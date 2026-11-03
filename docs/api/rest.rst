@@ -3909,6 +3909,10 @@ why, one entry per name, with ``reason`` one of:
      - Global ``GET /faults`` only. The request had already passed through 16
        gateways, so this gateway did not ask the peer.
 
+A peer that answers ``404`` with error code ``entity-not-found`` holds nothing
+by the id in the path. It contributes no items and is not a failed peer, so it
+neither marks the answer partial nor appears in ``failed_peers``.
+
 On the global ``GET /faults`` a peer that could not reach one of its own
 peers is reported partial in turn. The entry names both hops,
 ``<peer>/<its peer>``, with the reason the peer gave.

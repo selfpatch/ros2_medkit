@@ -665,6 +665,8 @@ const char * peer_failure_reason(PeerFailureKind kind) {
       return "too-large";
     case PeerFailureKind::kInvalidResponse:
       return "invalid-response";
+    case PeerFailureKind::kEntityNotFound:
+      return "entity-not-found";
   }
   return "unreachable";
 }
@@ -1274,6 +1276,21 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
     return PeerError{kind, std::move(message)};
   };
 
+  // A 404 carrying `entity-not-found` is the peer saying it holds nothing by the
+  // id in the path. A caller asking several peers about one entity reads that
+  // as "nothing from this peer", not as a call that failed.
+  auto status_failure = [&](int status, const std::string & body) {
+    auto kind = PeerFailureKind::kErrorStatus;
+    if (status == 404) {
+      auto error = nlohmann::json::parse(body, nullptr, false);
+      if (error.is_object() && string_at(error, "error_code") == ERR_ENTITY_NOT_FOUND) {
+        kind = PeerFailureKind::kEntityNotFound;
+      }
+    }
+    return PeerError{kind,
+                     "Peer '" + name_ + "' returned status " + std::to_string(status) + " for " + method + " " + path};
+  };
+
   if (used_streaming) {
     if (size_exceeded) {
       return tl::unexpected(
@@ -1284,18 +1301,14 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
       return tl::unexpected(transport_failure());
     }
     if (response_status < 200 || response_status >= 300) {
-      return tl::unexpected(PeerError{PeerFailureKind::kErrorStatus, "Peer '" + name_ + "' returned status " +
-                                                                         std::to_string(response_status) + " for " +
-                                                                         method + " " + path});
+      return tl::unexpected(status_failure(response_status, accumulated_body));
     }
   } else {
     if (!result) {
       return tl::unexpected(transport_failure());
     }
     if (result->status < 200 || result->status >= 300) {
-      return tl::unexpected(PeerError{PeerFailureKind::kErrorStatus, "Peer '" + name_ + "' returned status " +
-                                                                         std::to_string(result->status) + " for " +
-                                                                         method + " " + path});
+      return tl::unexpected(status_failure(result->status, result->body));
     }
     if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
       return tl::unexpected(

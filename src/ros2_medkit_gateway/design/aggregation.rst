@@ -726,7 +726,18 @@ never queried so they cannot appear in ``failed_peers``. The set unions:
 
 When the resolved list is empty (local-only entity), fan-out is skipped:
 no peer hosts the entity, so hitting peers would only produce spurious
-``partial: true`` / ``failed_peers``. Global endpoints (paths with no
+``partial: true`` / ``failed_peers``. A targeted peer that answers ``404``
+with ``entity-not-found`` - one that stopped holding the entity since the
+tables were built - contributes nothing and is not counted as failed either
+(``PeerFailureKind::kEntityNotFound``).
+
+``CorePluginContext::list_entity_faults``, behind the ROS 2
+``list_entity_faults`` service, applies the same rule. It asks only the peers
+the cached entity names among its ``contributors``, read off that entity
+rather than off the id-keyed map so a peer contributing a different entity
+with the same id is not asked, and it addresses an entity the merge prefixed
+by the id the peer knows it by. An entity only this gateway holds asks no peer
+and logs no partial fan-out. Global endpoints (paths with no
 entity id, e.g. ``GET /api/v1/faults``) pass a ``nullptr`` filter and keep
 fan-out-to-all-healthy behavior.
 

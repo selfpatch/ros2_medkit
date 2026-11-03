@@ -281,7 +281,8 @@ providing access to gateway data and utilities:
      for the allowed pattern and the rationale.
 
 - ``get_entity(id)`` - look up any entity (area, component, app, function) from the discovery cache
-- ``list_entity_faults(entity_id)`` - query faults for an entity
+- ``list_entity_faults(entity_id)`` - query faults for an entity: the local ones, plus those of the peers the
+  entity names among its ``contributors`` (none for an entity only this gateway holds)
 - ``validate_entity_for_route(req, res, entity_id)`` - validate entity exists and matches the route type, auto-sending SOVD errors on failure
 - ``register_capability()`` / ``register_entity_capability()`` - register custom capabilities on entities
 

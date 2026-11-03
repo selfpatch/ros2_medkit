@@ -14,10 +14,14 @@
 
 #include "ros2_medkit_gateway/core/plugins/core_plugin_context.hpp"
 
+#include <map>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/aggregation/entity_merger.hpp"
 #include "ros2_medkit_gateway/core/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
@@ -50,6 +54,47 @@ std::string entity_type_to_url_segment(SovdEntityType type) {
       return "";
   }
   return "";
+}
+
+/// The peers the cached entity `id` of `type` names among its contributors.
+/// Read off the entity itself rather than off a table keyed by id, so a peer
+/// that contributed some other entity sharing the id is not asked about this one.
+std::vector<std::string> contributing_peers(const ThreadSafeEntityCache & cache, SovdEntityType type,
+                                            const std::string & id) {
+  std::vector<std::string> contributors;
+  switch (type) {
+    case SovdEntityType::APP:
+      if (auto app = cache.get_app(id)) {
+        contributors = std::move(app->contributors);
+      }
+      break;
+    case SovdEntityType::COMPONENT:
+      if (auto comp = cache.get_component(id)) {
+        contributors = std::move(comp->contributors);
+      }
+      break;
+    case SovdEntityType::AREA:
+      if (auto area = cache.get_area(id)) {
+        contributors = std::move(area->contributors);
+      }
+      break;
+    case SovdEntityType::FUNCTION:
+      if (auto func = cache.get_function(id)) {
+        contributors = std::move(func->contributors);
+      }
+      break;
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+      break;
+  }
+  static constexpr std::string_view kPeerPrefix = "peer:";
+  std::vector<std::string> peers;
+  for (const auto & contributor : contributors) {
+    if (contributor.size() > kPeerPrefix.size() && contributor.compare(0, kPeerPrefix.size(), kPeerPrefix) == 0) {
+      peers.push_back(contributor.substr(kPeerPrefix.size()));
+    }
+  }
+  return peers;
 }
 
 }  // namespace
@@ -124,17 +169,32 @@ nlohmann::json CorePluginContext::list_entity_faults(const std::string & entity_
     }
   }
 
-  // Fan-out to peer gateways: fetch faults for this entity from each peer.
-  // The peer path mirrors the HTTP REST route: /api/v1/<type_plural>/<id>/faults.
+  // Fan-out to peer gateways: fetch faults for this entity from the peers that
+  // contributed it, and from no other, as the HTTP per-entity route does. A
+  // local-only entity asks no peer at all. The peer path mirrors the HTTP REST
+  // route: /api/v1/<type_plural>/<id>/faults, with the id the peer knows the
+  // entity by - the merge serves an entity it prefixed as `<peer>__<id>`.
   // Auth: the ROS 2 service path has no inbound HTTP Authorization header to
   // forward, so peers are queried with an empty credential - fan-out over this
   // path only surfaces faults from peers that do not gate their /faults route.
   auto * agg = wiring_.aggregation ? wiring_.aggregation() : nullptr;
   if (agg) {
     const std::string type_segment = entity_type_to_url_segment(entity->type);
+    std::map<std::string, std::vector<std::string>> peers_by_path;
     if (!type_segment.empty()) {
-      const std::string peer_path = "/api/v1/" + type_segment + "/" + entity_id + "/faults";
-      auto fan_result = agg->fan_out_get(peer_path, "");
+      for (auto & peer : contributing_peers(services_->entity_cache(), entity->type, entity_id)) {
+        const std::string prefix = peer + EntityMerger::SEPARATOR;
+        const bool renamed = entity_id.size() > prefix.size() && entity_id.compare(0, prefix.size(), prefix) == 0;
+        std::string peer_path = "/api/v1/";
+        peer_path += type_segment;
+        peer_path += '/';
+        peer_path += renamed ? entity_id.substr(prefix.size()) : entity_id;
+        peer_path += "/faults";
+        peers_by_path[peer_path].push_back(std::move(peer));
+      }
+    }
+    for (const auto & [peer_path, peers] : peers_by_path) {
+      auto fan_result = agg->fan_out_get(peer_path, "", &peers);
       if (fan_result.merged_items.is_array()) {
         for (const auto & item : fan_result.merged_items) {
           local_faults.push_back(item);

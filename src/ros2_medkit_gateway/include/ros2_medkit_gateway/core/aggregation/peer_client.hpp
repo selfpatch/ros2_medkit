@@ -71,6 +71,7 @@ enum class PeerFailureKind : uint8_t {
   kErrorStatus,      ///< The peer answered, with a status outside 2xx.
   kTooLarge,         ///< The body passed the peer-response size limit.
   kInvalidResponse,  ///< The peer answered with something that is not the JSON the route promises.
+  kEntityNotFound,   ///< The peer answered 404 `entity-not-found`: it holds nothing by the id asked about.
 };
 
 /// A peer call that failed, and why. Kept together because every caller that
