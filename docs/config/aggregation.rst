@@ -419,8 +419,18 @@ When aggregation is enabled, entities from peers are merged with local entities:
   aggregator does not filter a peer's Apps again: the peer applied its own
   ``filter_internal_nodes``.
 
+- **An ID held locally by another type**: Prefixed the same way, whatever the
+  remote entity's type. A peer Area ``camera_driver`` next to a local App
+  ``camera_driver`` is served as Area ``arm__camera_driver``, so requests for
+  the local App stay local. A peer Component whose ID a local Component shares
+  is merged only when no local entity of another type shares the ID too;
+  otherwise it is prefixed. References the peer's entities make to a prefixed
+  entity (an Area, a parent, a host, a dependency) name the prefixed ID.
+
 Requests for remote entities are transparently forwarded to the owning peer.
-The routing table maps entity IDs to peer names.
+The routing table maps entity IDs to peer names. An entry is followed only for
+the entity the peer contributed, so a local entity never takes the route of a
+peer entity that shares its ID.
 
 An entity that draws its resources from members - an Area, a merged Function, a
 hierarchical parent Component - is deliberately absent from that table, because

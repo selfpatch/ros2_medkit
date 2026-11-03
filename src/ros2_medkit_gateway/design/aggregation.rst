@@ -200,7 +200,10 @@ type-specific merge rules:
 
    start
    :Receive remote entity from peer;
-   if (Entity type?) then (Area or Function)
+   if (A local entity of another type\nholds the ID?) then (yes)
+       :Prefix remote ID with\npeername__ separator;
+       :Add routing entry\n(prefixed ID);
+   elseif (Entity type?) then (Area or Function)
        if (Same ID exists locally?) then (yes)
            :Merge into existing entity\n(combine relations/tags);
        else (no)
@@ -341,11 +344,31 @@ classification pass over the full Component set:
   separator). Apps represent individual ROS 2 nodes with unique behavior - two
   Apps with the same ID from different peers are different entities.
 
+- **Any type, ID held locally by another type**: Prefixed the same way. The
+  routing table is keyed by ID alone, so a routing entry for a remote Area,
+  Component, Function or App whose ID a local entity of another type holds
+  would hand that local entity's requests - writes included - to the peer.
+  The remote entity is served as ``peername__<id>`` and routed under that ID
+  instead. "Local" here is everything already merged when the peer is folded
+  in: this gateway's own entities and those of every peer merged before it.
+  A remote Component whose ID a local Component shares merges as above only
+  when no local entity of another type shares it too; otherwise it is
+  prefixed rather than merged, because the merged Component's routing entry
+  would cover the other entity. Merged Areas and Functions create no routing
+  entry and merge regardless. A remote entity whose prefixed ID is itself held
+  locally is not served at all, and a warning names it.
+
+  A prefixed entity keeps its references valid: a subarea names its prefixed
+  parent, a Component its prefixed Area, parent or dependency, an App its
+  prefixed Component, and a Function its prefixed hosts and dependencies.
+  Responses the peer answers for it - its forwarded detail, for one - name it,
+  and what it refers to, by the peer's own IDs.
+
 The ``EntityMerger::SEPARATOR`` constant (``__``) is used as the prefix
-separator for Apps. The routing table maps ``entity_id -> peer_name`` for
+separator. The routing table maps ``entity_id -> peer_name`` for
 entities whose runtime state lives on the peer: remote-only Areas and
-Functions, leaf Components (remote-only or collision-merged), and
-remote-only or prefixed Apps. Hierarchical parent Components are not in the
+Functions, leaf Components (remote-only or collision-merged), remote-only
+Apps, and every prefixed entity. Hierarchical parent Components are not in the
 routing table - they are served locally.
 
 Provenance (``x-medkit.contributors``)
@@ -383,7 +406,17 @@ Request Routing
 
 When a request arrives for an entity, ``HandlerContext`` checks the routing
 table. If the entity is local, processing continues normally. If the entity
-maps to a peer, the request is forwarded transparently:
+maps to a peer, the request is forwarded transparently.
+
+The routing table is keyed by ID, and the entity a request names is resolved
+by type, so the two are checked against each other: a routing entry counts
+only when the entity found is that peer's contribution - its ``source`` is
+``peer:<name>`` or its ``contributors`` name the peer
+(``AggregationManager::find_owning_peer``). The merge already keeps a remote
+entity out of any ID a local entity holds; this check is what keeps a local
+entity local should the table and the cache ever disagree, for instance while a
+refresh has published the new table and not yet the entities. Member dispatch
+and the configuration reset read the owner the same way.
 
 .. plantuml::
    :caption: Request Routing - Local vs Remote
@@ -966,7 +999,8 @@ Key Classes
 ``EntityMerger``
     Stateless merge engine that combines local and remote entity sets using
     type-specific rules (merge by ID for Area/Function/Component, prefix on
-    collision for App). Produces a provisional routing table mapping remote
+    collision for App, prefix for any type whose ID a local entity of another
+    type holds). Produces a provisional routing table mapping remote
     entity IDs to peer names - the Component entries are later refined by
     ``classify_component_routing``.
 
@@ -1095,7 +1129,10 @@ Function Host Remapping
 
 When App ID collision causes prefixing (e.g., ``camera_driver`` becomes
 ``peer_b__camera_driver``), Function entities that reference the original App ID
-in their ``hosts`` list are automatically remapped to use the prefixed ID. This
+in their ``hosts`` list are automatically remapped to use the prefixed ID; a host
+naming a prefixed Component is remapped the same way. The remapping reads the
+renames ``EntityMerger`` recorded for that peer, never the shape of an ID, so a
+peer whose own IDs contain ``__`` keeps them. This
 ensures Function host references remain valid after merge. The hosts are not
 reduced at this point: the one pass at the end of the cache refresh removes
 every host that names no served App or Component.

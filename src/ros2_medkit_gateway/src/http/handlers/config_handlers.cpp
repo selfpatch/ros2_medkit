@@ -857,17 +857,19 @@ ConfigHandlers::delete_all_configurations(const http::TypedRequest & req) {
   // and is not reported - nothing was left undone for it.
   //
   // A member routed to a peer never contributes a local node: an id a peer
-  // announces that this gateway also declares is renamed `<peer>__<id>` by the
-  // merge, so the loop above and this one cannot name the same member.
+  // announces that this gateway also declares, under any entity type, is
+  // renamed `<peer>__<id>` by the merge, and the owner is read off the App
+  // itself, so the loop above and this one cannot name the same member.
   if (auto * agg = ctx_.aggregation_manager(); agg != nullptr) {
     for (const auto & member : cache.get_members(entity.sovd_type(), entity_id)) {
       // Apps only: a parameter belongs to a ROS node, an App is what carries
       // one, and a peer-owned Component's Apps are members in their own right.
       // Naming the Component too would report the same gap twice.
-      if (!cache.get_app(member)) {
+      auto app = cache.get_app(member);
+      if (!app) {
         continue;
       }
-      auto peer = agg->find_peer_for_entity(member);
+      auto peer = agg->find_owning_peer(*app);
       if (!peer) {
         continue;
       }

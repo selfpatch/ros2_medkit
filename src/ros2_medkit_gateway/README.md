@@ -1959,7 +1959,7 @@ curl http://localhost:8080/api/v1/components | jq
 **Key features:**
 - **Static peers**: List known gateways in config
 - **mDNS auto-discovery**: Zero-configuration peer discovery on local network
-- **Type-aware merging**: Areas, Functions, and Components merge by ID; Apps get peer-name prefixes on collision
+- **Type-aware merging**: Areas, Functions, and Components merge by ID; Apps get peer-name prefixes on collision, and so does a remote entity of any type whose ID a local entity of another type holds
 - **Transparent forwarding**: Requests for remote entities forwarded to owning peer
 - **Graceful degradation**: Unhealthy peers excluded, partial results clearly marked
 

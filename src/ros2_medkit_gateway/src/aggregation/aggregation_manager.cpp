@@ -593,54 +593,49 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
   }
 
   for (auto & pfr : to_merge) {
+    // Every ID already in the merged set, whatever its type, before this peer is
+    // folded in. The merger keeps the peer's entities out of those IDs unless the
+    // two are the same entity merged by design.
+    EntityMerger merger(pfr.peer_name,
+                        EntityMerger::collect_ids(merged.areas, merged.components, merged.apps, merged.functions));
+    // Areas, then Components, then Apps, then Functions: each step reads the
+    // renames of the ones before it to keep the peer's references pointing at
+    // the IDs its entities are served under.
+    merged.areas = merger.merge_areas(merged.areas, pfr.entities.areas);
+    merged.components = merger.merge_components(merged.components, pfr.entities.components);
+    merged.apps = merger.merge_apps(merged.apps, pfr.entities.apps);
+    merged.functions = merger.merge_functions(merged.functions, pfr.entities.functions);
+
+    // The Components this peer claims, by the IDs they are served under, so the
+    // classification below routes a prefixed Component under its prefixed ID.
     PeerClaim claim;
     claim.peer_name = pfr.peer_name;
+    const auto & renamed_components = merger.get_renames().components;
     for (const auto & c : pfr.entities.components) {
-      claim.claimed_entity_ids.insert(c.id);
+      auto renamed = renamed_components.find(c.id);
+      const std::string & served_id = renamed != renamed_components.end() ? renamed->second : c.id;
+      if (merger.get_routing_table().count(served_id) > 0u) {
+        claim.claimed_entity_ids.insert(served_id);
+      }
     }
     peer_component_claims.push_back(std::move(claim));
 
-    EntityMerger merger(pfr.peer_name);
-    merged.areas = merger.merge_areas(merged.areas, pfr.entities.areas);
-    merged.components = merger.merge_components(merged.components, pfr.entities.components);
-    // Merge apps BEFORE functions so that collision-prefixed App IDs are known
-    // when we need to remap Function hosts below.
-    merged.apps = merger.merge_apps(merged.apps, pfr.entities.apps);
-
-    // Build a map of original remote App IDs to their (possibly prefixed) final IDs.
-    // When merge_apps prefixes a remote App (e.g., "camera_driver" -> "peer_b__camera_driver"),
-    // Function hosts referencing the original ID need to be updated to the prefixed ID.
-    std::unordered_map<std::string, std::string> app_id_remap;
-    for (const auto & [routed_id, peer_name_val] : merger.get_routing_table()) {
-      // Check if this is a prefixed App ID (contains SEPARATOR)
-      std::string sep = EntityMerger::SEPARATOR;
-      auto sep_pos = routed_id.find(sep);
-      if (sep_pos != std::string::npos) {
-        std::string original_id = routed_id.substr(sep_pos + sep.size());
-        app_id_remap[original_id] = routed_id;
-      }
-    }
-
-    // Remap Function hosts from original remote App IDs to their prefixed IDs
-    // before merging functions.
-    for (auto & func : pfr.entities.functions) {
-      for (auto & host : func.hosts) {
-        auto remap_it = app_id_remap.find(host);
-        if (remap_it != app_id_remap.end()) {
-          host = remap_it->second;
-        }
-      }
-    }
-
-    merged.functions = merger.merge_functions(merged.functions, pfr.entities.functions);
-
     for (const auto & [id, name] : merger.get_routing_table()) {
       merged.routing_table[id] = name;
-      // Log collision-prefixed entities to help operators diagnose naming conflicts
-      if (id.find(EntityMerger::SEPARATOR) != std::string::npos) {
-        if (logger) {
-          MEDKIT_LOG_WARN(*logger, "Entity ID collision: '%s' prefixed for peer '%s'", id.c_str(), name.c_str());
+    }
+    // Log collision-prefixed entities to help operators diagnose naming conflicts
+    if (logger) {
+      const auto & renames = merger.get_renames();
+      for (const auto * renamed : {&renames.areas, &renames.components, &renames.apps, &renames.functions}) {
+        for (const auto & [original_id, served_id] : *renamed) {
+          MEDKIT_LOG_WARN(*logger, "Entity ID collision: '%s' from peer '%s' prefixed to '%s'", original_id.c_str(),
+                          pfr.peer_name.c_str(), served_id.c_str());
         }
+      }
+      for (const auto & dropped : merger.get_dropped()) {
+        MEDKIT_LOG_WARN(*logger,
+                        "Entity ID collision: %s from peer '%s' not served, its prefixed ID is held locally too",
+                        dropped.c_str(), pfr.peer_name.c_str());
       }
     }
   }
@@ -708,6 +703,20 @@ std::optional<std::string> AggregationManager::find_peer_for_entity(const std::s
   auto it = routing_table_.find(entity_id);
   if (it != routing_table_.end()) {
     return it->second;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> AggregationManager::find_owning_peer(const std::string & entity_id,
+                                                                const std::string & source,
+                                                                const std::vector<std::string> & contributors) const {
+  auto peer = find_peer_for_entity(entity_id);
+  if (!peer) {
+    return std::nullopt;
+  }
+  const std::string tag = "peer:" + *peer;
+  if (source == tag || std::find(contributors.begin(), contributors.end(), tag) != contributors.end()) {
+    return peer;
   }
   return std::nullopt;
 }
