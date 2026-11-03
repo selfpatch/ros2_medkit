@@ -561,7 +561,8 @@ nested ``subareas`` and ``subcomponents`` collections, the per-entity detail
 that carries a Component's relationships and a Function's hosts, and each app's
 ``operations``. If any of them cannot be read - connection failure, a status
 the route has no other meaning for, an oversized body, a body nested more than
-64 levels deep, unparsable JSON - the refresh for that peer is discarded whole. A partial picture is never published
+64 levels deep or holding more than 1,000,000 values (see Peer Response Limits),
+unparsable JSON - the refresh for that peer is discarded whole. A partial picture is never published
 as a complete one, and the peer's last complete declaration is left in place.
 
 What clients see then depends on the peer's health check:
@@ -625,6 +626,16 @@ does not end them grows this gateway's memory for as long as it keeps sending.
 The SSE relay of a peer's event stream is not covered either: it reads the
 stream with its own client and no total limit, holds at most 1 MB of an event
 that has not ended, and drops the connection past that.
+
+A body is also judged on its text before it is parsed, because a parsed body
+costs many times its text: a list of three million empty objects, 9 MB, came to
+some 0.6 GB. A body nested more than 64 levels deep, or holding more than
+1,000,000 values - array elements and object members, counted at every level -
+is refused unparsed, the same as an oversized one. That is 1000 entities of
+1000 values each, far above anything a gateway serves: the largest item of a
+gateway serving the demo nodes holds about 160 values, its largest answer about
+3000. The relayed events of a peer's fault stream are judged the same way, and
+one past either bound is dropped with a warning.
 
 .. _aggregation-breaking-changes:
 

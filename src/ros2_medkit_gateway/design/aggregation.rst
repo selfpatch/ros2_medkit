@@ -428,11 +428,12 @@ classification pass over the full Component set:
   the list.
 
   The body comes from the peer, so the walk is bounded: a body nested deeper
-  than ``kMaxPeerJsonDepth`` (64) levels is judged on its text before it is
-  parsed and refused with ``502`` (``x-medkit-peer-unavailable``, naming the
-  depth). It is not passed through untranslated, which would present the
+  than ``kMaxPeerJsonDepth`` (64) levels, or holding more than
+  ``kMaxPeerJsonValues`` (1,000,000) values, is judged on its text before it
+  is parsed and refused with ``502`` (``x-medkit-peer-unavailable``, naming
+  the bound). It is not passed through untranslated, which would present the
   peer's IDs as this gateway's, and it is never translated in part. No
-  discovery response nests anywhere near that deep. The dropped references of
+  discovery response comes anywhere near either bound. The dropped references of
   an array are removed in one pass over it, so the work grows with the length
   of the array and not with its square.
 
@@ -920,7 +921,8 @@ refreshes that gateway needs to relink its ROS graph, and then turns true.
 ``PeerClient::fetch_entities()`` reads a peer over several requests and either
 describes it whole or reports failure: a dead connection, a status a route has
 no other meaning for, an oversized body, a body nested deeper than
-``kMaxPeerJsonDepth`` (64) levels or unparsable JSON on any of them fails
+``kMaxPeerJsonDepth`` (64) levels or holding more than ``kMaxPeerJsonValues``
+(1,000,000) values, or unparsable JSON on any of them fails
 the fetch, because a picture missing a branch is indistinguishable on the wire
 from a peer that does not have that branch. Two statuses carry a meaning of
 their own: a ``404`` on a nested collection route (``/subareas``,
@@ -1281,6 +1283,26 @@ The SSE relay is not covered by the limit either. ``SSEStreamProxy`` reads a
 peer's event stream with its own cpp-httplib client and no total limit, since
 a stream has no end. It holds at most 1 MB of an event that has not ended
 (``kMaxSSEBufferSize``) and drops the connection past that.
+
+Parsed Size Limits
+~~~~~~~~~~~~~~~~~~
+
+A body within the size limit can still cost far more once parsed: the JSON
+library builds a 16-byte value for every element and member, and every object
+and string allocates on top, so a 9 MB list of three million empty objects
+parsed to some 0.6 GB. Every body a peer sends is therefore judged on its text
+before it is parsed (``judge_peer_json``), in the same scan as its depth: a
+body holding more than ``kMaxPeerJsonValues`` (1,000,000) values - array
+elements and object members, counted at every level - is refused unparsed,
+like one nested deeper than ``kMaxPeerJsonDepth``. The bound is 1000 entities
+(``MAX_ENTITIES_PER_COLLECTION``) of 1000 values each; the largest item of a
+gateway serving the demo nodes holds about 160 values (a data item with its
+message schema), its largest answer about 3000. At the bound a body of the
+costliest values, a million empty objects, parses to some 250 MB. The scan
+runs wherever a peer body is parsed: every request of an entity fetch, the
+health answer, a fan-out, the error body of a ``404`` or ``504``, a forwarded
+discovery response before it is rewritten (``502`` when refused), and each
+event the fault stream relays (dropped with a warning).
 
 Per-Peer Entity Limits
 ~~~~~~~~~~~~~~~~~~~~~~

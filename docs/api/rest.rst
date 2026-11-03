@@ -3905,7 +3905,9 @@ why, one entry per name, with ``reason`` one of:
    * - ``invalid-response``
      - The peer answered with something that is not the JSON the route
        promises, including a body that nests arrays and objects more than 64
-       levels deep.
+       levels deep or holds more than 1,000,000 values (array elements and
+       object members, counted at every level). Such a body is refused before
+       it is parsed.
    * - ``too-deep``
      - Global ``GET /faults`` only. The request had already passed through 16
        gateways, so this gateway did not ask the peer.

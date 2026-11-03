@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_json.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_json.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
@@ -250,6 +251,14 @@ void SSEFaultHandler::on_fault_event(const fd::FaultEventRecord & event) {
 }
 
 void SSEFaultHandler::on_peer_event(const StreamEvent & event) {
+  // The peer writes the event, and the payload is serialized again below once
+  // the attribution is added, which recurses once per level: judged on its
+  // text before it is parsed, as every other body a peer sends is.
+  if (const auto shape = judge_peer_json(event.data); shape != PeerJsonShape::kAcceptable) {
+    MEDKIT_LOG_WARN(HandlerContext::logger(), "Discarding fault event relayed from peer '%s': it %s",
+                    event.peer_name.c_str(), describe_peer_json_shape(shape).c_str());
+    return;
+  }
   auto payload = nlohmann::json::parse(event.data, nullptr, false);
   if (payload.is_discarded() || !payload.is_object()) {
     MEDKIT_LOG_WARN(HandlerContext::logger(), "Discarding unparseable fault event relayed from peer '%s'",

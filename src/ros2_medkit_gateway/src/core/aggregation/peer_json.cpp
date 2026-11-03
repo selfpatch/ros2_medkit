@@ -16,10 +16,14 @@
 
 namespace ros2_medkit_gateway {
 
-bool json_nesting_exceeds(const std::string & text, size_t max_depth) {
+PeerJsonShape judge_peer_json(const std::string & text, size_t max_depth, size_t max_values) {
   size_t depth = 0;
+  size_t values = 0;
   bool in_string = false;
   bool escaped = false;
+  // Set by `[` or `{`: the next character that is not white space either
+  // closes the container or starts its first value.
+  bool opened = false;
   for (const char c : text) {
     if (in_string) {
       if (escaped) {
@@ -31,6 +35,15 @@ bool json_nesting_exceeds(const std::string & text, size_t max_depth) {
       }
       continue;
     }
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+      continue;
+    }
+    if (opened) {
+      opened = false;
+      if (c != ']' && c != '}' && ++values > max_values) {
+        return PeerJsonShape::kTooManyValues;
+      }
+    }
     switch (c) {
       case '"':
         in_string = true;
@@ -38,8 +51,9 @@ bool json_nesting_exceeds(const std::string & text, size_t max_depth) {
       case '[':
       case '{':
         if (++depth > max_depth) {
-          return true;
+          return PeerJsonShape::kTooDeep;
         }
+        opened = true;
         break;
       case ']':
       case '}':
@@ -47,11 +61,28 @@ bool json_nesting_exceeds(const std::string & text, size_t max_depth) {
           --depth;
         }
         break;
+      case ',':
+        if (++values > max_values) {
+          return PeerJsonShape::kTooManyValues;
+        }
+        break;
       default:
         break;
     }
   }
-  return false;
+  return PeerJsonShape::kAcceptable;
+}
+
+std::string describe_peer_json_shape(PeerJsonShape shape) {
+  switch (shape) {
+    case PeerJsonShape::kTooDeep:
+      return "nests deeper than " + std::to_string(kMaxPeerJsonDepth) + " levels";
+    case PeerJsonShape::kTooManyValues:
+      return "holds more than " + std::to_string(kMaxPeerJsonValues) + " values";
+    case PeerJsonShape::kAcceptable:
+      break;
+  }
+  return {};
 }
 
 }  // namespace ros2_medkit_gateway
