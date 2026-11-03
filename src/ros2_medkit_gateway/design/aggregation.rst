@@ -803,6 +803,14 @@ peer from re-asking ITS peers: each gateway reports what it holds, the hop that
 owns an entity is the hop that answers for it, and that is also what makes the
 walk terminate.
 
+Each field is read from the key a gateway serves it under. An Area's and a
+Component's description come from the top level of the item, their namespace
+from ``x-medkit.ros2.namespace``, a Component's node from
+``x-medkit.ros2.node``, and a Function's translation id from the top-level
+``translation_id``. ``x-medkit.description``, ``x-medkit.namespace``,
+``x-medkit.fqn`` and ``translationId`` are still read when the served key is
+absent, for a peer that sends a field there.
+
 Availability travels the same way in the other direction. ``x-medkit.available``
 is emitted only when false, so absence means reachable, and both
 ``parse_component`` and ``parse_app`` read it back with a default of ``true``.

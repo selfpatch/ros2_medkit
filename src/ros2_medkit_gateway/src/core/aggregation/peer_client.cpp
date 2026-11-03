@@ -141,6 +141,38 @@ std::vector<T> parse_collection(const nlohmann::json & response_json, Parser par
   return result;
 }
 
+/// The string under `key`, or empty when the key is absent or holds something else.
+std::string string_at(const nlohmann::json & j, const char * key) {
+  auto it = j.find(key);
+  return (it != j.end() && it->is_string()) ? it->get<std::string>() : std::string{};
+}
+
+/// A field a gateway serves under `x-medkit.ros2.<ros2_key>`, falling back to
+/// `x-medkit.<legacy_key>`, where this parser used to look for it.
+std::string ros2_field(const nlohmann::json & xm, const char * ros2_key, const char * legacy_key) {
+  auto ros2 = xm.find("ros2");
+  if (ros2 != xm.end() && ros2->is_object()) {
+    auto value = string_at(*ros2, ros2_key);
+    if (!value.empty()) {
+      return value;
+    }
+  }
+  return string_at(xm, legacy_key);
+}
+
+/// The description a gateway serves at the top level of an entity, falling back
+/// to `x-medkit.description`, which only some routes carry.
+std::string description_of(const nlohmann::json & j) {
+  auto description = string_at(j, "description");
+  if (description.empty()) {
+    auto xm = j.find("x-medkit");
+    if (xm != j.end() && xm->is_object()) {
+      description = string_at(*xm, "description");
+    }
+  }
+  return description;
+}
+
 /**
  * @brief Parse an Area from JSON
  */
@@ -148,10 +180,10 @@ Area parse_area(const nlohmann::json & j) {
   Area area;
   area.id = j.value("id", "");
   area.name = j.value("name", "");
+  area.description = description_of(j);
   if (j.contains("x-medkit") && j["x-medkit"].is_object()) {
     const auto & xm = j["x-medkit"];
-    area.namespace_path = xm.value("namespace", "");
-    area.description = xm.value("description", "");
+    area.namespace_path = ros2_field(xm, "namespace", "namespace");
     area.source = xm.value("source", "");
   }
   if (j.contains("translationId")) {
@@ -170,13 +202,13 @@ Component parse_component(const nlohmann::json & j) {
   Component comp;
   comp.id = j.value("id", "");
   comp.name = j.value("name", "");
+  comp.description = description_of(j);
   if (j.contains("x-medkit") && j["x-medkit"].is_object()) {
     const auto & xm = j["x-medkit"];
-    comp.namespace_path = xm.value("namespace", "");
-    comp.fqn = xm.value("fqn", "");
+    comp.namespace_path = ros2_field(xm, "namespace", "namespace");
+    comp.fqn = ros2_field(xm, "node", "fqn");
     comp.area = xm.value("area", "");
     comp.source = xm.value("source", "");
-    comp.description = xm.value("description", "");
     comp.variant = xm.value("variant", "");
     comp.parent_component_id = xm.value("parentComponentId", "");
     if (xm.contains("dependsOn") && xm["dependsOn"].is_array()) {
@@ -393,16 +425,19 @@ Function parse_function(const nlohmann::json & j) {
   Function func;
   func.id = j.value("id", "");
   func.name = j.value("name", "");
+  func.description = description_of(j);
   if (j.contains("x-medkit") && j["x-medkit"].is_object()) {
     const auto & xm = j["x-medkit"];
     func.source = xm.value("source", "");
-    func.description = xm.value("description", "");
     if (xm.contains("hosts") && xm["hosts"].is_array()) {
       func.hosts = xm["hosts"].get<std::vector<std::string>>();
     }
   }
-  if (j.contains("translationId")) {
-    func.translation_id = j["translationId"].get<std::string>();
+  // The Function detail serves `translation_id`; `translationId` is what this
+  // parser read before.
+  func.translation_id = string_at(j, "translation_id");
+  if (func.translation_id.empty()) {
+    func.translation_id = string_at(j, "translationId");
   }
   if (j.contains("tags") && j["tags"].is_array()) {
     func.tags = j["tags"].get<std::vector<std::string>>();
