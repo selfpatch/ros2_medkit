@@ -58,10 +58,12 @@ std::string EntityMerger::peer_source() const {
 }
 
 bool EntityMerger::held_by_other_type(const std::string & id, Kind kind) const {
-  return (kind != Kind::kArea && local_ids_.areas.count(id) > 0u) ||
-         (kind != Kind::kComponent && local_ids_.components.count(id) > 0u) ||
-         (kind != Kind::kApp && local_ids_.apps.count(id) > 0u) ||
-         (kind != Kind::kFunction && local_ids_.functions.count(id) > 0u);
+  auto held = [&id, kind](const LocalIds & ids) {
+    return (kind != Kind::kArea && ids.areas.count(id) > 0u) ||
+           (kind != Kind::kComponent && ids.components.count(id) > 0u) ||
+           (kind != Kind::kApp && ids.apps.count(id) > 0u) || (kind != Kind::kFunction && ids.functions.count(id) > 0u);
+  };
+  return held(local_ids_) || held(added_);
 }
 
 bool EntityMerger::held_by_any_type(const std::string & id) const {
@@ -69,7 +71,7 @@ bool EntityMerger::held_by_any_type(const std::string & id) const {
          local_ids_.functions.count(id) > 0u;
 }
 
-bool EntityMerger::can_generate(const std::string & id, const std::string & original_id) const {
+bool EntityMerger::can_generate(const std::string & id, Kind kind, const std::string & original_id) const {
   if (held_by_any_type(id)) {
     return false;
   }
@@ -78,7 +80,11 @@ bool EntityMerger::can_generate(const std::string & id, const std::string & orig
     return false;
   }
   auto it = generated_.find(id);
-  return it == generated_.end() || it->second == original_id;
+  return it == generated_.end() || (it->second.kind == kind && it->second.original_id == original_id);
+}
+
+void EntityMerger::record_generated(const std::string & id, Kind kind, const std::string & original_id) {
+  generated_[id] = GeneratedFor{kind, original_id};
 }
 
 void EntityMerger::drop(Kind kind, const std::string & original_id, const std::string & taken_id) {
@@ -229,18 +235,19 @@ std::vector<Area> EntityMerger::merge_areas(const std::vector<Area> & local, con
     if (it != local_index.end() || held_by_other_type(remote_area.id, Kind::kArea)) {
       // Another entity holds the ID here; serving this one under it would put both under one ID.
       added.id = prefix_id(remote_area.id);
-      if (local_index.count(added.id) > 0u || !can_generate(added.id, remote_area.id)) {
+      if (local_index.count(added.id) > 0u || !can_generate(added.id, Kind::kArea, remote_area.id)) {
         drop(Kind::kArea, remote_area.id, added.id);
         continue;
       }
       added.name = peer_name_ + SEPARATOR + remote_area.name;
       added.original_id = remote_area.id;
       renames_.areas[remote_area.id] = added.id;
-      generated_[added.id] = remote_area.id;
+      record_generated(added.id, Kind::kArea, remote_area.id);
     }
 
     // Remote-only areas get a routing entry
     routing_table_[added.id] = peer_name_;
+    added_.areas.insert(added.id);
     result.push_back(added);
     added_index.push_back(result.size() - 1);
   }
@@ -313,18 +320,19 @@ std::vector<Function> EntityMerger::merge_functions(const std::vector<Function> 
     if (it != local_index.end() || held_by_other_type(remote_func.id, Kind::kFunction)) {
       // Another entity holds the ID here; serving this one under it would put both under one ID.
       added.id = prefix_id(remote_func.id);
-      if (local_index.count(added.id) > 0u || !can_generate(added.id, remote_func.id)) {
+      if (local_index.count(added.id) > 0u || !can_generate(added.id, Kind::kFunction, remote_func.id)) {
         drop(Kind::kFunction, remote_func.id, added.id);
         continue;
       }
       added.name = peer_name_ + SEPARATOR + remote_func.name;
       added.original_id = remote_func.id;
       renames_.functions[remote_func.id] = added.id;
-      generated_[added.id] = remote_func.id;
+      record_generated(added.id, Kind::kFunction, remote_func.id);
     }
 
     // Remote-only functions get a routing entry
     routing_table_[added.id] = peer_name_;
+    added_.functions.insert(added.id);
     result.push_back(added);
     renamed_refs_index.push_back(result.size() - 1);
   }
@@ -411,18 +419,19 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
 
     if (it != local_index.end() || held_elsewhere) {
       added.id = prefix_id(remote_comp.id);
-      if (local_index.count(added.id) > 0u || !can_generate(added.id, remote_comp.id)) {
+      if (local_index.count(added.id) > 0u || !can_generate(added.id, Kind::kComponent, remote_comp.id)) {
         drop(Kind::kComponent, remote_comp.id, added.id);
         continue;
       }
       added.name = peer_name_ + SEPARATOR + remote_comp.name;
       added.original_id = remote_comp.id;
       renames_.components[remote_comp.id] = added.id;
-      generated_[added.id] = remote_comp.id;
+      record_generated(added.id, Kind::kComponent, remote_comp.id);
     }
 
     // Remote-only components get a routing entry
     routing_table_[added.id] = peer_name_;
+    added_.components.insert(added.id);
     result.push_back(added);
     added_index.push_back(result.size() - 1);
   }
@@ -460,17 +469,18 @@ std::vector<App> EntityMerger::merge_apps(const std::vector<App> & local, const 
       // Collision: prefix the remote entity ID, preserve original for clients
       added.original_id = remote_app.id;
       added.id = prefix_id(remote_app.id);
-      if (local_ids.count(added.id) > 0u || !can_generate(added.id, remote_app.id)) {
+      if (local_ids.count(added.id) > 0u || !can_generate(added.id, Kind::kApp, remote_app.id)) {
         drop(Kind::kApp, remote_app.id, added.id);
         continue;
       }
       added.name = peer_name_ + SEPARATOR + remote_app.name;
       renames_.apps[remote_app.id] = added.id;
-      generated_[added.id] = remote_app.id;
+      record_generated(added.id, Kind::kApp, remote_app.id);
     }
 
     append_contributor_unique(added.contributors, peer_source());
     routing_table_[added.id] = peer_name_;
+    added_.apps.insert(added.id);
     result.push_back(added);
     added_index.push_back(result.size() - 1);
   }

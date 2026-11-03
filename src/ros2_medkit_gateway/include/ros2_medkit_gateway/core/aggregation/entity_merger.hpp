@@ -35,18 +35,21 @@ namespace ros2_medkit_gateway {
  * - Component: merge by ID (combine tags/description, no duplication)
  * - App: prefix remote ID with "peername__" on collision
  *
- * A remote Component or App whose ID a local entity of another type holds is
+ * A remote Component or App whose ID an entity of another type holds is
  * prefixed the same way, and so is a remote Area or Function that has no local
- * entity of its own type to merge with: several lookups are keyed by ID alone,
- * and the remote entity under that ID would take the local entity's place in
- * them.
+ * entity of its own type to merge with: routing and several lookups are keyed
+ * by ID alone, and the remote entity under that ID would take the other
+ * entity's place in them. The entity of another type is a local one, or one
+ * this merger already added for the same peer: a peer that declares Area x
+ * and Component x is served as Area x and Component <peer>__x.
  *
  * A prefixed ID is reserved against every ID already merged (whatever its type),
  * every ID the peer itself declares, and every ID this merger generated for
- * another entity. When it is taken, the remote entity is dropped, the drop is
- * recorded per type, and the peer's references to it are removed rather than
- * left to name the local entity that shares its ID. An ID a merge generated is
- * never a merge target: a remote entity declared under one is another entity.
+ * another entity of any type. When it is taken, the remote entity is dropped,
+ * the drop is recorded per type, and the peer's references to it are removed
+ * rather than left to name the local entity that shares its ID. An ID a merge
+ * generated is never a merge target: a remote entity declared under one is
+ * another entity.
  *
  * After merging, a routing table maps remote entity IDs (possibly prefixed)
  * to the peer name, enabling request forwarding. Merged Areas and Functions do
@@ -163,8 +166,16 @@ class EntityMerger {
   Renames renames_;
   std::vector<std::string> dropped_;
   LocalIds drops_;
-  /// Every ID this merger generated, -> the remote ID it was generated for.
-  std::unordered_map<std::string, std::string> generated_;
+  /// The IDs of the remote entities this merger added, as served, per type.
+  LocalIds added_;
+
+  /// The remote entity an ID was generated for: its type and its own ID.
+  struct GeneratedFor {
+    Kind kind;
+    std::string original_id;
+  };
+  /// Every ID this merger generated, -> the remote entity it was generated for.
+  std::unordered_map<std::string, GeneratedFor> generated_;
 
   /// Create a prefixed ID: "peername__original_id"
   std::string prefix_id(const std::string & id) const;
@@ -172,17 +183,23 @@ class EntityMerger {
   /// Create the source tag for remote entities: "peer:<name>"
   std::string peer_source() const;
 
-  /// True when a local entity of a type other than `kind` holds `id`.
+  /// True when a local entity, or a remote one this merger added, of a type
+  /// other than `kind` holds `id`.
   bool held_by_other_type(const std::string & id, Kind kind) const;
 
   /// True when a local entity of any type holds `id`.
   bool held_by_any_type(const std::string & id) const;
 
-  /// True when `id` is free to be generated for the remote `original_id`: no
-  /// local entity of any type holds it, the peer declares no entity by it, and
-  /// this merger generated it for no other remote ID. The same original of
-  /// another type may share it, the way the peer's own entities share their ID.
-  bool can_generate(const std::string & id, const std::string & original_id) const;
+  /// True when `id` is free to be generated for the remote `original_id` of
+  /// `kind`: no local entity of any type holds it, the peer declares no entity
+  /// by it, and this merger generated it for no other entity. An entity of
+  /// another type with the same original ID is another entity: two served
+  /// under one ID would share its route. Only the same entity listed twice
+  /// gets it again.
+  bool can_generate(const std::string & id, Kind kind, const std::string & original_id) const;
+
+  /// Record `id`, generated for the remote `original_id` of `kind`.
+  void record_generated(const std::string & id, Kind kind, const std::string & original_id);
 
   /// Record `original_id` of `kind` as dropped because `taken_id` is taken.
   void drop(Kind kind, const std::string & original_id, const std::string & taken_id);
