@@ -453,6 +453,8 @@ class AggregationManager {
    *        both sides until it answered empty. A peer that reports itself
    *        partial makes this result partial too, with its failed peers named
    *        `<peer>/<its peer>`.
+   * A peer answering `404 entity-not-found` holds nothing by the id in
+   * `path`: it contributes no items and is not a failed peer.
    * @return FanOutResult with merged items and failure info.
    */
   FanOutResult fan_out_get(const std::string & path, const std::string & auth_header,

@@ -916,6 +916,13 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
       pr.peer_name = peer->name();
 
       auto result = peer->forward_and_get_json("GET", path, auth_header, headers);
+      if (!result.has_value() && result.error().kind == PeerFailureKind::kEntityNotFound) {
+        // The peer holds nothing by the id in the path, so it has nothing to
+        // add. That is an answer, not a failed peer: counting it as one marks
+        // a complete result partial and names a healthy peer as failed.
+        pr.success = true;
+        return pr;
+      }
       if (!result.has_value()) {
         pr.success = false;
         pr.failure_reason = peer_failure_reason(result.error().kind);
