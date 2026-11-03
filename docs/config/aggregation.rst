@@ -64,7 +64,9 @@ Core Parameters
        a client waits on across every peer at once. Increase for high-latency
        networks. The health check is the exception: it caps both its budgets at
        1000 ms, because an unresponsive peer is unhealthy whether the gateway
-       waits one second or five, and the wait bounds how long shutdown takes.
+       waits one second or five. A read budget bounds each read, not the
+       answer: a peer that keeps sending a byte at a time holds the call until
+       it stops, and shutdown cancels every peer call in flight.
        Range 100-600000; a value outside it is clamped to the nearest end, and
        the clamp is logged when aggregation is enabled.
    * - ``aggregation.forward_timeout_ms``

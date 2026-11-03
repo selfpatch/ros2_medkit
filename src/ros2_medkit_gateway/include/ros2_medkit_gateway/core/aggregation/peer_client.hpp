@@ -155,8 +155,8 @@ struct PeerTimeouts {
  * REST API. It supports health checking, entity fetching, transparent request
  * forwarding (proxy), and JSON fan-out queries.
  *
- * Thread safety: The healthy_ flag is atomic. Client creation is lazy and
- * guarded by a mutex. All public methods are safe to call from any thread.
+ * Thread safety: The healthy_ flag is atomic, and every call makes its own
+ * HTTP client. All public methods are safe to call from any thread.
  */
 class PeerClient {
  public:
@@ -199,7 +199,9 @@ class PeerClient {
    * the peer unhealthy, all of them answering 2xx keep it healthy. Any other
    * answer, a failed /health included, keeps the last such verdict; with none
    * yet, a reduced 200 is healthy. Each refusal is logged once, when it is
-   * reached; clearing it is silent.
+   * reached; clearing it is silent. The call is made on its own client, so
+   * shutdown() stops it like any other; the read timeout bounds each read, not
+   * the answer, so a peer that keeps sending holds it until then.
    */
   void check_health();
 
@@ -271,22 +273,15 @@ class PeerClient {
    * Sets a shutdown flag, after which no call against the peer starts: a
    * forward answers 503 and every other call fails as canceled without
    * dialing. Then invokes ``stop()`` on every active per-call
-   * ``httplib::Client`` (forward / fetch), which unblocks worker threads
-   * sitting in a call so gateway shutdown does not have to wait out the full
-   * peer read timeout. A call that read the flag before it was set has its
+   * ``httplib::Client`` (health check, fetch, forward), which unblocks worker
+   * threads sitting in a call so gateway shutdown does not have to wait out
+   * the full peer read timeout. A call that read the flag before it was set has its
    * socket by the time ``stop()`` runs, so ``stop()`` shuts it (see
    * admission_mutex_). Idempotent. Safe to call from any thread.
    */
   void shutdown();
 
  private:
-  /**
-   * @brief Ensure the underlying HTTP client exists (lazy initialization)
-   *
-   * Must be called under client_mutex_. Creates the client if it doesn't exist.
-   */
-  void ensure_client();
-
   /// RAII helper for per-call clients: registers itself with active_clients_
   /// on construction and unregisters on destruction. shutdown() iterates
   /// active_clients_ and calls stop() on each so blocked I/O unwinds. It does
@@ -336,12 +331,10 @@ class PeerClient {
   mutable std::mutex instance_id_mutex_;
   std::string instance_id_;
 
-  std::mutex client_mutex_;
-  std::unique_ptr<httplib::Client> client_;
-
-  /// What health checks last found about this gateway's credential. Guarded by client_mutex_.
+  /// What health checks last found about this gateway's credential.
   enum class CredentialState { kNotRefused, kRefusedReadsOpen, kRefusedReadsClosed };
-  CredentialState credential_state_{CredentialState::kNotRefused};
+  std::mutex credential_mutex_;
+  CredentialState credential_state_{CredentialState::kNotRefused};  ///< Guarded by credential_mutex_.
 
   std::mutex active_mutex_;
   std::unordered_set<httplib::Client *> active_clients_;
