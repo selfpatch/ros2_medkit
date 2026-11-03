@@ -19,13 +19,15 @@
 #include <httplib.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <shared_mutex>
 #include <string>
+#include <thread>
 #include <tl/expected.hpp>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 #include "ros2_medkit_gateway/core/aggregation/peer_json.hpp"
@@ -139,11 +141,71 @@ struct PeerTimeouts {
   /// Write budget for every call. cpp-httplib defaults this to 5 s.
   int write_ms{5000};
 
-  /// Every budget set to the same value - the pre-split shape, for a caller
-  /// that is not testing the split.
+  /// The longest one request may run, from its connect to the last byte of
+  /// the answer, however steadily the peer keeps sending: each read budget
+  /// above bounds one read, not the answer. Never less, for a request, than
+  /// its connect, write and read budgets added up, so no request is cut before
+  /// its own budgets are spent; the health check keeps its own, the sum of its
+  /// capped connect and read budgets.
+  int request_deadline_ms{30000};
+
+  /// Every read, connect and write budget set to the same value - the
+  /// pre-split shape, for a caller that is not testing the split. The request
+  /// deadline keeps its default.
   static PeerTimeouts uniform(int ms) {
     return PeerTimeouts{ms, ms, ms, ms};
   }
+};
+
+/**
+ * @brief The per-call clients in flight against one peer, each with the
+ * deadline of the request it is making.
+ *
+ * cpp-httplib bounds each read, not an answer, so a peer that sends a byte
+ * at a time inside the read budget holds a request for as long as it keeps
+ * sending. Every request is armed with a deadline as it starts and disarmed
+ * when it returns; a reaper thread stops the client of a request still
+ * running at its deadline, as stop_all() stops every client at shutdown, and
+ * the request fails. Every stop() runs with the registry mutex held, and a
+ * client leaves the registry, which takes the same mutex, before it is
+ * destroyed, so no client is stopped while it is being freed.
+ */
+class PeerCallRegistry {
+ public:
+  PeerCallRegistry();
+  /// Stops the reaper and waits for it.
+  ~PeerCallRegistry();
+  PeerCallRegistry(const PeerCallRegistry &) = delete;
+  PeerCallRegistry & operator=(const PeerCallRegistry &) = delete;
+  PeerCallRegistry(PeerCallRegistry &&) = delete;
+  PeerCallRegistry & operator=(PeerCallRegistry &&) = delete;
+
+  /// `cli` is in flight; it is stopped by stop_all() until removed.
+  void add(httplib::Client * cli);
+  /// `cli` is done. Waits for a stop() of it in progress.
+  void remove(httplib::Client * cli);
+  /// The request `cli` starts now runs for at most `deadline`.
+  void arm(httplib::Client * cli, std::chrono::milliseconds deadline);
+  /// The request `cli` was making has returned. True when it ran into its
+  /// deadline and the reaper stopped it.
+  bool disarm(httplib::Client * cli);
+  /// stop() every client in flight.
+  void stop_all();
+
+ private:
+  struct Call {
+    std::chrono::steady_clock::time_point deadline{std::chrono::steady_clock::time_point::max()};
+    bool expired{false};
+  };
+
+  void reap();
+
+  std::mutex mutex_;
+  std::condition_variable wake_;
+  std::unordered_map<httplib::Client *, Call> calls_;
+  bool stopping_{false};
+  /// Last, so it starts once everything it reads exists.
+  std::thread reaper_;
 };
 
 /**
@@ -191,8 +253,8 @@ class PeerClient {
    * GETs /api/v1/health on the peer. Sets the internal healthy_ flag
    * based on whether a 200 response was received, and records the peer's
    * instance id. The call is made on its own client, so shutdown() stops it
-   * like any other; the read timeout bounds each read, not the answer, so a
-   * peer that keeps sending holds it until then.
+   * like any other, and it ends at its deadline, its capped connect and read
+   * budgets added up, however steadily the peer keeps sending.
    */
   void check_health();
 
@@ -275,13 +337,12 @@ class PeerClient {
   void shutdown();
 
  private:
-  /// RAII helper for per-call clients: registers itself with active_clients_
-  /// on construction and unregisters on destruction. shutdown() iterates
-  /// active_clients_ and calls stop() on each so blocked I/O unwinds. It does
-  /// so under active_mutex_, which unregistering also takes, so destruction
-  /// waits for a stop() in progress rather than freeing the client under it.
-  /// Whether a call made on it may start at all is decided per call, by
-  /// admission_mutex_.
+  /// RAII helper for per-call clients: adds itself to calls_ on construction
+  /// and removes itself on destruction. shutdown() stops every client in
+  /// calls_ so blocked I/O unwinds, and calls_ stops one whose request runs
+  /// past its deadline; removing waits for a stop() in progress rather than
+  /// freeing the client under it. Whether a call made on it may start at all
+  /// is decided per call, by admission_mutex_.
   class ScopedClient {
    public:
     /// @param read_timeout_ms Read budget for this call. Connect and write
@@ -305,8 +366,10 @@ class PeerClient {
     httplib::Client cli_;
   };
 
-  void register_active(httplib::Client * cli);
-  void unregister_active(httplib::Client * cli);
+  /// The deadline of one request whose read budget is `read_ms`:
+  /// PeerTimeouts::request_deadline_ms, or the request's connect, write and
+  /// read budgets added up when that is longer.
+  std::chrono::milliseconds request_deadline(int read_ms) const;
 
   std::string url_;
   std::string name_;
@@ -322,8 +385,7 @@ class PeerClient {
   mutable std::mutex instance_id_mutex_;
   std::string instance_id_;
 
-  std::mutex active_mutex_;
-  std::unordered_set<httplib::Client *> active_clients_;
+  PeerCallRegistry calls_;
 
   /// What makes starting a call and shutdown() exclusive. A call holds it
   /// shared from the moment it reads shutdown_requested_ until its socket

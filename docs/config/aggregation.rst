@@ -65,8 +65,8 @@ Core Parameters
        networks. The health check is the exception: it caps both its budgets at
        1000 ms, because an unresponsive peer is unhealthy whether the gateway
        waits one second or five. A read budget bounds each read, not the
-       answer: a peer that keeps sending a byte at a time holds the call until
-       it stops, and shutdown cancels every peer call in flight.
+       answer: ``aggregation.request_deadline_ms`` bounds the whole of it, and
+       shutdown cancels every peer call in flight.
        Range 100-600000; a value outside it is clamped to the nearest end, and
        the clamp is logged when aggregation is enabled.
    * - ``aggregation.forward_timeout_ms``
@@ -85,10 +85,27 @@ Core Parameters
      - Budget for pushing a request body to a peer. Raise it when forwarding
        large uploads over a slow link. Range 100-600000, clamped and logged as
        above.
+   * - ``aggregation.request_deadline_ms``
+     - int
+     - ``30000``
+     - The longest one request to a peer may run, from its connect to the last
+       byte of the answer, however steadily the peer keeps sending: the budgets
+       above each bound one read or write, and a peer that sends a byte inside
+       every one of them would otherwise hold the request, and whatever waits
+       on it, for as long as it likes. At the deadline the request is stopped
+       and fails as a timeout: a forward answers ``504``, a fan-out names the
+       peer ``timeout``, a refresh discards what it read of that peer. It
+       bounds every request - the health check, each request of an entity
+       fetch, a fan-out and a forward - but is never shorter, for a request,
+       than its own connect, write and read budgets added up, so a forward is
+       not cut before ``aggregation.forward_timeout_ms`` has run out. The
+       health check keeps its own: its connect and read budgets added up,
+       each capped at 1000 ms. The default leaves the 15 s forward budget room for a 10 MB
+       answer over a slow link. Range 100-600000, clamped and logged as above.
 
 .. note::
 
-   These three are separate because they bound different things. One value
+   The three budgets are separate because they bound different things. One value
    serving as connect, metadata read and forward read at once gives an
    operation on a peer the budget of a listing, and the peer is then reported
    as unavailable while it is still working. Raising that one value also
@@ -562,7 +579,8 @@ that carries a Component's relationships and a Function's hosts, and each app's
 ``operations``. If any of them cannot be read - connection failure, a status
 the route has no other meaning for, an oversized body, a body nested more than
 64 levels deep or holding more than 1,000,000 values (see Peer Response Limits),
-unparsable JSON - the refresh for that peer is discarded whole. A partial picture is never published
+unparsable JSON, a request still unanswered at ``aggregation.request_deadline_ms`` -
+the refresh for that peer is discarded whole. A partial picture is never published
 as a complete one, and the peer's last complete declaration is left in place.
 
 What clients see then depends on the peer's health check:
@@ -636,6 +654,10 @@ is refused unparsed, the same as an oversized one. That is 1000 entities of
 gateway serving the demo nodes holds about 160 values, its largest answer about
 3000. The relayed events of a peer's fault stream are judged the same way, and
 one past either bound is dropped with a warning.
+
+One request to a peer, the health check included, runs for at most
+``aggregation.request_deadline_ms`` (see Core Parameters) however steadily the
+peer sends; the SSE relay is the exception, since a stream has no last byte.
 
 .. _aggregation-breaking-changes:
 

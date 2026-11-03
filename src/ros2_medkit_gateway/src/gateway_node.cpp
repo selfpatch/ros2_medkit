@@ -248,6 +248,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("aggregation.timeout_ms", 2000);
   declare_parameter("aggregation.forward_timeout_ms", 15000);
   declare_parameter("aggregation.write_timeout_ms", 5000);
+  declare_parameter("aggregation.request_deadline_ms", 30000);
   declare_parameter("aggregation.announce", false);
   declare_parameter("aggregation.discover", false);
   declare_parameter("aggregation.mdns_service", std::string("_medkit._tcp.local"));
@@ -1036,7 +1037,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   if (get_parameter("aggregation.enabled").as_bool()) {
     AggregationConfig agg_config;
     agg_config.enabled = true;
-    // Documented range 100-600000 ms for all three budgets. A ROS parameter is
+    // Documented range 100-600000 ms for every budget and the request deadline. A ROS parameter is
     // int64 and `declare_parameter<int>` narrows silently, so a value above
     // INT_MAX wraps back into the legal band and passes any check made after
     // the narrowing - clamp on the int64 first, narrow second.
@@ -1053,6 +1054,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     agg_config.timeout_ms = clamp_budget_ms("aggregation.timeout_ms");
     agg_config.forward_timeout_ms = clamp_budget_ms("aggregation.forward_timeout_ms");
     agg_config.write_timeout_ms = clamp_budget_ms("aggregation.write_timeout_ms");
+    agg_config.request_deadline_ms = clamp_budget_ms("aggregation.request_deadline_ms");
     // A forward budget below the metadata budget inverts what the split is for:
     // the path carrying the peer's real work would be cut off before the path
     // that only reads its description. Report it rather than serve it, because

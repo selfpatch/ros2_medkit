@@ -112,14 +112,15 @@ CLAMPED_PARAMS = [
     ('data_provider.idle_safety_net_sec', 0, 86400, -1, 172800),
     ('data_provider.idle_sweep_tick_sec', 0, 3600, -1, 7200),
     # aggregation.* - gateway_node.cpp, only read when aggregation is enabled.
-    # The three budgets share one range; the "above" value is past INT_MAX on
-    # purpose, because they are read as int64 and narrowed only after the
-    # clamp - narrowing first would wrap 4294967296 back to 0 and let a value
-    # far outside the range pass as if it were inside it.
+    # The budgets and the request deadline share one range; the "above" value
+    # is past INT_MAX on purpose, because they are read as int64 and narrowed
+    # only after the clamp - narrowing first would wrap 4294967296 back to 0
+    # and let a value far outside the range pass as if it were inside it.
     ('aggregation.max_discovered_peers', 1, 1000, 0, 2000),
     ('aggregation.timeout_ms', 100, 600000, 0, 4294967296),
     ('aggregation.forward_timeout_ms', 100, 600000, 0, 4294967296),
     ('aggregation.write_timeout_ms', 100, 600000, -1, 4294967296),
+    ('aggregation.request_deadline_ms', 100, 600000, 0, 4294967296),
     # fault_triggers.* - gateway_node.cpp, only read once a plugin is loaded.
     # The ceiling is INT_MAX because the value is narrowed to int for the timer;
     # it is a type boundary, not a tuning choice.
@@ -155,6 +156,7 @@ IN_RANGE_PARAMS = {
     'aggregation.timeout_ms': 2000,
     'aggregation.forward_timeout_ms': 15000,
     'aggregation.write_timeout_ms': 5000,
+    'aggregation.request_deadline_ms': 30000,
     'fault_triggers.poll_interval_ms': 1000,
 }
 

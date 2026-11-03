@@ -3892,7 +3892,9 @@ why, one entry per name, with ``reason`` one of:
    * - ``timeout``
      - A budget ran out. Which one is named in the message: the connect budget
        means the peer never accepted the connection, a read or write budget
-       means it did and the gateway stopped waiting.
+       means it did and the gateway stopped waiting, and
+       ``aggregation.request_deadline_ms`` means the peer kept answering but
+       had not finished when the request's deadline came.
    * - ``unreachable``
      - No usable answer arrived: connection refused, no route, TLS or redirect
        failure, or the peer died while the answer was arriving.

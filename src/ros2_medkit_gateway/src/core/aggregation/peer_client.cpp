@@ -573,15 +573,25 @@ enum class RouteKind {
  * MAX_PEER_RESPONSE_SIZE.
  */
 struct PeerReply {
-  httplib::Result result;  ///< The answer with its body, or why there is none
-  bool too_large{false};   ///< The read stopped at the limit; `result` is then empty
+  httplib::Result result;                 ///< The answer with its body, or why there is none
+  bool too_large{false};                  ///< The read stopped at the limit; `result` is then empty
+  bool past_deadline{false};              ///< The request ran into its deadline and was stopped; `result` is empty
+  std::chrono::milliseconds deadline{0};  ///< The deadline the request was armed with
 };
 
+/// The key a request deadline is configured by and its value, for a message.
+std::string describe_deadline(std::chrono::milliseconds deadline) {
+  return "aggregation.request_deadline_ms (" + std::to_string(deadline.count()) + "ms for this request)";
+}
+
 /// What a call against the peer is admitted by: the owner's admission mutex
-/// and its shutdown flag (see PeerClient::admission_mutex_).
+/// and its shutdown flag (see PeerClient::admission_mutex_), and the registry
+/// that stops a request still running at `deadline`.
 struct Admission {
   std::shared_mutex & mutex;
   const std::atomic<bool> & shutdown_requested;
+  PeerCallRegistry & calls;
+  std::chrono::milliseconds deadline;
 };
 
 /**
@@ -598,6 +608,9 @@ struct Admission {
  * exists, from the socket-options callback, which cpp-httplib runs while it
  * holds the lock its stop() takes; a call that never gets that far releases
  * it on return.
+ *
+ * The request is armed with the admission's deadline as it starts, before it
+ * connects, and stopped by the registry if it is still running then.
  */
 PeerReply send_capped(httplib::Client & cli, httplib::Request & req, const Admission & admission) {
   PeerReply reply;
@@ -622,7 +635,11 @@ PeerReply send_capped(httplib::Client & cli, httplib::Request & req, const Admis
   };
   auto res = std::make_unique<httplib::Response>();
   auto error = httplib::Error::Success;
+  admission.calls.arm(&cli, admission.deadline);
   const bool sent = cli.send(req, *res, error);
+  // A stop() that landed after the answer was complete changed nothing.
+  reply.past_deadline = admission.calls.disarm(&cli) && !sent;
+  reply.deadline = admission.deadline;
   // The callback refers to `admitted`, which ends with this call.
   cli.set_socket_options(nullptr);
   if (sent) {
@@ -684,6 +701,11 @@ SubResponse read_sub_response(const PeerReply & reply, const std::string & peer_
   SubResponse out;
   if (reply.too_large) {
     out.error = "Response from peer '" + peer_name + "' for " + path + " exceeds size limit";
+    return out;
+  }
+  if (reply.past_deadline) {
+    out.error =
+        "Peer '" + peer_name + "' did not finish answering " + path + " within " + describe_deadline(reply.deadline);
     return out;
   }
   const auto & result = reply.result;
@@ -875,8 +897,9 @@ bool PeerClient::is_healthy() const {
 void PeerClient::check_health() {
   // A per-call client, as every other call makes, so shutdown() stops one in
   // flight. The read timeout bounds each read, not the answer: a peer that
-  // sends its answer a byte at a time, each inside the timeout, holds the call
-  // and the refresh waiting on it for as long as it keeps sending. A shared
+  // sends its answer a byte at a time, each inside the timeout, would hold the
+  // call and the refresh waiting on it for as long as it kept sending, so the
+  // request ends at its deadline, the two capped budgets added up. A shared
   // client kept for health checks was left out of shutdown(), so such a peer
   // held the executor that runs the refresh past SIGTERM.
   //
@@ -898,8 +921,9 @@ void PeerClient::check_health() {
     headers.emplace("Authorization", peer_auth_header_);
   }
   // A health answer past the size limit is no answer: the peer is unhealthy.
-  const auto reply =
-      get_capped(cli, Admission{admission_mutex_, shutdown_requested_}, std::string(API_PREFIX) + "/health", headers);
+  const auto reply = get_capped(
+      cli, Admission{admission_mutex_, shutdown_requested_, calls_, std::chrono::milliseconds(connect_ms + health_ms)},
+      std::string(API_PREFIX) + "/health", headers);
   const auto & result = reply.result;
   const bool healthy = result && result->status == 200;
   std::string instance_id;
@@ -930,7 +954,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
   // stop() the in-flight call.
   ScopedClient scoped(*this, url_, timeouts_.metadata_read_ms);
   auto & cli = *scoped;
-  const Admission admission{admission_mutex_, shutdown_requested_};
+  const Admission admission{admission_mutex_, shutdown_requested_, calls_,
+                            request_deadline(timeouts_.metadata_read_ms)};
   // Fetching the peer's entities is this gateway asking on its own behalf, so
   // it carries the gateway's own credential. Set once on the client rather
   // than on each of the requests below - that is also what stops the next
@@ -1303,6 +1328,8 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
   const auto started_at = std::chrono::steady_clock::now();
 
   bool too_large = false;
+  bool past_deadline = false;
+  std::chrono::milliseconds deadline{0};
   if (req.method == "GET" || req.method == "DELETE" || req.method == "POST" || req.method == "PUT" ||
       req.method == "PATCH") {
     httplib::Request out;
@@ -1315,9 +1342,13 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
       }
       out.body = req.body;
     }
-    auto reply = send_capped(cli, out, Admission{admission_mutex_, shutdown_requested_});
+    auto reply = send_capped(
+        cli, out,
+        Admission{admission_mutex_, shutdown_requested_, calls_, request_deadline(timeouts_.forward_read_ms)});
     result = std::move(reply.result);
     too_large = reply.too_large;
+    past_deadline = reply.past_deadline;
+    deadline = reply.deadline;
   }
 
   if (too_large) {
@@ -1333,6 +1364,19 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
   // Classified as a transport failure it read as the peer being unavailable.
   if (!result && shutdown_requested_.load(std::memory_order_acquire)) {
     refuse_for_shutdown();
+    return;
+  }
+
+  // The peer kept sending, each read inside its budget, and the answer was
+  // still not complete at the request's deadline. Like a budget that ran out,
+  // the peer may still be working, so it answers as a timeout naming the key
+  // that bounds it.
+  if (past_deadline) {
+    res.status = 504;
+    auto error_body = make_error_body(ERR_NOT_RESPONDING,
+                                      "Peer '" + name_ + "' at " + url_ + " did not finish answering within " +
+                                          describe_deadline(deadline) + ". The request may still be running there.");
+    res.set_content(error_body.dump(), "application/json");
     return;
   }
 
@@ -1432,7 +1476,9 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
   const auto started_at = std::chrono::steady_clock::now();
   PeerReply reply;
   if (method == "GET" || method == "POST" || method == "PUT" || method == "DELETE") {
-    reply = send_capped(cli, out, Admission{admission_mutex_, shutdown_requested_});
+    reply = send_capped(
+        cli, out,
+        Admission{admission_mutex_, shutdown_requested_, calls_, request_deadline(timeouts_.metadata_read_ms)});
   }
   const auto & result = reply.result;
 
@@ -1474,6 +1520,11 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
     return tl::unexpected(PeerError{PeerFailureKind::kTooLarge, "Response from peer '" + name_ +
                                                                     "' exceeds size limit for " + method + " " + path});
   }
+  if (reply.past_deadline) {
+    return tl::unexpected(PeerError{PeerFailureKind::kTimeout, "Peer '" + name_ + "' at " + url_ +
+                                                                   " did not finish answering " + method + " " + path +
+                                                                   " within " + describe_deadline(reply.deadline)});
+  }
   if (!result) {
     return tl::unexpected(transport_failure());
   }
@@ -1504,16 +1555,8 @@ void PeerClient::shutdown() {
   if (shutdown_requested_.exchange(true)) {
     return;
   }
-  // stop() runs with the registry mutex held. A worker removes its client from
-  // the registry in ~ScopedClient, before the client itself is destroyed, and
-  // that removal takes the same mutex - so a client cannot be destroyed while
-  // this loop is calling stop() on it. Calling stop() on pointers copied out
-  // from under the mutex left exactly that window open: a worker whose call
-  // returned in between destroyed the client the loop was about to stop.
-  // Holding the mutex costs a worker that starts or ends a call during
-  // shutdown a wait of one stop() per active client; stop() only shuts the
-  // socket down and never waits for the call it cancels, and nothing that
-  // stop() locks is held by a worker while it waits for this mutex.
+  // Every client in flight is stopped with the registry mutex held, as the
+  // reaper stops one at its deadline (PeerCallRegistry::stop_all).
   //
   // Exclusive admission waits out every call between its check of the flag
   // and its socket, so each call is either refused or in flight below. A
@@ -1521,20 +1564,104 @@ void PeerClient::shutdown() {
   // the wait, and the stop() of that client, last until the connect ends,
   // which aggregation.timeout_ms bounds.
   std::unique_lock<std::shared_mutex> admission(admission_mutex_);
-  std::lock_guard<std::mutex> lock(active_mutex_);
-  for (auto * cli : active_clients_) {
-    cli->stop();
+  calls_.stop_all();
+}
+
+std::chrono::milliseconds PeerClient::request_deadline(int read_ms) const {
+  return std::chrono::milliseconds(
+      std::max(timeouts_.request_deadline_ms, timeouts_.connect_ms + timeouts_.write_ms + read_ms));
+}
+
+PeerCallRegistry::PeerCallRegistry()
+  : reaper_([this] {
+    reap();
+  }) {
+}
+
+PeerCallRegistry::~PeerCallRegistry() {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stopping_ = true;
+  }
+  wake_.notify_all();
+  reaper_.join();
+}
+
+void PeerCallRegistry::add(httplib::Client * cli) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  calls_.emplace(cli, Call{});
+}
+
+void PeerCallRegistry::remove(httplib::Client * cli) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  calls_.erase(cli);
+}
+
+void PeerCallRegistry::arm(httplib::Client * cli, std::chrono::milliseconds deadline) {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto call = calls_.find(cli);
+    if (call == calls_.end()) {
+      return;
+    }
+    call->second = Call{std::chrono::steady_clock::now() + deadline, false};
+  }
+  wake_.notify_all();
+}
+
+bool PeerCallRegistry::disarm(httplib::Client * cli) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto call = calls_.find(cli);
+  if (call == calls_.end()) {
+    return false;
+  }
+  const bool expired = call->second.expired;
+  call->second = Call{};
+  return expired;
+}
+
+void PeerCallRegistry::stop_all() {
+  // stop() runs with the mutex held. A worker removes its client in
+  // ~ScopedClient, before the client itself is destroyed, and that removal
+  // takes the same mutex - so a client cannot be destroyed while this loop is
+  // calling stop() on it. Calling stop() on pointers copied out from under the
+  // mutex left exactly that window open: a worker whose call returned in
+  // between destroyed the client the loop was about to stop. Holding the mutex
+  // costs a worker that starts or ends a call meanwhile a wait of one stop()
+  // per active client; stop() only shuts the socket down and never waits for
+  // the call it cancels, and nothing that stop() locks is held by a worker
+  // while it waits for this mutex.
+  std::lock_guard<std::mutex> lock(mutex_);
+  for (auto & call : calls_) {
+    call.first->stop();
   }
 }
 
-void PeerClient::register_active(httplib::Client * cli) {
-  std::lock_guard<std::mutex> lock(active_mutex_);
-  active_clients_.insert(cli);
-}
-
-void PeerClient::unregister_active(httplib::Client * cli) {
-  std::lock_guard<std::mutex> lock(active_mutex_);
-  active_clients_.erase(cli);
+void PeerCallRegistry::reap() {
+  // A stop() that comes before the request has its socket shuts nothing, so
+  // a request stopped at its deadline is stopped again this often until it
+  // returns and disarms. The deadline is never shorter than the connect
+  // budget, and stop() waits for a connect in progress, so this is a guard,
+  // not the path a request normally takes.
+  constexpr auto kRestop = std::chrono::milliseconds(100);
+  std::unique_lock<std::mutex> lock(mutex_);
+  while (!stopping_) {
+    const auto now = std::chrono::steady_clock::now();
+    auto next = std::chrono::steady_clock::time_point::max();
+    for (auto & [cli, call] : calls_) {
+      if (call.deadline <= now) {
+        cli->stop();
+        call.expired = true;
+        call.deadline = now + kRestop;
+      }
+      next = std::min(next, call.deadline);
+    }
+    if (next == std::chrono::steady_clock::time_point::max()) {
+      wake_.wait(lock);
+    } else {
+      wake_.wait_until(lock, next);
+    }
+  }
 }
 
 PeerClient::ScopedClient::ScopedClient(PeerClient & owner, const std::string & url, int read_timeout_ms)
@@ -1547,11 +1674,11 @@ PeerClient::ScopedClient::ScopedClient(PeerClient & owner, const std::string & u
   // no configured value at all, so a large request body to a slow peer is cut
   // off however high the read budget is set.
   cli_.set_write_timeout(write_ms / 1000, (write_ms % 1000) * 1000);
-  owner_.register_active(&cli_);
+  owner_.calls_.add(&cli_);
 }
 
 PeerClient::ScopedClient::~ScopedClient() {
-  owner_.unregister_active(&cli_);
+  owner_.calls_.remove(&cli_);
 }
 
 }  // namespace ros2_medkit_gateway

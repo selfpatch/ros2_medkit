@@ -922,7 +922,8 @@ refreshes that gateway needs to relink its ROS graph, and then turns true.
 describes it whole or reports failure: a dead connection, a status a route has
 no other meaning for, an oversized body, a body nested deeper than
 ``kMaxPeerJsonDepth`` (64) levels or holding more than ``kMaxPeerJsonValues``
-(1,000,000) values, or unparsable JSON on any of them fails
+(1,000,000) values, a request still unanswered at its deadline, or unparsable
+JSON on any of them fails
 the fetch, because a picture missing a branch is indistinguishable on the wire
 from a peer that does not have that branch. Two statuses carry a meaning of
 their own: a ``404`` on a nested collection route (``/subareas``,
@@ -1133,10 +1134,14 @@ Key Classes
     flag; every call, the health check included, makes its own client.
     ``shutdown()`` sets a flag after which no call against the peer starts,
     and stops the per-call clients in flight. A read budget bounds each read,
-    not the answer, so a peer sending its answer a byte at a time holds a
-    call until it stops or shutdown stops the call; the health check once
-    used a shared client that shutdown left alone, and such a peer held the
-    refresh, and the executor running it, past SIGTERM. Starting a call and
+    not the answer, so a peer sending its answer a byte at a time would hold
+    a call for as long as it kept sending; the health check once used a
+    shared client that shutdown left alone, and such a peer held the
+    refresh, and the executor running it, past SIGTERM. Each request
+    therefore runs for at most its deadline, ``request_deadline_ms``
+    (``aggregation.request_deadline_ms``, 30 s), and never for less than its
+    own connect, write and read budgets added up; the health check's is its
+    connect and read budgets added up, each capped at 1 s. Starting a call and
     shutting down are exclusive: a call holds the admission lock shared from
     its check of the flag until its socket exists, and ``shutdown()`` holds it
     exclusively while it stops the clients, so a call is either refused
@@ -1155,6 +1160,22 @@ Key Classes
     request on, and the first peer merge runs on the executor from a one-shot
     timer as soon as it spins; peer entities are served once it has read every
     peer.
+
+``PeerCallRegistry``
+    The per-call clients in flight against one peer, each with the deadline
+    of the request it is making. ``send_capped`` arms a request with its
+    deadline before it connects and disarms it when it returns; a reaper
+    thread, one per ``PeerClient``, sleeps until the earliest deadline and
+    stops the client of a request still running then, as ``stop_all()``
+    stops every client at shutdown. The request fails as a timeout naming
+    ``aggregation.request_deadline_ms``: a forward answers ``504``, a fan-out
+    names the peer ``timeout``, a fetch fails. Every ``stop()`` runs with the
+    registry mutex held, and a client leaves the registry, taking the same
+    mutex, before it is destroyed. The deadline is never shorter than the
+    connect budget, and ``stop()`` waits for a connect in progress, so at the
+    deadline the request has its socket; a ``stop()`` that still found none
+    is repeated every 100 ms until the request returns. The SSE relay has no
+    deadline: a stream has no last byte.
 
 ``EntityMerger``
     Stateless merge engine that combines local and remote entity sets using
@@ -1303,6 +1324,22 @@ runs wherever a peer body is parsed: every request of an entity fetch, the
 health answer, a fan-out, the error body of a ``404`` or ``504``, a forwarded
 discovery response before it is rewritten (``502`` when refused), and each
 event the fault stream relays (dropped with a warning).
+
+Request Deadlines
+~~~~~~~~~~~~~~~~~
+
+cpp-httplib's timeouts bound each read and write, not an answer, so a peer
+that sends a byte inside every read budget holds a request, and whatever waits
+on it - a refresh, a client - for as long as it keeps sending. Every request to
+a peer therefore has a deadline, ``aggregation.request_deadline_ms`` (30 s), but
+never less than its own connect, write and read budgets added up, so no
+request is cut before its budgets are spent; the health check's deadline is its
+connect and read budgets added up, each capped at 1 s. ``PeerCallRegistry`` stops a request
+still running at its deadline (see Key Classes), and the request fails as a
+timeout: a forward answers ``504 not-responding``, a fan-out names the peer
+``timeout``, an entity fetch fails and the refresh keeps the peer's last
+complete declaration, a health check counts as failed. The SSE relay has no
+deadline: a stream has no last byte.
 
 Per-Peer Entity Limits
 ~~~~~~~~~~~~~~~~~~~~~~

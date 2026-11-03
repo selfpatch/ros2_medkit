@@ -84,7 +84,11 @@ struct AggregationConfig {
   /// Write budget for every peer call.
   int write_timeout_ms{5000};
 
-  /// The three budgets above in the shape PeerClient takes them.
+  /// The longest one request to a peer may run, however steadily the peer
+  /// keeps sending (PeerTimeouts::request_deadline_ms).
+  int request_deadline_ms{30000};
+
+  /// The budgets above in the shape PeerClient takes them.
   ///
   /// The connect budget is capped at kConnectCapMs rather than following
   /// `timeout_ms`. A peer that cannot complete a TCP handshake in a second is
@@ -96,7 +100,8 @@ struct AggregationConfig {
   /// slower than the cap fails as a connect timeout, which is named correctly.
   PeerTimeouts peer_timeouts() const {
     constexpr int kConnectCapMs = 1000;
-    return PeerTimeouts{std::min(timeout_ms, kConnectCapMs), timeout_ms, forward_timeout_ms, write_timeout_ms};
+    return PeerTimeouts{std::min(timeout_ms, kConnectCapMs), timeout_ms, forward_timeout_ms, write_timeout_ms,
+                        request_deadline_ms};
   }
 
   bool announce{false};
