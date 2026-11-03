@@ -1368,9 +1368,16 @@ void PeerClient::shutdown() {
   if (shutdown_requested_.exchange(true)) {
     return;
   }
-  // Snapshot active clients under the registry mutex so we do not hold it
-  // while calling stop() (each stop() may block momentarily on the socket
-  // close). Worker threads remove themselves on unwind.
+  // stop() runs with the registry mutex held. A worker removes its client from
+  // the registry in ~ScopedClient, before the client itself is destroyed, and
+  // that removal takes the same mutex - so a client cannot be destroyed while
+  // this loop is calling stop() on it. Calling stop() on pointers copied out
+  // from under the mutex left exactly that window open: a worker whose call
+  // returned in between destroyed the client the loop was about to stop.
+  // Holding the mutex costs a worker that starts or ends a call during
+  // shutdown a wait of one stop() per active client; stop() only shuts the
+  // socket down and never waits for the call it cancels, and nothing that
+  // stop() locks is held by a worker while it waits for this mutex.
   //
   // We deliberately do NOT stop the lazily-created health-check client_
   // here. That client is exclusively used inside check_health() which
@@ -1382,15 +1389,8 @@ void PeerClient::shutdown() {
   // timeout) so blocking on it is bounded; the multi-second hang we
   // are fixing came from in-flight forward_request / fetch_entities
   // calls, which use ScopedClient and ARE in to_stop.
-  std::vector<httplib::Client *> to_stop;
-  {
-    std::lock_guard<std::mutex> lock(active_mutex_);
-    to_stop.reserve(active_clients_.size());
-    for (auto * cli : active_clients_) {
-      to_stop.push_back(cli);
-    }
-  }
-  for (auto * cli : to_stop) {
+  std::lock_guard<std::mutex> lock(active_mutex_);
+  for (auto * cli : active_clients_) {
     cli->stop();
   }
 }

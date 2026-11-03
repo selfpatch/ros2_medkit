@@ -276,7 +276,9 @@ class PeerClient {
 
   /// RAII helper for per-call clients: registers itself with active_clients_
   /// on construction and unregisters on destruction. shutdown() iterates
-  /// active_clients_ and calls stop() on each so blocked I/O unwinds.
+  /// active_clients_ and calls stop() on each so blocked I/O unwinds. It does
+  /// so under active_mutex_, which unregistering also takes, so destruction
+  /// waits for a stop() in progress rather than freeing the client under it.
   class ScopedClient {
    public:
     /// @param read_timeout_ms Read budget for this call. Connect and write
