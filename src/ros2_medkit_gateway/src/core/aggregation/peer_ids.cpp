@@ -171,19 +171,28 @@ class ServedIdWalk {
     return false;
   }
 
-  /// Remove the entries of the array `value` that `drop` says to.
+  /// Remove the entries of the array `value` that `drop` says to, in one pass:
+  /// each kept entry moves down once. Erasing each dropped entry where it
+  /// stands shifts everything after it, so an array the peer filled with
+  /// dropped references cost the square of its length. `drop` may rewrite the
+  /// entry it is given, and is called once per entry, in order.
   template <class Drop>
   void erase_from(nlohmann::json & value, Drop drop) {
     if (!value.is_array()) {
       return;
     }
-    for (size_t i = 0; i < value.size();) {
-      if (drop(value[i])) {
-        value.erase(i);
-      } else {
-        ++i;
+    auto & entries = value.get_ref<nlohmann::json::array_t &>();
+    size_t kept = 0;
+    for (size_t i = 0; i < entries.size(); ++i) {
+      if (drop(entries[i])) {
+        continue;
       }
+      if (kept != i) {
+        entries[kept] = std::move(entries[i]);
+      }
+      ++kept;
     }
+    entries.resize(kept);
   }
 
   /// The relationship IDs an `x-medkit` block carries, then anything else in it.

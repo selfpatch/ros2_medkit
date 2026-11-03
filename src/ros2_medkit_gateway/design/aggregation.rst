@@ -427,7 +427,9 @@ classification pass over the full Component set:
   parsed and refused with ``502`` (``x-medkit-peer-unavailable``, naming the
   depth). It is not passed through untranslated, which would present the
   peer's IDs as this gateway's, and it is never translated in part. No
-  discovery response nests anywhere near that deep.
+  discovery response nests anywhere near that deep. The dropped references of
+  an array are removed in one pass over it, so the work grows with the length
+  of the array and not with its square.
 
 The ``EntityMerger::SEPARATOR`` constant (``__``) is used as the prefix
 separator. The routing table maps ``entity_id -> peer_name`` for
