@@ -132,17 +132,58 @@ nlohmann::json make_error_body(const std::string & error_code, const std::string
   return body;
 }
 
+/// The `items` array of a collection a peer answered, or nullptr when it has none.
+const nlohmann::json * items_of(const nlohmann::json & response_json) {
+  if (!response_json.is_object()) {
+    return nullptr;
+  }
+  const auto items = response_json.find("items");
+  return items != response_json.end() && items->is_array() ? &*items : nullptr;
+}
+
+/// The entity id an item of a peer's collection names, as the entity parsers
+/// read it, or nullptr when it names none.
+const std::string * item_id(const nlohmann::json & item) {
+  if (!item.is_object()) {
+    return nullptr;
+  }
+  const auto id = item.find("id");
+  return id != item.end() && id->is_string() ? &id->get_ref<const std::string &>() : nullptr;
+}
+
+/// True for an item of a peer's collection that names a valid entity id. No
+/// entity is built for any other item.
+bool names_valid_entity(const nlohmann::json & item) {
+  const auto * id = item_id(item);
+  return id != nullptr && is_valid_entity_id(*id);
+}
+
 /**
- * @brief Parse an entity collection from a JSON response
+ * @brief Parse the entities of a collection a peer answered, if there are at
+ * most `max` of them.
  *
- * Expects the response to contain an "items" array. Each item is parsed
- * by the provided parser function.
+ * Only the items naming a valid entity id are built, and they are counted
+ * before any is: an empty object costs the peer three bytes and the gateway a
+ * whole entity, so building first and checking the cap after let a body
+ * within the size limit allocate gigabytes.
+ *
+ * @return The entities in the order the peer listed them, or the number of
+ *   items naming one when it is past `max`.
  */
 template <typename T, typename Parser>
-std::vector<T> parse_collection(const nlohmann::json & response_json, Parser parser) {
+tl::expected<std::vector<T>, size_t> parse_collection(const nlohmann::json & response_json, Parser parser, size_t max) {
   std::vector<T> result;
-  if (response_json.contains("items") && response_json["items"].is_array()) {
-    for (const auto & item : response_json["items"]) {
+  const auto * items = items_of(response_json);
+  if (items == nullptr) {
+    return result;
+  }
+  const auto count = static_cast<size_t>(std::count_if(items->begin(), items->end(), names_valid_entity));
+  if (count > max) {
+    return tl::unexpected(count);
+  }
+  result.reserve(count);
+  for (const auto & item : *items) {
+    if (names_valid_entity(item)) {
       result.push_back(parser(item));
     }
   }
@@ -940,17 +981,12 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
     }
-    entities.areas = parse_collection<Area>(response.body, parse_area);
-    // Validate entity IDs and enforce per-collection limit
-    entities.areas.erase(std::remove_if(entities.areas.begin(), entities.areas.end(),
-                                        [](const Area & a) {
-                                          return !is_valid_entity_id(a.id);
-                                        }),
-                         entities.areas.end());
-    if (entities.areas.size() > MAX_ENTITIES_PER_COLLECTION) {
-      return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(entities.areas.size()) +
+    auto areas = parse_collection<Area>(response.body, parse_area, MAX_ENTITIES_PER_COLLECTION);
+    if (!areas) {
+      return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(areas.error()) +
                                          " areas (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
     }
+    entities.areas = std::move(*areas);
     for (auto & area : entities.areas) {
       area.declared_source = area.source;
       area.source = peer_source;
@@ -988,17 +1024,22 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
           // detail missing, not a failed read of the peer.
           continue;
         }
-        for (auto & subarea : parse_collection<Area>(sub.body, parse_area)) {
-          if (!is_valid_entity_id(subarea.id) || !seen_areas.insert(subarea.id).second) {
+        const auto * items = items_of(sub.body);
+        if (items == nullptr) {
+          continue;
+        }
+        for (const auto & item : *items) {
+          if (!names_valid_entity(item) || !seen_areas.insert(*item_id(item)).second) {
             continue;
           }
-          // The cap is checked before each subarea is taken, not once a level
+          // The cap is checked before each subarea is built, not once a level
           // is done: a level is as wide as the peer makes it, and every
           // subarea taken costs a request for its own subareas.
           if (entities.areas.size() + all_subareas.size() >= MAX_ENTITIES_PER_COLLECTION) {
             return tl::unexpected<std::string>("Peer '" + name_ + "' returned more than " +
                                                std::to_string(MAX_ENTITIES_PER_COLLECTION) + " areas and subareas");
           }
+          auto subarea = parse_area(item);
           subarea.parent_area_id = parent_id;
           subarea.declared_source = subarea.source;
           subarea.source = peer_source;
@@ -1020,17 +1061,12 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       return tl::unexpected<std::string>(response.error);
     }
     // Parse IDs from list, then fetch detail per entity for relationships
-    auto comp_list = parse_collection<Component>(response.body, parse_component);
-    // Validate entity IDs and enforce per-collection limit
-    comp_list.erase(std::remove_if(comp_list.begin(), comp_list.end(),
-                                   [](const Component & c) {
-                                     return !is_valid_entity_id(c.id);
-                                   }),
-                    comp_list.end());
-    if (comp_list.size() > MAX_ENTITIES_PER_COLLECTION) {
-      return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(comp_list.size()) +
+    auto components = parse_collection<Component>(response.body, parse_component, MAX_ENTITIES_PER_COLLECTION);
+    if (!components) {
+      return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(components.error()) +
                                          " components (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
     }
+    auto comp_list = std::move(*components);
     // The detail response carries the relationships (parent, dependencies,
     // identity) the list omits, so a Component built from the list alone is a
     // Component asserted to have none.
@@ -1081,11 +1117,15 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
           // it contains cannot be read. The parent itself already carries that.
           continue;
         }
-        for (auto & subcomp : parse_collection<Component>(sub.body, parse_component)) {
-          if (!is_valid_entity_id(subcomp.id) || !seen_components.insert(subcomp.id).second) {
+        const auto * items = items_of(sub.body);
+        if (items == nullptr) {
+          continue;
+        }
+        for (const auto & item : *items) {
+          if (!names_valid_entity(item) || !seen_components.insert(*item_id(item)).second) {
             continue;
           }
-          // Checked before the subcomponent is taken and before its detail is
+          // Checked before the subcomponent is built and before its detail is
           // asked for: a level is as wide as the peer makes it, and checking
           // once it is done let one level cost a request per child of every
           // parent in it.
@@ -1094,6 +1134,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
                                                std::to_string(MAX_ENTITIES_PER_COLLECTION) +
                                                " components and subcomponents");
           }
+          auto subcomp = parse_component(item);
           // Fetch detail for each subcomponent to get full relationships
           const std::string sub_id = subcomp.id;
           const std::string detail_route = "/components/" + sub_id;
@@ -1134,17 +1175,12 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
     }
-    entities.apps = parse_collection<App>(response.body, parse_app);
-    // Validate entity IDs and enforce per-collection limit
-    entities.apps.erase(std::remove_if(entities.apps.begin(), entities.apps.end(),
-                                       [](const App & a) {
-                                         return !is_valid_entity_id(a.id);
-                                       }),
-                        entities.apps.end());
-    if (entities.apps.size() > MAX_ENTITIES_PER_COLLECTION) {
-      return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(entities.apps.size()) +
+    auto apps = parse_collection<App>(response.body, parse_app, MAX_ENTITIES_PER_COLLECTION);
+    if (!apps) {
+      return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(apps.error()) +
                                          " apps (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
     }
+    entities.apps = std::move(*apps);
     for (auto & app : entities.apps) {
       app.declared_source = app.source;
       app.source = peer_source;
@@ -1209,17 +1245,12 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       return tl::unexpected<std::string>(response.error);
     }
     // Parse IDs from list, then fetch detail per entity for hosts
-    auto func_list = parse_collection<Function>(response.body, parse_function);
-    // Validate entity IDs and enforce per-collection limit
-    func_list.erase(std::remove_if(func_list.begin(), func_list.end(),
-                                   [](const Function & f) {
-                                     return !is_valid_entity_id(f.id);
-                                   }),
-                    func_list.end());
-    if (func_list.size() > MAX_ENTITIES_PER_COLLECTION) {
-      return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(func_list.size()) +
+    auto functions = parse_collection<Function>(response.body, parse_function, MAX_ENTITIES_PER_COLLECTION);
+    if (!functions) {
+      return tl::unexpected<std::string>("Peer '" + name_ + "' returned " + std::to_string(functions.error()) +
                                          " functions (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
     }
+    auto func_list = std::move(*functions);
     // A Function's hosts live only in its detail response: the list carries
     // none. A Function built from the list alone is a Function asserted to
     // group nothing, which is a statement the peer never made.

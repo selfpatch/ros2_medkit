@@ -1233,6 +1233,12 @@ entities per peer, nested subareas and subcomponents included. If a peer
 returns more, the entire fetch for that peer is rejected, as soon as the
 1001st is read and before any request it would cost. This prevents a
 malicious peer from causing excessive HTTP requests via N+1 detail fetches.
+No entity is built before it is counted: the items of a list that name a
+valid entity id are counted first, a nested item is checked against the
+limit before it is parsed, and an item naming no valid id is never built. An
+empty object costs the peer three bytes and the gateway a whole entity, so a
+list built first and counted after let a body within the size limit allocate
+gigabytes.
 
 Response Size Limits
 ~~~~~~~~~~~~~~~~~~~~
