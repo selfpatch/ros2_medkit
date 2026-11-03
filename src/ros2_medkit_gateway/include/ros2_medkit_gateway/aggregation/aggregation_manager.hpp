@@ -29,6 +29,7 @@
 
 #include "ros2_medkit_gateway/core/aggregation/classification.hpp"
 #include "ros2_medkit_gateway/core/aggregation/peer_client.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_id_index.hpp"
 #include "ros2_medkit_gateway/core/logging.hpp"
 #include "ros2_medkit_gateway/dto/aggregation.hpp"
 
@@ -165,6 +166,9 @@ class AggregationManager {
     /// to operators via /health.warnings; runtime falls back to last-writer
     /// for routing.
     std::vector<LeafCollisionWarning> leaf_warnings;
+    /// Peer name -> the entities of that peer left out because their prefixed
+    /// ID was taken. The peer keeps naming them; see PeerIdIndex.
+    std::unordered_map<std::string, PeerDrops> drops;
   };
 
   /**

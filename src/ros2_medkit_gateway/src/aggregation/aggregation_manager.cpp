@@ -660,6 +660,14 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
                                         pfr.peer_name, "' prefixed to '", served_id, "'"}));
       }
     }
+    if (const auto & drops = merger.get_drops();
+        !drops.areas.empty() || !drops.components.empty() || !drops.apps.empty() || !drops.functions.empty()) {
+      auto & recorded = merged.drops[pfr.peer_name];
+      recorded.areas.insert(drops.areas.begin(), drops.areas.end());
+      recorded.components.insert(drops.components.begin(), drops.components.end());
+      recorded.apps.insert(drops.apps.begin(), drops.apps.end());
+      recorded.functions.insert(drops.functions.begin(), drops.functions.end());
+    }
     for (const auto & dropped : merger.get_dropped()) {
       collisions.emplace_back(concat({pfr.peer_name, "\n", dropped}),
                               concat({"Entity ID collision: ", dropped, " from peer '", pfr.peer_name,

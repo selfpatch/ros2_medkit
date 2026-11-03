@@ -449,8 +449,12 @@ looked up, so a local entity never takes the route of a peer entity that
 shares its ID, and the route always belongs to the same refresh as the entity.
 A prefixed entity is forwarded under the ID its peer knows it by, and the
 discovery responses that come back (its detail, its relationship collections)
-are rewritten to the IDs this gateway serves: the entity's own ID, its self,
-resource and relationship links, and the related entities' IDs.
+are rewritten to the IDs this gateway serves: the entity's own ID and its name
+(``arm__Camera driver``, as the listings show it), its self, resource and
+relationship links, and the related entities' IDs. A reference to a peer
+entity that is not served (see the taken prefixed ID above) is removed from the
+response, because by the peer's ID it would name the local entity that holds
+that ID here.
 
 An entity that draws its resources from members - an Area, a merged Function, a
 hierarchical parent Component - is deliberately absent from that table, because

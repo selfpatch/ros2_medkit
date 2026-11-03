@@ -393,15 +393,25 @@ classification pass over the full Component set:
   relationship collection such as an App's ``depends-on`` - comes back in the
   peer's own IDs, and ``validate_entity_for_route`` rewrites it to the IDs it
   is served under here before it is sent (``rewrite_to_served_ids``): the ``id``
-  of every object that names its ``type``, every entity URI (the self link,
-  the resource collection links, the relationship links, relative or
-  absolute), and the relationship IDs ``x-medkit`` carries
-  (``parent_area_id``, ``parentComponentId``, ``dependsOn``, ``area``,
-  ``component_id``, ``hosts``). Only recorded renames are reversed: the cached
-  entity under ``<peer>__<id>`` has to be that peer's, renamed from ``<id>``.
-  A rewritten body drops the peer's ``ETag``. Responses of the resource
-  collections (data, faults, operations and the rest) are passed through as
-  the peer sent them.
+  of every object that names its ``type`` - with its ``name``, which takes the
+  served one so a forwarded detail names the entity as the listings do -
+  every entity URI (the self link, the resource collection links, the
+  relationship links, relative or absolute), and the relationship IDs
+  ``x-medkit`` carries (``parent_area_id``, ``parentComponentId``,
+  ``dependsOn``, ``area``, ``component_id``, ``hosts``). A reference to an
+  entity the merge dropped is removed - the collection item that describes
+  it, the link or relationship field that names it, the entry of a list of
+  IDs - because by the peer's ID it would name the local entity that took its
+  place. Only recorded renames and drops are applied. They come from the
+  ``PeerIdIndex`` the refresh builds from the served entities and the merge's
+  drops and publishes in the entity cache with the entities
+  (``ThreadSafeEntityCache::update_all``); the rewrite reads one snapshot of
+  it for the whole body. A rewritten body drops the peer's ``ETag``.
+  Responses of the resource collections (data, faults, operations and the
+  rest) are passed through as the peer sent them, except for the member IDs a
+  fan-out reads off them: a dropped member is removed from a data item's
+  ``x-medkit.member_ids``, and an operation of a dropped member is left out of
+  the list.
 
   The body comes from the peer, so the walk is bounded: a body nested deeper
   than ``kMaxPeerJsonDepth`` (64) levels is judged on its text before it is

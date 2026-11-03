@@ -1942,9 +1942,11 @@ void GatewayNode::refresh_cache() {
     // Merge remote peer entities if aggregation is active.
     // Keep the routing table accessible for the internal-node filter below.
     std::unordered_map<std::string, std::string> peer_routing_table;
+    std::unordered_map<std::string, PeerDrops> peer_drops;
     if (aggregation_host_) {
-      if (auto routing_table = aggregation_host_->merge_peers(areas, all_components, apps, functions)) {
-        peer_routing_table = std::move(*routing_table);
+      if (auto merged_peers = aggregation_host_->merge_peers(areas, all_components, apps, functions)) {
+        peer_routing_table = std::move(merged_peers->routing_table);
+        peer_drops = std::move(merged_peers->drops);
         for (const auto & func : functions) {
           for (const auto & contributor : func.contributors) {
             if (contributor.rfind("peer:", 0) == 0) {
@@ -2001,9 +2003,18 @@ void GatewayNode::refresh_cache() {
       node_to_app = std::move(linking->node_to_app);
     }
 
-    // Update ThreadSafeEntityCache atomically (entities + node_to_app under single lock)
+    // What the merge renamed and dropped of each peer's entities, from the
+    // entities served after every filter, published with them so a reader of
+    // the cache sees one generation of both.
+    std::shared_ptr<const PeerIdIndex> peer_ids;
+    if (aggregation_host_) {
+      peer_ids =
+          std::make_shared<const PeerIdIndex>(make_peer_id_index(areas, all_components, apps, functions, peer_drops));
+    }
+
+    // Update ThreadSafeEntityCache atomically (entities + node_to_app + peer ids under single lock)
     thread_safe_cache_.update_all(std::move(areas), std::move(all_components), std::move(apps), std::move(functions),
-                                  std::move(node_to_app));
+                                  std::move(node_to_app), std::move(peer_ids));
 
     // Emit a one-shot WARN when the entity cache grew beyond its reserved capacity.
     // Growing is harmless but causes structural reallocation; embedded / memory-

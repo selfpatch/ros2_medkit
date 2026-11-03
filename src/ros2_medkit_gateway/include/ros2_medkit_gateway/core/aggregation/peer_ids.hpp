@@ -133,20 +133,21 @@ std::vector<PeerTarget> peer_targets_of(const Entity & entity) {
 
 /// The ID this gateway serves an entity of `type` under that `peer` calls `peer_id`.
 ///
-/// The reverse of peer_entity_id, for an ID a peer reports: an entity the merge
-/// renamed is served as `<peer>__<peer_id>`, and the unprefixed ID names a
-/// local entity here. Only a recorded rename is reversed - the cached entity
-/// under the prefixed ID must be that peer's, renamed from `peer_id` - so a
-/// peer's own entity whose ID merely reads like a prefix is left alone, and so
-/// is another peer's entity that happens to carry the prefixed ID. Returns
-/// `peer_id` when nothing was renamed, which is the ordinary case.
-std::string served_entity_id(const ThreadSafeEntityCache & cache, SovdEntityType type, const std::string & peer,
-                             const std::string & peer_id);
+/// The reverse of peer_entity_id, for an ID a peer reports, read from the peer
+/// ID index the cache publishes with the entities (PeerIdIndex): an entity the
+/// merge renamed is served as `<peer>__<peer_id>`, and one it dropped is not
+/// served at all - in both cases the unprefixed ID names a local entity here.
+/// Only recorded renames and drops count, so a peer's own entity whose ID
+/// merely reads like a prefix is left alone. Returns `peer_id` when the merge
+/// did neither, which is the ordinary case, and std::nullopt for a dropped
+/// entity: nothing here may be named for it.
+std::optional<std::string> served_entity_id(const ThreadSafeEntityCache & cache, SovdEntityType type,
+                                            const std::string & peer, const std::string & peer_id);
 
 /// served_entity_id for a member a peer names without saying its type: its App
-/// when one was renamed from that ID, else its Component.
-std::string served_member_id(const ThreadSafeEntityCache & cache, const std::string & peer,
-                             const std::string & member_id);
+/// when one was renamed or dropped by that ID, else its Component.
+std::optional<std::string> served_member_id(const ThreadSafeEntityCache & cache, const std::string & peer,
+                                            const std::string & member_id);
 
 /// True for a discovery route: an entity's detail (`/<collection>/<id>`) or one
 /// of the relationship collections discovery serves under it (`subareas`,
@@ -158,14 +159,18 @@ bool is_discovery_route(const std::string & path);
 /// is named by the ID this gateway serves it under (served_entity_id).
 ///
 /// A peer describes its own tree in its own IDs, and an entity this gateway
-/// renamed on collision is something else here under the peer's ID: followed
-/// through this gateway, the peer's ID addresses the local entity that took
-/// its place. Rewritten are the `id` of every object that names its `type`
-/// (the detail itself, the items of a relationship collection), every entity
-/// URI - the self link, the resource collection links, the relationship
-/// links, relative or absolute - and the relationship IDs `x-medkit` carries
+/// renamed or dropped on collision is something else here under the peer's
+/// ID: followed through this gateway, the peer's ID addresses the local entity
+/// that took its place. Rewritten are the `id` of every object that names its
+/// `type` (the detail itself, the items of a relationship collection) together
+/// with its `name`, which takes the served one as the listings show it; every
+/// entity URI - the self link, the resource collection links, the relationship
+/// links, relative or absolute; and the relationship IDs `x-medkit` carries
 /// (`parent_area_id`, `parentComponentId`, `dependsOn`, `area`,
-/// `component_id`, `hosts`). IDs nothing was renamed from are left as they are.
+/// `component_id`, `hosts`). A reference to a dropped entity is removed: the
+/// item of a collection that describes it, the link or relationship field that
+/// names it, the entry of a list of IDs. IDs the merge neither renamed nor
+/// dropped are left as they are. Every lookup reads one snapshot of the index.
 ///
 /// The walk descends at most kMaxPeerJsonDepth levels (see peer_json.hpp): the
 /// body comes from a peer, and a walk that followed it down without a bound
@@ -173,8 +178,8 @@ bool is_discovery_route(const std::string & path);
 /// kTooDeep with the walk abandoned and `body` partly rewritten; the caller
 /// must not serve it as a translated response.
 enum class ServedIdRewrite {
-  kUnchanged,  ///< Nothing in the body names a renamed entity.
-  kRewritten,  ///< Every renamed entity the body names is named by its served ID.
+  kUnchanged,  ///< Nothing in the body names a renamed or dropped entity.
+  kRewritten,  ///< Renamed entities named by their served IDs, dropped ones removed.
   kTooDeep,    ///< The body nests past the bound; it is not a discovery response.
 };
 ServedIdRewrite rewrite_to_served_ids(nlohmann::json & body, const std::string & peer,

@@ -117,9 +117,10 @@ void AggregationHost::shutdown() {
   manager_->shutdown();
 }
 
-std::optional<std::unordered_map<std::string, std::string>>
-AggregationHost::merge_peers(std::vector<Area> & areas, std::vector<Component> & components, std::vector<App> & apps,
-                             std::vector<Function> & functions) {
+std::optional<AggregationHost::MergedPeers> AggregationHost::merge_peers(std::vector<Area> & areas,
+                                                                         std::vector<Component> & components,
+                                                                         std::vector<App> & apps,
+                                                                         std::vector<Function> & functions) {
   if (manager_->peer_count() == 0) {
     return std::nullopt;
   }
@@ -129,10 +130,10 @@ AggregationHost::merge_peers(std::vector<Area> & areas, std::vector<Component> &
   components = std::move(merged.components);
   apps = std::move(merged.apps);
   functions = std::move(merged.functions);
-  auto routing_table = std::move(merged.routing_table);
-  manager_->update_routing_table(routing_table);
+  MergedPeers result{std::move(merged.routing_table), std::move(merged.drops)};
+  manager_->update_routing_table(result.routing_table);
   manager_->set_leaf_warnings(std::move(merged.leaf_warnings));
-  return routing_table;
+  return result;
 }
 
 }  // namespace ros2_medkit_gateway
