@@ -527,6 +527,55 @@ enum class RouteKind {
 };
 
 /**
+ * @brief A peer's answer to one request, read no further than
+ * MAX_PEER_RESPONSE_SIZE.
+ */
+struct PeerReply {
+  httplib::Result result;  ///< The answer with its body, or why there is none
+  bool too_large{false};   ///< The read stopped at the limit; `result` is then empty
+};
+
+/**
+ * @brief Send `req` to the peer, reading its body no further than
+ * MAX_PEER_RESPONSE_SIZE.
+ *
+ * httplib's own calls read the whole body into memory before they return it,
+ * so a size check on what they return runs after the gateway has already held
+ * everything the peer chose to send. Here the bytes are counted as they arrive
+ * and the read stops at the limit, which holds whatever the status is.
+ */
+PeerReply send_capped(httplib::Client & cli, httplib::Request & req) {
+  PeerReply reply;
+  std::string body;
+  req.content_receiver = [&body, &reply](const char * data, size_t length, uint64_t /*offset*/, uint64_t /*total*/) {
+    if (length > MAX_PEER_RESPONSE_SIZE - body.size()) {
+      reply.too_large = true;
+      return false;
+    }
+    body.append(data, length);
+    return true;
+  };
+  auto res = std::make_unique<httplib::Response>();
+  auto error = httplib::Error::Success;
+  if (cli.send(req, *res, error)) {
+    res->body = std::move(body);
+    reply.result = httplib::Result{std::move(res), error};
+  } else {
+    reply.result = httplib::Result{nullptr, error};
+  }
+  return reply;
+}
+
+/// A GET to the peer, read no further than MAX_PEER_RESPONSE_SIZE.
+PeerReply get_capped(httplib::Client & cli, const std::string & path, const httplib::Headers & headers = {}) {
+  httplib::Request req;
+  req.method = "GET";
+  req.path = path;
+  req.headers = headers;
+  return send_capped(cli, req);
+}
+
+/**
  * @brief What one sub-request issued while describing a peer produced.
  */
 struct SubResponse {
@@ -546,7 +595,7 @@ struct SubResponse {
  * @brief True for a SOVD error body carrying the ``not-responding`` code.
  */
 bool says_not_responding(const std::string & body) {
-  if (body.size() > MAX_PEER_RESPONSE_SIZE || json_nesting_exceeds(body)) {
+  if (json_nesting_exceeds(body)) {
     return false;
   }
   auto parsed = nlohmann::json::parse(body, nullptr, false);
@@ -556,14 +605,19 @@ bool says_not_responding(const std::string & body) {
 /**
  * @brief Classify one sub-request of a peer fetch.
  *
- * @param result httplib result for the call
+ * @param reply What the call produced
  * @param peer_name Peer the call was made against, for the error text
  * @param path Route that was called, for the error text
  * @param kind What a non-200 means on this route
  */
-SubResponse read_sub_response(const httplib::Result & result, const std::string & peer_name, const std::string & path,
+SubResponse read_sub_response(const PeerReply & reply, const std::string & peer_name, const std::string & path,
                               RouteKind kind) {
   SubResponse out;
+  if (reply.too_large) {
+    out.error = "Response from peer '" + peer_name + "' for " + path + " exceeds size limit";
+    return out;
+  }
+  const auto & result = reply.result;
   if (!result) {
     out.error = "Failed to connect to peer '" + peer_name + "' for " + path;
     return out;
@@ -579,10 +633,6 @@ SubResponse read_sub_response(const httplib::Result & result, const std::string 
   }
   if (result->status != 200) {
     out.error = "Peer '" + peer_name + "' returned status " + std::to_string(result->status) + " for " + path;
-    return out;
-  }
-  if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
-    out.error = "Response from peer '" + peer_name + "' for " + path + " exceeds size limit";
     return out;
   }
   if (json_nesting_exceeds(result->body)) {
@@ -777,10 +827,10 @@ void PeerClient::ensure_client() {
                                     (std::min(timeouts_.connect_ms, health_timeout_ms) % 1000) * 1000);
     client_->set_read_timeout(health_timeout_ms / 1000, (health_timeout_ms % 1000) * 1000);
     client_->set_write_timeout(timeouts_.write_ms / 1000, (timeouts_.write_ms % 1000) * 1000);
-    // Note: cpp-httplib Client does not expose set_payload_max_length (server-only).
-    // Response size is enforced post-download in forward_request() and
-    // forward_and_get_json() via MAX_PEER_RESPONSE_SIZE body length checks.
-    // The read timeout provides a secondary defense against slow-drip attacks.
+    // cpp-httplib's Client has no payload limit (set_payload_max_length is
+    // server-only), so every call against a peer goes through send_capped,
+    // which stops reading at MAX_PEER_RESPONSE_SIZE. The read timeout bounds
+    // a peer that drips its answer instead.
   }
 }
 
@@ -796,7 +846,9 @@ void PeerClient::check_health() {
   if (!peer_auth_header_.empty()) {
     headers.emplace("Authorization", peer_auth_header_);
   }
-  auto result = client_->Get(std::string(API_PREFIX) + "/health", headers);
+  // A health answer past the size limit is no answer: the peer is unhealthy.
+  const auto reply = get_capped(*client_, std::string(API_PREFIX) + "/health", headers);
+  const auto & result = reply.result;
   const bool healthy = result && result->status == 200;
   std::string instance_id;
   if (healthy && !json_nesting_exceeds(result->body)) {
@@ -852,7 +904,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
   // Fetch areas
   {
     auto response =
-        read_sub_response(cli.Get(std::string(API_PREFIX) + "/areas"), name_, "/areas", RouteKind::kCollection);
+        read_sub_response(get_capped(cli, std::string(API_PREFIX) + "/areas"), name_, "/areas", RouteKind::kCollection);
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
     }
@@ -889,8 +941,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       std::vector<std::string> next_level;
       for (const auto & parent_id : area_level) {
         const std::string route = "/areas/" + parent_id + "/subareas";
-        auto sub =
-            read_sub_response(cli.Get(std::string(API_PREFIX) + route), name_, route, RouteKind::kNestedCollection);
+        auto sub = read_sub_response(get_capped(cli, std::string(API_PREFIX) + route), name_, route,
+                                     RouteKind::kNestedCollection);
         if (sub.kind == SubResponse::Kind::kIncomplete) {
           return tl::unexpected<std::string>(sub.error);
         }
@@ -928,7 +980,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 
   // Fetch components (list then detail per entity for full relationship data)
   {
-    auto response = read_sub_response(cli.Get(std::string(API_PREFIX) + "/components"), name_, "/components",
+    auto response = read_sub_response(get_capped(cli, std::string(API_PREFIX) + "/components"), name_, "/components",
                                       RouteKind::kCollection);
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
@@ -950,8 +1002,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     // Component asserted to have none.
     for (auto & comp : comp_list) {
       const std::string route = "/components/" + comp.id;
-      auto detail =
-          read_sub_response(cli.Get(std::string(API_PREFIX) + route), name_, route, RouteKind::kAddressableDetail);
+      auto detail = read_sub_response(get_capped(cli, std::string(API_PREFIX) + route), name_, route,
+                                      RouteKind::kAddressableDetail);
       if (detail.kind == SubResponse::Kind::kIncomplete) {
         return tl::unexpected<std::string>(detail.error);
       }
@@ -981,8 +1033,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       std::vector<std::string> next_level;
       for (const auto & parent_id : component_level) {
         const std::string route = "/components/" + parent_id + "/subcomponents";
-        auto sub =
-            read_sub_response(cli.Get(std::string(API_PREFIX) + route), name_, route, RouteKind::kNestedCollection);
+        auto sub = read_sub_response(get_capped(cli, std::string(API_PREFIX) + route), name_, route,
+                                     RouteKind::kNestedCollection);
         if (sub.kind == SubResponse::Kind::kIncomplete) {
           return tl::unexpected<std::string>(sub.error);
         }
@@ -1002,7 +1054,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
           // Fetch detail for each subcomponent to get full relationships
           const std::string sub_id = subcomp.id;
           const std::string detail_route = "/components/" + sub_id;
-          auto detail = read_sub_response(cli.Get(std::string(API_PREFIX) + detail_route), name_, detail_route,
+          auto detail = read_sub_response(get_capped(cli, std::string(API_PREFIX) + detail_route), name_, detail_route,
                                           RouteKind::kAddressableDetail);
           if (detail.kind == SubResponse::Kind::kIncomplete) {
             return tl::unexpected<std::string>(detail.error);
@@ -1040,7 +1092,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
   // Fetch apps
   {
     auto response =
-        read_sub_response(cli.Get(std::string(API_PREFIX) + "/apps"), name_, "/apps", RouteKind::kCollection);
+        read_sub_response(get_capped(cli, std::string(API_PREFIX) + "/apps"), name_, "/apps", RouteKind::kCollection);
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
     }
@@ -1083,7 +1135,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       const httplib::Headers no_fan_out{{"X-Medkit-No-Fan-Out", "1"}};
 
       const std::string ops_route = "/apps/" + app.id + "/operations";
-      auto ops = read_sub_response(cli.Get(std::string(API_PREFIX) + ops_route, no_fan_out), name_, ops_route,
+      auto ops = read_sub_response(get_capped(cli, std::string(API_PREFIX) + ops_route, no_fan_out), name_, ops_route,
                                    RouteKind::kNestedCollection);
       if (ops.kind == SubResponse::Kind::kIncomplete) {
         return tl::unexpected<std::string>(ops.error);
@@ -1098,8 +1150,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       // already reported; there is nothing further to read.
 
       const std::string data_route = "/apps/" + app.id + "/data";
-      auto data = read_sub_response(cli.Get(std::string(API_PREFIX) + data_route, no_fan_out), name_, data_route,
-                                    RouteKind::kNestedCollection);
+      auto data = read_sub_response(get_capped(cli, std::string(API_PREFIX) + data_route, no_fan_out), name_,
+                                    data_route, RouteKind::kNestedCollection);
       if (data.kind == SubResponse::Kind::kIncomplete) {
         return tl::unexpected<std::string>(data.error);
       }
@@ -1113,8 +1165,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
 
   // Fetch functions (list then detail per entity for hosts data)
   {
-    auto response =
-        read_sub_response(cli.Get(std::string(API_PREFIX) + "/functions"), name_, "/functions", RouteKind::kCollection);
+    auto response = read_sub_response(get_capped(cli, std::string(API_PREFIX) + "/functions"), name_, "/functions",
+                                      RouteKind::kCollection);
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
     }
@@ -1136,7 +1188,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
     for (auto & func : func_list) {
       const std::string route = "/functions/" + func.id;
       auto detail =
-          read_sub_response(cli.Get(std::string(API_PREFIX) + route), name_, route, RouteKind::kGroupingDetail);
+          read_sub_response(get_capped(cli, std::string(API_PREFIX) + route), name_, route, RouteKind::kGroupingDetail);
       if (detail.kind != SubResponse::Kind::kBody) {
         return tl::unexpected<std::string>(detail.error);
       }
@@ -1201,16 +1253,30 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
 
   const auto started_at = std::chrono::steady_clock::now();
 
-  if (req.method == "GET") {
-    result = cli.Get(path, headers);
-  } else if (req.method == "POST") {
-    result = cli.Post(path, headers, req.body, content_type);
-  } else if (req.method == "PUT") {
-    result = cli.Put(path, headers, req.body, content_type);
-  } else if (req.method == "DELETE") {
-    result = cli.Delete(path, headers);
-  } else if (req.method == "PATCH") {
-    result = cli.Patch(path, headers, req.body, content_type);
+  bool too_large = false;
+  if (req.method == "GET" || req.method == "DELETE" || req.method == "POST" || req.method == "PUT" ||
+      req.method == "PATCH") {
+    httplib::Request out;
+    out.method = req.method;
+    out.path = path;
+    out.headers = std::move(headers);
+    if (req.method == "POST" || req.method == "PUT" || req.method == "PATCH") {
+      if (!content_type.empty()) {
+        out.set_header("Content-Type", content_type);
+      }
+      out.body = req.body;
+    }
+    auto reply = send_capped(cli, out);
+    result = std::move(reply.result);
+    too_large = reply.too_large;
+  }
+
+  if (too_large) {
+    res.status = 502;
+    auto error_body = make_error_body(ERR_VENDOR_ERROR, "Response from peer '" + name_ + "' exceeds size limit",
+                                      ERR_X_MEDKIT_PEER_UNAVAILABLE);
+    res.set_content(error_body.dump(), "application/json");
+    return;
   }
 
   if (!result) {
@@ -1245,14 +1311,6 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
     return;
   }
 
-  if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
-    res.status = 502;
-    auto error_body = make_error_body(ERR_VENDOR_ERROR, "Response from peer '" + name_ + "' exceeds size limit",
-                                      ERR_X_MEDKIT_PEER_UNAVAILABLE);
-    res.set_content(error_body.dump(), "application/json");
-    return;
-  }
-
   // Copy response from peer - only forward safe headers.
   // The x-medkit header allowlist must match headers the gateway actually produces.
   // Currently the only x-medkit HTTP header is X-Medkit-Local-Only (fault_handlers.cpp).
@@ -1267,7 +1325,7 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
                                                         "last-modified", "location", "x-medkit-local-only"};
 
   res.status = result->status;
-  res.body = result->body;
+  res.body = std::move(result->body);
   for (const auto & header : result->headers) {
     std::string lower_name = header.first;
     std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), [](unsigned char c) {
@@ -1309,51 +1367,20 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
     headers.emplace(key, value);
   }
 
-  // Accumulate body with streaming size enforcement via ContentReceiver.
-  // This prevents a malicious peer from pushing hundreds of MB before the
-  // post-download check. The receiver returns false to abort the download
-  // as soon as MAX_PEER_RESPONSE_SIZE is exceeded.
-  std::string accumulated_body;
-  bool size_exceeded = false;
-  int response_status = 0;
-
-  auto content_receiver = [&](const char * data, size_t data_length) -> bool {
-    if (accumulated_body.size() + data_length > MAX_PEER_RESPONSE_SIZE) {
-      size_exceeded = true;
-      return false;  // Abort download
-    }
-    accumulated_body.append(data, data_length);
-    return true;
-  };
-
-  httplib::Result result{nullptr, httplib::Error::Unknown};
-
-  const auto started_at = std::chrono::steady_clock::now();
-
-  if (method == "GET") {
-    result = cli.Get(
-        path, headers,
-        [&response_status](const httplib::Response & resp) -> bool {
-          response_status = resp.status;
-          return true;  // Continue to receive body
-        },
-        content_receiver);
-  } else if (method == "POST") {
-    result = cli.Post(path, headers, "", "application/json");
-  } else if (method == "PUT") {
-    result = cli.Put(path, headers, "", "application/json");
-  } else if (method == "DELETE") {
-    result = cli.Delete(path, headers);
+  httplib::Request out;
+  out.method = method;
+  out.path = path;
+  out.headers = std::move(headers);
+  if (method == "POST" || method == "PUT") {
+    out.set_header("Content-Type", "application/json");
   }
+  const auto started_at = std::chrono::steady_clock::now();
+  PeerReply reply;
+  if (method == "GET" || method == "POST" || method == "PUT" || method == "DELETE") {
+    reply = send_capped(cli, out);
+  }
+  const auto & result = reply.result;
 
-  // For non-GET methods, fall back to post-download size check since
-  // cpp-httplib does not offer ContentReceiver overloads for all methods.
-  bool used_streaming = (method == "GET");
-
-  // The size guard aborts the download from inside the content receiver, which
-  // cpp-httplib surfaces as a cancelled read. Checked before the transport
-  // error so an oversized body is reported as one rather than as a broken
-  // connection.
   auto transport_failure = [&]() {
     const auto elapsed =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_at);
@@ -1384,42 +1411,31 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
                      "Peer '" + name_ + "' returned status " + std::to_string(status) + " for " + method + " " + path};
   };
 
-  if (used_streaming) {
-    if (size_exceeded) {
-      return tl::unexpected(
-          PeerError{PeerFailureKind::kTooLarge,
-                    "Response from peer '" + name_ + "' exceeds size limit for " + method + " " + path});
-    }
-    if (!result) {
-      return tl::unexpected(transport_failure());
-    }
-    if (response_status < 200 || response_status >= 300) {
-      return tl::unexpected(status_failure(response_status, accumulated_body));
-    }
-  } else {
-    if (!result) {
-      return tl::unexpected(transport_failure());
-    }
-    if (result->status < 200 || result->status >= 300) {
-      return tl::unexpected(status_failure(result->status, result->body));
-    }
-    if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
-      return tl::unexpected(
-          PeerError{PeerFailureKind::kTooLarge,
-                    "Response from peer '" + name_ + "' exceeds size limit for " + method + " " + path});
-    }
-    accumulated_body = std::move(result->body);
+  // The size guard stops the read from inside the content receiver, which
+  // cpp-httplib surfaces as a cancelled read. Checked before the transport
+  // error so an oversized body is reported as one rather than as a broken
+  // connection.
+  if (reply.too_large) {
+    return tl::unexpected(PeerError{PeerFailureKind::kTooLarge, "Response from peer '" + name_ +
+                                                                    "' exceeds size limit for " + method + " " + path});
   }
+  if (!result) {
+    return tl::unexpected(transport_failure());
+  }
+  if (result->status < 200 || result->status >= 300) {
+    return tl::unexpected(status_failure(result->status, result->body));
+  }
+  const std::string & body_text = result->body;
 
   // The caller copies, merges and serializes what comes back, all of which
   // recurse once per level of nesting: a body nested past the limit is not
   // the JSON any route promises, and is refused before it is parsed.
-  if (json_nesting_exceeds(accumulated_body)) {
+  if (json_nesting_exceeds(body_text)) {
     return tl::unexpected(PeerError{PeerFailureKind::kInvalidResponse,
                                     "Response from peer '" + name_ + "' for " + method + " " + path +
                                         " nests deeper than " + std::to_string(kMaxPeerJsonDepth) + " levels"});
   }
-  auto parsed = nlohmann::json::parse(accumulated_body, nullptr, false);
+  auto parsed = nlohmann::json::parse(body_text, nullptr, false);
   if (parsed.is_discarded()) {
     return tl::unexpected(PeerError{PeerFailureKind::kInvalidResponse,
                                     "Invalid JSON response from peer '" + name_ + "' for " + method + " " + path});

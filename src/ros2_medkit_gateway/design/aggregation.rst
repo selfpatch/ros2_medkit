@@ -1211,8 +1211,15 @@ requests via N+1 detail fetches.
 Response Size Limits
 ~~~~~~~~~~~~~~~~~~~~
 
-All HTTP responses from peers are limited to 10 MB (``MAX_PEER_RESPONSE_SIZE``).
-Responses exceeding this limit are rejected.
+All HTTP responses from peers are limited to 10 MB (``MAX_PEER_RESPONSE_SIZE``),
+whatever their status: the health check, every request of an entity fetch,
+forwarded requests and fan-out requests. The limit is enforced while the body
+arrives (``send_capped`` counts the bytes in its content receiver and stops
+the read at the limit), so a peer that sends more never has more than 10 MB of
+it buffered here. cpp-httplib's own calls read the whole body before they
+return it, which is why none of them is used against a peer. A response past
+the limit is rejected: a health check counts as failed, an entity fetch
+fails, a forward answers ``502`` and a fan-out names the peer ``too-large``.
 
 Per-Peer Entity Limits
 ~~~~~~~~~~~~~~~~~~~~~~
