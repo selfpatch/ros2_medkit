@@ -518,9 +518,11 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
       if (agg != nullptr && !peer_name.empty() && item.x_medkit.has_value() && item.x_medkit->member_ids.has_value()) {
         // A member the merge dropped is not served here, and its id names the
         // local entity that took its place: it is removed, not re-addressed.
+        // Read against the index of the generation the request was validated
+        // against, which is the one the fan-out targeted.
         std::vector<std::string> members;
         for (const auto & member_id : *item.x_medkit->member_ids) {
-          if (auto served = served_member_id(cache, peer_name, member_id)) {
+          if (auto served = served_member_id(entity_info.peer_ids, peer_name, member_id)) {
             members.push_back(std::move(*served));
           }
         }

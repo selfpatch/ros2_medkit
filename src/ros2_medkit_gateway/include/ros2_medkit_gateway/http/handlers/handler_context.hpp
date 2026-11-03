@@ -87,6 +87,12 @@ struct EntityInfo {
   /// these peers and no other, so it targets the same cache generation the
   /// request was validated against. Empty without aggregation.
   std::vector<PeerTarget> peer_targets;
+  /// The peer ID index of the cache generation the entity was found in, set
+  /// by validate_entity_for_route. What a peer answers for this request is
+  /// read against it (served_member_id, rewrite_to_served_ids): a refresh
+  /// that lands while the answer is on its way can rename or drop the entity
+  /// the request named, and the newest index would then name another one.
+  std::shared_ptr<const PeerIdIndex> peer_ids;
 
   // Plugin routing fields
   bool is_plugin{false};    ///< True if entity is owned by a plugin

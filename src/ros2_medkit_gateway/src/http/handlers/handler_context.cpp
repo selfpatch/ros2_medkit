@@ -303,7 +303,7 @@ void refuse_forwarded_discovery(httplib::Response & res, const std::string & pee
 /// so only a broken or hostile peer is refused. The text is judged before it is
 /// parsed, so no deep value is built.
 void rewrite_forwarded_discovery(const httplib::Request & req, const std::string & peer, httplib::Response & res,
-                                 const ThreadSafeEntityCache & cache) {
+                                 const std::shared_ptr<const PeerIdIndex> & peer_ids) {
   if (req.method != "GET" || res.status != 200 || !is_discovery_route(req.path)) {
     return;
   }
@@ -315,7 +315,7 @@ void rewrite_forwarded_discovery(const httplib::Request & req, const std::string
   if (body.is_discarded()) {
     return;
   }
-  switch (rewrite_to_served_ids(body, peer, cache)) {
+  switch (rewrite_to_served_ids(body, peer, peer_ids)) {
     case ServedIdRewrite::kUnchanged:
       return;
     case ServedIdRewrite::kTooDeep:
@@ -357,7 +357,20 @@ http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(cons
   const auto & raw_req = req.raw_for_framework();
 #pragma GCC diagnostic pop
   auto expected_type = extract_entity_type_from_path(raw_req.path);
+  // The entity and the peer ID index an answer from its peer is read against
+  // come from one cache generation. A refresh replaces both under one lock, so
+  // an index that is the same before and after the lookup is the one the
+  // entity was published with; a different one means a refresh landed in
+  // between, and the lookup is made again. Each retry needs a whole refresh
+  // to complete between two reads of a pointer, so the loop ends.
+  const auto & cache = services_.entity_cache();
+  auto peer_ids = cache.get_peer_id_index();
   auto entity_info = get_entity_info(entity_id, expected_type);
+  for (auto latest = cache.get_peer_id_index(); latest != peer_ids; latest = cache.get_peer_id_index()) {
+    peer_ids = std::move(latest);
+    entity_info = get_entity_info(entity_id, expected_type);
+  }
+  entity_info.peer_ids = std::move(peer_ids);
 
   if (entity_info.type == EntityType::UNKNOWN) {
     // Step 3: Check if entity exists in ANY collection (for better error message).
@@ -412,7 +425,7 @@ http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(cons
     if (tl_forward_response != nullptr) {
       aggregation_mgr_->forward_request(entity_info.peer_name, raw_req, *tl_forward_response,
                                         path_on_peer(raw_req.path, entity_info));
-      rewrite_forwarded_discovery(raw_req, entity_info.peer_name, *tl_forward_response, services_.entity_cache());
+      rewrite_forwarded_discovery(raw_req, entity_info.peer_name, *tl_forward_response, entity_info.peer_ids);
     }
     return tl::unexpected(ErrorVariant{http::Forwarded{}});
   }

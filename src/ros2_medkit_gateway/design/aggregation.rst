@@ -414,8 +414,13 @@ classification pass over the full Component set:
   place. Only recorded renames and drops are applied. They come from the
   ``PeerIdIndex`` the refresh builds from the served entities and the merge's
   drops and publishes in the entity cache with the entities
-  (``ThreadSafeEntityCache::update_all``); the rewrite reads one snapshot of
-  it for the whole body. A rewritten body drops the peer's ``ETag``.
+  (``ThreadSafeEntityCache::update_all``). The rewrite reads, for the whole
+  body, the snapshot of the generation the request was validated against,
+  which ``validate_entity_for_route`` reads with the entity and keeps in
+  ``EntityInfo::peer_ids``; so do the fan-outs below. A refresh that lands
+  while the peer answers can rename or drop the entity the request named, and
+  the newest snapshot would then map the peer's id to the local entity that
+  took its place. A rewritten body drops the peer's ``ETag``.
   Responses of the resource collections (data, faults, operations and the
   rest) are passed through as the peer sent them, except for the member IDs a
   fan-out reads off them: a dropped member is removed from a data item's

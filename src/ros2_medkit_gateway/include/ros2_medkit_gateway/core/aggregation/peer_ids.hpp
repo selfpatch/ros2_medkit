@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -28,7 +29,7 @@
 
 namespace ros2_medkit_gateway {
 
-class ThreadSafeEntityCache;
+struct PeerIdIndex;
 
 /// Where the entity a path names sits in it: the first
 /// `/components|apps|areas|functions/<id>` segment.
@@ -141,21 +142,26 @@ std::vector<PeerTarget> peer_targets_of(const Entity & entity) {
 
 /// The ID this gateway serves an entity of `type` under that `peer` calls `peer_id`.
 ///
-/// The reverse of peer_entity_id, for an ID a peer reports, read from the peer
-/// ID index the cache publishes with the entities (PeerIdIndex): an entity the
-/// merge renamed is served as `<peer>__<peer_id>`, and one it dropped is not
-/// served at all - in both cases the unprefixed ID names a local entity here.
+/// The reverse of peer_entity_id, for an ID a peer reports, read from
+/// `peer_ids`, the peer ID index the cache publishes with the entities
+/// (PeerIdIndex), or nullptr for none. Pass the index of the generation the
+/// request was validated against (EntityInfo::peer_ids): what the peer answers
+/// describes the entity that request named, and a refresh that renames or
+/// drops it while the answer is on its way makes the newest index describe
+/// another entity. An entity the merge renamed is served as
+/// `<peer>__<peer_id>`, and one it dropped is not served at all - in both
+/// cases the unprefixed ID names a local entity here.
 /// Only recorded renames and drops count, so a peer's own entity whose ID
 /// merely reads like a prefix is left alone. Returns `peer_id` when the merge
 /// did neither, which is the ordinary case, and std::nullopt for a dropped
 /// entity: nothing here may be named for it.
-std::optional<std::string> served_entity_id(const ThreadSafeEntityCache & cache, SovdEntityType type,
+std::optional<std::string> served_entity_id(const std::shared_ptr<const PeerIdIndex> & peer_ids, SovdEntityType type,
                                             const std::string & peer, const std::string & peer_id);
 
 /// served_entity_id for a member a peer names without saying its type: its App
 /// when one was renamed or dropped by that ID, else its Component.
-std::optional<std::string> served_member_id(const ThreadSafeEntityCache & cache, const std::string & peer,
-                                            const std::string & member_id);
+std::optional<std::string> served_member_id(const std::shared_ptr<const PeerIdIndex> & peer_ids,
+                                            const std::string & peer, const std::string & member_id);
 
 /// True for a discovery route: an entity's detail (`/<collection>/<id>`) or one
 /// of the relationship collections discovery serves under it (`subareas`,
@@ -178,7 +184,8 @@ bool is_discovery_route(const std::string & path);
 /// `component_id`, `hosts`). A reference to a dropped entity is removed: the
 /// item of a collection that describes it, the link or relationship field that
 /// names it, the entry of a list of IDs. IDs the merge neither renamed nor
-/// dropped are left as they are. Every lookup reads one snapshot of the index.
+/// dropped are left as they are. Every lookup reads `peer_ids`, the index of
+/// the generation the request was validated against (see served_entity_id).
 ///
 /// The walk descends at most kMaxPeerJsonDepth levels (see peer_json.hpp): the
 /// body comes from a peer, and a walk that followed it down without a bound
@@ -191,6 +198,6 @@ enum class ServedIdRewrite {
   kTooDeep,    ///< The body nests past the bound; it is not a discovery response.
 };
 ServedIdRewrite rewrite_to_served_ids(nlohmann::json & body, const std::string & peer,
-                                      const ThreadSafeEntityCache & cache);
+                                      const std::shared_ptr<const PeerIdIndex> & peer_ids);
 
 }  // namespace ros2_medkit_gateway
