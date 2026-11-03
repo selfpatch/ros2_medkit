@@ -43,6 +43,20 @@ namespace {
 /// that body would limit the entries, and the answer built from them.
 constexpr size_t kMaxNestedPeerFailures = 1024;
 
+/// The longest failed-peer name read from a peer's partial answer. A longer
+/// one is not listed, and the answer stays partial.
+constexpr size_t kMaxNestedPeerNameLength = 1024;
+
+/// The longest reason read from a peer's `peer_failures`. The reasons a
+/// gateway gives are short words (peer_failure_reason); a longer one is read
+/// as `unreachable`, what a peer that gives no reason means.
+constexpr size_t kMaxNestedPeerReasonLength = 64;
+
+/// The most bytes of names and reasons one peer's partial answer adds to a
+/// fan-out. Each entry copies its reason, so without it a peer naming the
+/// same failed peer many times with one long reason multiplies its body.
+constexpr size_t kMaxNestedPeerFailureBytes = 64 * 1024;
+
 std::string make_instance_id() {
   static constexpr char kHex[] = "0123456789abcdef";
   std::random_device rd;
@@ -954,26 +968,25 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
                                 x_medkit->contains("partial") && (*x_medkit)["partial"].is_boolean() &&
                                 (*x_medkit)["partial"].get<bool>();
       if (peer_partial) {
-        // The failed peers the peer names, up to kMaxNestedPeerFailures, then
-        // the reason it gives for each, read in one pass over peer_failures:
-        // matching every name against every entry is quadratic in what the
-        // peer chose to send. The first entry naming a peer is its reason.
+        // The failed peers the peer names, each once and up to
+        // kMaxNestedPeerFailures of them, then the reason it gives for each,
+        // read in one pass over peer_failures: matching every name against
+        // every entry is quadratic in what the peer chose to send. The first
+        // entry naming a peer is its reason. A peer that predates
+        // peer_failures names no reason; its partial flag meant a peer call
+        // that failed, which is what unreachable says.
         std::vector<std::string> nested_names;
+        std::unordered_map<std::string, std::optional<std::string>> reasons;
         if (auto names = x_medkit->find("failed_peers"); names != x_medkit->end() && names->is_array()) {
           for (const auto & name : *names) {
             if (nested_names.size() == kMaxNestedPeerFailures) {
               break;
             }
-            if (name.is_string()) {
+            if (name.is_string() && name.get_ref<const std::string &>().size() <= kMaxNestedPeerNameLength &&
+                reasons.emplace(name.get<std::string>(), std::nullopt).second) {
               nested_names.push_back(name.get<std::string>());
             }
           }
-        }
-        // A peer that predates peer_failures names no reason. Its partial flag
-        // meant a peer call that failed, which is what unreachable says.
-        std::unordered_map<std::string, std::optional<std::string>> reasons;
-        for (const auto & name : nested_names) {
-          reasons.emplace(name, std::nullopt);
         }
         size_t unsettled = reasons.size();
         if (auto failures = x_medkit->find("peer_failures"); failures != x_medkit->end() && failures->is_array()) {
@@ -993,13 +1006,23 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
               continue;
             }
             const auto why = failure.find("reason");
-            reason->second = why != failure.end() && why->is_string() ? why->get<std::string>() : "unreachable";
+            const bool readable = why != failure.end() && why->is_string() &&
+                                  why->get_ref<const std::string &>().size() <= kMaxNestedPeerReasonLength;
+            reason->second = readable ? why->get<std::string>() : "unreachable";
             --unsettled;
           }
         }
+        // Listed in the order the peer named them until the next entry would
+        // take the answer past kMaxNestedPeerFailureBytes. The names left out
+        // keep the answer partial all the same.
+        size_t added_bytes = 0;
         for (const auto & name : nested_names) {
-          const auto & reason = reasons[name];
-          pr.nested_failures.push_back(dto::PeerFailure{pr.peer_name + "/" + name, reason.value_or("unreachable")});
+          auto failure = dto::PeerFailure{pr.peer_name + "/" + name, reasons[name].value_or("unreachable")};
+          added_bytes += failure.peer.size() + failure.reason.size();
+          if (added_bytes > kMaxNestedPeerFailureBytes) {
+            break;
+          }
+          pr.nested_failures.push_back(std::move(failure));
         }
         // Partial with nobody named breaks the contract this route promises.
         if (pr.nested_failures.empty()) {
