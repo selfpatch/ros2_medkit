@@ -1182,13 +1182,42 @@ Key Classes
     stops the client of a request still running then, as ``stop_all()``
     stops every client at shutdown. The request fails as a timeout naming
     ``aggregation.request_deadline_ms``: a forward answers ``504``, a fan-out
-    names the peer ``timeout``, a fetch fails. Every ``stop()`` runs with the
-    registry mutex held, and a client leaves the registry, taking the same
-    mutex, before it is destroyed. The deadline is never shorter than the
-    connect budget, and ``stop()`` waits for a connect in progress, so at the
-    deadline the request has its socket; a ``stop()`` that still found none
-    is repeated every 100 ms until the request returns. The SSE relay has no
-    deadline: a stream has no last byte.
+    names the peer ``timeout``, a fetch fails. cpp-httplib's ``stop()``
+    takes the client's socket lock, which a request holds while it connects,
+    so a ``stop()`` can wait; each one runs on a thread of its own with the
+    registry mutex released, and one that waits keeps no other request from
+    arming, disarming or being stopped at its own deadline. A client is pinned
+    while a ``stop()`` of it runs: ``remove()``, before the client is
+    destroyed, and ``disarm()``, before its next request, wait for it, so no
+    client is freed under a ``stop()`` and no late ``stop()`` lands on the
+    next request. ``stop_all()`` runs the stops side by side and returns when
+    the slowest has. The deadline is never shorter than the connect budget,
+    and ``stop()`` waits for a connect in progress, so at the deadline the
+    request has its socket; a ``stop()`` that still found none is repeated
+    every 100 ms until the request returns. The SSE relay has no deadline: a
+    stream has no last byte.
+
+``PeerResolver``
+    The host name of one peer, resolved by this gateway before a call is
+    admitted rather than by cpp-httplib inside it. cpp-httplib calls
+    ``getaddrinfo`` under the socket lock its ``stop()`` takes, and after the
+    admission lock is taken: a resolver that did not answer held the call,
+    every ``stop()`` of it, and shutdown's exclusive admission for as long as
+    the system resolver retried - ten seconds and more - and a forward to a
+    peer whose resolver had gone silent answered after some 12 s, the refresh
+    stalled with it, and SIGTERM took 10 s. The lookup runs on a detached
+    thread that owns its result, at most one per peer at a time, and a call
+    waits for it at most its connect budget (``aggregation.timeout_ms``,
+    capped at 1 s); ``PeerClient::ScopedClient`` then points the client at the
+    first address, and ``send_capped`` tries the next one when an address
+    refuses or does not accept the connection, as cpp-httplib does when it
+    resolves the name itself. A name that does not resolve in time makes no
+    request: the call fails as the peer being unreachable, naming the host
+    and the budget (a forward answers ``502``, a fetch fails, the health check
+    counts as failed). ``shutdown()`` cancels the wait, and an IP address is
+    not looked up. ``SSEStreamProxy`` resolves the same way before each
+    connect, within its own 5 s connect budget, waiting in 100 ms slices so
+    ``close()`` is noticed.
 
 ``EntityMerger``
     Stateless merge engine that combines local and remote entity sets using
@@ -1377,7 +1406,9 @@ still running at its deadline (see Key Classes), and the request fails as a
 timeout: a forward answers ``504 not-responding``, a fan-out names the peer
 ``timeout``, an entity fetch fails and the refresh keeps the peer's last
 complete declaration, a health check counts as failed. The SSE relay has no
-deadline: a stream has no last byte.
+deadline: a stream has no last byte. The deadline is armed once the peer's host
+name has resolved, which ``PeerResolver`` bounds by the connect budget (see Key
+Classes), so a call runs for at most that budget plus its deadline.
 
 Per-Peer Entity Limits
 ~~~~~~~~~~~~~~~~~~~~~~

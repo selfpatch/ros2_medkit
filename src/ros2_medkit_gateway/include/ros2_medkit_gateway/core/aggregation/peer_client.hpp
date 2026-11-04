@@ -20,6 +20,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
@@ -31,6 +32,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/core/aggregation/peer_json.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_resolver.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
@@ -166,9 +168,15 @@ struct PeerTimeouts {
  * sending. Every request is armed with a deadline as it starts and disarmed
  * when it returns; a reaper thread stops the client of a request still
  * running at its deadline, as stop_all() stops every client at shutdown, and
- * the request fails. Every stop() runs with the registry mutex held, and a
- * client leaves the registry, which takes the same mutex, before it is
- * destroyed, so no client is stopped while it is being freed.
+ * the request fails.
+ *
+ * stop() takes the client's socket lock, which the request holds while it
+ * connects, so a stop() can wait. Each one therefore runs on a thread of its
+ * own with the registry mutex released, and one that waits holds up no other
+ * request: none is kept from arming, disarming or being stopped at its own
+ * deadline. The client is pinned while a stop() of it runs - remove() and
+ * disarm() wait for it - so it is never freed under the stop(), and a late
+ * stop() never lands on the client's next request.
  */
 class PeerCallRegistry {
  public:
@@ -182,26 +190,41 @@ class PeerCallRegistry {
 
   /// `cli` is in flight; it is stopped by stop_all() until removed.
   void add(httplib::Client * cli);
-  /// `cli` is done. Waits for a stop() of it in progress.
+  /// `cli` is done. Waits for a stop() of it in progress; `cli` may be freed
+  /// once this returns.
   void remove(httplib::Client * cli);
   /// The request `cli` starts now runs for at most `deadline`.
   void arm(httplib::Client * cli, std::chrono::milliseconds deadline);
-  /// The request `cli` was making has returned. True when it ran into its
-  /// deadline and the reaper stopped it.
+  /// The request `cli` was making has returned. Waits for a stop() of it in
+  /// progress, so none lands on the next request. True when the request ran
+  /// into its deadline and was stopped.
   bool disarm(httplib::Client * cli);
-  /// stop() every client in flight.
+  /// True once the request `cli` is making has run into its deadline.
+  bool expired(httplib::Client * cli);
+  /// stop() every client in flight, each from a thread of its own, and
+  /// return once every one of those stop() calls has.
   void stop_all();
 
  private:
   struct Call {
     std::chrono::steady_clock::time_point deadline{std::chrono::steady_clock::time_point::max()};
     bool expired{false};
+    /// stop() calls of this client running now; it is pinned while any is.
+    int stops{0};
   };
 
   void reap();
+  /// stop() `cli` from a thread of its own, `call` pinned until it returns.
+  /// Called with mutex_ held; the stop() runs without it.
+  std::future<void> stop_async(httplib::Client * cli, Call & call);
+  /// Wait, with `lock` on mutex_, until no stop() of `call` is running.
+  void wait_unpinned(std::unique_lock<std::mutex> & lock, const Call & call);
 
   std::mutex mutex_;
+  /// The reaper's: a deadline changed, or the registry is going away.
   std::condition_variable wake_;
+  /// A stop() returned.
+  std::condition_variable stopped_;
   std::unordered_map<httplib::Client *, Call> calls_;
   bool stopping_{false};
   /// Last, so it starts once everything it reads exists.
@@ -348,9 +371,11 @@ class PeerClient {
   /// is decided per call, by admission_mutex_.
   class ScopedClient {
    public:
-    /// @param read_timeout_ms Read budget for this call. Connect and write
-    /// come from the owner's PeerTimeouts, which do not vary per call kind.
-    ScopedClient(PeerClient & owner, const std::string & url, int read_timeout_ms);
+    /// @param read_timeout_ms Read budget for this call. Write comes from the
+    /// owner's PeerTimeouts, which does not vary per call kind.
+    /// @param connect_ms Connect budget for this call, the owner's when
+    /// negative. The host name is resolved within it, before any request.
+    ScopedClient(PeerClient & owner, const std::string & url, int read_timeout_ms, int connect_ms = -1);
     ~ScopedClient();
     ScopedClient(const ScopedClient &) = delete;
     ScopedClient & operator=(const ScopedClient &) = delete;
@@ -364,9 +389,23 @@ class PeerClient {
       return &cli_;
     }
 
+    /// Why no request can be made on this client - the host name did not
+    /// resolve in time, or does not resolve - or empty when one can.
+    const std::string & unresolved() const {
+      return unresolved_;
+    }
+
+    /// Point the client at the next address the host name resolved to. False
+    /// when there is none left: the host is an IP address, or every address
+    /// has been tried.
+    bool next_address();
+
    private:
     PeerClient & owner_;
     httplib::Client cli_;
+    std::vector<std::string> addresses_;
+    size_t next_address_{0};
+    std::string unresolved_;
   };
 
   /// The deadline of one request whose read budget is `read_ms`:
@@ -382,6 +421,9 @@ class PeerClient {
   /// rather than relaying a client's request: the health check, and any
   /// forward whose caller sent no credential to pass on. Empty for none.
   std::string peer_auth_header_;
+  /// The peer's host name, resolved with a bound before each call
+  /// (ScopedClient), never by cpp-httplib inside one.
+  PeerResolver resolver_;
   std::atomic<bool> healthy_{false};
   std::atomic<bool> shutdown_requested_{false};
 

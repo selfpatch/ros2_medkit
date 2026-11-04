@@ -603,9 +603,11 @@ ros2_medkit_gateway:
       # Default: false
       enabled: false
 
-      # Connect budget for every peer request, and the read budget for reading a
-      # peer's description of itself: health checks, entity fetching, and the
-      # collection fan-out a client waits on across every peer at once.
+      # Connect budget for every peer request, capped at 1000 ms, and the read
+      # budget for reading a peer's description of itself: health checks,
+      # entity fetching, and the collection fan-out a client waits on across
+      # every peer at once. A peer's host name is resolved within the connect
+      # budget; a resolver that does not answer in it makes the peer unreachable.
       # Milliseconds. Range 100-600000, clamped to the nearest end with a warning.
       # Default: 2000
       timeout_ms: 2000

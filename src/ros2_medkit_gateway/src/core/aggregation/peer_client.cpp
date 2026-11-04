@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <set>
@@ -746,6 +747,8 @@ struct PeerReply {
   bool too_large{false};                  ///< The read stopped at the limit; `result` is then empty
   bool past_deadline{false};              ///< The request ran into its deadline and was stopped; `result` is empty
   std::chrono::milliseconds deadline{0};  ///< The deadline the request was armed with
+  /// Why no request was made: the host name did not resolve. Empty otherwise.
+  std::string unresolved;
 };
 
 /// The key a request deadline is configured by and its value, for a message.
@@ -761,6 +764,16 @@ struct Admission {
   const std::atomic<bool> & shutdown_requested;
   PeerCallRegistry & calls;
   std::chrono::milliseconds deadline;
+};
+
+/// The client a call is made on, with what its host name resolved to (see
+/// PeerClient::ScopedClient).
+struct PeerLink {
+  httplib::Client & cli;
+  /// Why no request can be made on it, or empty when one can.
+  const std::string & unresolved;
+  /// Point the client at the host's next address; false when none is left.
+  std::function<bool()> next_address;
 };
 
 /**
@@ -780,19 +793,17 @@ struct Admission {
  *
  * The request is armed with the admission's deadline as it starts, before it
  * connects, and stopped by the registry if it is still running then.
+ *
+ * A host name that did not resolve makes no request at all. One that
+ * resolved to several addresses is tried at each in turn, the way cpp-httplib
+ * tries them when it resolves the name itself: an address that refuses the
+ * connection, or does not accept it within the connect budget, has been sent
+ * nothing. Each attempt is admitted afresh, and none is made once the
+ * deadline has passed.
  */
-PeerReply send_capped(httplib::Client & cli, httplib::Request & req, const Admission & admission) {
+PeerReply send_capped(const PeerLink & link, httplib::Request & req, const Admission & admission) {
   PeerReply reply;
-  std::shared_lock<std::shared_mutex> admitted(admission.mutex);
-  if (admission.shutdown_requested.load(std::memory_order_acquire)) {
-    reply.result = httplib::Result{nullptr, httplib::Error::Canceled};
-    return reply;
-  }
-  cli.set_socket_options([&admitted](socket_t /*sock*/) {
-    if (admitted.owns_lock()) {
-      admitted.unlock();
-    }
-  });
+  reply.deadline = admission.deadline;
   std::string body;
   req.content_receiver = [&body, &reply](const char * data, size_t length, uint64_t /*offset*/, uint64_t /*total*/) {
     if (length > MAX_PEER_RESPONSE_SIZE - body.size()) {
@@ -802,15 +813,44 @@ PeerReply send_capped(httplib::Client & cli, httplib::Request & req, const Admis
     body.append(data, length);
     return true;
   };
+  auto & cli = link.cli;
   auto res = std::make_unique<httplib::Response>();
   auto error = httplib::Error::Success;
-  admission.calls.arm(&cli, admission.deadline);
-  const bool sent = cli.send(req, *res, error);
+  bool sent = false;
+  bool armed = false;
+  for (;;) {
+    std::shared_lock<std::shared_mutex> admitted(admission.mutex);
+    if (admission.shutdown_requested.load(std::memory_order_acquire)) {
+      error = httplib::Error::Canceled;
+      break;
+    }
+    if (!link.unresolved.empty()) {
+      reply.unresolved = link.unresolved;
+      error = httplib::Error::Connection;
+      break;
+    }
+    cli.set_socket_options([&admitted](socket_t /*sock*/) {
+      if (admitted.owns_lock()) {
+        admitted.unlock();
+      }
+    });
+    if (!armed) {
+      admission.calls.arm(&cli, admission.deadline);
+      armed = true;
+    }
+    sent = cli.send(req, *res, error);
+    // The callback refers to `admitted`, which ends with this attempt.
+    cli.set_socket_options(nullptr);
+    const bool not_connected = error == httplib::Error::Connection || error == httplib::Error::ConnectionTimeout;
+    if (sent || !not_connected || admission.calls.expired(&cli) || !link.next_address || !link.next_address()) {
+      break;
+    }
+    body.clear();
+    res = std::make_unique<httplib::Response>();
+    error = httplib::Error::Success;
+  }
   // A stop() that landed after the answer was complete changed nothing.
-  reply.past_deadline = admission.calls.disarm(&cli) && !sent;
-  reply.deadline = admission.deadline;
-  // The callback refers to `admitted`, which ends with this call.
-  cli.set_socket_options(nullptr);
+  reply.past_deadline = armed && admission.calls.disarm(&cli) && !sent;
   if (sent) {
     res->body = std::move(body);
     reply.result = httplib::Result{std::move(res), error};
@@ -821,13 +861,13 @@ PeerReply send_capped(httplib::Client & cli, httplib::Request & req, const Admis
 }
 
 /// A GET to the peer, read no further than MAX_PEER_RESPONSE_SIZE.
-PeerReply get_capped(httplib::Client & cli, const Admission & admission, const std::string & path,
+PeerReply get_capped(const PeerLink & link, const Admission & admission, const std::string & path,
                      const httplib::Headers & headers = {}) {
   httplib::Request req;
   req.method = "GET";
   req.path = path;
   req.headers = headers;
-  return send_capped(cli, req, admission);
+  return send_capped(link, req, admission);
 }
 
 /**
@@ -875,6 +915,10 @@ SubResponse read_sub_response(const PeerReply & reply, const std::string & peer_
   if (reply.past_deadline) {
     out.error =
         "Peer '" + peer_name + "' did not finish answering " + path + " within " + describe_deadline(reply.deadline);
+    return out;
+  }
+  if (!reply.unresolved.empty()) {
+    out.error = "Failed to reach peer '" + peer_name + "' for " + path + ": " + reply.unresolved;
     return out;
   }
   const auto & result = reply.result;
@@ -1043,7 +1087,8 @@ PeerClient::PeerClient(const std::string & url, const std::string & name, PeerTi
   , name_(name)
   , timeouts_(timeouts)
   , forward_auth_(forward_auth)
-  , peer_auth_header_(std::move(peer_auth_header)) {
+  , peer_auth_header_(std::move(peer_auth_header))
+  , resolver_(url) {
 }
 
 PeerClient::PeerClient(const std::string & url, const std::string & name, int timeout_ms, bool forward_auth,
@@ -1074,12 +1119,15 @@ void PeerClient::check_health() {
   //
   // Both budgets are capped at 1 s whatever is configured: an unresponsive
   // peer is unhealthy whether the gateway waits one second or five, and a
-  // refresh checks every peer before it reads any.
+  // refresh checks every peer before it reads any. The host name is resolved
+  // within the capped connect budget too.
   const int health_ms = std::min(timeouts_.metadata_read_ms, 1000);
   const int connect_ms = std::min(timeouts_.connect_ms, health_ms);
-  ScopedClient scoped(*this, url_, health_ms);
+  ScopedClient scoped(*this, url_, health_ms, connect_ms);
   auto & cli = *scoped;
-  cli.set_connection_timeout(connect_ms / 1000, (connect_ms % 1000) * 1000);
+  const PeerLink link{cli, scoped.unresolved(), [&scoped]() {
+                        return scoped.next_address();
+                      }};
   // The health check is this gateway asking on its own behalf, so it carries
   // the gateway's own credential. Without it a peer that requires auth on
   // reads answers 401, is recorded as unhealthy, and then appears in no
@@ -1091,7 +1139,7 @@ void PeerClient::check_health() {
   }
   // A health answer past the size limit is no answer: the peer is unhealthy.
   const auto reply = get_capped(
-      cli, Admission{admission_mutex_, shutdown_requested_, calls_, std::chrono::milliseconds(connect_ms + health_ms)},
+      link, Admission{admission_mutex_, shutdown_requested_, calls_, std::chrono::milliseconds(connect_ms + health_ms)},
       std::string(API_PREFIX) + "/health", headers);
   const auto & result = reply.result;
   const bool healthy = result && result->status == 200;
@@ -1129,6 +1177,9 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
   // stop() the in-flight call.
   ScopedClient scoped(*this, url_, timeouts_.metadata_read_ms);
   auto & cli = *scoped;
+  const PeerLink link{cli, scoped.unresolved(), [&scoped]() {
+                        return scoped.next_address();
+                      }};
   const Admission admission{admission_mutex_, shutdown_requested_, calls_,
                             request_deadline(timeouts_.metadata_read_ms)};
   // Fetching the peer's entities is this gateway asking on its own behalf, so
@@ -1158,7 +1209,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
 
   // Fetch areas
   {
-    auto response = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + "/areas"), name_, "/areas",
+    auto response = read_sub_response(get_capped(link, admission, std::string(API_PREFIX) + "/areas"), name_, "/areas",
                                       RouteKind::kCollection);
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
@@ -1191,7 +1242,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
       std::vector<std::string> next_level;
       for (const auto & parent_id : area_level) {
         const std::string route = "/areas/" + parent_id + "/subareas";
-        auto sub = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + route), name_, route,
+        auto sub = read_sub_response(get_capped(link, admission, std::string(API_PREFIX) + route), name_, route,
                                      RouteKind::kNestedCollection);
         if (sub.kind == SubResponse::Kind::kIncomplete) {
           return tl::unexpected<std::string>(sub.error);
@@ -1238,7 +1289,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
 
   // Fetch components (list then detail per entity for full relationship data)
   {
-    auto response = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + "/components"), name_,
+    auto response = read_sub_response(get_capped(link, admission, std::string(API_PREFIX) + "/components"), name_,
                                       "/components", RouteKind::kCollection);
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
@@ -1255,7 +1306,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
     // Component asserted to have none.
     for (auto & comp : comp_list) {
       const std::string route = "/components/" + comp.id;
-      auto detail = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + route), name_, route,
+      auto detail = read_sub_response(get_capped(link, admission, std::string(API_PREFIX) + route), name_, route,
                                       RouteKind::kAddressableDetail);
       if (detail.kind == SubResponse::Kind::kIncomplete) {
         return tl::unexpected<std::string>(detail.error);
@@ -1286,7 +1337,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
       std::vector<std::string> next_level;
       for (const auto & parent_id : component_level) {
         const std::string route = "/components/" + parent_id + "/subcomponents";
-        auto sub = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + route), name_, route,
+        auto sub = read_sub_response(get_capped(link, admission, std::string(API_PREFIX) + route), name_, route,
                                      RouteKind::kNestedCollection);
         if (sub.kind == SubResponse::Kind::kIncomplete) {
           return tl::unexpected<std::string>(sub.error);
@@ -1322,7 +1373,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
           // Fetch detail for each subcomponent to get full relationships
           const std::string sub_id = subcomp.id;
           const std::string detail_route = "/components/" + sub_id;
-          auto detail = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + detail_route), name_,
+          auto detail = read_sub_response(get_capped(link, admission, std::string(API_PREFIX) + detail_route), name_,
                                           detail_route, RouteKind::kAddressableDetail);
           if (detail.kind == SubResponse::Kind::kIncomplete) {
             return tl::unexpected<std::string>(detail.error);
@@ -1354,7 +1405,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
 
   // Fetch apps
   {
-    auto response = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + "/apps"), name_, "/apps",
+    auto response = read_sub_response(get_capped(link, admission, std::string(API_PREFIX) + "/apps"), name_, "/apps",
                                       RouteKind::kCollection);
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
@@ -1393,7 +1444,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
       const httplib::Headers no_fan_out{{"X-Medkit-No-Fan-Out", "1"}};
 
       const std::string ops_route = "/apps/" + app.id + "/operations";
-      auto ops = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + ops_route, no_fan_out), name_,
+      auto ops = read_sub_response(get_capped(link, admission, std::string(API_PREFIX) + ops_route, no_fan_out), name_,
                                    ops_route, RouteKind::kNestedCollection);
       if (ops.kind == SubResponse::Kind::kIncomplete) {
         return tl::unexpected<std::string>(ops.error);
@@ -1408,8 +1459,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
       // already reported; there is nothing further to read.
 
       const std::string data_route = "/apps/" + app.id + "/data";
-      auto data = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + data_route, no_fan_out), name_,
-                                    data_route, RouteKind::kNestedCollection);
+      auto data = read_sub_response(get_capped(link, admission, std::string(API_PREFIX) + data_route, no_fan_out),
+                                    name_, data_route, RouteKind::kNestedCollection);
       if (data.kind == SubResponse::Kind::kIncomplete) {
         return tl::unexpected<std::string>(data.error);
       }
@@ -1423,7 +1474,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
 
   // Fetch functions (list then detail per entity for hosts data)
   {
-    auto response = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + "/functions"), name_,
+    auto response = read_sub_response(get_capped(link, admission, std::string(API_PREFIX) + "/functions"), name_,
                                       "/functions", RouteKind::kCollection);
     if (response.kind != SubResponse::Kind::kBody) {
       return tl::unexpected<std::string>(response.error);
@@ -1440,7 +1491,7 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
     // group nothing, which is a statement the peer never made.
     for (auto & func : func_list) {
       const std::string route = "/functions/" + func.id;
-      auto detail = read_sub_response(get_capped(cli, admission, std::string(API_PREFIX) + route), name_, route,
+      auto detail = read_sub_response(get_capped(link, admission, std::string(API_PREFIX) + route), name_, route,
                                       RouteKind::kGroupingDetail);
       if (detail.kind != SubResponse::Kind::kBody) {
         return tl::unexpected<std::string>(detail.error);
@@ -1480,6 +1531,9 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
   // gateway's own service budget and for a large resource is the transfer.
   ScopedClient scoped(*this, url_, timeouts_.forward_read_ms);
   auto & cli = *scoped;
+  const PeerLink link{cli, scoped.unresolved(), [&scoped]() {
+                        return scoped.next_address();
+                      }};
 
   httplib::Headers headers;
   // Forward Authorization header only when explicitly enabled (forward_auth).
@@ -1516,6 +1570,7 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
   bool too_large = false;
   bool past_deadline = false;
   std::chrono::milliseconds deadline{0};
+  std::string unresolved;
   if (req.method == "GET" || req.method == "DELETE" || req.method == "POST" || req.method == "PUT" ||
       req.method == "PATCH") {
     httplib::Request out;
@@ -1529,12 +1584,13 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
       out.body = req.body;
     }
     auto reply = send_capped(
-        cli, out,
+        link, out,
         Admission{admission_mutex_, shutdown_requested_, calls_, request_deadline(timeouts_.forward_read_ms)});
     result = std::move(reply.result);
     too_large = reply.too_large;
     past_deadline = reply.past_deadline;
     deadline = reply.deadline;
+    unresolved = std::move(reply.unresolved);
   }
 
   if (too_large) {
@@ -1562,6 +1618,17 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
     auto error_body = make_error_body(ERR_NOT_RESPONDING,
                                       "Peer '" + name_ + "' at " + url_ + " did not finish answering within " +
                                           describe_deadline(deadline) + ". The request may still be running there.");
+    res.set_content(error_body.dump(), "application/json");
+    return;
+  }
+
+  // Nothing was sent: the peer's address is not known. The peer is out of
+  // reach until its host name resolves, like a peer that refuses connections.
+  if (!unresolved.empty()) {
+    res.status = 502;
+    auto error_body =
+        make_error_body(ERR_VENDOR_ERROR, "Peer '" + name_ + "' at " + url_ + " is unavailable (" + unresolved + ")",
+                        ERR_X_MEDKIT_PEER_UNAVAILABLE);
     res.set_content(error_body.dump(), "application/json");
     return;
   }
@@ -1642,6 +1709,9 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
   // listing is worth, not by what one peer's work might cost.
   ScopedClient scoped(*this, url_, timeouts_.metadata_read_ms);
   auto & cli = *scoped;
+  const PeerLink link{cli, scoped.unresolved(), [&scoped]() {
+                        return scoped.next_address();
+                      }};
 
   httplib::Headers headers;
   // Only forward auth header when forward_auth is enabled
@@ -1665,7 +1735,7 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
   PeerReply reply;
   if (method == "GET" || method == "POST" || method == "PUT" || method == "DELETE") {
     reply = send_capped(
-        cli, out,
+        link, out,
         Admission{admission_mutex_, shutdown_requested_, calls_, request_deadline(timeouts_.metadata_read_ms)});
   }
   const auto & result = reply.result;
@@ -1713,6 +1783,11 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
                                                                    " did not finish answering " + method + " " + path +
                                                                    " within " + describe_deadline(reply.deadline)});
   }
+  if (!reply.unresolved.empty()) {
+    return tl::unexpected(PeerError{PeerFailureKind::kUnreachable, "Failed to reach peer '" + name_ + "' at " + url_ +
+                                                                       " for " + method + " " + path + ": " +
+                                                                       reply.unresolved});
+  }
   if (!result) {
     return tl::unexpected(transport_failure());
   }
@@ -1743,14 +1818,19 @@ void PeerClient::shutdown() {
   if (shutdown_requested_.exchange(true)) {
     return;
   }
-  // Every client in flight is stopped with the registry mutex held, as the
+  // A call waiting for the peer's host name to resolve stops waiting and is
+  // refused at admission below.
+  resolver_.cancel();
+  // Every client in flight is stopped, each from a thread of its own, as the
   // reaper stops one at its deadline (PeerCallRegistry::stop_all).
   //
   // Exclusive admission waits out every call between its check of the flag
-  // and its socket, so each call is either refused or in flight below. A
-  // call still resolving or connecting holds its client's socket lock, so
-  // the wait, and the stop() of that client, last until the connect ends,
-  // which aggregation.timeout_ms bounds.
+  // and its socket, so each call is either refused or in flight below. The
+  // host name is resolved before a call is admitted, so in that window a call
+  // only converts a numeric address and creates its socket. A call still
+  // connecting holds its client's socket lock, so the stop() of that client
+  // lasts until the connect ends, which aggregation.timeout_ms bounds; the
+  // stops wait side by side, so shutdown waits for the slowest, not their sum.
   std::unique_lock<std::shared_mutex> admission(admission_mutex_);
   calls_.stop_all();
 }
@@ -1780,8 +1860,21 @@ void PeerCallRegistry::add(httplib::Client * cli) {
   calls_.emplace(cli, Call{});
 }
 
+void PeerCallRegistry::wait_unpinned(std::unique_lock<std::mutex> & lock, const Call & call) {
+  // Elements of an unordered_map keep their address when others are added or
+  // removed, so `call` stays valid across the wait.
+  stopped_.wait(lock, [&call]() {
+    return call.stops == 0;
+  });
+}
+
 void PeerCallRegistry::remove(httplib::Client * cli) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::unique_lock<std::mutex> lock(mutex_);
+  auto call = calls_.find(cli);
+  if (call == calls_.end()) {
+    return;
+  }
+  wait_unpinned(lock, call->second);
   calls_.erase(cli);
 }
 
@@ -1792,36 +1885,59 @@ void PeerCallRegistry::arm(httplib::Client * cli, std::chrono::milliseconds dead
     if (call == calls_.end()) {
       return;
     }
-    call->second = Call{std::chrono::steady_clock::now() + deadline, false};
+    call->second.deadline = std::chrono::steady_clock::now() + deadline;
+    call->second.expired = false;
   }
   wake_.notify_all();
 }
 
 bool PeerCallRegistry::disarm(httplib::Client * cli) {
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::unique_lock<std::mutex> lock(mutex_);
   auto call = calls_.find(cli);
   if (call == calls_.end()) {
     return false;
   }
+  // The request has returned, so a stop() still running has nothing left to
+  // wait for and ends at once; waiting for it keeps it off the next request.
+  wait_unpinned(lock, call->second);
   const bool expired = call->second.expired;
-  call->second = Call{};
+  call->second.deadline = std::chrono::steady_clock::time_point::max();
+  call->second.expired = false;
   return expired;
 }
 
-void PeerCallRegistry::stop_all() {
-  // stop() runs with the mutex held. A worker removes its client in
-  // ~ScopedClient, before the client itself is destroyed, and that removal
-  // takes the same mutex - so a client cannot be destroyed while this loop is
-  // calling stop() on it. Calling stop() on pointers copied out from under the
-  // mutex left exactly that window open: a worker whose call returned in
-  // between destroyed the client the loop was about to stop. Holding the mutex
-  // costs a worker that starts or ends a call meanwhile a wait of one stop()
-  // per active client; stop() only shuts the socket down and never waits for
-  // the call it cancels, and nothing that stop() locks is held by a worker
-  // while it waits for this mutex.
+bool PeerCallRegistry::expired(httplib::Client * cli) {
   std::lock_guard<std::mutex> lock(mutex_);
-  for (auto & call : calls_) {
-    call.first->stop();
+  auto call = calls_.find(cli);
+  return call != calls_.end() && call->second.expired;
+}
+
+std::future<void> PeerCallRegistry::stop_async(httplib::Client * cli, Call & call) {
+  ++call.stops;
+  return std::async(std::launch::async, [this, cli]() {
+    cli->stop();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      // Still registered: remove() waits for this stop() before it erases.
+      --calls_.at(cli).stops;
+    }
+    stopped_.notify_all();
+  });
+}
+
+void PeerCallRegistry::stop_all() {
+  std::vector<std::future<void>> stops;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    stops.reserve(calls_.size());
+    for (auto & [cli, call] : calls_) {
+      stops.push_back(stop_async(cli, call));
+    }
+  }
+  // Each stop() returns once its client's connect, if one is in progress, is
+  // over; they wait side by side rather than one after another.
+  for (auto & stop : stops) {
+    stop.wait();
   }
 }
 
@@ -1832,15 +1948,26 @@ void PeerCallRegistry::reap() {
   // budget, and stop() waits for a connect in progress, so this is a guard,
   // not the path a request normally takes.
   constexpr auto kRestop = std::chrono::milliseconds(100);
+  std::vector<std::future<void>> stops;
   std::unique_lock<std::mutex> lock(mutex_);
   while (!stopping_) {
+    // Forget the stops that have returned. Not waited for here: one that
+    // waits on its client's socket lock must not keep the next deadline from
+    // being served.
+    stops.erase(std::remove_if(stops.begin(), stops.end(),
+                               [](const std::future<void> & stop) {
+                                 return stop.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+                               }),
+                stops.end());
     const auto now = std::chrono::steady_clock::now();
     auto next = std::chrono::steady_clock::time_point::max();
     for (auto & [cli, call] : calls_) {
       if (call.deadline <= now) {
-        cli->stop();
         call.expired = true;
         call.deadline = now + kRestop;
+        if (call.stops == 0) {
+          stops.push_back(stop_async(cli, call));
+        }
       }
       next = std::min(next, call.deadline);
     }
@@ -1850,11 +1977,16 @@ void PeerCallRegistry::reap() {
       wake_.wait_until(lock, next);
     }
   }
+  // The stops still running take the mutex to unpin their client.
+  lock.unlock();
+  stops.clear();
 }
 
-PeerClient::ScopedClient::ScopedClient(PeerClient & owner, const std::string & url, int read_timeout_ms)
+PeerClient::ScopedClient::ScopedClient(PeerClient & owner, const std::string & url, int read_timeout_ms, int connect_ms)
   : owner_(owner), cli_(url) {
-  const int connect_ms = owner.timeouts_.connect_ms;
+  if (connect_ms < 0) {
+    connect_ms = owner.timeouts_.connect_ms;
+  }
   const int write_ms = owner.timeouts_.write_ms;
   cli_.set_connection_timeout(connect_ms / 1000, (connect_ms % 1000) * 1000);
   cli_.set_read_timeout(read_timeout_ms / 1000, (read_timeout_ms % 1000) * 1000);
@@ -1862,11 +1994,40 @@ PeerClient::ScopedClient::ScopedClient(PeerClient & owner, const std::string & u
   // no configured value at all, so a large request body to a slow peer is cut
   // off however high the read budget is set.
   cli_.set_write_timeout(write_ms / 1000, (write_ms % 1000) * 1000);
+  // The host name is resolved here, within the connect budget, and the call is
+  // made to its first address; cpp-httplib resolving it itself would wait for
+  // a silent resolver for as long as the system resolver retries, holding the
+  // lock that stopping the call takes (see PeerResolver).
+  auto resolved = owner.resolver_.resolve(std::chrono::milliseconds(connect_ms));
+  switch (resolved.outcome) {
+    case PeerResolver::Outcome::kResolved:
+      addresses_ = std::move(resolved.addresses);
+      next_address();
+      break;
+    case PeerResolver::Outcome::kFailed:
+      unresolved_ = "its host name '" + owner.resolver_.host() + "' does not resolve";
+      break;
+    case PeerResolver::Outcome::kTimedOut:
+      unresolved_ = "its host name '" + owner.resolver_.host() + "' did not resolve within aggregation.timeout_ms (" +
+                    std::to_string(connect_ms) + "ms, connect)";
+      break;
+    case PeerResolver::Outcome::kCanceled:
+      unresolved_ = "the gateway is shutting down";
+      break;
+  }
   owner_.calls_.add(&cli_);
 }
 
 PeerClient::ScopedClient::~ScopedClient() {
   owner_.calls_.remove(&cli_);
+}
+
+bool PeerClient::ScopedClient::next_address() {
+  if (next_address_ >= addresses_.size()) {
+    return false;
+  }
+  cli_.set_hostname_addr_map({{owner_.resolver_.host(), addresses_[next_address_++]}});
+  return true;
 }
 
 }  // namespace ros2_medkit_gateway

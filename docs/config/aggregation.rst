@@ -59,12 +59,18 @@ Core Parameters
    * - ``aggregation.timeout_ms``
      - int
      - ``2000``
-     - Connect budget for every peer call, and the read budget for reading a
+     - Connect budget for every peer call, capped at 1000 ms whatever is set
+       (a peer that cannot complete a TCP handshake in a second is out of reach
+       whatever the request wanted), and the read budget for reading a
        peer's description of itself: entity fetching and the collection fan-out
        a client waits on across every peer at once. Increase for high-latency
-       networks. The health check is the exception: it caps both its budgets at
-       1000 ms, because an unresponsive peer is unhealthy whether the gateway
-       waits one second or five. A read budget bounds each read, not the
+       networks. The health check caps its read budget at 1000 ms too, because
+       an unresponsive peer is unhealthy whether the gateway waits one second
+       or five. A peer's host name is resolved within the connect budget, by
+       this gateway before the call rather than by its HTTP client inside it,
+       so a resolver that does not answer costs a call at most that budget: the
+       call fails as the peer being unreachable, naming the host. A read budget
+       bounds each read, not the
        answer: ``aggregation.request_deadline_ms`` bounds the whole of it, and
        shutdown cancels every peer call in flight.
        Range 100-600000; a value outside it is clamped to the nearest end, and
@@ -687,7 +693,14 @@ about 200 MB, and one Component carrying a 9 MB description to about 210 MB.
 
 One request to a peer, the health check included, runs for at most
 ``aggregation.request_deadline_ms`` (see Core Parameters) however steadily the
-peer sends; the SSE relay is the exception, since a stream has no last byte.
+peer sends, from the moment the peer's host name has resolved. Resolving takes
+at most the connect budget (``aggregation.timeout_ms``, capped at 1 s for the
+connect), because this gateway resolves the name itself with that bound: left
+to the HTTP client, a resolver that did not answer held a call, anything
+stopping it and shutdown for as long as the system resolver retried, ten
+seconds and more. The SSE relay is the exception to the deadline, since a
+stream has no last byte; it resolves the name within its own 5 s connect
+budget.
 
 .. _aggregation-breaking-changes:
 
