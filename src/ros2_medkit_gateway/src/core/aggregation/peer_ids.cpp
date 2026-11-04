@@ -538,20 +538,36 @@ std::string_view relation_of(const std::string & path, const EntitySegment & seg
 }
 }  // namespace
 
+std::string without_route_trailing_slash(const std::string & path) {
+  const size_t path_end = std::min(path.find('?'), path.find('#'));
+  const size_t path_len = path_end == std::string::npos ? path.size() : path_end;
+  if (path_len < 2 || path[path_len - 1] != '/') {
+    return path;
+  }
+  std::string route = path;
+  route.erase(path_len - 1, 1);
+  return route;
+}
+
 bool is_discovery_route(const std::string & path) {
-  auto segment = locate_entity_segment(path);
+  // Classified as the router matched it: `/apps/x/` is the detail of x. Read
+  // as sent, a resource after the id, it skipped the rewrite and reached the
+  // client in the peer's IDs.
+  const std::string route = without_route_trailing_slash(path);
+  auto segment = locate_entity_segment(route);
   if (!segment) {
     return false;
   }
-  return !segment->has_subpath || !relation_of(path, *segment).empty();
+  return !segment->has_subpath || !relation_of(route, *segment).empty();
 }
 
 std::optional<RelationshipItems> relationship_items(const std::string & path) {
-  const auto segment = locate_entity_segment(path);
+  const std::string route = without_route_trailing_slash(path);
+  const auto segment = locate_entity_segment(route);
   if (!segment || !segment->has_subpath) {
     return std::nullopt;
   }
-  const auto relation = relation_of(path, *segment);
+  const auto relation = relation_of(route, *segment);
   if (relation.empty()) {
     return std::nullopt;
   }
