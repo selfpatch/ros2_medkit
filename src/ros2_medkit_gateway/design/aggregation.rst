@@ -661,8 +661,11 @@ for the same reason - ``GET`` for its status, ``PUT`` to apply a capability and
    GET /api/v1/functions/vehicle_health/operations/peer_long_calibration:long_calibration/executions/{exec}
      -> GET /api/v1/apps/peer_long_calibration/operations/long_calibration/executions/{exec}
 
-An id that does not resolve to exactly one owned operation is left to the local
-path, whose key is the execution id alone: resolving is how the owning gateway
+An App's own operations name no member: the App owns them, so the status,
+stop and cancel of an execution on a peer's App go to that peer, as its start
+did, addressed by the App's id there. An id that does not resolve to exactly
+one owned operation is left to the local path, whose key is the execution id
+alone: resolving is how the owning gateway
 is found, not a second place for these routes to refuse a request. So a
 locally-owned execution is answered here exactly as before, and an id naming no
 goal gets the same ``404`` it always did.
