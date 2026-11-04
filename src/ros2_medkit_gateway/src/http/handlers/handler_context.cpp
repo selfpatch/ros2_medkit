@@ -330,6 +330,30 @@ void rewrite_forwarded_discovery(const httplib::Request & req, const std::string
   res.headers.erase("ETag");
 }
 
+/// The `Location` `peer` answered a forwarded request with, naming the entity
+/// it addresses by the id this gateway serves it under (served_entity_uri),
+/// read against `peer_ids`, the index of the generation the forward was
+/// resolved in. The peer builds it from the route it received, which names
+/// the entity by the peer's id: for an entity this gateway renamed on
+/// collision that id is the local namesake's here, and an async execution or
+/// a lock followed through it would be looked up on the wrong entity. A
+/// `Location` naming an entity this gateway does not serve is removed.
+void translate_forwarded_location(httplib::Response & res, const std::string & peer,
+                                  const std::shared_ptr<const PeerIdIndex> & peer_ids) {
+  if (!res.has_header("Location")) {
+    return;
+  }
+  const auto location = res.get_header_value("Location");
+  auto served = served_entity_uri(peer_ids, peer, location);
+  if (served && *served == location) {
+    return;
+  }
+  res.headers.erase("Location");
+  if (served) {
+    res.set_header("Location", *served);
+  }
+}
+
 }  // namespace
 
 http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(const http::TypedRequest & req,
@@ -427,6 +451,7 @@ http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(cons
       aggregation_mgr_->forward_request(entity_info.peer_name, raw_req, *tl_forward_response,
                                         path_on_peer(raw_req.path, entity_info));
       rewrite_forwarded_discovery(raw_req, entity_info.peer_name, *tl_forward_response, entity_info.peer_ids);
+      translate_forwarded_location(*tl_forward_response, entity_info.peer_name, entity_info.peer_ids);
     }
     return tl::unexpected(ErrorVariant{http::Forwarded{}});
   }
@@ -468,22 +493,36 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
   //
   // The member is addressed on the peer by the id that peer knows it by, read
   // off the member's recorded rename like its owner.
+  //
+  // The member and the peer ID index the peer's answer is read against come
+  // from one cache generation, the same way validate_entity_for_route reads
+  // them: an index that is the same before and after the lookup is the one
+  // the member was published with.
   const auto & cache = services_.entity_cache();
   std::string collection;
   std::optional<std::string> peer;
   std::string member_on_peer;
-  if (auto app = cache.get_app(member_id)) {
-    collection = "apps";
-    peer = aggregation_mgr_->find_owning_peer(*app);
-    member_on_peer = peer ? peer_entity_id(*app, *peer) : member_id;
-  } else if (auto component = cache.get_component(member_id)) {
-    collection = "components";
-    peer = aggregation_mgr_->find_owning_peer(*component);
-    member_on_peer = peer ? peer_entity_id(*component, *peer) : member_id;
-  } else {
-    return MemberDispatch::kServeLocally;
+  const auto look_up_member = [&]() {
+    collection.clear();
+    peer.reset();
+    member_on_peer.clear();
+    if (auto app = cache.get_app(member_id)) {
+      collection = "apps";
+      peer = aggregation_mgr_->find_owning_peer(*app);
+      member_on_peer = peer ? peer_entity_id(*app, *peer) : member_id;
+    } else if (auto component = cache.get_component(member_id)) {
+      collection = "components";
+      peer = aggregation_mgr_->find_owning_peer(*component);
+      member_on_peer = peer ? peer_entity_id(*component, *peer) : member_id;
+    }
+  };
+  auto peer_ids = cache.get_peer_id_index();
+  look_up_member();
+  for (auto latest = cache.get_peer_id_index(); latest != peer_ids; latest = cache.get_peer_id_index()) {
+    peer_ids = std::move(latest);
+    look_up_member();
   }
-  if (!peer) {
+  if (collection.empty() || !peer) {
     return MemberDispatch::kServeLocally;
   }
 
@@ -497,6 +536,7 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
   if (tl_forward_response != nullptr) {
     aggregation_mgr_->forward_request(*peer, raw_req, *tl_forward_response,
                                       api_path("/" + collection + "/" + member_on_peer + "/" + member_resource_path));
+    translate_forwarded_location(*tl_forward_response, *peer, peer_ids);
   }
   return MemberDispatch::kForwarded;
 }
