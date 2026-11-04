@@ -503,7 +503,11 @@ execution, a lock, a created resource - is translated the same way, whether the
 entity was forwarded whole or a member was reached through a grouping entity
 (below): ``POST /apps/arm__camera/operations/calibrate/executions`` comes back
 with ``Location: /api/v1/apps/arm__camera/...``, not the peer's
-``/api/v1/apps/camera/...``, which names the local ``camera`` here. A
+``/api/v1/apps/camera/...``, which names the local ``camera`` here. An entity
+link or ``Location`` the peer wrote absolute (``http://<peer>/api/v1/...``) comes
+back as that path on this gateway, whether its ID was renamed or not, so it
+resolves through this gateway and never names the peer's address; a link that
+is not an entity URI is left as the peer sent it. A
 ``Location`` naming an entity this gateway does not serve is removed.
 
 An entity that draws its resources from members - an Area, a merged Function, a

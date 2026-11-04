@@ -353,8 +353,9 @@ was, whatever operations this gateway's cache lists for the entity: a plugin
 operation with no ROS path, or one added since the last refresh, is followed
 up like any other. Only on a grouping entity does the cached list pick the
 member. The `Location` a forwarded `201` or `202` comes back with names the
-entity by the id it is served under here - for an App renamed on collision,
-`<peer>__<id>`, not the peer's own id, which names the local namesake.
+entity by the id it is served under here, as a path on this gateway - for an
+App renamed on collision, `<peer>__<id>`, not the peer's own id, which names
+the local namesake.
 
 A member-qualified request is served by the gateway that owns that member, on
 the member's own entity route. An aggregating entity holds nothing itself and

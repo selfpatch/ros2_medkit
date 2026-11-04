@@ -99,8 +99,10 @@ const PeerIdIndex::Ids * ids_of(const PeerIdIndex::Peer * ids, SovdEntityType ty
 
 /// The entity segment of `text` when it is an entity URI - `/api/v1/<collection>/<id>...`,
 /// or the same behind `http(s)://host` - and std::nullopt for any other string.
+/// The API prefix every entity URI carries, on a peer as here.
+constexpr std::string_view kApi = "/api/v1/";
+
 std::optional<EntitySegment> entity_uri_segment(const std::string & text) {
-  static constexpr std::string_view kApi = "/api/v1/";
   const auto api = text.find(kApi);
   if (api == std::string::npos) {
     return std::nullopt;
@@ -114,6 +116,26 @@ std::optional<EntitySegment> entity_uri_segment(const std::string & text) {
     return std::nullopt;
   }
   return segment;
+}
+
+/// Where the API prefix starts in an entity URI entity_uri_segment located
+/// `segment` in: 0 for a path, past the scheme and authority for an absolute
+/// URI.
+size_t api_offset(const EntitySegment & segment) {
+  return segment.collection_pos + 1 - kApi.size();
+}
+
+/// `uri`, an entity URI entity_uri_segment located `segment` in, as a path on
+/// this gateway naming the entity by `id`. An absolute URI loses its scheme and
+/// authority: the link names the peer's entity as this gateway serves it, and
+/// only through this gateway does it resolve - the peer does not know an ID
+/// served here, and a client may not reach the peer at all. The query and
+/// fragment are kept as sent.
+std::string served_path(const std::string & uri, EntitySegment segment, const std::string & id) {
+  const size_t api = api_offset(segment);
+  segment.collection_pos -= api;
+  segment.id_pos -= api;
+  return with_entity_id(uri.substr(api), segment, id);
 }
 
 std::optional<std::string> served(const Fate & fate, const std::string & peer_id) {
@@ -243,18 +265,21 @@ class ServedIdWalk {
     if (!segment) {
       return false;
     }
-    const auto fate = fate_of(ids_of(ids_, segment->type), text.substr(segment->id_pos, segment->id_len));
+    const std::string peer_id = text.substr(segment->id_pos, segment->id_len);
+    const auto fate = fate_of(ids_of(ids_, segment->type), peer_id);
     switch (fate.kind) {
       case Fate::kRenamed: {
-        // The ID is the only part of the URI that changes, and it is an entity
-        // ID on both sides, which JSON never escapes.
-        const size_t grown = fate.renamed->id.size() > segment->id_len ? fate.renamed->id.size() - segment->id_len : 0;
+        // The ID is the only part of the URI that grows, and it is an entity
+        // ID on both sides, which JSON never escapes; an absolute URI also
+        // loses its scheme and authority.
+        const size_t served_size = text.size() - api_offset(*segment) - segment->id_len + fate.renamed->id.size();
+        const size_t grown = served_size > text.size() ? served_size - text.size() : 0;
         if (too_large_ || grown > growth_left_) {
           too_large_ = true;
           return false;
         }
         growth_left_ -= grown;
-        value = with_entity_id(text, *segment, fate.renamed->id);
+        value = served_path(text, *segment, fate.renamed->id);
         changed_ = true;
         return false;
       }
@@ -263,6 +288,12 @@ class ServedIdWalk {
         changed_ = true;
         return true;
       case Fate::kKept:
+        // The ID names the same entity here, so the link is kept - as a path
+        // on this gateway when the peer wrote it absolute (served_path).
+        if (api_offset(*segment) != 0) {
+          value = served_path(text, *segment, peer_id);
+          changed_ = true;
+        }
         break;
     }
     return false;
@@ -454,18 +485,18 @@ std::optional<std::string> served_entity_uri(const std::shared_ptr<const PeerIdI
   if (peer.empty() || !segment) {
     return uri;
   }
-  const auto fate =
-      fate_of(ids_of(peer_ids_of(peer_ids, peer), segment->type), uri.substr(segment->id_pos, segment->id_len));
+  const std::string peer_id = uri.substr(segment->id_pos, segment->id_len);
+  const auto fate = fate_of(ids_of(peer_ids_of(peer_ids, peer), segment->type), peer_id);
   switch (fate.kind) {
     case Fate::kRenamed:
-      return with_entity_id(uri, *segment, fate.renamed->id);
+      return served_path(uri, *segment, fate.renamed->id);
     case Fate::kDropped:
     case Fate::kUnknown:
       return std::nullopt;
     case Fate::kKept:
       break;
   }
-  return uri;
+  return api_offset(*segment) == 0 ? uri : served_path(uri, *segment, peer_id);
 }
 
 bool is_discovery_route(const std::string & path) {

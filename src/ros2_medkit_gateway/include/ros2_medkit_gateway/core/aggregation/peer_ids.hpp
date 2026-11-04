@@ -184,11 +184,15 @@ std::optional<std::string> served_member_qualified_id(const std::shared_ptr<cons
 /// `uri`, an entity URI `peer` reported - `/api/v1/<collection>/<id>...`, or
 /// the same behind `http(s)://host` - with the entity it names named by the
 /// ID this gateway serves it under (served_entity_id), read from `peer_ids`,
-/// the index of the generation the request was validated against. Returns
-/// `uri` as it is when it names no entity or one the merge left alone, and
-/// std::nullopt when it names one this gateway does not serve: its ID there
-/// names another entity. For a header such as `Location`, which a peer builds
-/// from the route it received - a route in its own IDs.
+/// the index of the generation the request was validated against, and always
+/// as a path on this gateway: an absolute URI loses the peer's scheme and
+/// authority, whether its ID is renamed or kept, so it resolves through this
+/// gateway - with the peer's authority, a served ID reached a peer that does
+/// not know it. Returns `uri` as it is when it names no entity, or is a path
+/// naming one the merge left alone, and std::nullopt when it names one this
+/// gateway does not serve: its ID there names another entity. For a header such
+/// as `Location`, which a peer builds from the route it received - a route in
+/// its own IDs.
 std::optional<std::string> served_entity_uri(const std::shared_ptr<const PeerIdIndex> & peer_ids,
                                              const std::string & peer, const std::string & uri);
 
@@ -210,7 +214,8 @@ bool is_discovery_route(const std::string & path);
 /// the entity a detail route asked for - together with its `name`, which
 /// takes the served one as the listings show it; every
 /// entity URI - the self link, the resource collection links, the relationship
-/// links, relative or absolute; and the relationship IDs `x-medkit` carries
+/// links, relative or absolute, an absolute one written as a path on this
+/// gateway (served_entity_uri); and the relationship IDs `x-medkit` carries
 /// (`parent_area_id`, `parentComponentId`, `dependsOn`, `area`,
 /// `component_id`, `hosts`). A reference to a dropped entity, or to one the
 /// peer never declared, is removed: the item of a collection that describes

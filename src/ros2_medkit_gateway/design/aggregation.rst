@@ -425,7 +425,15 @@ classification pass over the full Component set:
   alone, and a query or fragment after it is kept as sent), and the
   relationship IDs ``x-medkit`` carries (``parent_area_id``,
   ``parentComponentId``, ``dependsOn``, ``area``, ``component_id``,
-  ``hosts``). A reference to an
+  ``hosts``). An entity URI the peer wrote absolute
+  (``http://peer:8080/api/v1/apps/x``) is written as a path on this gateway
+  (``/api/v1/apps/peer__x``), whether its ID is renamed or kept: the walk reads
+  every entity URI as the peer's reference by its ID, so the link has to
+  resolve through this gateway. With the peer's authority kept, a renamed
+  link reached the peer with an ID it does not know, and a kept one bypassed
+  this gateway for a peer a client may not reach, or may not be allowed to
+  call. An absolute URI that is not an entity URI - an external manual - is
+  left as sent. A reference to an
   entity the merge dropped is removed - the collection item that describes
   it, the link or relationship field that names it, the entry of a list of
   IDs - because by the peer's ID it would name the local entity that took its
@@ -743,7 +751,11 @@ peer's id names the local namesake here, and a client following the
 ``Location`` of an async execution or a lock would ask the wrong entity. The
 same applies to every forwarded request, a member dispatched through a
 grouping entity or an entity forwarded whole, and a ``Location`` naming an
-entity this gateway does not serve is removed.
+entity this gateway does not serve is removed. A ``Location`` the peer wrote
+absolute (``http://peer:8080/api/v1/...``) is passed on as a path on this
+gateway (``/api/v1/...``), renamed or not: with the peer's authority and the
+served id it reached the peer with an id the peer does not know, and with the
+peer's own id it went round this gateway, to a peer a client may not reach.
 
 The member's own gateway is the only one that can answer: the ROS service, the
 topic and the parameter behind the id exist on its graph and nowhere else. What
