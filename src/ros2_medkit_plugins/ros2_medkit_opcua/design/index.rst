@@ -83,8 +83,12 @@ an entity on the same node never runs a client destructor on a gateway executor 
 
 **Subscription** - registers OPC-UA monitored items and receives change notifications at
 ``subscription_interval_ms``. Lower CPU cost on large node sets, but requires a running OPC-UA
-client event loop. Kept as an opt-in path because many PLC servers have limits on the number
-of active subscriptions.
+client event loop. The poll thread is that loop: between two polls it iterates the client once
+per ``subscription_interval_ms`` (at least every 20 ms, at most once per ``poll_interval_ms``),
+so a change reaches the plugin within about one publishing interval whatever the poll cadence.
+The iterate stays on the poll thread because the data-change callbacks evaluate alarms against
+the node map, which only that thread reads without a lock. Kept as an opt-in path because many
+PLC servers have limits on the number of active subscriptions.
 
 Both modes share the same ``PollSnapshot`` output structure, so downstream consumers
 (``OpcuaPlugin::publish_values``, REST handlers, fault mapping) are agnostic to the source.

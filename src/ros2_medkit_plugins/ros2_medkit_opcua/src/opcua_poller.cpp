@@ -1220,6 +1220,22 @@ std::chrono::milliseconds OpcuaPoller::next_reconnect_wait(std::chrono::millisec
   return std::min(current * 2, max_wait);
 }
 
+std::chrono::milliseconds OpcuaPoller::subscription_pump_interval(double subscription_interval_ms,
+                                                                  std::chrono::milliseconds poll_interval) {
+  // subscription_interval_ms is taken from the config as is, so guard it here:
+  // a value that is not a positive number keeps the old once-per-poll cadence,
+  // and a tiny one is floored so the poll thread does not spin.
+  if (!std::isfinite(subscription_interval_ms) || subscription_interval_ms <= 0.0) {
+    return poll_interval;
+  }
+  const auto floor = std::min(kMinSubscriptionPumpInterval, poll_interval);
+  if (subscription_interval_ms >= static_cast<double>(poll_interval.count())) {
+    return poll_interval;
+  }
+  const auto step = std::chrono::milliseconds(static_cast<int64_t>(std::llround(subscription_interval_ms)));
+  return std::clamp(step, floor, poll_interval);
+}
+
 void OpcuaPoller::emit_comms_lost(bool active) {
   ros2_medkit::fault_detection::FaultSignal signal;
   signal.fault_code = kCommsLostFaultCode;
@@ -1357,11 +1373,39 @@ void OpcuaPoller::poll_loop() {
     }
 
     // Sleep for poll interval. condition_variable so stop() wakes immediately.
-    {
-      std::unique_lock<std::mutex> lock(stop_mutex_);
-      stop_cv_.wait_for(lock, config_.poll_interval, [this] {
-        return !running_.load();
-      });
+    // In subscription mode the wait is cut into steps of the subscription
+    // interval with an iterate after each one, so a data change reaches the
+    // plugin within about one publishing interval and not once per poll. The
+    // iterate stays on this thread: the data-change callbacks evaluate alarms
+    // against node_map_, which only this thread may read without a lock.
+    const bool pump_subscriptions = using_subscriptions_.load();
+    const auto step = pump_subscriptions
+                          ? subscription_pump_interval(config_.subscription_interval_ms, config_.poll_interval)
+                          : config_.poll_interval;
+    const auto deadline = std::chrono::steady_clock::now() + config_.poll_interval;
+    while (running_.load()) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        break;
+      }
+      {
+        std::unique_lock<std::mutex> lock(stop_mutex_);
+        const auto wait =
+            std::min<std::chrono::steady_clock::duration>(step, std::chrono::steady_clock::duration(deadline - now));
+        if (stop_cv_.wait_for(lock, wait, [this] {
+              return !running_.load();
+            })) {
+          break;
+        }
+      }
+      if (!pump_subscriptions || std::chrono::steady_clock::now() >= deadline) {
+        continue;
+      }
+      // A link that dropped during the wait goes back to the reconnect arm now.
+      if (!client_.is_connected()) {
+        break;
+      }
+      client_.run_iterate(50);
     }
   }
 }
