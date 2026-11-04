@@ -637,16 +637,16 @@ if(BUILD_TESTING)
     set_tests_properties(test_opcua_subscription_values PROPERTIES
       LABELS "integration"
       TIMEOUT 300)
-    # raise_after_samples / raise_after_ms through a real gateway, on the poll
-    # and the subscription transport. No fault manager: x-plc-status reports
-    # which faults the plugin holds active.
+    # raise_after_samples / raise_after_ms through a real gateway and fault
+    # manager, on the poll and the subscription transport. Each leg can wait
+    # about 180 s in the worst case, so TIMEOUT covers both legs.
     medkit_add_wrapped_test(test_opcua_raise_qualifier
       COMMAND "${Python3_EXECUTABLE}"
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_raise_qualifier.test.py"
               "${CMAKE_BINARY_DIR}/test_alarm_server")
     set_tests_properties(test_opcua_raise_qualifier PROPERTIES
       LABELS "integration"
-      TIMEOUT 300)
+      TIMEOUT 450)
     # This one boots a real gateway and fault manager, so it needs a domain, and
     # it builds its own command line - hence the generic wrapper rather than an
     # ament test runner.
