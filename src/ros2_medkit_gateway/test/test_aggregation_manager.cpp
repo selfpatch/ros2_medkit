@@ -1190,10 +1190,11 @@ TEST(AggregationManager, fetch_and_merge_remaps_function_hosts_after_app_collisi
                       res.set_content(R"({"items":[]})", "application/json");
                     });
 
-  // Apps: one app "camera_driver" that will collide with local
+  // Apps: "camera_driver", which will collide with local, and "lidar_driver"
   mock.server().Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
     nlohmann::json items = nlohmann::json::array();
     items.push_back({{"id", "camera_driver"}, {"name", "Camera Driver"}});
+    items.push_back({{"id", "lidar_driver"}, {"name", "Lidar Driver"}});
     res.set_content(nlohmann::json({{"items", items}}).dump(), "application/json");
   });
 
@@ -1239,9 +1240,10 @@ TEST(AggregationManager, fetch_and_merge_remaps_function_hosts_after_app_collisi
   auto result = manager.fetch_and_merge_peer_entities({}, {}, {local_app}, {});
 
   // The remote app should be prefixed
-  ASSERT_EQ(result.apps.size(), 2u);
+  ASSERT_EQ(result.apps.size(), 3u);
   EXPECT_EQ(result.apps[0].id, "camera_driver");            // local
   EXPECT_EQ(result.apps[1].id, "peer_cam__camera_driver");  // remote, prefixed
+  EXPECT_EQ(result.apps[2].id, "lidar_driver");             // remote, no collision
 
   // The remote function's hosts should reference the prefixed app ID
   ASSERT_EQ(result.functions.size(), 1u);
@@ -1360,7 +1362,8 @@ void install_complete_peer(httplib::Server & svr, PeerFaults & faults) {
   });
 
   svr.Get("/api/v1/components", [](const httplib::Request &, httplib::Response & res) {
-    res.set_content(R"({"items":[{"id":"robot_alpha","name":"Robot Alpha","x-medkit":{"source":"manifest"}}]})",
+    res.set_content(R"({"items":[{"id":"robot_alpha","name":"Robot Alpha","x-medkit":{"source":"manifest"}},)"
+                    R"({"id":"compute_unit","name":"Compute Unit","x-medkit":{"source":"manifest"}}]})",
                     "application/json");
   });
   // The nested list carries ids and names, as the gateway's own collection
@@ -1374,6 +1377,11 @@ void install_complete_peer(httplib::Server & svr, PeerFaults & faults) {
     res.set_content(R"({"items":[]})", "application/json");
   });
   svr.Get(R"(/api/v1/components/([^/]+))", [&faults](const httplib::Request & req, httplib::Response & res) {
+    if (req.matches[1].str() == "compute_unit") {
+      res.set_content(R"({"id":"compute_unit","name":"Compute Unit","x-medkit":{"source":"manifest"}})",
+                      "application/json");
+      return;
+    }
     if (req.matches[1].str() != "perception_ecu") {
       res.set_content(R"({"id":"robot_alpha","name":"Robot Alpha","x-medkit":{"source":"manifest"}})",
                       "application/json");
@@ -1563,7 +1571,7 @@ TEST(AggregationManager, a_peer_reporting_one_entity_as_not_responding_still_des
                       "application/json");
       return;
     }
-    res.set_content(R"({"id":"ecu_b","name":"ECU B","x-medkit":{"source":"manifest","dependsOn":["compute_unit"]}})",
+    res.set_content(R"({"id":"ecu_b","name":"ECU B","x-medkit":{"source":"manifest","dependsOn":["ecu_c"]}})",
                     "application/json");
   });
   mock.server().Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
