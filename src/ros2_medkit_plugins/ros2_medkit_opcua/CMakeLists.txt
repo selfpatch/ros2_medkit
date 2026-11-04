@@ -602,14 +602,15 @@ if(BUILD_TESTING)
       LABELS "integration"
       TIMEOUT 900)
     # Subscription mode with plain nodes and no event_alarms: values reach the
-    # plugin and its alarms, over real HTTP against the fixture server.
+    # plugin and its faults reach a real fault manager, over real HTTP against
+    # the fixture server. TIMEOUT stays above the sum of the script's waits.
     medkit_add_wrapped_test(test_opcua_subscription_values
       COMMAND "${Python3_EXECUTABLE}"
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_subscription_values.test.py"
               "${CMAKE_BINARY_DIR}/test_alarm_server")
     set_tests_properties(test_opcua_subscription_values PROPERTIES
       LABELS "integration"
-      TIMEOUT 180)
+      TIMEOUT 300)
     # This one boots a real gateway and fault manager, so it needs a domain, and
     # it builds its own command line - hence the generic wrapper rather than an
     # ament test runner.

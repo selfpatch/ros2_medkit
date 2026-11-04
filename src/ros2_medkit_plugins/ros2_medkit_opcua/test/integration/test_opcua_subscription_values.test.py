@@ -16,11 +16,13 @@
 """
 Subscription mode with only plain nodes delivers values.
 
-A real gateway runs with prefer_subscriptions and a node map that has scalar
-nodes and no event_alarms, against the fixture server. The test checks over
-HTTP that the plugin reports subscription mode, that the values arrive, that a
-threshold alarm on a constant node is active, and that a register written on
-the server reaches the plugin and raises and clears its status-bit fault.
+A real gateway and fault manager run with prefer_subscriptions and a node map
+that has scalar nodes and no event_alarms, against the fixture server. The poll
+interval is 60 s, so only the subscription can deliver a change in time. The
+test checks over HTTP that the plugin reports subscription mode, that the values
+arrive, that a threshold alarm on a constant node is active, and that a register
+written on the server raises its status-bit fault in the fault manager and
+clears it again, each within two seconds.
 
 Usage: test_opcua_subscription_values.test.py <test_alarm_server>
 """
@@ -42,6 +44,8 @@ COMPONENT = 'subscription_runtime'
 ENTITY = 'plc_app'
 CONSTANT = 'TANK_ABOVE_40'
 BIT = 'STATUS_BIT0'
+# Long enough that a change seen only on a poll would miss every deadline below.
+POLL_INTERVAL_MS = 60000
 
 failures = []
 
@@ -218,7 +222,7 @@ def write_files(workdir, plugin, gateway_port, server_port):
         f'    plugins.opcua.path: "{plugin}"',
         f'    plugins.opcua.endpoint_url: "opc.tcp://127.0.0.1:{server_port}"',
         f'    plugins.opcua.node_map_path: "{node_map}"',
-        '    plugins.opcua.poll_interval_ms: 500',
+        f'    plugins.opcua.poll_interval_ms: {POLL_INTERVAL_MS}',
         '    plugins.opcua.prefer_subscriptions: true',
         '    plugins.opcua.subscription_interval_ms: 250.0',
         '    discovery.mode: "hybrid"',
@@ -226,6 +230,34 @@ def write_files(workdir, plugin, gateway_port, server_port):
         '    discovery.manifest_strict_validation: false',
     ]) + '\n')
     return params
+
+
+def start_fault_manager(log_path, env):
+    """Start fault_manager_node with memory storage and wait until its services exist."""
+    log = open(log_path, 'w')
+    proc = subprocess.Popen(
+        ['ros2', 'run', 'ros2_medkit_fault_manager', 'fault_manager_node',
+         '--ros-args', '-p', 'storage_type:=memory'],
+        stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True,
+    )
+    proc._log = log
+    # Logged at the end of the constructor, after the services exist.
+    started = wait_log(log_path, 'FaultManager node started (', 30 * SCALE)
+    if not started or proc.poll() is not None:
+        terminate(proc)
+        return None
+    return proc
+
+
+def fault_status(base, code):
+    """Return the status the fault manager reports for <code>, 'ABSENT', or None on error."""
+    listing = http_json(f'{base}/faults?status=all')
+    if listing is None:
+        return None
+    for item in listing.get('items', []):
+        if item.get('fault_code') == code:
+            return item.get('status')
+    return 'ABSENT'
 
 
 def main():
@@ -257,12 +289,19 @@ def main():
     gateway_port = free_port()
     server_log = workdir / 'alarm_server.log'
     gateway_log = workdir / 'gateway.log'
+    fault_manager_log = workdir / 'fault_manager.log'
     server = start_server(server_bin, server_port, server_log)
+    fault_manager = None
     gateway = None
     try:
         if server is None:
             print('FAIL: fixture server did not become READY', file=sys.stderr)
             print(server_log.read_text(errors='replace'), file=sys.stderr)
+            return 1
+        fault_manager = start_fault_manager(fault_manager_log, env)
+        if fault_manager is None:
+            print('FAIL: fault_manager_node did not start', file=sys.stderr)
+            print(fault_manager_log.read_text(errors='replace'), file=sys.stderr)
             return 1
         params = write_files(workdir, plugin, gateway_port, server_port)
         log = open(gateway_log, 'w')
@@ -304,15 +343,21 @@ def main():
         got, ok = wait_for(status, lambda s: CONSTANT in s.get('active_alarms', []), 15 * SCALE)
         check(ok, f'{CONSTANT} is active (got {got!r})')
 
+        def bit_status():
+            return fault_status(base, BIT)
+
+        got, ok = wait_for(bit_status, lambda s: s == 'ABSENT', 5 * SCALE)
+        check(ok, f'{BIT} is not reported before the register changes (got {got!r})')
+
         check(set_register(server, server_log, 'StatusWord', 1), 'StatusWord set to 1')
-        got, raised = wait_for(status, lambda s: BIT in s.get('active_alarms', []), 15 * SCALE)
-        check(raised, f'the change reaches the plugin: {BIT} is active (got {got!r})')
+        got, raised = wait_for(bit_status, lambda s: s == 'CONFIRMED', 2 * SCALE, period=0.1)
+        check(raised, f'the change reaches the fault manager: {BIT} is CONFIRMED (got {got!r})')
 
         # The clear only means something once the raise was seen.
         if raised:
             check(set_register(server, server_log, 'StatusWord', 0), 'StatusWord set back to 0')
-            got, ok = wait_for(status, lambda s: BIT not in s.get('active_alarms', []), 15 * SCALE)
-            check(ok, f'{BIT} clears again (got {got!r})')
+            got, ok = wait_for(bit_status, lambda s: s == 'CLEARED', 2 * SCALE, period=0.1)
+            check(ok, f'{BIT} is CLEARED in the fault manager (got {got!r})')
 
         if failures:
             print(f'FAIL: {len(failures)} expectation(s) not met:', file=sys.stderr)
@@ -324,6 +369,7 @@ def main():
         return 0
     finally:
         terminate(gateway)
+        terminate(fault_manager)
         terminate(server)
         shutil.rmtree(workdir, ignore_errors=True)
 
