@@ -61,6 +61,21 @@ std::string EntityMerger::prefix_id(const std::string & id) const {
   return peer_name_ + SEPARATOR + id;
 }
 
+std::string EntityMerger::prefix_name(const std::string & name) const {
+  std::string served = peer_name_ + SEPARATOR + name;
+  if (served.size() > kMaxServedNameBytes) {
+    // Back off to the start of the character the cut would split: a byte
+    // 10xxxxxx continues one, and a name ending inside a character is not
+    // UTF-8, which the JSON writer refuses.
+    size_t cut = kMaxServedNameBytes;
+    while (cut > 0 && (static_cast<unsigned char>(served[cut]) & 0xC0u) == 0x80u) {
+      --cut;
+    }
+    served.resize(cut);
+  }
+  return served;
+}
+
 std::string EntityMerger::peer_source() const {
   return "peer:" + peer_name_;
 }
@@ -296,7 +311,7 @@ std::vector<Area> EntityMerger::merge_areas(const std::vector<Area> & local, con
         drop(Kind::kArea, remote_area.id, "its prefixed ID '" + added.id + "' is taken");
         continue;
       }
-      added.name = peer_name_ + SEPARATOR + remote_area.name;
+      added.name = prefix_name(remote_area.name);
       added.original_id = remote_area.id;
       renames_.areas[remote_area.id] = added.id;
       record_generated(added.id, Kind::kArea, remote_area.id);
@@ -384,7 +399,7 @@ std::vector<Function> EntityMerger::merge_functions(const std::vector<Function> 
         drop(Kind::kFunction, remote_func.id, "its prefixed ID '" + added.id + "' is taken");
         continue;
       }
-      added.name = peer_name_ + SEPARATOR + remote_func.name;
+      added.name = prefix_name(remote_func.name);
       added.original_id = remote_func.id;
       renames_.functions[remote_func.id] = added.id;
       record_generated(added.id, Kind::kFunction, remote_func.id);
@@ -486,7 +501,7 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
         drop(Kind::kComponent, remote_comp.id, "its prefixed ID '" + added.id + "' is taken");
         continue;
       }
-      added.name = peer_name_ + SEPARATOR + remote_comp.name;
+      added.name = prefix_name(remote_comp.name);
       added.original_id = remote_comp.id;
       renames_.components[remote_comp.id] = added.id;
       record_generated(added.id, Kind::kComponent, remote_comp.id);
@@ -540,7 +555,7 @@ std::vector<App> EntityMerger::merge_apps(const std::vector<App> & local, const 
         drop(Kind::kApp, remote_app.id, "its prefixed ID '" + added.id + "' is taken");
         continue;
       }
-      added.name = peer_name_ + SEPARATOR + remote_app.name;
+      added.name = prefix_name(remote_app.name);
       renames_.apps[remote_app.id] = added.id;
       record_generated(added.id, Kind::kApp, remote_app.id);
     }
