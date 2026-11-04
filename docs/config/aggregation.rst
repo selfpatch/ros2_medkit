@@ -695,7 +695,8 @@ about 200 MB, and one Component carrying a 9 MB description to about 210 MB.
 
 One request to a peer, the health check included, runs for at most
 ``aggregation.request_deadline_ms`` (see Core Parameters) however steadily the
-peer sends, from the moment the peer's host name has resolved. Resolving takes
+peer sends - a TLS handshake sent a byte at a time included - from the moment
+the peer's host name has resolved. Resolving takes
 at most the connect budget (``aggregation.timeout_ms``, capped at 1 s for the
 connect), because this gateway resolves the name itself with that bound: left
 to the HTTP client, a resolver that did not answer held a call, anything

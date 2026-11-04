@@ -14,6 +14,10 @@
 
 #include "ros2_medkit_gateway/core/aggregation/peer_client.hpp"
 
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -829,7 +833,10 @@ PeerReply send_capped(const PeerLink & link, httplib::Request & req, const Admis
       error = httplib::Error::Connection;
       break;
     }
-    cli.set_socket_options([&admitted](socket_t /*sock*/) {
+    // The socket is attached before admission is released, so a shutdown that
+    // waits for admission finds it and can shut it.
+    cli.set_socket_options([&admitted, &admission, &cli](socket_t sock) {
+      admission.calls.attach_socket(&cli, sock);
       if (admitted.owns_lock()) {
         admitted.unlock();
       }
@@ -1827,10 +1834,12 @@ void PeerClient::shutdown() {
   // Exclusive admission waits out every call between its check of the flag
   // and its socket, so each call is either refused or in flight below. The
   // host name is resolved before a call is admitted, so in that window a call
-  // only converts a numeric address and creates its socket. A call still
-  // connecting holds its client's socket lock, so the stop() of that client
-  // lasts until the connect ends, which aggregation.timeout_ms bounds; the
-  // stops wait side by side, so shutdown waits for the slowest, not their sum.
+  // only converts a numeric address and creates its socket, which it attaches
+  // to the registry before admission is released. stop_all() shuts every
+  // attached socket first, which ends a connect or a TLS handshake that holds
+  // the client's socket lock however long the peer would keep it going, and
+  // the stop() of each client then finds the lock free; the stops wait side
+  // by side, so shutdown waits for the slowest, not their sum.
   std::unique_lock<std::shared_mutex> admission(admission_mutex_);
   calls_.stop_all();
 }
@@ -1875,7 +1884,44 @@ void PeerCallRegistry::remove(httplib::Client * cli) {
     return;
   }
   wait_unpinned(lock, call->second);
+  release_socket(call->second);
   calls_.erase(cli);
+}
+
+void PeerCallRegistry::shut_socket(const Call & call) {
+  if (call.socket >= 0) {
+    ::shutdown(call.socket, SHUT_RDWR);
+  }
+}
+
+void PeerCallRegistry::release_socket(Call & call) {
+  if (call.socket >= 0) {
+    ::close(call.socket);
+    call.socket = -1;
+  }
+}
+
+void PeerCallRegistry::attach_socket(httplib::Client * cli, int sock) {
+  // F_DUPFD_CLOEXEC, not dup(): a plain duplicate would be inherited by every
+  // process this gateway execs.
+  const int held = ::fcntl(sock, F_DUPFD_CLOEXEC, 0);
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto call = calls_.find(cli);
+  if (call == calls_.end()) {
+    if (held >= 0) {
+      ::close(held);
+    }
+    return;
+  }
+  // A second socket inside one request, as cpp-httplib makes on a retry: the
+  // first one is done with.
+  release_socket(call->second);
+  call->second.socket = held;
+  // Past its deadline before it had a socket: the reaper's shutdown found
+  // nothing to act on, so it is done here.
+  if (call->second.expired) {
+    shut_socket(call->second);
+  }
 }
 
 void PeerCallRegistry::arm(httplib::Client * cli, std::chrono::milliseconds deadline) {
@@ -1900,6 +1946,7 @@ bool PeerCallRegistry::disarm(httplib::Client * cli) {
   // The request has returned, so a stop() still running has nothing left to
   // wait for and ends at once; waiting for it keeps it off the next request.
   wait_unpinned(lock, call->second);
+  release_socket(call->second);
   const bool expired = call->second.expired;
   call->second.deadline = std::chrono::steady_clock::time_point::max();
   call->second.expired = false;
@@ -1931,6 +1978,7 @@ void PeerCallRegistry::stop_all() {
     std::lock_guard<std::mutex> lock(mutex_);
     stops.reserve(calls_.size());
     for (auto & [cli, call] : calls_) {
+      shut_socket(call);
       stops.push_back(stop_async(cli, call));
     }
   }
@@ -1942,11 +1990,11 @@ void PeerCallRegistry::stop_all() {
 }
 
 void PeerCallRegistry::reap() {
-  // A stop() that comes before the request has its socket shuts nothing, so
-  // a request stopped at its deadline is stopped again this often until it
-  // returns and disarms. The deadline is never shorter than the connect
-  // budget, and stop() waits for a connect in progress, so this is a guard,
-  // not the path a request normally takes.
+  // A request stopped at its deadline is stopped again this often until it
+  // returns and disarms: a cancel that came before the request had its
+  // socket shut nothing (attach_socket shuts a socket that appears later),
+  // and neither did a stop() that found none. A guard, not the path a
+  // request normally takes.
   constexpr auto kRestop = std::chrono::milliseconds(100);
   std::vector<std::future<void>> stops;
   std::unique_lock<std::mutex> lock(mutex_);
@@ -1965,6 +2013,9 @@ void PeerCallRegistry::reap() {
       if (call.deadline <= now) {
         call.expired = true;
         call.deadline = now + kRestop;
+        // The socket first: it ends a connect or a TLS handshake that holds
+        // the lock stop() takes, for as long as the peer keeps it going.
+        shut_socket(call);
         if (call.stops == 0) {
           stops.push_back(stop_async(cli, call));
         }

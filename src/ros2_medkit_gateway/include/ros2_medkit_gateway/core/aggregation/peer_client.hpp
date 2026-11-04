@@ -171,12 +171,20 @@ struct PeerTimeouts {
  * the request fails.
  *
  * stop() takes the client's socket lock, which the request holds while it
- * connects, so a stop() can wait. Each one therefore runs on a thread of its
- * own with the registry mutex released, and one that waits holds up no other
- * request: none is kept from arming, disarming or being stopped at its own
- * deadline. The client is pinned while a stop() of it runs - remove() and
- * disarm() wait for it - so it is never freed under the stop(), and a late
- * stop() never lands on the client's next request.
+ * connects and, over TLS, through the whole handshake - a handshake whose
+ * timeout restarts on every fragment the peer sends. A stop() alone would
+ * wait as long as such a peer kept sending, so a request is cancelled through
+ * its socket first: the registry holds a duplicate of the socket each
+ * request creates (attach_socket), and cancelling shuts that down, which ends
+ * the connect, handshake or read the request is blocked in without taking
+ * any of the client's locks. stop() follows as before.
+ *
+ * Each stop() runs on a thread of its own with the registry mutex released,
+ * and one that waits holds up no other request: none is kept from arming,
+ * disarming or being stopped at its own deadline. The client is pinned while
+ * a stop() of it runs - remove() and disarm() wait for it - so it is never
+ * freed under the stop(), and a late stop() never lands on the client's next
+ * request.
  */
 class PeerCallRegistry {
  public:
@@ -195,14 +203,21 @@ class PeerCallRegistry {
   void remove(httplib::Client * cli);
   /// The request `cli` starts now runs for at most `deadline`.
   void arm(httplib::Client * cli, std::chrono::milliseconds deadline);
+  /// The request `cli` is making has created `sock`. Called from the client's
+  /// socket-options callback, before the connect. A duplicate is kept until
+  /// the request ends, so the number stays reserved and a cancel never shuts
+  /// a socket the process reused it for; a request already past its deadline
+  /// has it shut at once.
+  void attach_socket(httplib::Client * cli, int sock);
   /// The request `cli` was making has returned. Waits for a stop() of it in
-  /// progress, so none lands on the next request. True when the request ran
-  /// into its deadline and was stopped.
+  /// progress, so none lands on the next request, and releases the socket
+  /// duplicate. True when the request ran into its deadline and was stopped.
   bool disarm(httplib::Client * cli);
   /// True once the request `cli` is making has run into its deadline.
   bool expired(httplib::Client * cli);
-  /// stop() every client in flight, each from a thread of its own, and
-  /// return once every one of those stop() calls has.
+  /// Shut the socket of every request in flight, then stop() every client,
+  /// each from a thread of its own, and return once every one of those stop()
+  /// calls has.
   void stop_all();
 
  private:
@@ -211,6 +226,9 @@ class PeerCallRegistry {
     bool expired{false};
     /// stop() calls of this client running now; it is pinned while any is.
     int stops{0};
+    /// A duplicate of the socket of the request in progress, -1 when it has
+    /// none (attach_socket).
+    int socket{-1};
   };
 
   void reap();
@@ -219,6 +237,11 @@ class PeerCallRegistry {
   std::future<void> stop_async(httplib::Client * cli, Call & call);
   /// Wait, with `lock` on mutex_, until no stop() of `call` is running.
   void wait_unpinned(std::unique_lock<std::mutex> & lock, const Call & call);
+  /// Shut the socket of the request `call` is making, if it has one. A
+  /// syscall, called with mutex_ held; it takes no lock of the client's.
+  static void shut_socket(const Call & call);
+  /// Close the socket duplicate `call` holds. Called with mutex_ held.
+  static void release_socket(Call & call);
 
   std::mutex mutex_;
   /// The reaper's: a deadline changed, or the registry is going away.

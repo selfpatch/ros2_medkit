@@ -1191,18 +1191,28 @@ Key Classes
     stops every client at shutdown. The request fails as a timeout naming
     ``aggregation.request_deadline_ms``: a forward answers ``504``, a fan-out
     names the peer ``timeout``, a fetch fails. cpp-httplib's ``stop()``
-    takes the client's socket lock, which a request holds while it connects,
-    so a ``stop()`` can wait; each one runs on a thread of its own with the
-    registry mutex released, and one that waits keeps no other request from
-    arming, disarming or being stopped at its own deadline. A client is pinned
+    takes the client's socket lock, which a request holds while it connects
+    and, over TLS, through the whole handshake, whose timeout restarts on
+    every fragment the peer sends: a peer that sends its handshake a byte at
+    a time holds the ``stop()``, the deadline and shutdown for as long as it
+    keeps sending. A request is therefore
+    cancelled through its socket first. The socket-options callback hands the
+    registry each socket a request creates (``attach_socket``), before
+    admission is released; the registry keeps a ``F_DUPFD_CLOEXEC`` duplicate
+    until the request ends, so the number stays reserved and a cancel never
+    shuts a socket the process reused it for, and cancelling shuts it down,
+    which ends the connect, handshake or read without taking any lock of the
+    client's. A request that passes its deadline before it has a socket has
+    it shut as it is attached. ``stop()`` follows; each one runs on a thread
+    of its own with the registry mutex released, and one that waits keeps no
+    other request from arming, disarming or being stopped at its own
+    deadline. A client is pinned
     while a ``stop()`` of it runs: ``remove()``, before the client is
     destroyed, and ``disarm()``, before its next request, wait for it, so no
     client is freed under a ``stop()`` and no late ``stop()`` lands on the
-    next request. ``stop_all()`` runs the stops side by side and returns when
-    the slowest has. The deadline is never shorter than the connect budget,
-    and ``stop()`` waits for a connect in progress, so at the deadline the
-    request has its socket; a ``stop()`` that still found none is repeated
-    every 100 ms until the request returns. The SSE relay has no deadline: a
+    next request. ``stop_all()`` shuts every attached socket, then runs the
+    stops side by side and returns when the slowest has. A request cancelled
+    before it had a socket is cancelled again every 100 ms until it returns. The SSE relay has no deadline: a
     stream has no last byte.
 
 ``PeerResolver``
