@@ -276,8 +276,10 @@ classification pass over the full Component set:
   hosts from both gateways, and a local declaration that names no
   dependencies takes the peer's. Same ownership semantics as Areas. A peer host that
   names a peer App the App merge prefixed takes the prefixed id, so it cannot
-  bind to the local App with the same id. The merge keeps the other hosts as
-  the peer listed them. After the merge and the internal-node filter, the
+  bind to the local App with the same id. The merge keeps the other hosts
+  the peer declared, as App or as Component, and removes a host the peer
+  declared as neither: by the peer's ID it would name the local entity that
+  holds that ID here. After the merge and the internal-node filter, the
   gateway keeps only the hosts that name an App or Component it serves.
 
 - **Components**: Merge by ID, combining tags and metadata. Components
@@ -396,6 +398,13 @@ classification pass over the full Component set:
   A prefixed entity keeps its references valid: a subarea names its prefixed
   parent, a Component its prefixed Area, parent or dependency, an App its
   prefixed Component, and a Function its prefixed hosts and dependencies.
+  A reference a peer entity makes resolves only to an entity that peer
+  declared - kept under its own ID, prefixed, or dropped - and one to an ID
+  the peer never declared is removed in the merge: a peer Function
+  ``diagnostics`` hosting ``admin``, which the peer declares neither as App
+  nor as Component, does not group the local App ``admin``. The merge pass
+  over a peer reads the peer's IDs off the entities it fetched
+  (``EntityMerger::collect_ids``).
   A discovery response the peer answers for it - a forwarded detail, or a
   relationship collection such as an App's ``depends-on`` - comes back in the
   peer's own IDs, and ``validate_entity_for_route`` rewrites it to the IDs it
@@ -1469,6 +1478,7 @@ in their ``hosts`` list are automatically remapped to use the prefixed ID; a hos
 naming a prefixed Component is remapped the same way. The remapping reads the
 renames ``EntityMerger`` recorded for that peer, never the shape of an ID, so a
 peer whose own IDs contain ``__`` keeps them. This
-ensures Function host references remain valid after merge. The hosts are not
-reduced at this point: the one pass at the end of the cache refresh removes
+ensures Function host references remain valid after merge. A host the peer
+declared neither as App nor as Component is removed here. The other hosts are
+not reduced at this point: the one pass at the end of the cache refresh removes
 every host that names no served App or Component.

@@ -460,7 +460,10 @@ When aggregation is enabled, entities from peers are merged with local entities:
   and Component ``arm__cell``, merged in that order (Areas, Components, Apps,
   Functions), because routing is keyed by ID alone and two entities under one
   ID would share one route. References the peer's entities make to a prefixed
-  entity (an Area, a parent, a host, a dependency) name the prefixed ID.
+  entity (an Area, a parent, a host, a dependency) name the prefixed ID. A
+  reference to an ID the peer never declared is removed: a peer Function
+  hosting ``admin``, when the peer serves no App or Component ``admin``, would
+  otherwise group the local App ``admin``.
 
 - **A prefixed ID that is taken**: The prefixed ID must be free of every ID
   already served, whatever its type, of every ID the peer itself declares, and
