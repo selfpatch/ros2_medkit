@@ -387,9 +387,13 @@ classification pass over the full Component set:
   ``x``), and of every ID this merge generated for another remote entity,
   whatever its type: a remote Area ``x`` and a remote Component ``x`` that
   both collide are not both served as ``peername__x`` (the Area, merged first,
-  is). Only the same remote entity listed twice gets its ID again. A remote
-  entity whose prefixed ID is taken is not
-  served at all, and a warning names it. The drop is recorded per type, and
+  is). Only the same remote entity listed twice gets its ID again. A prefixed
+  ID also has to be a valid entity ID (``validate_entity_id``): a peer ID of
+  up to 256 characters is valid, and prefixed by ``peername__`` it can be
+  longer than that, an ID every request answers with ``400``, so the entity
+  would be listed and never addressable (``drop_if_unaddressable``). A remote
+  entity whose prefixed ID is taken, or is not a valid entity ID, is not
+  served at all, and a warning names it and the reason. The drop is recorded per type, and
   every reference the peer's other entities make to it - a subarea's parent, a
   Component's Area, parent or dependency, an App's Component or dependency, a
   Function's host or dependency - is removed: by the peer's own ID it would

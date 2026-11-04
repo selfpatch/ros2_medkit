@@ -155,9 +155,9 @@ class EntityMerger {
   /// The remote IDs this merger prefixed, original -> prefixed.
   const Renames & get_renames() const;
 
-  /// Remote entities left out because their prefixed ID is taken, as
-  /// "<Type> '<id>'" with the ID taken. Serving one would put two entities
-  /// under one ID.
+  /// Remote entities left out because their prefixed ID is taken, or is not a
+  /// valid entity ID, as "<Type> '<id>' (<why>)". Serving one would put two
+  /// entities under one ID, or one under an ID no request can name.
   const std::vector<std::string> & get_dropped() const;
 
   /// The remote IDs left out, one set per type, by the peer's own IDs. A
@@ -225,8 +225,15 @@ class EntityMerger {
   /// Record `id`, generated for the remote `original_id` of `kind`.
   void record_generated(const std::string & id, Kind kind, const std::string & original_id);
 
-  /// Record `original_id` of `kind` as dropped because `taken_id` is taken.
-  void drop(Kind kind, const std::string & original_id, const std::string & taken_id);
+  /// Record `original_id` of `kind` as dropped, for the reason `why`.
+  void drop(Kind kind, const std::string & original_id, const std::string & why);
+
+  /// Drop `original_id` of `kind` when `generated_id`, its prefixed ID, is not
+  /// a valid entity ID (validate_entity_id): longer than 256 characters, which
+  /// a peer ID of 250 under a peer name of 8 already is, or holding a
+  /// character a peer name brought in. Requests answer 400 for such an ID, so
+  /// the entity could be listed but never addressed. True when dropped.
+  bool drop_if_unaddressable(Kind kind, const std::string & original_id, const std::string & generated_id);
 
   /// A Function's hosts, which name the peer's own Apps or Components, as the
   /// IDs they are served under; a dropped one, and one the peer declared

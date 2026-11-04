@@ -19,6 +19,7 @@
 #include <utility>
 
 #include "ros2_medkit_gateway/core/discovery/identity_merge.hpp"
+#include "ros2_medkit_gateway/core/entity_validation.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -109,7 +110,7 @@ void EntityMerger::record_generated(const std::string & id, Kind kind, const std
   generated_[id] = GeneratedFor{kind, original_id};
 }
 
-void EntityMerger::drop(Kind kind, const std::string & original_id, const std::string & taken_id) {
+void EntityMerger::drop(Kind kind, const std::string & original_id, const std::string & why) {
   const char * type_name = "Area";
   std::unordered_set<std::string> * drops = &drops_.areas;
   switch (kind) {
@@ -129,7 +130,18 @@ void EntityMerger::drop(Kind kind, const std::string & original_id, const std::s
       break;
   }
   drops->insert(original_id);
-  dropped_.push_back(std::string(type_name) + " '" + original_id + "' (its prefixed ID '" + taken_id + "' is taken)");
+  dropped_.push_back(std::string(type_name) + " '" + original_id + "' (" + why + ")");
+}
+
+bool EntityMerger::drop_if_unaddressable(Kind kind, const std::string & original_id, const std::string & generated_id) {
+  const auto valid = validate_entity_id(generated_id);
+  if (valid) {
+    return false;
+  }
+  drop(kind, original_id,
+       "its prefixed ID, " + std::to_string(generated_id.size()) +
+           " characters long, is not a valid entity ID: " + valid.error());
+  return true;
 }
 
 namespace {
@@ -274,8 +286,11 @@ std::vector<Area> EntityMerger::merge_areas(const std::vector<Area> & local, con
     if (it != local_index.end() || held_by_other_type(remote_area.id, Kind::kArea)) {
       // Another entity holds the ID here; serving this one under it would put both under one ID.
       added.id = prefix_id(remote_area.id);
+      if (drop_if_unaddressable(Kind::kArea, remote_area.id, added.id)) {
+        continue;
+      }
       if (local_index.count(added.id) > 0u || !can_generate(added.id, Kind::kArea, remote_area.id)) {
-        drop(Kind::kArea, remote_area.id, added.id);
+        drop(Kind::kArea, remote_area.id, "its prefixed ID '" + added.id + "' is taken");
         continue;
       }
       added.name = prefix_name(remote_area.name);
@@ -359,8 +374,11 @@ std::vector<Function> EntityMerger::merge_functions(const std::vector<Function> 
     if (it != local_index.end() || held_by_other_type(remote_func.id, Kind::kFunction)) {
       // Another entity holds the ID here; serving this one under it would put both under one ID.
       added.id = prefix_id(remote_func.id);
+      if (drop_if_unaddressable(Kind::kFunction, remote_func.id, added.id)) {
+        continue;
+      }
       if (local_index.count(added.id) > 0u || !can_generate(added.id, Kind::kFunction, remote_func.id)) {
-        drop(Kind::kFunction, remote_func.id, added.id);
+        drop(Kind::kFunction, remote_func.id, "its prefixed ID '" + added.id + "' is taken");
         continue;
       }
       added.name = prefix_name(remote_func.name);
@@ -458,8 +476,11 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
 
     if (it != local_index.end() || held_elsewhere) {
       added.id = prefix_id(remote_comp.id);
+      if (drop_if_unaddressable(Kind::kComponent, remote_comp.id, added.id)) {
+        continue;
+      }
       if (local_index.count(added.id) > 0u || !can_generate(added.id, Kind::kComponent, remote_comp.id)) {
-        drop(Kind::kComponent, remote_comp.id, added.id);
+        drop(Kind::kComponent, remote_comp.id, "its prefixed ID '" + added.id + "' is taken");
         continue;
       }
       added.name = prefix_name(remote_comp.name);
@@ -509,8 +530,11 @@ std::vector<App> EntityMerger::merge_apps(const std::vector<App> & local, const 
       // Collision: prefix the remote entity ID, preserve original for clients
       added.original_id = remote_app.id;
       added.id = prefix_id(remote_app.id);
+      if (drop_if_unaddressable(Kind::kApp, remote_app.id, added.id)) {
+        continue;
+      }
       if (local_ids.count(added.id) > 0u || !can_generate(added.id, Kind::kApp, remote_app.id)) {
-        drop(Kind::kApp, remote_app.id, added.id);
+        drop(Kind::kApp, remote_app.id, "its prefixed ID '" + added.id + "' is taken");
         continue;
       }
       added.name = prefix_name(remote_app.name);

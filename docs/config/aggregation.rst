@@ -466,9 +466,11 @@ When aggregation is enabled, entities from peers are merged with local entities:
   hosting ``admin``, when the peer serves no App or Component ``admin``, would
   otherwise group the local App ``admin``.
 
-- **A prefixed ID that is taken**: The prefixed ID must be free of every ID
-  already served, whatever its type, of every ID the peer itself declares, and
-  of every ID generated for another entity, whatever its type. When it is not,
+- **A prefixed ID that is taken, or too long**: The prefixed ID must be free of
+  every ID already served, whatever its type, of every ID the peer itself
+  declares, and of every ID generated for another entity, whatever its type,
+  and it must be a valid entity ID: at most 256 characters, so a peer ID of 250
+  characters cannot be prefixed by a peer name of 5 or more. When it is not,
   the remote entity is not served, a warning names it, and the peer's
   references to it (an Area, a parent, a host, a dependency, a Component an App
   is located on) are removed rather than left to name the local entity that
