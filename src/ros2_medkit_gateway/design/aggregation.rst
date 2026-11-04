@@ -454,7 +454,12 @@ classification pass over the full Component set:
   gateway, the local ``admin``; the link is removed. The detail itself has to
   describe the entity it was asked for: an ``id`` other than the peer's id for
   it, or a ``type`` other than the route's (a ``type`` that is not a string
-  included), is refused with ``502``. Only
+  included), is refused with ``502``. A route is read as the router matched
+  it: every route takes one trailing slash (``/?$``), so ``/apps/x/`` is the
+  detail of ``x`` and ``/apps/y/depends-on/`` its relationship, rewritten and
+  checked as such (``without_route_trailing_slash``). Read as sent, the slash
+  made them a resource after the id, and the peer's answer reached the client
+  in the peer's IDs. Only
   recorded renames are applied. They come from the
   ``PeerIdIndex`` the refresh builds from the served entities and the merge's
   drops and publishes in the entity cache with the entities

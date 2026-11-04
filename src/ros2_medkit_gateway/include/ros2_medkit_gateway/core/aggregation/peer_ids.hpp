@@ -196,10 +196,17 @@ std::optional<std::string> served_member_qualified_id(const std::shared_ptr<cons
 std::optional<std::string> served_entity_uri(const std::shared_ptr<const PeerIdIndex> & peer_ids,
                                              const std::string & peer, const std::string & uri);
 
+/// `path` without the one trailing slash every route accepts, a query or
+/// fragment after it kept: the registry ends each route's pattern with `/?$`
+/// (RouteRegistry::to_regex_path), so `/apps/x/` routes to the detail of `x`
+/// and `/apps/y/depends-on/` to the relationship, and are classified as them.
+std::string without_route_trailing_slash(const std::string & path);
+
 /// True for a discovery route: an entity's detail (`/<collection>/<id>`) or one
 /// of the relationship collections discovery serves under it (`subareas`,
 /// `components`, `contains`, `subcomponents`, `hosts`, `depends-on`,
-/// `is-located-on`, `belongs-to`).
+/// `is-located-on`, `belongs-to`), with or without the trailing slash the
+/// router accepts (without_route_trailing_slash).
 bool is_discovery_route(const std::string & path);
 
 /// What a relationship collection lists, by the entity its route names and the
@@ -218,7 +225,8 @@ struct RelationshipItems {
 };
 
 /// The items of the relationship collection `path` names - a discovery route
-/// with a relationship after the entity - or std::nullopt for any other path.
+/// with a relationship after the entity, trailing slash or not - or
+/// std::nullopt for any other path.
 std::optional<RelationshipItems> relationship_items(const std::string & path);
 
 /// Rewrite a discovery response `peer` answered so that every entity it names

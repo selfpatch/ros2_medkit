@@ -324,8 +324,9 @@ void refuse_forwarded_discovery(httplib::Response & res, const std::string & pee
 /// whose rewrite would add more than kMaxServedIdRewriteGrowth bytes: one that
 /// names a renamed entity in far more objects than its size accounts for.
 ///
-/// The detail of an entity, `peer_path` without a resource after the id, has
-/// to describe the entity it was asked for: an `id` other than the peer's id
+/// The detail of an entity, `peer_path` without a resource after the id (the
+/// trailing slash every route accepts is none), has to describe the entity it
+/// was asked for: an `id` other than the peer's id
 /// for it, or a `type` other than the route's - a `type` that is not a string
 /// included - is refused (502). Served, a detail of the peer's App `sensor`
 /// saying it is App `admin` would present as this gateway's account of
@@ -345,8 +346,9 @@ void rewrite_forwarded_discovery(const httplib::Request & req, const std::string
     return;
   }
   std::optional<SovdEntityType> detail_type;
-  if (const auto segment = locate_entity_segment(peer_path); segment && !segment->has_subpath) {
-    const std::string asked = peer_path.substr(segment->id_pos, segment->id_len);
+  const std::string peer_route = without_route_trailing_slash(peer_path);
+  if (const auto segment = locate_entity_segment(peer_route); segment && !segment->has_subpath) {
+    const std::string asked = peer_route.substr(segment->id_pos, segment->id_len);
     const auto id = body.is_object() ? body.find("id") : body.end();
     const std::string said = id != body.end() && id->is_string() ? id->get<std::string>() : std::string{};
     if (said != asked) {
