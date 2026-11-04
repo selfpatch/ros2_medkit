@@ -1196,9 +1196,13 @@ void PeerClient::check_health() {
       link, Admission{admission_mutex_, shutdown_requested_, calls_, std::chrono::milliseconds(connect_ms + health_ms)},
       std::string(API_PREFIX) + "/health", headers);
   const auto & result = reply.result;
-  const bool healthy = result && result->status == 200;
+  // A health answer whose body nests past the depth bound, or holds more values
+  // than the value bound, is no answer either, as an oversized one is not: it
+  // is not read, and a peer that sends one is unhealthy. Text that is not JSON
+  // is judged the same way and stays a healthy 200, as before.
+  const bool healthy = result && result->status == 200 && judge_peer_json(result->body) == PeerJsonShape::kAcceptable;
   std::string instance_id;
-  if (healthy && judge_peer_json(result->body) == PeerJsonShape::kAcceptable) {
+  if (healthy) {
     auto body = nlohmann::json::parse(result->body, nullptr, false);
     if (body.is_object() && body.contains("x-medkit-instance-id") && body["x-medkit-instance-id"].is_string()) {
       instance_id = body["x-medkit-instance-id"].get<std::string>();

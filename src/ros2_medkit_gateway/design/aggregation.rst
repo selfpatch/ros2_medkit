@@ -1471,9 +1471,12 @@ gateway serving the demo nodes holds about 160 values (a data item with its
 message schema), its largest answer about 3000. At the bound a body of the
 costliest values, a million empty objects, parses to some 250 MB. The scan
 runs wherever a peer body is parsed: every request of an entity fetch, the
-health answer, a fan-out, the error body of a ``404`` or ``504``, a forwarded
-discovery response before it is rewritten (``502`` when refused), and each
-event the fault stream relays (dropped with a warning).
+health answer (a ``200`` whose body is refused is a failed health check, as an
+oversized one is: the peer is unhealthy), a fan-out, the error body of a
+``404`` or ``504``, a forwarded discovery response before it is rewritten
+(``502`` when refused), and each event the fault stream relays (dropped with
+a warning). Text that is not JSON is judged the same way and fails to parse
+afterwards; a health answer of that kind keeps counting as a healthy ``200``.
 
 Refresh Size Limits
 ~~~~~~~~~~~~~~~~~~~
