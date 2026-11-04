@@ -728,8 +728,16 @@ std::string detail_mismatch(const nlohmann::json & detail, const std::string & i
     return std::string("answered the detail of ") + label + " '" + id + "' as '" + said + "'";
   }
   const auto declared = detail.find("type");
-  if (declared != detail.end() && (!declared->is_string() || declared->get_ref<const std::string &>() != type)) {
-    return std::string("answered the detail of ") + label + " '" + id + "' with type " + declared->dump();
+  if (declared == detail.end()) {
+    return {};
+  }
+  // A type that is not a string is not quoted: it can be any JSON the peer sent.
+  if (!declared->is_string()) {
+    return std::string("answered the detail of ") + label + " '" + id + "' with a type that is not a string";
+  }
+  if (declared->get_ref<const std::string &>() != type) {
+    return std::string("answered the detail of ") + label + " '" + id + "' as a " +
+           declared->get_ref<const std::string &>();
   }
   return {};
 }

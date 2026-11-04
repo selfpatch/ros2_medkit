@@ -189,8 +189,10 @@ bool is_discovery_route(const std::string & path);
 /// renamed or dropped on collision is something else here under the peer's
 /// ID: followed through this gateway, the peer's ID addresses the local entity
 /// that took its place. Rewritten are the `id` of every object that names its
-/// `type` (the detail itself, the items of a relationship collection) together
-/// with its `name`, which takes the served one as the listings show it; every
+/// `type` (the detail itself, the items of a relationship collection), and of
+/// the body itself when it names none and `root_type` is given - the type of
+/// the entity a detail route asked for - together with its `name`, which
+/// takes the served one as the listings show it; every
 /// entity URI - the self link, the resource collection links, the relationship
 /// links, relative or absolute; and the relationship IDs `x-medkit` carries
 /// (`parent_area_id`, `parentComponentId`, `dependsOn`, `area`,
@@ -211,6 +213,7 @@ enum class ServedIdRewrite {
   kTooDeep,    ///< The body nests past the bound; it is not a discovery response.
 };
 ServedIdRewrite rewrite_to_served_ids(nlohmann::json & body, const std::string & peer,
-                                      const std::shared_ptr<const PeerIdIndex> & peer_ids);
+                                      const std::shared_ptr<const PeerIdIndex> & peer_ids,
+                                      std::optional<SovdEntityType> root_type = std::nullopt);
 
 }  // namespace ros2_medkit_gateway

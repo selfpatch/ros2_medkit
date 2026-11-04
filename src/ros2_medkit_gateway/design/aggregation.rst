@@ -409,7 +409,8 @@ classification pass over the full Component set:
   relationship collection such as an App's ``depends-on`` - comes back in the
   peer's own IDs, and ``validate_entity_for_route`` rewrites it to the IDs it
   is served under here before it is sent (``rewrite_to_served_ids``): the ``id``
-  of every object that names its ``type`` - with its ``name``, which takes the
+  of every object that names its ``type``, and of a detail that names none,
+  which is of the type its route asked for - with its ``name``, which takes the
   served one so a forwarded detail names the entity as the listings do -
   every entity URI (the self link, the resource collection links, the
   relationship links, relative or absolute; the ID is read from the path
@@ -426,7 +427,8 @@ classification pass over the full Component set:
   the peer's App ``sensor`` linking ``/apps/admin`` names, through this
   gateway, the local ``admin``; the link is removed. The detail itself has to
   describe the entity it was asked for: an ``id`` other than the peer's id for
-  it, or a ``type`` other than the route's, is refused with ``502``. Only
+  it, or a ``type`` other than the route's (a ``type`` that is not a string
+  included), is refused with ``502``. Only
   recorded renames are applied. They come from the
   ``PeerIdIndex`` the refresh builds from the served entities and the merge's
   drops and publishes in the entity cache with the entities

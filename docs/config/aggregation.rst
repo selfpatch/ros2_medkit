@@ -490,8 +490,10 @@ relationship links, and the related entities' IDs. A reference to a peer
 entity that is not served (see the taken prefixed ID above), or to an ID the
 peer never declared, is removed from the response, because by the peer's ID it
 would name the local entity that holds that ID here. A forwarded detail has to
-describe the entity asked for: one naming another ``id``, or another ``type``,
-is refused with ``502`` (``x-medkit-peer-unavailable``). The ``Location`` header of any forwarded answer - an async
+describe the entity asked for: one naming another ``id``, or another ``type``
+(a ``type`` that is not a string included), is refused with ``502``
+(``x-medkit-peer-unavailable``). A detail that names no ``type`` is of the type
+its route asked for, and its ``id`` and ``name`` are rewritten as that type's. The ``Location`` header of any forwarded answer - an async
 execution, a lock, a created resource - is translated the same way, whether the
 entity was forwarded whole or a member was reached through a grouping entity
 (below): ``POST /apps/arm__camera/operations/calibrate/executions`` comes back
