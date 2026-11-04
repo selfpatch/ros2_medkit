@@ -653,7 +653,7 @@ ros2_medkit_gateway:
 | `auto_alarms` | `false` | Boolean or object; subscribe a server EventNotifier and auto-derive a fault per AlarmCondition with no per-alarm `event_alarms` mapping - the zero-config native A&C surface (see above) |
 | `poll_interval_ms` | `1000` | Polling interval in ms (clamped to [100, 60000]) |
 | `prefer_subscriptions` | `false` | Use OPC-UA subscriptions instead of polling |
-| `subscription_interval_ms` | `500` | Publishing interval for OPC-UA subscriptions when `prefer_subscriptions: true` |
+| `subscription_interval_ms` | `500` | Publishing interval for OPC-UA subscriptions when `prefer_subscriptions: true`. Between two polls the client is also iterated at this interval (at least 20 ms apart, at most once per poll), so changes arrive at this cadence and not once per `poll_interval_ms` |
 | `condition_replay_strategy` | `auto` | Active-condition replay on reconnect: `method`, `read`, `auto`, `off` (see below) |
 | `require_confirm_for_clear` | `true` | Require both Acknowledge AND Confirm before a native alarm auto-clears. Set `false` for Confirm-less servers (e.g. Siemens S7-1500) so alarms clear on Acknowledge alone (see below) |
 | `comms_lost_fault_enabled` | `true` | Raise a component-scoped `PLC_COMMS_LOST` fault when the connection stays down, and clear it on every successful connect (issue #496) |

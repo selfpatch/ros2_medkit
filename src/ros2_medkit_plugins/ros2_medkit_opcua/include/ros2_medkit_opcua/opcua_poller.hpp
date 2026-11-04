@@ -295,6 +295,18 @@ class OpcuaPoller {
   static std::chrono::milliseconds next_reconnect_wait(std::chrono::milliseconds current,
                                                        std::chrono::milliseconds max_wait);
 
+  /// Smallest step between two iterates of the subscription pump.
+  static constexpr std::chrono::milliseconds kMinSubscriptionPumpInterval{20};
+
+  /// How often the poll thread iterates the client while it waits for the next
+  /// poll in data-change subscription mode: the subscription interval, rounded
+  /// to whole ms, floored at ``kMinSubscriptionPumpInterval`` and capped at
+  /// ``poll_interval``. A value that is not a positive number (NaN, inf, zero,
+  /// negative) gives ``poll_interval``, which is one iterate per poll. Pure and
+  /// static so the cadence is unit-testable.
+  static std::chrono::milliseconds subscription_pump_interval(double subscription_interval_ms,
+                                                              std::chrono::milliseconds poll_interval);
+
   /// Zero-config native A&C (``auto_alarms``): the alarm sources that should
   /// actually be subscribed / replayed, i.e. every explicit ``event_alarms``
   /// entry plus (when ``auto_cfg.enabled`` and no explicit entry already

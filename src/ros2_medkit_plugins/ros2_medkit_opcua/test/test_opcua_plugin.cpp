@@ -26,12 +26,14 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -1325,6 +1327,30 @@ TEST(NextReconnectWait, DoublesUpToTheCeiling) {
   // consulted once per cadence, which is what the cap is for.
   EXPECT_EQ(OpcuaPoller::next_reconnect_wait(20000ms, 30000ms), 30000ms);
   EXPECT_EQ(OpcuaPoller::next_reconnect_wait(30000ms, 30000ms), 30000ms);
+}
+
+TEST(SubscriptionPumpInterval, FollowsTheSubscriptionIntervalWithinThePoll) {
+  using namespace std::chrono_literals;
+  // The usual case: a slow poll is cut into subscription-interval steps.
+  EXPECT_EQ(OpcuaPoller::subscription_pump_interval(250.0, 60000ms), 250ms);
+  EXPECT_EQ(OpcuaPoller::subscription_pump_interval(500.0, 1000ms), 500ms);
+  EXPECT_EQ(OpcuaPoller::subscription_pump_interval(99.6, 1000ms), 100ms);
+  // Never longer than the poll itself.
+  EXPECT_EQ(OpcuaPoller::subscription_pump_interval(5000.0, 1000ms), 1000ms);
+  EXPECT_EQ(OpcuaPoller::subscription_pump_interval(1000.0, 1000ms), 1000ms);
+  EXPECT_EQ(OpcuaPoller::subscription_pump_interval(1e300, 1000ms), 1000ms);
+  // A tiny interval is floored so the poll thread does not spin.
+  EXPECT_EQ(OpcuaPoller::subscription_pump_interval(1.0, 1000ms), OpcuaPoller::kMinSubscriptionPumpInterval);
+  EXPECT_EQ(OpcuaPoller::subscription_pump_interval(0.4, 1000ms), OpcuaPoller::kMinSubscriptionPumpInterval);
+}
+
+TEST(SubscriptionPumpInterval, BadIntervalKeepsOneIteratePerPoll) {
+  using namespace std::chrono_literals;
+  EXPECT_EQ(OpcuaPoller::subscription_pump_interval(0.0, 1000ms), 1000ms);
+  EXPECT_EQ(OpcuaPoller::subscription_pump_interval(-250.0, 1000ms), 1000ms);
+  EXPECT_EQ(OpcuaPoller::subscription_pump_interval(std::nan(""), 1000ms), 1000ms);
+  EXPECT_EQ(OpcuaPoller::subscription_pump_interval(std::numeric_limits<double>::infinity(), 1000ms), 1000ms);
+  EXPECT_EQ(OpcuaPoller::subscription_pump_interval(-std::numeric_limits<double>::infinity(), 1000ms), 1000ms);
 }
 
 // ---------------------------------------------------------------------------
