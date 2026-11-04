@@ -315,12 +315,21 @@ http::Result<MemberDispatch> dispatch_execution_to_owner(const HandlerContext & 
 
   const std::string & full_path =
       resolved.service.has_value() ? resolved.service->full_path : resolved.action->full_path;
+  // An App's operations are its own and name no member: the App owns them,
+  // and the goal of a peer's App lives on that peer. Left to the local path,
+  // which holds no goal of it, the status, stop and cancel of every execution
+  // a peer's App was asked for answered 404 here, and so did the `Location`
+  // its start handed out.
   auto owner = ops.owner_by_path.find(full_path);
-  if (owner == ops.owner_by_path.end()) {
+  std::string owner_id = owner != ops.owner_by_path.end() ? owner->second : std::string{};
+  if (owner_id.empty() && !ops.is_aggregated) {
+    owner_id = entity_id;
+  }
+  if (owner_id.empty()) {
     return MemberDispatch::kServeLocally;
   }
   return ctx.dispatch_to_member(
-      req, owner->second, "operations/" + parsed.item_id + "/executions/" + execution_id,
+      req, owner_id, "operations/" + parsed.item_id + "/executions/" + execution_id,
       json{{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}});
 }
 
