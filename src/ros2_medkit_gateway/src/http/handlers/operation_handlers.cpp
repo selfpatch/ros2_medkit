@@ -283,6 +283,18 @@ std::optional<ErrorInfo> refuse_if_ambiguous(const AggregatedOperations & ops, c
   return make_error(400, ERR_INVALID_REQUEST, "Ambiguous operation id: it names more than one operation", params);
 }
 
+/// The entity type the route names: `/functions/{id}/...` addresses a
+/// Function, whatever else holds that id. An Area and a Function may share an
+/// id - a namespace Function next to a manifest Area of that name - and a
+/// lookup by id alone finds the Area first.
+SovdEntityType route_entity_type(const http::TypedRequest & req) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  const auto & raw_req = req.raw_for_framework();
+#pragma GCC diagnostic pop
+  return extract_entity_type_from_path(raw_req.path);
+}
+
 /// Settle which gateway holds the execution this request addresses.
 ///
 /// An execution lives on the gateway that started it, which is the gateway that
@@ -305,18 +317,23 @@ std::optional<ErrorInfo> refuse_if_ambiguous(const AggregatedOperations & ops, c
 /// the local path: the execution id is the key there, and the answer it gives
 /// for an id naming no goal is the answer this route already owes. Resolving is
 /// how the owner is found, never a second place for the route to refuse.
+///
+/// The entity is the one the route names, looked up by the route's type: by id
+/// alone a Function follow-up resolved against an Area sharing the id and was
+/// dispatched to a peer member of the Area.
 http::Result<MemberDispatch> dispatch_execution_to_owner(const HandlerContext & ctx, const http::TypedRequest & req,
                                                          const std::string & entity_id,
                                                          const std::string & operation_id,
                                                          const std::string & execution_id) {
-  const auto entity_info = ctx.get_entity_info(entity_id);
+  auto entity_info = ctx.get_entity_info(entity_id, route_entity_type(req));
   if (entity_info.is_remote) {
     auto routed = ctx.validate_entity_for_route(req, entity_id);
     if (!routed) {
       return tl::unexpected(flatten_validator_error(routed.error()));
     }
-    // A refresh landed in between and the entity is served here now: it is
-    // resolved below like any local one.
+    // A refresh landed in between and the entity is served here now: the
+    // entity validation found is resolved below like any local one.
+    entity_info = std::move(*routed);
   }
   const auto & cache = ctx.services().entity_cache();
   auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
@@ -457,8 +474,8 @@ dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std
 /// addresses the wrong entity gets the same "not found" it would get for a
 /// wrong id, which is the answer that keeps entity boundaries meaningful.
 tl::expected<ActionGoalInfo, ErrorInfo> owned_goal(const HandlerContext & ctx, OperationManager * operation_mgr,
-                                                   const std::string & entity_id, const std::string & operation_id,
-                                                   const std::string & execution_id) {
+                                                   SovdEntityType entity_type, const std::string & entity_id,
+                                                   const std::string & operation_id, const std::string & execution_id) {
   auto goal_info = operation_mgr->get_tracked_goal(execution_id);
   if (goal_info.has_value()) {
     if (goal_info->entity_id == entity_id) {
@@ -474,7 +491,8 @@ tl::expected<ActionGoalInfo, ErrorInfo> owned_goal(const HandlerContext & ctx, O
     // aggregates - not that the member named is one of its members. Without
     // this gate any aggregate could name the owner of someone else's goal and
     // read, stop or cancel it from an unrelated URI.
-    const auto entity_info = ctx.get_entity_info(entity_id);
+    // The entity the route names, by its type (route_entity_type).
+    const auto entity_info = ctx.get_entity_info(entity_id, entity_type);
     const auto & cache = ctx.services().entity_cache();
     if (auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id)) {
       const auto parsed = http::parse_member_qualified_id(operation_id, lookup->ops.is_aggregated);
@@ -1418,7 +1436,7 @@ http::Result<dto::OperationExecution> OperationHandlers::get_execution(const htt
   }
 
   auto * operation_mgr = ctx_.services().operation_manager();
-  auto goal_info = owned_goal(ctx_, operation_mgr, entity_id, operation_id, execution_id);
+  auto goal_info = owned_goal(ctx_, operation_mgr, route_entity_type(req), entity_id, operation_id, execution_id);
   if (!goal_info) {
     return tl::make_unexpected(goal_info.error());
   }
@@ -1473,8 +1491,8 @@ http::Result<http::NoContent> OperationHandlers::cancel_execution(const http::Ty
 
   // Lock-check against the resolved entity (best-effort - if the entity
   // cannot be resolved here we still let the operation manager produce the
-  // canonical 404 below).
-  const auto entity_info = ctx_.get_entity_info(entity_id);
+  // canonical 404 below). The entity the route names, by its type.
+  const auto entity_info = ctx_.get_entity_info(entity_id, route_entity_type(req));
   if (auto lock_err = ctx_.validate_lock_access(req, entity_info, "operations"); !lock_err) {
     return tl::make_unexpected(lock_err.error());
   }
@@ -1490,7 +1508,7 @@ http::Result<http::NoContent> OperationHandlers::cancel_execution(const http::Ty
   }
 
   auto * operation_mgr = ctx_.services().operation_manager();
-  auto goal_info = owned_goal(ctx_, operation_mgr, entity_id, operation_id, execution_id);
+  auto goal_info = owned_goal(ctx_, operation_mgr, route_entity_type(req), entity_id, operation_id, execution_id);
   if (!goal_info) {
     return tl::make_unexpected(goal_info.error());
   }
@@ -1542,7 +1560,7 @@ OperationHandlers::update_execution(const http::TypedRequest & req, const dto::E
                                           json{{"details", vr.error()}, {"entity_id", entity_id}}));
   }
 
-  const auto entity_info = ctx_.get_entity_info(entity_id);
+  const auto entity_info = ctx_.get_entity_info(entity_id, route_entity_type(req));
   if (auto lock_err = ctx_.validate_lock_access(req, entity_info, "operations"); !lock_err) {
     return tl::make_unexpected(lock_err.error());
   }
@@ -1560,7 +1578,7 @@ OperationHandlers::update_execution(const http::TypedRequest & req, const dto::E
   const std::string capability = body.capability;
 
   auto * operation_mgr = ctx_.services().operation_manager();
-  auto goal_info = owned_goal(ctx_, operation_mgr, entity_id, operation_id, execution_id);
+  auto goal_info = owned_goal(ctx_, operation_mgr, route_entity_type(req), entity_id, operation_id, execution_id);
   if (!goal_info) {
     return tl::make_unexpected(goal_info.error());
   }

@@ -734,7 +734,11 @@ instead found no owner for an operation the cache does not list - a plugin
 operation with no ROS path, one the peer added since the last refresh - and
 answered a local ``404`` for an execution the start had just created on the
 peer. The cached operations pick the owner only on a grouping entity, whose
-member holds the execution. There, an id that does not resolve to exactly
+member holds the execution. The entity is the one the route names, looked up
+by the route's type: an Area and a Function may share an id (a namespace
+Function beside a manifest Area of that name), and by id alone a Function's
+follow-up was resolved against the Area and dispatched to the Area's peer
+member. There, an id that does not resolve to exactly
 one owned operation is left to the local path, whose key is the execution id
 alone: resolving is how the owning gateway
 is found, not a second place for these routes to refuse a request. So a
