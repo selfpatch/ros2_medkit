@@ -157,9 +157,11 @@ std::optional<std::string> served(const Fate & fate, const std::string & peer_id
 class ServedIdWalk {
  public:
   /// `root_type`, when given, is the type of the entity the body describes
-  /// when it names none itself: a detail route's.
-  ServedIdWalk(const PeerIdIndex::Peer * ids, std::optional<SovdEntityType> root_type)
-    : ids_(ids), root_type_(root_type) {
+  /// when it names none itself: a detail route's. `items`, when given, is what
+  /// the relationship collection the body is lists.
+  ServedIdWalk(const PeerIdIndex::Peer * ids, std::optional<SovdEntityType> root_type,
+               std::optional<RelationshipItems> items)
+    : ids_(ids), root_type_(root_type), items_(items) {
   }
 
   ServedIdRewrite run(nlohmann::json & body) {
@@ -357,8 +359,10 @@ class ServedIdWalk {
   }
 
   /// Rewrite `value`. True when it names a dropped entity and is to be removed
-  /// from the array or object holding it.
-  bool node(nlohmann::json & value, size_t depth) {
+  /// from the array or object holding it. `listed`, for an item of the
+  /// relationship collection the body is, is what the relationship lists: the
+  /// type the item is of when it names none the walk recognizes.
+  bool node(nlohmann::json & value, size_t depth, const RelationshipItems * listed = nullptr) {
     if (value.is_string()) {
       return uri(value);
     }
@@ -384,6 +388,7 @@ class ServedIdWalk {
     // -Wnull-dereference false positives (see document_checks.cpp). value is an
     // object, so operator[] only reads keys contains() has found.
     auto entity_type = SovdEntityType::UNKNOWN;
+    bool member = false;
     if (value.contains("type")) {
       if (const nlohmann::json & type = value["type"]; type.is_string()) {
         entity_type = entity_type_named(type.get<std::string>());
@@ -391,9 +396,23 @@ class ServedIdWalk {
     } else if (depth == 0 && root_type_) {
       entity_type = *root_type_;
     }
-    if (entity_type != SovdEntityType::UNKNOWN && value.contains("id") && value["id"].is_string()) {
+    // An item of a relationship collection that names no type the walk
+    // recognizes is of the type the relationship lists. Left untyped, its `id`
+    // kept the peer's ID - the local namesake's here - while its links were
+    // rewritten or removed. One whose type the relationship does not establish
+    // either is removed whole: nothing here says what its ID names.
+    if (entity_type == SovdEntityType::UNKNOWN && listed != nullptr) {
+      entity_type = listed->type;
+      member = listed->member;
+      if (entity_type == SovdEntityType::UNKNOWN && !member) {
+        changed_ = true;
+        return true;
+      }
+    }
+    if ((entity_type != SovdEntityType::UNKNOWN || member) && value.contains("id") && value["id"].is_string()) {
       nlohmann::json & entity_id = value["id"];
-      const auto fate = fate_of(ids_of(ids_, entity_type), entity_id.get<std::string>());
+      const auto fate = member ? member_fate_of(ids_, entity_id.get<std::string>())
+                               : fate_of(ids_of(ids_, entity_type), entity_id.get<std::string>());
       if (fate.kind == Fate::kDropped || fate.kind == Fate::kUnknown) {
         changed_ = true;
         return true;
@@ -420,6 +439,13 @@ class ServedIdWalk {
       bool remove = false;
       if (it.key() == "x-medkit" && it.value().is_object()) {
         x_medkit(it.value(), depth + 1);
+      } else if (depth == 0 && items_ && it.key() == "items" && it.value().is_array()) {
+        // The items of the relationship collection the body is.
+        if (!past_bound(depth + 1)) {
+          erase_from(it.value(), [this, depth](nlohmann::json & entry) {
+            return !halted() && node(entry, depth + 2, entry.is_object() ? &*items_ : nullptr);
+          });
+        }
       } else {
         remove = node(it.value(), depth + 1);
       }
@@ -435,6 +461,7 @@ class ServedIdWalk {
 
   const PeerIdIndex::Peer * ids_;
   std::optional<SovdEntityType> root_type_;
+  std::optional<RelationshipItems> items_;
   bool changed_{false};
   bool too_deep_{false};
   bool too_large_{false};
@@ -499,30 +526,79 @@ std::optional<std::string> served_entity_uri(const std::shared_ptr<const PeerIdI
   return api_offset(*segment) == 0 ? uri : served_path(uri, *segment, peer_id);
 }
 
+namespace {
+/// The relationship discovery serves under the entity of `segment` that `path`
+/// names after it, or empty when what follows the entity is none of them.
+std::string_view relation_of(const std::string & path, const EntitySegment & segment) {
+  static const std::array<std::string_view, 8> kRelations = {"subareas", "components", "contains",      "subcomponents",
+                                                             "hosts",    "depends-on", "is-located-on", "belongs-to"};
+  std::string_view relation = std::string_view(path).substr(segment.id_pos + segment.id_len + 1);
+  relation = relation.substr(0, relation.find_first_of("?#"));
+  return std::find(kRelations.begin(), kRelations.end(), relation) != kRelations.end() ? relation : std::string_view{};
+}
+}  // namespace
+
 bool is_discovery_route(const std::string & path) {
   auto segment = locate_entity_segment(path);
   if (!segment) {
     return false;
   }
-  if (!segment->has_subpath) {
-    return true;
+  return !segment->has_subpath || !relation_of(path, *segment).empty();
+}
+
+std::optional<RelationshipItems> relationship_items(const std::string & path) {
+  const auto segment = locate_entity_segment(path);
+  if (!segment || !segment->has_subpath) {
+    return std::nullopt;
   }
-  static const std::array<std::string_view, 8> kRelations = {"subareas", "components", "contains",      "subcomponents",
-                                                             "hosts",    "depends-on", "is-located-on", "belongs-to"};
-  std::string_view relation = std::string_view(path).substr(segment->id_pos + segment->id_len + 1);
-  relation = relation.substr(0, relation.find_first_of("?#"));
-  return std::find(kRelations.begin(), kRelations.end(), relation) != kRelations.end();
+  const auto relation = relation_of(path, *segment);
+  if (relation.empty()) {
+    return std::nullopt;
+  }
+  RelationshipItems items;
+  switch (segment->type) {
+    case SovdEntityType::AREA:
+      if (relation == "subareas") {
+        items.type = SovdEntityType::AREA;
+      } else if (relation == "components" || relation == "contains") {
+        items.type = SovdEntityType::COMPONENT;
+      }
+      break;
+    case SovdEntityType::COMPONENT:
+      if (relation == "subcomponents" || relation == "depends-on") {
+        items.type = SovdEntityType::COMPONENT;
+      } else if (relation == "hosts") {
+        items.type = SovdEntityType::APP;
+      }
+      break;
+    case SovdEntityType::APP:
+      if (relation == "is-located-on") {
+        items.type = SovdEntityType::COMPONENT;
+      } else if (relation == "belongs-to") {
+        items.type = SovdEntityType::AREA;
+      } else if (relation == "depends-on") {
+        items.type = SovdEntityType::APP;
+      }
+      break;
+    case SovdEntityType::FUNCTION:
+      items.member = relation == "hosts";
+      break;
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+      break;
+  }
+  return items;
 }
 
 ServedIdRewrite rewrite_to_served_ids(nlohmann::json & body, const std::string & peer,
                                       const std::shared_ptr<const PeerIdIndex> & peer_ids,
-                                      std::optional<SovdEntityType> root_type) {
+                                      std::optional<SovdEntityType> root_type, std::optional<RelationshipItems> items) {
   if (peer.empty()) {
     return ServedIdRewrite::kUnchanged;
   }
   // One snapshot for the whole body: every rename and drop it applies is of
   // the same generation.
-  return ServedIdWalk(peer_ids_of(peer_ids, peer), root_type).run(body);
+  return ServedIdWalk(peer_ids_of(peer_ids, peer), root_type, items).run(body);
 }
 
 }  // namespace ros2_medkit_gateway
