@@ -480,7 +480,13 @@ are rewritten to the IDs this gateway serves: the entity's own ID and its name
 relationship links, and the related entities' IDs. A reference to a peer
 entity that is not served (see the taken prefixed ID above) is removed from the
 response, because by the peer's ID it would name the local entity that holds
-that ID here.
+that ID here. The ``Location`` header of any forwarded answer - an async
+execution, a lock, a created resource - is translated the same way, whether the
+entity was forwarded whole or a member was reached through a grouping entity
+(below): ``POST /apps/arm__camera/operations/calibrate/executions`` comes back
+with ``Location: /api/v1/apps/arm__camera/...``, not the peer's
+``/api/v1/apps/camera/...``, which names the local ``camera`` here. A
+``Location`` naming an entity this gateway does not serve is removed.
 
 An entity that draws its resources from members - an Area, a merged Function, a
 hierarchical parent Component - is deliberately absent from that table, because

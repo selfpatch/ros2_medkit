@@ -671,8 +671,16 @@ locally-owned execution is answered here exactly as before, and an id naming no
 goal gets the same ``404`` it always did.
 
 The peer's ``Location`` header is carried back through the forward, because it
-names the member's own route - a path the aggregator resolves to the same
-member - and it is the only address of a resource that lives on the other side.
+is the only address of a resource that lives on the other side. The peer builds
+it from the route it received, which names the member by the peer's own id, so
+the id is translated to the one this gateway serves the member under
+(``served_entity_uri``, read against the index of the generation the forward
+was resolved in) before it is passed on: for a member renamed on collision the
+peer's id names the local namesake here, and a client following the
+``Location`` of an async execution or a lock would ask the wrong entity. The
+same applies to every forwarded request, a member dispatched through a
+grouping entity or an entity forwarded whole, and a ``Location`` naming an
+entity this gateway does not serve is removed.
 
 The member's own gateway is the only one that can answer: the ROS service, the
 topic and the parameter behind the id exist on its graph and nowhere else. What

@@ -75,6 +75,25 @@ const PeerIdIndex::Peer & peer_ids_of(const std::shared_ptr<const PeerIdIndex> &
   return index ? index->peer(peer) : kEmpty;
 }
 
+/// The entity segment of `text` when it is an entity URI - `/api/v1/<collection>/<id>...`,
+/// or the same behind `http(s)://host` - and std::nullopt for any other string.
+std::optional<EntitySegment> entity_uri_segment(const std::string & text) {
+  static constexpr std::string_view kApi = "/api/v1/";
+  const auto api = text.find(kApi);
+  if (api == std::string::npos) {
+    return std::nullopt;
+  }
+  if (api != 0 && text.rfind("http://", 0) != 0 && text.rfind("https://", 0) != 0) {
+    return std::nullopt;
+  }
+  // The collection has to follow the API prefix directly, as in every route.
+  auto segment = locate_entity_segment(text);
+  if (!segment || segment->collection_pos != api + kApi.size() - 1) {
+    return std::nullopt;
+  }
+  return segment;
+}
+
 std::optional<std::string> served(const Fate & fate, const std::string & peer_id) {
   switch (fate.kind) {
     case Fate::kRenamed:
@@ -142,18 +161,9 @@ class ServedIdWalk {
   /// `http(s)://host` - named by the served ID; any other string is left
   /// alone. True when the URI names a dropped entity.
   bool uri(nlohmann::json & value) {
-    static constexpr std::string_view kApi = "/api/v1/";
     const auto & text = value.get_ref<const std::string &>();
-    const auto api = text.find(kApi);
-    if (api == std::string::npos) {
-      return false;
-    }
-    if (api != 0 && text.rfind("http://", 0) != 0 && text.rfind("https://", 0) != 0) {
-      return false;
-    }
-    // The collection has to follow the API prefix directly, as in every route.
-    auto segment = locate_entity_segment(text);
-    if (!segment || segment->collection_pos != api + kApi.size() - 1) {
+    const auto segment = entity_uri_segment(text);
+    if (!segment) {
       return false;
     }
     const auto fate = fate_of(ids_.of(segment->type), text.substr(segment->id_pos, segment->id_len));
@@ -310,6 +320,25 @@ std::optional<std::string> served_member_id(const std::shared_ptr<const PeerIdIn
     return member_id;
   }
   return served(member_fate_of(peer_ids_of(peer_ids, peer), member_id), member_id);
+}
+
+std::optional<std::string> served_entity_uri(const std::shared_ptr<const PeerIdIndex> & peer_ids,
+                                             const std::string & peer, const std::string & uri) {
+  const auto segment = entity_uri_segment(uri);
+  if (peer.empty() || !segment) {
+    return uri;
+  }
+  const auto fate =
+      fate_of(peer_ids_of(peer_ids, peer).of(segment->type), uri.substr(segment->id_pos, segment->id_len));
+  switch (fate.kind) {
+    case Fate::kRenamed:
+      return with_entity_id(uri, *segment, fate.renamed->id);
+    case Fate::kDropped:
+      return std::nullopt;
+    case Fate::kKept:
+      break;
+  }
+  return uri;
 }
 
 bool is_discovery_route(const std::string & path) {

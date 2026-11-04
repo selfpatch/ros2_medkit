@@ -1604,10 +1604,12 @@ void PeerClient::forward_request(const httplib::Request & req, httplib::Response
   // Update this list when adding new x-medkit HTTP response headers.
   //
   // `location` is what a 201 or 202 hands the client to address the resource it
-  // just created. The peer builds it from the request it received, so it names
-  // the member's own route - a path this gateway resolves to the same member,
-  // and the only address of a resource that lives on the other side. Dropping it
-  // leaves the client a status with nothing to follow.
+  // just created, and the only address of a resource that lives on the other
+  // side. Dropping it leaves the client a status with nothing to follow. The
+  // peer builds it from the request it received, in the peer's own ids; the
+  // handler that forwarded the request names the entity in it by the id this
+  // gateway serves it under (translate_forwarded_location in
+  // handler_context.cpp), which this class has no index for.
   static const std::set<std::string> allowed_headers = {"content-type",  "etag",     "cache-control",
                                                         "last-modified", "location", "x-medkit-local-only"};
 

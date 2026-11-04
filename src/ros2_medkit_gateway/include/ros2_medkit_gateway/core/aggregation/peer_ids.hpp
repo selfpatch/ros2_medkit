@@ -163,6 +163,17 @@ std::optional<std::string> served_entity_id(const std::shared_ptr<const PeerIdIn
 std::optional<std::string> served_member_id(const std::shared_ptr<const PeerIdIndex> & peer_ids,
                                             const std::string & peer, const std::string & member_id);
 
+/// `uri`, an entity URI `peer` reported - `/api/v1/<collection>/<id>...`, or
+/// the same behind `http(s)://host` - with the entity it names named by the
+/// ID this gateway serves it under (served_entity_id), read from `peer_ids`,
+/// the index of the generation the request was validated against. Returns
+/// `uri` as it is when it names no entity or one the merge left alone, and
+/// std::nullopt when it names one this gateway does not serve: its ID there
+/// names another entity. For a header such as `Location`, which a peer builds
+/// from the route it received - a route in its own IDs.
+std::optional<std::string> served_entity_uri(const std::shared_ptr<const PeerIdIndex> & peer_ids,
+                                             const std::string & peer, const std::string & uri);
+
 /// True for a discovery route: an entity's detail (`/<collection>/<id>`) or one
 /// of the relationship collections discovery serves under it (`subareas`,
 /// `components`, `contains`, `subcomponents`, `hosts`, `depends-on`,
