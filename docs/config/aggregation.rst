@@ -443,7 +443,8 @@ When aggregation is enabled, entities from peers are merged with local entities:
   one, the remote App's ID is prefixed with ``peername__`` (double underscore).
   For example, App ``camera_driver`` from peer ``arm`` becomes
   ``arm__camera_driver``, and a Function host of that peer that names it does
-  too. Apps represent individual ROS 2 nodes with unique behavior. The
+  too. A prefixed entity's name is prefixed the same way (``arm__Camera
+  driver``) and cut to 512 bytes. Apps represent individual ROS 2 nodes with unique behavior. The
   aggregator does not filter a peer's Apps again: the peer applied its own
   ``filter_internal_nodes``.
 
@@ -486,7 +487,9 @@ A prefixed entity is forwarded under the ID its peer knows it by, and the
 discovery responses that come back (its detail, its relationship collections)
 are rewritten to the IDs this gateway serves: the entity's own ID and its name
 (``arm__Camera driver``, as the listings show it), its self, resource and
-relationship links, and the related entities' IDs. A reference to a peer
+relationship links, and the related entities' IDs. A response whose rewrite
+would add more than 10 MB to it - one naming a renamed entity in far more
+objects than its own size accounts for - is refused with ``502``. A reference to a peer
 entity that is not served (see the taken prefixed ID above), or to an ID the
 peer never declared, is removed from the response, because by the peer's ID it
 would name the local entity that holds that ID here. A forwarded detail has to

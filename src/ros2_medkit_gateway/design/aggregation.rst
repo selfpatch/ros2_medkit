@@ -362,7 +362,11 @@ classification pass over the full Component set:
   Component, Function or App whose ID a local entity of another type holds
   would hand that local entity's requests - writes included - to the peer.
   The remote entity is served as ``peername__<id>`` and routed under that ID
-  instead. "Local" here is everything already merged when the peer is folded
+  instead, with the name ``peername__<name>``, cut to
+  ``EntityMerger::kMaxServedNameBytes`` (512) bytes at a UTF-8 character
+  boundary: the peer's name is bounded only by the text a refresh may read,
+  and the served name is copied into every forwarded object that names the
+  entity (below). "Local" here is everything already merged when the peer is folded
   in: this gateway's own entities, plugin-provided ones included (they are
   injected before the merge in every discovery mode), and those of every peer
   merged before it. An entity of the same peer merged earlier in the same
@@ -455,6 +459,18 @@ classification pass over the full Component set:
   discovery response comes anywhere near either bound. The dropped references of
   an array are removed in one pass over it, so the work grows with the length
   of the array and not with its square.
+
+  What the walk writes is bounded as well. It copies a served ID, and with it
+  a served name, into each object that names a renamed entity, so a small
+  body that names one entity many times grows by that many copies: an 8 MB
+  name repeated in 10,000 objects of a valid detail would come to about 78 GB;
+  300 of them took the gateway from 150 MB to 7.3 GB. Every replacement is
+  charged, before its value is built, by the bytes it adds to the body's JSON
+  text (escapes counted), against ``kMaxServedIdRewriteGrowth`` (10 MB, as much
+  again as the largest body a peer is read for); a body whose rewrite would
+  pass it is refused with ``502`` and not served in part. A rename adds the
+  peer's name and a separator to an ID and a name, so a discovery response
+  grows by a fraction of its own size.
 
 The ``EntityMerger::SEPARATOR`` constant (``__``) is used as the prefix
 separator. The routing table maps ``entity_id -> peer_name`` for

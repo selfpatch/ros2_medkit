@@ -207,11 +207,28 @@ bool is_discovery_route(const std::string & path);
 /// would let a deeply nested answer overflow the stack. A deeper body returns
 /// kTooDeep with the walk abandoned and `body` partly rewritten; the caller
 /// must not serve it as a translated response.
+///
+/// What the walk writes is bounded too. Each replacement copies a served ID or
+/// a served name into the body once per object that names the entity, so a
+/// small body naming one renamed entity many times grows by that many copies:
+/// a name of 8 MB repeated in 10,000 objects of a valid detail comes to about
+/// 78 GB. Every replacement is charged, before its value is built, by what it
+/// adds to the body's JSON text, against kMaxServedIdRewriteGrowth; one that
+/// would take the total past it stops the walk and returns kTooLarge, with
+/// `body` partly rewritten and not to be served.
 enum class ServedIdRewrite {
   kUnchanged,  ///< Nothing in the body names a renamed or dropped entity.
   kRewritten,  ///< Renamed entities named by their served IDs, dropped ones removed.
   kTooDeep,    ///< The body nests past the bound; it is not a discovery response.
+  kTooLarge,   ///< Rewritten, the body would grow past kMaxServedIdRewriteGrowth.
 };
+
+/// The most bytes rewrite_to_served_ids adds to a body's JSON text: as much
+/// again as the largest body a peer is read for (10 MB). A rename adds the
+/// peer's name and a separator to an ID and to a name, so a discovery response
+/// grows by a fraction of its own size; only a body that names one renamed
+/// entity far more often than its own size would explain comes near it.
+inline constexpr size_t kMaxServedIdRewriteGrowth = 10 * 1024 * 1024;
 ServedIdRewrite rewrite_to_served_ids(nlohmann::json & body, const std::string & peer,
                                       const std::shared_ptr<const PeerIdIndex> & peer_ids,
                                       std::optional<SovdEntityType> root_type = std::nullopt);

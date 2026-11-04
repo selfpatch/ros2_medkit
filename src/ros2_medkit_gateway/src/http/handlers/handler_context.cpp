@@ -320,7 +320,9 @@ void refuse_forwarded_discovery(httplib::Response & res, const std::string & pee
 /// entities by the peer's ids as if they were this gateway's, which is the
 /// answer the rewrite exists to prevent. No discovery response comes near
 /// either bound, so only a broken or hostile peer is refused. The text is
-/// judged before it is parsed, so no deep or huge value is built.
+/// judged before it is parsed, so no deep or huge value is built. So is a body
+/// whose rewrite would add more than kMaxServedIdRewriteGrowth bytes: one that
+/// names a renamed entity in far more objects than its size accounts for.
 ///
 /// The detail of an entity, `peer_path` without a resource after the id, has
 /// to describe the entity it was asked for: an `id` other than the peer's id
@@ -374,6 +376,11 @@ void rewrite_forwarded_discovery(const httplib::Request & req, const std::string
       return;
     case ServedIdRewrite::kTooDeep:
       refuse_forwarded_discovery(res, peer, describe_peer_json_shape(PeerJsonShape::kTooDeep));
+      return;
+    case ServedIdRewrite::kTooLarge:
+      refuse_forwarded_discovery(res, peer,
+                                 "would grow by more than " + std::to_string(kMaxServedIdRewriteGrowth) +
+                                     " bytes when named by the IDs served here");
       return;
     case ServedIdRewrite::kRewritten:
       break;

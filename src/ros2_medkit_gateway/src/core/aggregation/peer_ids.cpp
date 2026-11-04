@@ -146,22 +146,72 @@ class ServedIdWalk {
     if (too_deep_) {
       return ServedIdRewrite::kTooDeep;
     }
+    if (too_large_) {
+      return ServedIdRewrite::kTooLarge;
+    }
     return changed_ ? ServedIdRewrite::kRewritten : ServedIdRewrite::kUnchanged;
   }
 
  private:
+  /// True once the walk is over: the body nests too deep, or its rewrite grew
+  /// past the budget.
+  bool halted() const {
+    return too_deep_ || too_large_;
+  }
+
   /// True, and the walk over, when `depth` is past the bound.
   bool past_bound(size_t depth) {
     if (depth >= kMaxPeerJsonDepth) {
       too_deep_ = true;
     }
-    return too_deep_;
+    return halted();
+  }
+
+  /// The length of `text` as a JSON string in the served body: quoted, with
+  /// the escapes nlohmann's dump writes (two bytes for a quote, a backslash
+  /// and \b \f \n \r \t, six for any other control character).
+  static size_t json_text_size(const std::string & text) {
+    size_t size = 2;
+    for (const char c : text) {
+      const auto byte = static_cast<unsigned char>(c);
+      if (c == '"' || c == '\\' || c == '\b' || c == '\f' || c == '\n' || c == '\r' || c == '\t') {
+        size += 2;
+      } else if (byte < 0x20) {
+        size += 6;
+      } else {
+        size += 1;
+      }
+    }
+    return size;
+  }
+
+  /// Charge replacing the string `current` by `replacement` against the growth
+  /// budget, before the replacement is copied in. False, and the walk over,
+  /// when it would take the body past kMaxServedIdRewriteGrowth.
+  bool charge(const std::string & current, const std::string & replacement) {
+    if (too_large_) {
+      return false;
+    }
+    const size_t before = json_text_size(current);
+    const size_t after = json_text_size(replacement);
+    if (after <= before) {
+      return true;
+    }
+    if (after - before > growth_left_) {
+      too_large_ = true;
+      return false;
+    }
+    growth_left_ -= after - before;
+    return true;
   }
 
   /// Apply `fate` to the ID `value` holds. True when the value is to be removed.
   bool apply(nlohmann::json & value, const Fate & fate) {
     switch (fate.kind) {
       case Fate::kRenamed:
+        if (!charge(value.get_ref<const std::string &>(), fate.renamed->id)) {
+          return false;
+        }
         value = fate.renamed->id;
         changed_ = true;
         return false;
@@ -194,10 +244,19 @@ class ServedIdWalk {
     }
     const auto fate = fate_of(ids_of(ids_, segment->type), text.substr(segment->id_pos, segment->id_len));
     switch (fate.kind) {
-      case Fate::kRenamed:
+      case Fate::kRenamed: {
+        // The ID is the only part of the URI that changes, and it is an entity
+        // ID on both sides, which JSON never escapes.
+        const size_t grown = fate.renamed->id.size() > segment->id_len ? fate.renamed->id.size() - segment->id_len : 0;
+        if (too_large_ || grown > growth_left_) {
+          too_large_ = true;
+          return false;
+        }
+        growth_left_ -= grown;
         value = with_entity_id(text, *segment, fate.renamed->id);
         changed_ = true;
         return false;
+      }
       case Fate::kDropped:
       case Fate::kUnknown:
         changed_ = true;
@@ -238,7 +297,7 @@ class ServedIdWalk {
       return;
     }
     std::vector<std::string> removed;
-    for (auto it = xm.begin(); it != xm.end() && !too_deep_; ++it) {
+    for (auto it = xm.begin(); it != xm.end() && !halted(); ++it) {
       const auto & key = it.key();
       bool remove = false;
       if (key == "parent_area_id" || key == "area") {
@@ -279,7 +338,7 @@ class ServedIdWalk {
     }
     if (value.is_array()) {
       erase_from(value, [this, depth](nlohmann::json & item) {
-        return !too_deep_ && node(item, depth + 1);
+        return !halted() && node(item, depth + 1);
       });
       return false;
     }
@@ -308,15 +367,21 @@ class ServedIdWalk {
         return true;
       }
       if (fate.kind == Fate::kRenamed) {
+        if (!charge(entity_id.get_ref<const std::string &>(), fate.renamed->id)) {
+          return false;
+        }
         entity_id = fate.renamed->id;
         if (value.contains("name") && value["name"].is_string()) {
+          if (!charge(value["name"].get_ref<const std::string &>(), fate.renamed->name)) {
+            return false;
+          }
           value["name"] = fate.renamed->name;
         }
         changed_ = true;
       }
     }
     std::vector<std::string> removed;
-    for (auto it = value.begin(); it != value.end() && !too_deep_; ++it) {
+    for (auto it = value.begin(); it != value.end() && !halted(); ++it) {
       if (it.key() == "id" || it.key() == "name") {
         continue;
       }
@@ -340,6 +405,8 @@ class ServedIdWalk {
   std::optional<SovdEntityType> root_type_;
   bool changed_{false};
   bool too_deep_{false};
+  bool too_large_{false};
+  size_t growth_left_{kMaxServedIdRewriteGrowth};
 };
 
 }  // namespace

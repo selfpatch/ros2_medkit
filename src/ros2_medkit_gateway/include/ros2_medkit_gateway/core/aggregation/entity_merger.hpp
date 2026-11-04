@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -166,6 +167,12 @@ class EntityMerger {
   /// Separator used for prefixing remote entity IDs on collision.
   static constexpr const char * SEPARATOR = "__";
 
+  /// The longest name, in bytes, a prefixed entity is served under:
+  /// `<peer>__<name>` is cut to it at a UTF-8 character boundary. The peer's
+  /// name is bounded only by the text a refresh may read (16 MB), and the
+  /// served name is copied into every forwarded object that names the entity.
+  static constexpr size_t kMaxServedNameBytes = 512;
+
  private:
   enum class Kind { kArea, kComponent, kApp, kFunction };
 
@@ -192,6 +199,10 @@ class EntityMerger {
 
   /// Create a prefixed ID: "peername__original_id"
   std::string prefix_id(const std::string & id) const;
+
+  /// The name a prefixed entity is served under: "peername__name", cut to
+  /// kMaxServedNameBytes.
+  std::string prefix_name(const std::string & name) const;
 
   /// Create the source tag for remote entities: "peer:<name>"
   std::string peer_source() const;
