@@ -371,7 +371,9 @@ void rewrite_forwarded_discovery(const httplib::Request & req, const std::string
     }
     detail_type = segment->type;
   }
-  switch (rewrite_to_served_ids(body, peer, peer_ids, detail_type)) {
+  // The items of a relationship collection are of the type the relationship
+  // lists when they name none the walk recognizes.
+  switch (rewrite_to_served_ids(body, peer, peer_ids, detail_type, relationship_items(peer_path))) {
     case ServedIdRewrite::kUnchanged:
       return;
     case ServedIdRewrite::kTooDeep:

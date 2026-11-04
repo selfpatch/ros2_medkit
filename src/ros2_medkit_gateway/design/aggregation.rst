@@ -417,8 +417,18 @@ classification pass over the full Component set:
   relationship collection such as an App's ``depends-on`` - comes back in the
   peer's own IDs, and ``validate_entity_for_route`` rewrites it to the IDs it
   is served under here before it is sent (``rewrite_to_served_ids``): the ``id``
-  of every object that names its ``type``, and of a detail that names none,
-  which is of the type its route asked for - with its ``name``, which takes the
+  of every object that names its ``type``, of a detail that names none, which
+  is of the type its route asked for, and of an item of a relationship
+  collection that names no type the walk recognizes (none, one that is not a
+  string, one no entity has), which is of the type the relationship lists - an
+  App's ``depends-on`` Apps, its ``is-located-on`` Components and its
+  ``belongs-to`` Areas, a Component's ``subcomponents`` and ``depends-on``
+  Components and its ``hosts`` Apps, an Area's ``subareas`` Areas and its
+  ``components`` and ``contains`` Components, a Function's ``hosts`` Apps or
+  Components by what the peer declared (``relationship_items``); such an item
+  kept the peer's ID while its links were rewritten or removed, and named the
+  local namesake, and one whose type cannot be established is removed whole -
+  with its ``name``, which takes the
   served one so a forwarded detail names the entity as the listings do -
   every entity URI (the self link, the resource collection links, the
   relationship links, relative or absolute; the ID is read from the path

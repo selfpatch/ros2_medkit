@@ -202,6 +202,25 @@ std::optional<std::string> served_entity_uri(const std::shared_ptr<const PeerIdI
 /// `is-located-on`, `belongs-to`).
 bool is_discovery_route(const std::string & path);
 
+/// What a relationship collection lists, by the entity its route names and the
+/// relationship: an App's `depends-on` lists Apps, its `is-located-on`
+/// Components and its `belongs-to` Areas; a Component's `subcomponents` and
+/// `depends-on` list Components and its `hosts` Apps; an Area's `subareas`
+/// lists Areas and its `components` and `contains` Components; a Function's
+/// `hosts` lists Apps or Components.
+struct RelationshipItems {
+  /// The type of each item, UNKNOWN for a relationship this gateway knows no
+  /// item type of.
+  SovdEntityType type{SovdEntityType::UNKNOWN};
+  /// An App or a Component, as a Function's hosts: the App when the peer
+  /// declared one by the item's ID, else its Component (served_member_id).
+  bool member{false};
+};
+
+/// The items of the relationship collection `path` names - a discovery route
+/// with a relationship after the entity - or std::nullopt for any other path.
+std::optional<RelationshipItems> relationship_items(const std::string & path);
+
 /// Rewrite a discovery response `peer` answered so that every entity it names
 /// is named by the ID this gateway serves it under (served_entity_id).
 ///
@@ -217,8 +236,14 @@ bool is_discovery_route(const std::string & path);
 /// links, relative or absolute, an absolute one written as a path on this
 /// gateway (served_entity_uri); and the relationship IDs `x-medkit` carries
 /// (`parent_area_id`, `parentComponentId`, `dependsOn`, `area`,
-/// `component_id`, `hosts`). A reference to a dropped entity, or to one the
-/// peer never declared, is removed: the item of a collection that describes
+/// `component_id`, `hosts`). On a relationship collection (`items`, given),
+/// an item that names no type the walk recognizes - none, one that is not a
+/// string, one no entity has - is of the type the relationship lists, and its
+/// `id` and `name` are rewritten as that type's; one whose type cannot be
+/// established that way is removed whole. Left as it was, such an item kept
+/// the peer's ID while its links were rewritten or removed, and named, through
+/// this gateway, the local entity that holds that ID. A reference to a dropped
+/// entity, or to one the peer never declared, is removed: the item of a collection that describes
 /// it, the link or relationship field that names it, the entry of a list of
 /// IDs. IDs the merge admitted unrenamed are left as they are. Every lookup reads `peer_ids`, the index of
 /// the generation the request was validated against (see served_entity_id).
@@ -252,6 +277,7 @@ enum class ServedIdRewrite {
 inline constexpr size_t kMaxServedIdRewriteGrowth = 10 * 1024 * 1024;
 ServedIdRewrite rewrite_to_served_ids(nlohmann::json & body, const std::string & peer,
                                       const std::shared_ptr<const PeerIdIndex> & peer_ids,
-                                      std::optional<SovdEntityType> root_type = std::nullopt);
+                                      std::optional<SovdEntityType> root_type = std::nullopt,
+                                      std::optional<RelationshipItems> items = std::nullopt);
 
 }  // namespace ros2_medkit_gateway
