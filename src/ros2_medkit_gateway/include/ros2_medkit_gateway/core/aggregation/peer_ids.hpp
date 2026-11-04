@@ -165,6 +165,22 @@ std::optional<std::string> served_entity_id(const std::shared_ptr<const PeerIdIn
 std::optional<std::string> served_member_id(const std::shared_ptr<const PeerIdIndex> & peer_ids,
                                             const std::string & peer, const std::string & member_id);
 
+/// The id of an item `peer` listed in a fan-out collection - a configuration,
+/// a data item, an operation - with the member it is qualified by named by the
+/// ID this gateway serves that member under (served_member_id).
+///
+/// A member-qualified id is `<member>:<item>`, split at the first colon. This
+/// gateway splits an id it is asked for the same way and reads the member half
+/// against its own members, so the peer's `x:gain`, for a member `x` the merge
+/// renamed, addresses the local `x` here and a write to it changes the local
+/// parameter. The half is read as a member only when it can be an entity ID,
+/// which a colon in an item's own name (`ns.a:b`) does not make it. Returns the
+/// id unchanged when it carries no such half or the member keeps its ID,
+/// `<served>:<item>` for a renamed member, and std::nullopt for a member the
+/// merge dropped or the peer never declared: no id here addresses that item.
+std::optional<std::string> served_member_qualified_id(const std::shared_ptr<const PeerIdIndex> & peer_ids,
+                                                      const std::string & peer, const std::string & item_id);
+
 /// `uri`, an entity URI `peer` reported - `/api/v1/<collection>/<id>...`, or
 /// the same behind `http(s)://host` - with the entity it names named by the
 /// ID this gateway serves it under (served_entity_id), read from `peer_ids`,

@@ -24,6 +24,7 @@
 
 #include "ros2_medkit_gateway/core/aggregation/peer_id_index.hpp"
 #include "ros2_medkit_gateway/core/aggregation/peer_json.hpp"
+#include "ros2_medkit_gateway/core/entity_validation.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -425,6 +426,26 @@ std::optional<std::string> served_member_id(const std::shared_ptr<const PeerIdIn
     return member_id;
   }
   return served(member_fate_of(peer_ids_of(peer_ids, peer), member_id), member_id);
+}
+
+std::optional<std::string> served_member_qualified_id(const std::shared_ptr<const PeerIdIndex> & peer_ids,
+                                                      const std::string & peer, const std::string & item_id) {
+  const auto colon = item_id.find(':');
+  if (peer.empty() || colon == std::string::npos) {
+    return item_id;
+  }
+  const std::string member = item_id.substr(0, colon);
+  if (!validate_entity_id(member)) {
+    return item_id;
+  }
+  const auto served = served_member_id(peer_ids, peer, member);
+  if (!served) {
+    return std::nullopt;
+  }
+  if (*served == member) {
+    return item_id;
+  }
+  return *served + item_id.substr(colon);
 }
 
 std::optional<std::string> served_entity_uri(const std::shared_ptr<const PeerIdIndex> & peer_ids,

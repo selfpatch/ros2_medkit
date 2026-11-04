@@ -510,23 +510,37 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
     // the peer sends names the LOCAL leaf here. Re-emitted verbatim it
     // attributes the peer's topic to a member that does not publish it, and
     // every id built from that attribution - by this gateway or by a client
-    // reading the list - is resolved against the wrong member.
+    // reading the list - is resolved against the wrong member: the member half
+    // of a qualified id (`x:/topic`) is read against this gateway's members, so
+    // a write to it would publish on the local member's topic.
     std::unordered_set<std::string> topics_from_peers;
     for (size_t index = 0; index < fan_out.items.size(); ++index) {
       auto & item = fan_out.items[index];
       const std::string peer_name = index < fan_out.item_peers.size() ? fan_out.item_peers[index] : std::string{};
-      if (agg != nullptr && !peer_name.empty() && item.x_medkit.has_value() && item.x_medkit->member_ids.has_value()) {
-        // A member the merge dropped is not served here, and its id names the
-        // local entity that took its place: it is removed, not re-addressed.
-        // Read against the index of the generation the request was validated
+      if (agg != nullptr && !peer_name.empty()) {
+        // A member the merge dropped, or one the peer never declared, is not
+        // served here, and its id names whatever holds it here: it is removed,
+        // not re-addressed, and an item none of whose members is served here
+        // is left out, as is one whose id is qualified by such a member. Read
+        // against the index of the generation the request was validated
         // against, which is the one the fan-out targeted.
-        std::vector<std::string> members;
-        for (const auto & member_id : *item.x_medkit->member_ids) {
-          if (auto served = served_member_id(entity_info.peer_ids, peer_name, member_id)) {
-            members.push_back(std::move(*served));
+        if (item.x_medkit.has_value() && item.x_medkit->member_ids.has_value()) {
+          std::vector<std::string> members;
+          for (const auto & member_id : *item.x_medkit->member_ids) {
+            if (auto served = served_member_id(entity_info.peer_ids, peer_name, member_id)) {
+              members.push_back(std::move(*served));
+            }
           }
+          if (members.empty() && !item.x_medkit->member_ids->empty()) {
+            continue;
+          }
+          item.x_medkit->member_ids = std::move(members);
         }
-        item.x_medkit->member_ids = std::move(members);
+        auto id = served_member_qualified_id(entity_info.peer_ids, peer_name, item.id);
+        if (!id) {
+          continue;
+        }
+        item.id = std::move(*id);
       }
       if (auto topic = topic_of(item); !topic.empty()) {
         topics_from_peers.insert(std::move(topic));
