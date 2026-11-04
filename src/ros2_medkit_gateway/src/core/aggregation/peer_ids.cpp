@@ -47,32 +47,53 @@ SovdEntityType entity_type_named(const std::string & name) {
 
 /// What the merge did to one ID of one peer.
 struct Fate {
-  enum Kind { kKept, kRenamed, kDropped };
+  enum Kind {
+    kKept,     ///< Admitted under the peer's own ID.
+    kRenamed,  ///< Admitted under `renamed->id`.
+    kDropped,  ///< Left out; the ID names another entity here.
+    kUnknown,  ///< Never declared by the peer; here it names whatever holds it.
+  };
   Kind kind{kKept};
   const PeerIdIndex::Renamed * renamed{nullptr};  ///< Set for kRenamed
 };
 
-Fate fate_of(const PeerIdIndex::Ids & ids, const std::string & peer_id) {
-  if (auto it = ids.renamed.find(peer_id); it != ids.renamed.end()) {
+/// The fate of `peer_id` among `ids`, one type of one peer's IDs; nullptr
+/// when no index was published, in which case every ID is taken as it is.
+Fate fate_of(const PeerIdIndex::Ids * ids, const std::string & peer_id) {
+  if (ids == nullptr) {
+    return Fate{};
+  }
+  if (auto it = ids->renamed.find(peer_id); it != ids->renamed.end()) {
     return Fate{Fate::kRenamed, &it->second};
   }
-  if (ids.dropped.count(peer_id) > 0u) {
+  if (ids->dropped.count(peer_id) > 0u) {
     return Fate{Fate::kDropped, nullptr};
   }
-  return Fate{};
+  if (ids->admitted.count(peer_id) > 0u) {
+    return Fate{};
+  }
+  return Fate{Fate::kUnknown, nullptr};
 }
 
-/// A member names the peer's App when the merge renamed or dropped an App by
-/// that ID, and its Component otherwise.
-Fate member_fate_of(const PeerIdIndex::Peer & ids, const std::string & member_id) {
-  auto as_app = fate_of(ids.apps, member_id);
-  return as_app.kind != Fate::kKept ? as_app : fate_of(ids.components, member_id);
+/// A member names the peer's App when the peer declared an App by that ID,
+/// and its Component otherwise.
+Fate member_fate_of(const PeerIdIndex::Peer * ids, const std::string & member_id) {
+  if (ids == nullptr) {
+    return Fate{};
+  }
+  auto as_app = fate_of(&ids->apps, member_id);
+  return as_app.kind != Fate::kUnknown ? as_app : fate_of(&ids->components, member_id);
 }
 
-/// The ID index of `peer` in the snapshot `index`, or an empty one.
-const PeerIdIndex::Peer & peer_ids_of(const std::shared_ptr<const PeerIdIndex> & index, const std::string & peer) {
-  static const PeerIdIndex::Peer kEmpty;
-  return index ? index->peer(peer) : kEmpty;
+/// The ID index of `peer` in the snapshot `index` (an empty one for a peer
+/// that declared nothing), or nullptr when there is no snapshot.
+const PeerIdIndex::Peer * peer_ids_of(const std::shared_ptr<const PeerIdIndex> & index, const std::string & peer) {
+  return index ? &index->peer(peer) : nullptr;
+}
+
+/// The IDs of `type` in `ids`, or nullptr when there is no index.
+const PeerIdIndex::Ids * ids_of(const PeerIdIndex::Peer * ids, SovdEntityType type) {
+  return ids != nullptr ? &ids->of(type) : nullptr;
 }
 
 /// The entity segment of `text` when it is an entity URI - `/api/v1/<collection>/<id>...`,
@@ -99,6 +120,7 @@ std::optional<std::string> served(const Fate & fate, const std::string & peer_id
     case Fate::kRenamed:
       return fate.renamed->id;
     case Fate::kDropped:
+    case Fate::kUnknown:
       return std::nullopt;
     case Fate::kKept:
       break;
@@ -111,7 +133,7 @@ std::optional<std::string> served(const Fate & fate, const std::string & peer_id
 /// stops the walk and is reported as too deep, never as rewritten in part.
 class ServedIdWalk {
  public:
-  explicit ServedIdWalk(const PeerIdIndex::Peer & ids) : ids_(ids) {
+  explicit ServedIdWalk(const PeerIdIndex::Peer * ids) : ids_(ids) {
   }
 
   ServedIdRewrite run(nlohmann::json & body) {
@@ -141,6 +163,7 @@ class ServedIdWalk {
         changed_ = true;
         return false;
       case Fate::kDropped:
+      case Fate::kUnknown:
         changed_ = true;
         return true;
       case Fate::kKept:
@@ -150,7 +173,7 @@ class ServedIdWalk {
   }
 
   bool id(nlohmann::json & value, SovdEntityType type) {
-    return value.is_string() && apply(value, fate_of(ids_.of(type), value.get<std::string>()));
+    return value.is_string() && apply(value, fate_of(ids_of(ids_, type), value.get<std::string>()));
   }
 
   bool member(nlohmann::json & value) {
@@ -166,13 +189,14 @@ class ServedIdWalk {
     if (!segment) {
       return false;
     }
-    const auto fate = fate_of(ids_.of(segment->type), text.substr(segment->id_pos, segment->id_len));
+    const auto fate = fate_of(ids_of(ids_, segment->type), text.substr(segment->id_pos, segment->id_len));
     switch (fate.kind) {
       case Fate::kRenamed:
         value = with_entity_id(text, *segment, fate.renamed->id);
         changed_ = true;
         return false;
       case Fate::kDropped:
+      case Fate::kUnknown:
         changed_ = true;
         return true;
       case Fate::kKept:
@@ -264,8 +288,8 @@ class ServedIdWalk {
     if (type != value.end() && type->is_string() && entity_id != value.end() && entity_id->is_string()) {
       const auto entity_type = entity_type_named(type->get<std::string>());
       if (entity_type != SovdEntityType::UNKNOWN) {
-        const auto fate = fate_of(ids_.of(entity_type), entity_id->get<std::string>());
-        if (fate.kind == Fate::kDropped) {
+        const auto fate = fate_of(ids_of(ids_, entity_type), entity_id->get<std::string>());
+        if (fate.kind == Fate::kDropped || fate.kind == Fate::kUnknown) {
           changed_ = true;
           return true;
         }
@@ -299,7 +323,7 @@ class ServedIdWalk {
     return false;
   }
 
-  const PeerIdIndex::Peer & ids_;
+  const PeerIdIndex::Peer * ids_;
   bool changed_{false};
   bool too_deep_{false};
 };
@@ -311,7 +335,7 @@ std::optional<std::string> served_entity_id(const std::shared_ptr<const PeerIdIn
   if (peer.empty() || peer_id.empty()) {
     return peer_id;
   }
-  return served(fate_of(peer_ids_of(peer_ids, peer).of(type), peer_id), peer_id);
+  return served(fate_of(ids_of(peer_ids_of(peer_ids, peer), type), peer_id), peer_id);
 }
 
 std::optional<std::string> served_member_id(const std::shared_ptr<const PeerIdIndex> & peer_ids,
@@ -329,11 +353,12 @@ std::optional<std::string> served_entity_uri(const std::shared_ptr<const PeerIdI
     return uri;
   }
   const auto fate =
-      fate_of(peer_ids_of(peer_ids, peer).of(segment->type), uri.substr(segment->id_pos, segment->id_len));
+      fate_of(ids_of(peer_ids_of(peer_ids, peer), segment->type), uri.substr(segment->id_pos, segment->id_len));
   switch (fate.kind) {
     case Fate::kRenamed:
       return with_entity_id(uri, *segment, fate.renamed->id);
     case Fate::kDropped:
+    case Fate::kUnknown:
       return std::nullopt;
     case Fate::kKept:
       break;

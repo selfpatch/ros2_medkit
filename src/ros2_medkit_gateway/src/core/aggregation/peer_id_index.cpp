@@ -16,6 +16,8 @@
 
 #include <string_view>
 
+#include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
+
 namespace ros2_medkit_gateway {
 
 namespace {
@@ -37,6 +39,17 @@ void add_renames(PeerIdIndex & index, const std::vector<Entity> & entities, Memb
     }
     auto & ids = index.peers[entity.source.substr(kPeerPrefix.size())].*member;
     ids.renamed[entity.original_id] = PeerIdIndex::Renamed{entity.id, entity.name.empty() ? entity.id : entity.name};
+  }
+}
+
+/// Record every ID a peer contributes to an entity of `entities` under, as that
+/// peer knows it (peer_targets_of).
+template <class Entity, class Member>
+void add_admitted(PeerIdIndex & index, const std::vector<Entity> & entities, Member member) {
+  for (const auto & entity : entities) {
+    for (auto & target : peer_targets_of(entity)) {
+      (index.peers[target.peer].*member).admitted.insert(std::move(target.id));
+    }
   }
 }
 
@@ -73,6 +86,10 @@ PeerIdIndex make_peer_id_index(const std::vector<Area> & areas, const std::vecto
   add_renames(index, components, &PeerIdIndex::Peer::components);
   add_renames(index, apps, &PeerIdIndex::Peer::apps);
   add_renames(index, functions, &PeerIdIndex::Peer::functions);
+  add_admitted(index, areas, &PeerIdIndex::Peer::areas);
+  add_admitted(index, components, &PeerIdIndex::Peer::components);
+  add_admitted(index, apps, &PeerIdIndex::Peer::apps);
+  add_admitted(index, functions, &PeerIdIndex::Peer::functions);
   for (const auto & [peer, dropped] : drops) {
     auto & entry = index.peers[peer];
     entry.areas.dropped.insert(dropped.areas.begin(), dropped.areas.end());

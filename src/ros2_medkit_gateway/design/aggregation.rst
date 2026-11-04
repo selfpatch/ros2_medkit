@@ -411,7 +411,14 @@ classification pass over the full Component set:
   entity the merge dropped is removed - the collection item that describes
   it, the link or relationship field that names it, the entry of a list of
   IDs - because by the peer's ID it would name the local entity that took its
-  place. Only recorded renames and drops are applied. They come from the
+  place. So is a reference to an ID the peer never declared: the index holds
+  each peer's admitted IDs per type, every entity the peer contributes by the
+  ID that peer knows it by, and only those are the peer's to name. A detail of
+  the peer's App ``sensor`` linking ``/apps/admin`` names, through this
+  gateway, the local ``admin``; the link is removed. The detail itself has to
+  describe the entity it was asked for: an ``id`` other than the peer's id for
+  it, or a ``type`` other than the route's, is refused with ``502``. Only
+  recorded renames are applied. They come from the
   ``PeerIdIndex`` the refresh builds from the served entities and the merge's
   drops and publishes in the entity cache with the entities
   (``ThreadSafeEntityCache::update_all``). The rewrite reads, for the whole
@@ -423,9 +430,10 @@ classification pass over the full Component set:
   took its place. A rewritten body drops the peer's ``ETag``.
   Responses of the resource collections (data, faults, operations and the
   rest) are passed through as the peer sent them, except for the member IDs a
-  fan-out reads off them: a dropped member is removed from a data item's
-  ``x-medkit.member_ids``, and an operation of a dropped member is left out of
-  the list.
+  fan-out reads off them: a dropped member, or one the peer never declared, is
+  removed from a data item's ``x-medkit.member_ids``, and an operation of such
+  a member is left out of the list. The ``Location`` of every forwarded answer
+  is translated the same way (``served_entity_uri``).
 
   The body comes from the peer, so the walk is bounded: a body nested deeper
   than ``kMaxPeerJsonDepth`` (64) levels, or holding more than

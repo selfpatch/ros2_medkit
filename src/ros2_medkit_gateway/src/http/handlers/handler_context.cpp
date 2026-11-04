@@ -273,6 +273,24 @@ std::string path_on_peer(const std::string & path, const EntityInfo & entity) {
   return path;
 }
 
+/// The `type` an entity detail of the collection `type` names itself by.
+std::string route_type_name(SovdEntityType type) {
+  switch (type) {
+    case SovdEntityType::AREA:
+      return "area";
+    case SovdEntityType::COMPONENT:
+      return "component";
+    case SovdEntityType::APP:
+      return "app";
+    case SovdEntityType::FUNCTION:
+      return "function";
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+      break;
+  }
+  return "";
+}
+
 /// Replace a forwarded discovery response with a 502 naming why it is not
 /// served: `what` the body does, after the peer's name. The peer's headers
 /// that describe its body go with it.
@@ -303,8 +321,14 @@ void refuse_forwarded_discovery(httplib::Response & res, const std::string & pee
 /// answer the rewrite exists to prevent. No discovery response comes near
 /// either bound, so only a broken or hostile peer is refused. The text is
 /// judged before it is parsed, so no deep or huge value is built.
-void rewrite_forwarded_discovery(const httplib::Request & req, const std::string & peer, httplib::Response & res,
-                                 const std::shared_ptr<const PeerIdIndex> & peer_ids) {
+///
+/// The detail of an entity, `peer_path` without a resource after the id, has
+/// to describe the entity it was asked for: an `id` other than the peer's id
+/// for it, or a `type` other than the route's, is refused (502). Served, a
+/// detail of the peer's App `sensor` saying it is App `admin` would present
+/// as this gateway's account of whichever entity holds `admin` here.
+void rewrite_forwarded_discovery(const httplib::Request & req, const std::string & peer_path, const std::string & peer,
+                                 httplib::Response & res, const std::shared_ptr<const PeerIdIndex> & peer_ids) {
   if (req.method != "GET" || res.status != 200 || !is_discovery_route(req.path)) {
     return;
   }
@@ -315,6 +339,25 @@ void rewrite_forwarded_discovery(const httplib::Request & req, const std::string
   auto body = nlohmann::json::parse(res.body, nullptr, false);
   if (body.is_discarded()) {
     return;
+  }
+  if (const auto segment = locate_entity_segment(peer_path); segment && !segment->has_subpath) {
+    const std::string asked = peer_path.substr(segment->id_pos, segment->id_len);
+    const auto id = body.is_object() ? body.find("id") : body.end();
+    const std::string said = id != body.end() && id->is_string() ? id->get<std::string>() : std::string{};
+    if (said != asked) {
+      refuse_forwarded_discovery(res, peer,
+                                 said.empty() ? "names no entity for '" + asked + "'"
+                                              : "describes entity '" + said + "' rather than the '" + asked +
+                                                    "' it was asked for");
+      return;
+    }
+    const auto type = body.find("type");
+    if (type != body.end() && type->is_string() && type->get<std::string>() != route_type_name(segment->type)) {
+      refuse_forwarded_discovery(res, peer,
+                                 "describes '" + asked + "' as a " + type->get<std::string>() + " rather than a " +
+                                     route_type_name(segment->type));
+      return;
+    }
   }
   switch (rewrite_to_served_ids(body, peer, peer_ids)) {
     case ServedIdRewrite::kUnchanged:
@@ -448,9 +491,10 @@ http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(cons
       return tl::unexpected(ErrorVariant{std::move(err)});
     }
     if (tl_forward_response != nullptr) {
-      aggregation_mgr_->forward_request(entity_info.peer_name, raw_req, *tl_forward_response,
-                                        path_on_peer(raw_req.path, entity_info));
-      rewrite_forwarded_discovery(raw_req, entity_info.peer_name, *tl_forward_response, entity_info.peer_ids);
+      const std::string peer_path = path_on_peer(raw_req.path, entity_info);
+      aggregation_mgr_->forward_request(entity_info.peer_name, raw_req, *tl_forward_response, peer_path);
+      rewrite_forwarded_discovery(raw_req, peer_path, entity_info.peer_name, *tl_forward_response,
+                                  entity_info.peer_ids);
       translate_forwarded_location(*tl_forward_response, entity_info.peer_name, entity_info.peer_ids);
     }
     return tl::unexpected(ErrorVariant{http::Forwarded{}});

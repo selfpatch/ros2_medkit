@@ -152,14 +152,16 @@ std::vector<PeerTarget> peer_targets_of(const Entity & entity) {
 /// `<peer>__<peer_id>`, and one it dropped is not served at all - in both
 /// cases the unprefixed ID names a local entity here.
 /// Only recorded renames and drops count, so a peer's own entity whose ID
-/// merely reads like a prefix is left alone. Returns `peer_id` when the merge
-/// did neither, which is the ordinary case, and std::nullopt for a dropped
-/// entity: nothing here may be named for it.
+/// merely reads like a prefix is left alone. Returns `peer_id` for an entity
+/// the merge admitted under it, which is the ordinary case, and std::nullopt
+/// for a dropped entity or an ID the peer never declared: nothing here may be
+/// named for either, since the ID names whatever holds it here. Without an
+/// index - none published yet - every ID is returned as it is.
 std::optional<std::string> served_entity_id(const std::shared_ptr<const PeerIdIndex> & peer_ids, SovdEntityType type,
                                             const std::string & peer, const std::string & peer_id);
 
 /// served_entity_id for a member a peer names without saying its type: its App
-/// when one was renamed or dropped by that ID, else its Component.
+/// when the peer declared an App by that ID, else its Component.
 std::optional<std::string> served_member_id(const std::shared_ptr<const PeerIdIndex> & peer_ids,
                                             const std::string & peer, const std::string & member_id);
 
@@ -192,10 +194,10 @@ bool is_discovery_route(const std::string & path);
 /// entity URI - the self link, the resource collection links, the relationship
 /// links, relative or absolute; and the relationship IDs `x-medkit` carries
 /// (`parent_area_id`, `parentComponentId`, `dependsOn`, `area`,
-/// `component_id`, `hosts`). A reference to a dropped entity is removed: the
-/// item of a collection that describes it, the link or relationship field that
-/// names it, the entry of a list of IDs. IDs the merge neither renamed nor
-/// dropped are left as they are. Every lookup reads `peer_ids`, the index of
+/// `component_id`, `hosts`). A reference to a dropped entity, or to one the
+/// peer never declared, is removed: the item of a collection that describes
+/// it, the link or relationship field that names it, the entry of a list of
+/// IDs. IDs the merge admitted unrenamed are left as they are. Every lookup reads `peer_ids`, the index of
 /// the generation the request was validated against (see served_entity_id).
 ///
 /// The walk descends at most kMaxPeerJsonDepth levels (see peer_json.hpp): the

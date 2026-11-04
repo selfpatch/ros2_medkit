@@ -484,9 +484,11 @@ discovery responses that come back (its detail, its relationship collections)
 are rewritten to the IDs this gateway serves: the entity's own ID and its name
 (``arm__Camera driver``, as the listings show it), its self, resource and
 relationship links, and the related entities' IDs. A reference to a peer
-entity that is not served (see the taken prefixed ID above) is removed from the
-response, because by the peer's ID it would name the local entity that holds
-that ID here. The ``Location`` header of any forwarded answer - an async
+entity that is not served (see the taken prefixed ID above), or to an ID the
+peer never declared, is removed from the response, because by the peer's ID it
+would name the local entity that holds that ID here. A forwarded detail has to
+describe the entity asked for: one naming another ``id``, or another ``type``,
+is refused with ``502`` (``x-medkit-peer-unavailable``). The ``Location`` header of any forwarded answer - an async
 execution, a lock, a created resource - is translated the same way, whether the
 entity was forwarded whole or a member was reached through a grouping entity
 (below): ``POST /apps/arm__camera/operations/calibrate/executions`` comes back
