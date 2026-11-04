@@ -351,8 +351,8 @@ gateway that sent them, so an id naming a peer-owned member is dispatched to
 that member's own route exactly as the `POST` was. So is the status, stop and
 cancel of an execution on a peer's own App, and the `Location` a forwarded
 `201` or `202` comes back with names the entity by the id it is served under
-here - for an App renamed on collision, `<peer>__<id>`, not the peer's own id,
-which names the local namesake.
+here, as a path on this gateway - for an App renamed on collision,
+`<peer>__<id>`, not the peer's own id, which names the local namesake.
 
 A member-qualified request is served by the gateway that owns that member, on
 the member's own entity route. An aggregating entity holds nothing itself and
