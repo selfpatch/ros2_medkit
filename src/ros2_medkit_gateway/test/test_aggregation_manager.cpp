@@ -488,11 +488,12 @@ TEST(AggregationManager, served_member_id_reads_a_peers_own_name_through_the_rec
   // Only a recorded rename is reversed. Another peer can own an entity whose id
   // reads like this peer's prefix - here peer_b owns one literally called
   // `peer_a__shared_sensor` - and peer_a can own one itself that was never
-  // renamed; neither re-addresses peer_a's own uncollided `shared_sensor`.
-  publish({app("peer_a__shared_sensor", "", "peer_b")});
+  // renamed; neither re-addresses peer_a's own uncollided `shared_sensor`,
+  // which peer_a declares alongside.
+  publish({app("peer_a__shared_sensor", "", "peer_b"), app("shared_sensor", "", "peer_a")});
   EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "peer_a", "shared_sensor"),
             std::optional<std::string>("shared_sensor"));
-  publish({app("peer_a__shared_sensor", "", "peer_a")});
+  publish({app("peer_a__shared_sensor", "", "peer_a"), app("shared_sensor", "", "peer_a")});
   EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "peer_a", "shared_sensor"),
             std::optional<std::string>("shared_sensor"));
 
