@@ -91,6 +91,9 @@ struct AggregatedOperations {
   std::vector<ServiceInfo> services;
   std::vector<ActionInfo> actions;
   std::vector<std::string> source_ids;  ///< Entity IDs that contributed
+  /// The type of each `source_ids` entry, at the same index: a Component and
+  /// an App may share an id, and only the pair names one member.
+  std::vector<SovdEntityType> source_types;
   /// Owning member per full ROS path, for the items in `services`/`actions`.
   ///
   /// See AggregatedData::owner_by_topic for why the collection-level

@@ -577,6 +577,7 @@ AggregatedOperations ThreadSafeEntityCache::get_app_operations(const std::string
   result.services = app.services;
   result.actions = app.actions;
   result.source_ids.push_back(app_id);
+  result.source_types.push_back(SovdEntityType::APP);
 
   return result;
 }
@@ -1187,6 +1188,7 @@ void ThreadSafeEntityCache::collect_operations_from_apps(const std::vector<uint3
     }
     const auto & app = apps_[slot];
     result.source_ids.push_back(app.id);
+    result.source_types.push_back(SovdEntityType::APP);
 
     for (const auto & svc : app.services) {
       if (seen_paths.insert(svc.full_path).second) {
@@ -1212,6 +1214,7 @@ void ThreadSafeEntityCache::collect_operations_from_component(uint32_t comp_slot
 
   const auto & comp = components_[comp_slot];
   result.source_ids.push_back(comp.id);
+  result.source_types.push_back(SovdEntityType::COMPONENT);
 
   for (const auto & svc : comp.services) {
     if (seen_paths.insert(svc.full_path).second) {
