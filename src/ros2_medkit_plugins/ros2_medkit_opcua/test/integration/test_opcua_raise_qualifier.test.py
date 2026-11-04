@@ -14,7 +14,7 @@
 # limitations under the License.
 
 """
-raise_after_samples and raise_after_ms through a real gateway and OPC UA server.
+raise_after_samples and raise_after_ms through a real gateway, fault manager and OPC UA server.
 
 The fixture server holds two writable Int32 registers and a constant
 Tank.Level of 42.0. The node map gives each a detection rule:
@@ -25,9 +25,10 @@ Tank.Level of 42.0. The node map gives each a detection rule:
   * FaultCode > 0 with raise_after_samples: 4.
 
 The test writes the registers through the fixture's stdin and reads which
-faults the plugin holds active from x-plc-status. It runs once with polling
-and once with subscriptions, the transport where a steady value sends no
-further updates. Per leg:
+faults are CONFIRMED from the fault manager over the gateway's /faults, so a
+fault only counts once its report has left the plugin. It runs once with
+polling and once with subscriptions, the transport where a steady value sends
+no further updates. Each leg has its own fault manager. Per leg:
 
   * a StatusWord blip shorter than the window never shows up,
   * a held StatusWord shows up no sooner than 3 s after the write,
@@ -249,30 +250,48 @@ def start_gateway(params_file, log_path, env):
     return proc
 
 
-def active(status_url):
-    """Return the set of faults the plugin holds active, or None if unreadable."""
-    status = http_json(status_url)
-    if not isinstance(status, dict):
+def start_fault_manager(log_path, env):
+    """Start fault_manager_node with memory storage and wait until its services exist."""
+    log = open(log_path, 'w')
+    proc = subprocess.Popen(
+        ['ros2', 'run', 'ros2_medkit_fault_manager', 'fault_manager_node',
+         '--ros-args', '-p', 'storage_type:=memory'],
+        stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True,
+    )
+    proc._log = log
+    # Logged at the end of the constructor, after the services exist.
+    started = wait_log(log_path, 'FaultManager node started (', 30 * SCALE)
+    if not started or proc.poll() is not None:
+        terminate(proc)
         return None
-    return set(status.get('active_alarms', []))
+    return proc
 
 
-def first_active(status_url, code, deadline, period=0.1):
+def active(faults_url):
+    """Return the fault codes the fault manager has CONFIRMED, or None if unreadable."""
+    listing = http_json(faults_url)
+    if not isinstance(listing, dict):
+        return None
+    return {item.get('fault_code') for item in listing.get('items', [])
+            if item.get('status') == 'CONFIRMED'}
+
+
+def first_active(faults_url, code, deadline, period=0.1):
     """Seconds until <code> is active, or None if it is not within <deadline>."""
     start = time.monotonic()
     while time.monotonic() - start < deadline:
-        now = active(status_url)
+        now = active(faults_url)
         if now is not None and code in now:
             return time.monotonic() - start
         time.sleep(period)
     return None
 
 
-def stays_inactive(status_url, code, seconds, period=0.1):
+def stays_inactive(faults_url, code, seconds, period=0.1):
     """Return True when <code> is never active during <seconds>."""
     start = time.monotonic()
     while time.monotonic() - start < seconds:
-        now = active(status_url)
+        now = active(faults_url)
         if now is not None and code in now:
             return False
         time.sleep(period)
@@ -290,16 +309,24 @@ def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, sub
     write_params(params, port=port, plugin=plugin, server_port=server_port,
                  node_map=node_map, manifest=manifest, subscriptions=subscriptions)
     log = workdir / f'gateway_{mode}.log'
+    fm_log = workdir / f'fault_manager_{mode}.log'
+    fm = start_fault_manager(fm_log, env)
+    if not check(fm is not None, f'{mode}: fault_manager_node started'):
+        print(fm_log.read_text(errors='replace')[-3000:], file=sys.stderr)
+        return
     gw = start_gateway(params, log, env)
     status_url = f'http://127.0.0.1:{port}/api/v1/components/{COMPONENT}/x-plc-status'
+    faults_url = f'http://127.0.0.1:{port}/api/v1/faults?status=all'
     try:
         # Connected, on the transport this leg is about, and the control rule
-        # without a qualifier already active.
+        # without a qualifier already CONFIRMED in the fault manager.
         ready = False
+        status = None
         for _ in range(int(90 * SCALE / 0.5)):
             status = http_json(status_url)
+            now = active(faults_url)
             if isinstance(status, dict) and status.get('connected') is True \
-                    and CONTROL in status.get('active_alarms', []):
+                    and now is not None and CONTROL in now:
                 ready = True
                 break
             time.sleep(0.5)
@@ -320,13 +347,13 @@ def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, sub
         blip = time.monotonic() - blip_start
         check(blip < HOLD_MS / 1000.0,
               f'{mode}: the blip lasted {blip:.2f} s, less than {HOLD_MS} ms')
-        check(stays_inactive(status_url, HELD, (HOLD_MS / 1000.0 + 2.0) * SCALE),
+        check(stays_inactive(faults_url, HELD, (HOLD_MS / 1000.0 + 2.0) * SCALE),
               f'{mode}: a 1 s StatusWord blip never raises {HELD}')
 
         # 2. A held condition. The wait starts at the first sample, which is no
         #    earlier than the write, so the fault cannot show up sooner.
         check(set_register(server, server_log, 'StatusWord', 1), f'{mode}: StatusWord set to 1')
-        elapsed = first_active(status_url, HELD, (HOLD_MS / 1000.0 + 5.0) * SCALE)
+        elapsed = first_active(faults_url, HELD, (HOLD_MS / 1000.0 + 5.0) * SCALE)
         check(elapsed is not None, f'{mode}: a held StatusWord raises {HELD}')
         if elapsed is not None:
             check(elapsed >= HOLD_MS / 1000.0 - 0.1,
@@ -337,7 +364,7 @@ def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, sub
         cleared = None
         start = time.monotonic()
         while time.monotonic() - start < 3.0 * SCALE:
-            now = active(status_url)
+            now = active(faults_url)
             if now is not None and HELD not in now:
                 cleared = time.monotonic() - start
                 break
@@ -347,17 +374,18 @@ def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, sub
         # 4. Samples. Under a subscription the register sends one change and
         #    the poll loop counts one more sample per cycle while it holds.
         check(set_register(server, server_log, 'FaultCode', 5), f'{mode}: FaultCode set to 5')
-        elapsed = first_active(status_url, REPEATED, (SAMPLES * POLL_MS / 1000.0 + 6.0) * SCALE)
+        elapsed = first_active(faults_url, REPEATED, (SAMPLES * POLL_MS / 1000.0 + 6.0) * SCALE)
         check(elapsed is not None, f'{mode}: a held FaultCode raises {REPEATED}')
         if elapsed is not None:
             least = (SAMPLES - 1) * POLL_MS / 1000.0 - 0.3
             check(elapsed >= least,
                   f'{mode}: {REPEATED} needs {SAMPLES} samples, not one (after {elapsed:.2f} s)')
         set_register(server, server_log, 'FaultCode', 0)
-        check(first_active(status_url, CONTROL, 5 * SCALE) is not None,
+        check(first_active(faults_url, CONTROL, 5 * SCALE) is not None,
               f'{mode}: {CONTROL} still active at the end of the leg')
     finally:
         terminate(gw)
+        terminate(fm)
         # Leave the registers at 0 for the next leg; a server that is already
         # gone is reported by the next leg's own checks.
         try:
