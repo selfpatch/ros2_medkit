@@ -324,9 +324,11 @@ void refuse_forwarded_discovery(httplib::Response & res, const std::string & pee
 ///
 /// The detail of an entity, `peer_path` without a resource after the id, has
 /// to describe the entity it was asked for: an `id` other than the peer's id
-/// for it, or a `type` other than the route's, is refused (502). Served, a
-/// detail of the peer's App `sensor` saying it is App `admin` would present
-/// as this gateway's account of whichever entity holds `admin` here.
+/// for it, or a `type` other than the route's - a `type` that is not a string
+/// included - is refused (502). Served, a detail of the peer's App `sensor`
+/// saying it is App `admin` would present as this gateway's account of
+/// whichever entity holds `admin` here. A detail that names no type is of the
+/// route's, and its `id` and `name` are rewritten as that type's.
 void rewrite_forwarded_discovery(const httplib::Request & req, const std::string & peer_path, const std::string & peer,
                                  httplib::Response & res, const std::shared_ptr<const PeerIdIndex> & peer_ids) {
   if (req.method != "GET" || res.status != 200 || !is_discovery_route(req.path)) {
@@ -340,6 +342,7 @@ void rewrite_forwarded_discovery(const httplib::Request & req, const std::string
   if (body.is_discarded()) {
     return;
   }
+  std::optional<SovdEntityType> detail_type;
   if (const auto segment = locate_entity_segment(peer_path); segment && !segment->has_subpath) {
     const std::string asked = peer_path.substr(segment->id_pos, segment->id_len);
     const auto id = body.is_object() ? body.find("id") : body.end();
@@ -352,14 +355,21 @@ void rewrite_forwarded_discovery(const httplib::Request & req, const std::string
       return;
     }
     const auto type = body.find("type");
-    if (type != body.end() && type->is_string() && type->get<std::string>() != route_type_name(segment->type)) {
+    if (type != body.end() && !type->is_string()) {
       refuse_forwarded_discovery(res, peer,
-                                 "describes '" + asked + "' as a " + type->get<std::string>() + " rather than a " +
-                                     route_type_name(segment->type));
+                                 "describes '" + asked + "' with a type that is not a string, not as '" +
+                                     route_type_name(segment->type) + "'");
       return;
     }
+    if (type != body.end() && type->get<std::string>() != route_type_name(segment->type)) {
+      refuse_forwarded_discovery(res, peer,
+                                 "describes '" + asked + "' as '" + type->get<std::string>() + "' rather than '" +
+                                     route_type_name(segment->type) + "'");
+      return;
+    }
+    detail_type = segment->type;
   }
-  switch (rewrite_to_served_ids(body, peer, peer_ids)) {
+  switch (rewrite_to_served_ids(body, peer, peer_ids, detail_type)) {
     case ServedIdRewrite::kUnchanged:
       return;
     case ServedIdRewrite::kTooDeep:

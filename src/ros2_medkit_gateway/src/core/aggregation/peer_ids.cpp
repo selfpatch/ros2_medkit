@@ -133,7 +133,10 @@ std::optional<std::string> served(const Fate & fate, const std::string & peer_id
 /// stops the walk and is reported as too deep, never as rewritten in part.
 class ServedIdWalk {
  public:
-  explicit ServedIdWalk(const PeerIdIndex::Peer * ids) : ids_(ids) {
+  /// `root_type`, when given, is the type of the entity the body describes
+  /// when it names none itself: a detail route's.
+  ServedIdWalk(const PeerIdIndex::Peer * ids, std::optional<SovdEntityType> root_type)
+    : ids_(ids), root_type_(root_type) {
   }
 
   ServedIdRewrite run(nlohmann::json & body) {
@@ -282,24 +285,34 @@ class ServedIdWalk {
     }
     // The entity an object describes names its type: a detail, or an item of a
     // relationship collection. A renamed one takes its served ID and the name
-    // the listings serve it under; a dropped one is removed whole.
-    const auto type = value.find("type");
-    const auto entity_id = value.find("id");
-    if (type != value.end() && type->is_string() && entity_id != value.end() && entity_id->is_string()) {
-      const auto entity_type = entity_type_named(type->get<std::string>());
-      if (entity_type != SovdEntityType::UNKNOWN) {
-        const auto fate = fate_of(ids_of(ids_, entity_type), entity_id->get<std::string>());
-        if (fate.kind == Fate::kDropped || fate.kind == Fate::kUnknown) {
-          changed_ = true;
-          return true;
+    // the listings serve it under; a dropped one is removed whole. A detail
+    // that names no type is of the type its route asked for.
+    //
+    // Read through contains() and operator[], not find(): with the type
+    // branches below, GCC 13 inlines the find() iterator's dereference into
+    // -Wnull-dereference false positives (see document_checks.cpp). value is an
+    // object, so operator[] only reads keys contains() has found.
+    auto entity_type = SovdEntityType::UNKNOWN;
+    if (value.contains("type")) {
+      if (const nlohmann::json & type = value["type"]; type.is_string()) {
+        entity_type = entity_type_named(type.get<std::string>());
+      }
+    } else if (depth == 0 && root_type_) {
+      entity_type = *root_type_;
+    }
+    if (entity_type != SovdEntityType::UNKNOWN && value.contains("id") && value["id"].is_string()) {
+      nlohmann::json & entity_id = value["id"];
+      const auto fate = fate_of(ids_of(ids_, entity_type), entity_id.get<std::string>());
+      if (fate.kind == Fate::kDropped || fate.kind == Fate::kUnknown) {
+        changed_ = true;
+        return true;
+      }
+      if (fate.kind == Fate::kRenamed) {
+        entity_id = fate.renamed->id;
+        if (value.contains("name") && value["name"].is_string()) {
+          value["name"] = fate.renamed->name;
         }
-        if (fate.kind == Fate::kRenamed) {
-          *entity_id = fate.renamed->id;
-          if (auto name = value.find("name"); name != value.end() && name->is_string()) {
-            *name = fate.renamed->name;
-          }
-          changed_ = true;
-        }
+        changed_ = true;
       }
     }
     std::vector<std::string> removed;
@@ -324,6 +337,7 @@ class ServedIdWalk {
   }
 
   const PeerIdIndex::Peer * ids_;
+  std::optional<SovdEntityType> root_type_;
   bool changed_{false};
   bool too_deep_{false};
 };
@@ -382,13 +396,14 @@ bool is_discovery_route(const std::string & path) {
 }
 
 ServedIdRewrite rewrite_to_served_ids(nlohmann::json & body, const std::string & peer,
-                                      const std::shared_ptr<const PeerIdIndex> & peer_ids) {
+                                      const std::shared_ptr<const PeerIdIndex> & peer_ids,
+                                      std::optional<SovdEntityType> root_type) {
   if (peer.empty()) {
     return ServedIdRewrite::kUnchanged;
   }
   // One snapshot for the whole body: every rename and drop it applies is of
   // the same generation.
-  return ServedIdWalk(peer_ids_of(peer_ids, peer)).run(body);
+  return ServedIdWalk(peer_ids_of(peer_ids, peer), root_type).run(body);
 }
 
 }  // namespace ros2_medkit_gateway
