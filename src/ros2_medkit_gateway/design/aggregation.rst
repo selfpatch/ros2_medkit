@@ -942,8 +942,12 @@ describes it whole or reports failure: a dead connection, a status a route has
 no other meaning for, an oversized body, a body nested deeper than
 ``kMaxPeerJsonDepth`` (64) levels or holding more than ``kMaxPeerJsonValues``
 (1,000,000) values, a request still unanswered at its deadline, unparsable
-JSON or a field of the wrong type on any of them, or a refresh keeping more of
-the peer than ``FetchBudget`` allows (see Refresh Size Limits), fails
+JSON or a field of the wrong type on any of them, a detail that describes
+another entity than the list named (``detail_mismatch``: another ``id``, or a
+``type`` other than the collection's - a detail replaces the listed entity, so
+a peer listing ``sensor`` and describing ``ecu`` would be served as ``ecu``),
+or a refresh keeping more of the peer than ``FetchBudget`` allows (see Refresh
+Size Limits), fails
 the fetch, because a picture missing a branch is indistinguishable on the wire
 from a peer that does not have that branch. Two statuses carry a meaning of
 their own: a ``404`` on a nested collection route (``/subareas``,

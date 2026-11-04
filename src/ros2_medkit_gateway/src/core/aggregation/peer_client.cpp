@@ -712,6 +712,29 @@ Function parse_function(const nlohmann::json & j) {
 }
 
 /**
+ * @brief Why the detail a peer answered for the entity it listed as `id`
+ * describes another one, or empty when it describes that entity.
+ *
+ * The detail replaces what the list said, so an `id` other than `id` - or a
+ * `type` other than `type`, a type that is not a string included - would put
+ * whatever the peer named in its place: a peer listing Component `sensor`
+ * and answering its detail as Component `ecu` was served as `ecu`, under an
+ * id its list never declared. `label` names the type in the message.
+ */
+std::string detail_mismatch(const nlohmann::json & detail, const std::string & id, const char * type,
+                            const char * label) {
+  const std::string said = string_at(detail, "id");
+  if (said != id) {
+    return std::string("answered the detail of ") + label + " '" + id + "' as '" + said + "'";
+  }
+  const auto declared = detail.find("type");
+  if (declared != detail.end() && (!declared->is_string() || declared->get_ref<const std::string &>() != type)) {
+    return std::string("answered the detail of ") + label + " '" + id + "' with type " + declared->dump();
+  }
+  return {};
+}
+
+/**
  * @brief What a non-200 on a sub-request means, which depends on the route.
  */
 enum class RouteKind {
@@ -1319,6 +1342,9 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
         return tl::unexpected<std::string>(detail.error);
       }
       if (detail.kind == SubResponse::Kind::kBody) {
+        if (auto mismatch = detail_mismatch(detail.body, comp.id, "component", "Component"); !mismatch.empty()) {
+          return tl::unexpected<std::string>("Peer '" + name_ + "' " + mismatch);
+        }
         budget.replace(comp, parse_component(detail.body));
       } else {
         // The peer holds this Component's id but cannot describe it: whoever
@@ -1386,6 +1412,9 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
             return tl::unexpected<std::string>(detail.error);
           }
           if (detail.kind == SubResponse::Kind::kBody) {
+            if (auto mismatch = detail_mismatch(detail.body, sub_id, "component", "Component"); !mismatch.empty()) {
+              return tl::unexpected<std::string>("Peer '" + name_ + "' " + mismatch);
+            }
             budget.replace(subcomp, parse_component(detail.body));
           } else {
             subcomp.available = false;
@@ -1502,6 +1531,9 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() try {
                                       RouteKind::kGroupingDetail);
       if (detail.kind != SubResponse::Kind::kBody) {
         return tl::unexpected<std::string>(detail.error);
+      }
+      if (auto mismatch = detail_mismatch(detail.body, func.id, "function", "Function"); !mismatch.empty()) {
+        return tl::unexpected<std::string>("Peer '" + name_ + "' " + mismatch);
       }
       budget.replace(func, parse_function(detail.body));
       func.declared_source = func.source;

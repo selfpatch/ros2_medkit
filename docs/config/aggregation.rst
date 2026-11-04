@@ -600,7 +600,8 @@ that carries a Component's relationships and a Function's hosts, and each app's
 the route has no other meaning for, an oversized body, a body nested more than
 64 levels deep or holding more than 1,000,000 values, a refresh keeping more of the
 peer than its bounds allow (both in Peer Response Limits), unparsable JSON, a field of the wrong type (a name that is a number, a tag that
-is not a string), a request still unanswered at ``aggregation.request_deadline_ms`` -
+is not a string), a detail that describes another entity than the list named
+(another ``id``, or a ``type`` other than the collection's), a request still unanswered at ``aggregation.request_deadline_ms`` -
 the refresh for that peer is discarded whole. A partial picture is never published
 as a complete one, and the peer's last complete declaration is left in place.
 

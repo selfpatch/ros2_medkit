@@ -315,12 +315,13 @@ class PeerClient {
    *
    * The result describes the peer or it does not. Any sub-request that could
    * not be read - a dead connection, a non-200 the route has no other meaning
-   * for, an oversized body, unparsable JSON, a field of the wrong type - fails
-   * the whole fetch, because a picture missing a branch is indistinguishable on
-   * the wire from a peer that does not have that branch. So does a refresh that
-   * would keep more of the peer than its bounds allow: more than 1000
-   * operations or data items for one App, more than 250,000 records or 16 MiB
-   * of text in all. Two statuses do carry a meaning of their own and are read
+   * for, an oversized body, unparsable JSON, a field of the wrong type, a detail
+   * describing another entity than the list named - fails the whole fetch,
+   * because a picture missing a branch is indistinguishable on the wire from a
+   * peer that does not have that branch. So does a refresh that would keep
+   * more of the peer than its bounds allow: more than 1000 operations or data
+   * items for one App, more than 250,000 records or 16 MiB of text in all.
+   * Two statuses do carry a meaning of their own and are read
    * rather than failed:
    *
    * - 404 on a nested collection route: the peer predates the route. Those
