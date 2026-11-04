@@ -19,6 +19,8 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
+
 namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
@@ -113,6 +115,10 @@ struct ActionGoalInfo {
   std::string action_path;  ///< e.g., /powertrain/engine/long_calibration
   std::string action_type;  ///< e.g., example_interfaces/action/Fibonacci
   std::string entity_id;    ///< SOVD entity ID (e.g., engine) for trigger notifications
+  /// The type of the entity the goal was started through. An Area and a
+  /// Function may share an id, so the goal is the entity's only when type and
+  /// id both match; a goal tracked without one (UNKNOWN) belongs to no route.
+  SovdEntityType entity_type{SovdEntityType::UNKNOWN};
   ActionGoalStatus status;
   json last_feedback;
   std::chrono::system_clock::time_point created_at;

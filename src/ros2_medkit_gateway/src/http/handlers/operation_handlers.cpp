@@ -138,6 +138,34 @@ bool names_a_member(const AggregatedOperations & ops, const std::string & member
   return std::find(ops.source_ids.begin(), ops.source_ids.end(), member_id) != ops.source_ids.end();
 }
 
+/// True when `goal` is one of the executions of the entity of `entity_type`
+/// and `entity_id`, whose operations are `ops`, addressed by the operation id
+/// `parsed`: it was started through that entity, or through the member the
+/// qualified id names.
+///
+/// Both compare the type with the id. Ids are unique per type only - a
+/// namespace Function beside a manifest Area of that name shares its id - and
+/// by id alone a goal started through the Area was read, stopped and
+/// cancelled through the Function. The member has to be one of `ops`' own
+/// members, of the goal's type: parsing a member half only proves the
+/// addressed entity aggregates, not that the member named is one of its
+/// members, and an App and a Component may share an id too.
+bool goal_belongs_to(const ActionGoalInfo & goal, SovdEntityType entity_type, const std::string & entity_id,
+                     const AggregatedOperations & ops, const http::MemberQualifiedId & parsed) {
+  if (goal.entity_type == entity_type && goal.entity_id == entity_id) {
+    return true;
+  }
+  if (!parsed.has_member || goal.entity_id != parsed.member_id) {
+    return false;
+  }
+  for (size_t i = 0; i < ops.source_ids.size() && i < ops.source_types.size(); ++i) {
+    if (ops.source_types[i] == goal.entity_type && ops.source_ids[i] == goal.entity_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// The operation an item id resolves to inside one entity's operations.
 struct ResolvedOperation {
   std::optional<ServiceInfo> service;
@@ -464,7 +492,7 @@ dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std
 }
 
 /// Look up a tracked action goal, and refuse it through any entity other than
-/// the one it was started on.
+/// the one it was started on, by type and id (goal_belongs_to).
 ///
 /// `ActionGoalInfo` carries the owning entity, so the check costs nothing -
 /// and without it a goal id is a global handle: an execution started on one
@@ -478,7 +506,7 @@ tl::expected<ActionGoalInfo, ErrorInfo> owned_goal(const HandlerContext & ctx, O
                                                    const std::string & operation_id, const std::string & execution_id) {
   auto goal_info = operation_mgr->get_tracked_goal(execution_id);
   if (goal_info.has_value()) {
-    if (goal_info->entity_id == entity_id) {
+    if (goal_info->entity_type == entity_type && goal_info->entity_id == entity_id) {
       return *goal_info;
     }
     // The executions collection lists a goal under the member a qualified id
@@ -486,18 +514,17 @@ tl::expected<ActionGoalInfo, ErrorInfo> owned_goal(const HandlerContext & ctx, O
     // reads the collection and follows an id it was handed must not be told
     // the execution does not exist.
     //
-    // `names_a_member` is the half that makes this safe, and the collection
-    // applies it too. Parsing a member half only proves the ADDRESSED entity
-    // aggregates - not that the member named is one of its members. Without
-    // this gate any aggregate could name the owner of someone else's goal and
-    // read, stop or cancel it from an unrelated URI.
+    // The member half of `goal_belongs_to` is what makes this safe, and the
+    // collection applies it too. Parsing a member half only proves the
+    // ADDRESSED entity aggregates - not that the member named is one of its
+    // members. Without this gate any aggregate could name the owner of
+    // someone else's goal and read, stop or cancel it from an unrelated URI.
     // The entity the route names, by its type (route_entity_type).
     const auto entity_info = ctx.get_entity_info(entity_id, entity_type);
     const auto & cache = ctx.services().entity_cache();
     if (auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id)) {
       const auto parsed = http::parse_member_qualified_id(operation_id, lookup->ops.is_aggregated);
-      if (parsed.has_member && names_a_member(lookup->ops, parsed.member_id) &&
-          goal_info->entity_id == parsed.member_id) {
+      if (goal_belongs_to(*goal_info, entity_type, entity_id, lookup->ops, parsed)) {
         return *goal_info;
       }
     }
@@ -1195,7 +1222,8 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
       action_type = *body.type;
     }
 
-    auto action_result = operation_mgr->send_action_goal(action_info->full_path, action_type, goal_data, entity_id);
+    auto action_result = operation_mgr->send_action_goal(action_info->full_path, action_type, goal_data, entity_id,
+                                                         entity_info.sovd_type());
 
     if (action_result.success && action_result.goal_accepted) {
       dto::ExecutionCreateAsync async_dto;
@@ -1383,10 +1411,9 @@ http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executio
       // one; the same execution is also reachable under the member a
       // qualified id names, because that member is how the caller selects it.
       // Both readings are legitimate, so either match keeps the execution -
-      // testing only one of them empties the collection for the other.
-      const bool started_here = goal.entity_id == entity_id;
-      const bool started_on_the_named_member = parsed.has_member && goal.entity_id == parsed.member_id;
-      if (!started_here && !started_on_the_named_member) {
+      // testing only one of them empties the collection for the other - and
+      // each is by type and id, as for the execution's own routes.
+      if (!goal_belongs_to(goal, entity_info.sovd_type(), entity_id, ops, parsed)) {
         continue;
       }
       dto::ExecutionId item;

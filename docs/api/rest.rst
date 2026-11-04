@@ -1086,7 +1086,12 @@ Execute Operations
    the execution id exists, and the listing above shows an entity only the
    executions started through it. The same action reached through two entities
    (an app and the function that aggregates it) therefore keeps two separate
-   execution collections.
+   execution collections. An entity is its type and its id: an area and a
+   function that share an id are two entities, and an execution started
+   through ``/areas/{id}`` answers ``404`` through ``/functions/{id}``. Through
+   a grouping entity, a qualified operation id (``{member}:{operation}``) also
+   reaches the executions started on that member, an app or a component of the
+   grouping by its own type.
 
    **Example Response (completed action):**
 
