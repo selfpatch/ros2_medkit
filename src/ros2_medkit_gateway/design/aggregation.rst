@@ -445,10 +445,13 @@ classification pass over the full Component set:
   took its place. A rewritten body drops the peer's ``ETag``.
   Responses of the resource collections (data, faults, operations and the
   rest) are passed through as the peer sent them, except for the member IDs a
-  fan-out reads off them: a dropped member, or one the peer never declared, is
-  removed from a data item's ``x-medkit.member_ids``, and an operation of such
-  a member is left out of the list. The ``Location`` of every forwarded answer
-  is translated the same way (``served_entity_uri``).
+  fan-out reads off them (see the member-qualified items below): a dropped
+  member, or one the peer never declared, is removed from a data or
+  operation item's ``x-medkit.member_ids``, and an item none of whose members
+  is served here, or whose id or ``x-medkit.source`` names such a member, is
+  left out of the list. The ``Location`` of every forwarded answer is
+  translated the same way (``served_entity_uri``), and so is the entity a
+  relayed fault event is attributed to (below).
 
   The body comes from the peer, so the walk is bounded: a body nested deeper
   than ``kMaxPeerJsonDepth`` (64) levels, or holding more than
@@ -629,10 +632,24 @@ against the rename the merge recorded: the cached entity under
 ``<id>``, so a peer's own entity whose id merely reads like a prefix is never
 taken for one. An item arriving through the
 fan-out is re-attributed to the id the merge gave its owner, in
-``x-medkit.member_ids`` and in the member half of the item id, before any of it
-is offered to a client. Read verbatim instead, the peer's item is attributed to
-a member that does not own it, the collection offers one id for two operations,
-and the peer's copy is not addressable through the aggregate at all.
+``x-medkit.member_ids``, in ``x-medkit.source`` and in the member half of the
+item id, before any of it is offered to a client. Read verbatim instead, the
+peer's item is attributed to a member that does not own it, the collection
+offers one id for two operations, and the peer's copy is not addressable
+through the aggregate at all - and a request for it reaches the local member
+instead: the peer's configuration ``x:gain``, for a peer App ``x`` served here
+as ``peer__x``, was resolved by ``address_parameter`` to the local ``x``, and a
+``PUT`` to it changed the local parameter. The member half of an id is the
+text before its first colon, read as a member only when it can be an entity id
+(``served_member_qualified_id``), which is how ``address_parameter`` and
+``address_data_item`` read it here; an item whose member half or source names a
+member the merge dropped, or one the peer never declared, is left out, because
+no id here addresses it. ``/data``, ``/operations`` and ``/configurations`` are
+the collections whose items carry member ids. A log entry names its node by
+ROS FQN and a fault its code and the FQNs that reported it, so ``/logs`` and
+``/faults`` items carry none; bulk data, triggers, cyclic subscriptions,
+scripts and updates are not fanned out: a request for an entity a peer owns is
+forwarded to it whole, and one for any other entity is served here.
 
 Each collection keeps its own id scheme and each hands the same two halves to
 the dispatch. ``/data`` and ``/operations`` qualify only an ambiguous id and
@@ -1113,7 +1130,12 @@ Lifecycle and the three constraints that shape it:
   aggregating gateways would relay one event round the loop.
 
 Each relayed event goes out under the aggregator's own event id, carrying the
-peer's payload with ``x-medkit.peer`` added. **Replay covers this gateway's own
+peer's payload with ``x-medkit.peer`` added. The entity the peer attributed
+the event to, ``x-medkit.entity_type`` and ``entity_id``, is named by its
+peer's ID, and a consumer addresses it here
+(``/{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}``): it is named by
+the ID served here, read against the newest peer ID index, and an entity the
+merge dropped, or the peer never declared, is taken out of the attribution. **Replay covers this gateway's own
 ids only.** Two peers number their events independently, so a ``Last-Event-ID``
 cannot address a position in a merged stream; a reconnecting client resumes
 from what the aggregator has buffered, not from each peer's own history.

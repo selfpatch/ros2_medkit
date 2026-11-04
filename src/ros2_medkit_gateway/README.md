@@ -310,9 +310,13 @@ A member half a peer supplied is read through the collision rename before it is
 used. A peer names its own leaves as its own tree names them, and an App whose
 id collided with a local one is merged here under `<peer>__<id>` - so the name
 the peer sends names the LOCAL leaf. Items that arrive through the peer fan-out
-are re-attributed to the id the merge gave their owner, in `member_ids` and in
-the member half of the id itself, so every id the collection offers addresses
-the copy it names.
+are re-attributed to the id the merge gave their owner, in `member_ids`, in a
+configuration's `x-medkit.source` and in the member half of the id itself, so
+every id the collection offers addresses the copy it names: a `PUT` to a peer's
+configuration reaches the peer, not the local App that shares its member's id.
+An item of a member the merge left out, or one the peer never declared, is not
+listed. A relayed fault event names the entity it is attributed to by the id
+served here too.
 
 `x-medkit.available` on a listed item is a statement about its MEMBER: it
 appears, as `false`, only when the gateway that owns the item is not answering.

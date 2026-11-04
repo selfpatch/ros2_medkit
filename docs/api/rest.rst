@@ -723,9 +723,11 @@ the path form is the one ``/data`` already uses for a topic.
 its own leaves as its own tree names them, and an App whose id collided with a
 local one is merged here under ``<peer>__<id>`` - so the name the peer sends
 names the LOCAL leaf. Items arriving through the peer fan-out are re-attributed
-to the id the merge gave their owner, both in ``x-medkit.member_ids`` and in the
-member half of the item id, so ``secondary_gateway__shared_sensor:calibrate``
-addresses the peer's copy and ``shared_sensor:calibrate`` the local one.
+to the id the merge gave their owner, in ``x-medkit.member_ids``, in a
+configuration's ``x-medkit.source`` and in the member half of the item id, so
+``secondary_gateway__shared_sensor:calibrate`` addresses the peer's copy and
+``shared_sensor:calibrate`` the local one. An item of a member the merge left
+out, or one the peer never declared, is not listed: no id here addresses it.
 
 **Availability on a listed item describes its member.** ``x-medkit.available``
 is emitted only as ``false``, and only when the gateway that owns the item is
@@ -3966,7 +3968,10 @@ had to match on the text in ``parameters.details`` to learn it was a timeout.
 
 **Fault streaming on an aggregating gateway.** ``GET /faults/stream`` on a
 gateway with peers relays their streams into its own. Each relayed event
-carries ``x-medkit.peer`` naming the gateway that raised the fault. The relay
+carries ``x-medkit.peer`` naming the gateway that raised the fault, and the
+entity the peer attributed it to (``x-medkit.entity_type`` and ``entity_id``)
+by the id it is served under here, or not at all when this gateway does not
+serve it. The relay
 is open only while a client is attached, because it holds one SSE client slot
 on each peer and ``sse.max_clients`` defaults to 2. Replay via
 ``Last-Event-ID`` covers this gateway's own ids: two peers number their events

@@ -541,6 +541,16 @@ whose members are all owned by peers - a parent gateway that runs no ROS node of
 its own - and on one that runs a single node beside peer-owned members. Neither
 shape changes the ids the entity's listing offers.
 
+The items a peer lists for such an entity name their member by the peer's id,
+and the listing here names it by the id served here: a peer's
+``calibration:calibration_offset``, for a peer App ``calibration`` served here as
+``peer_a__calibration`` because a local App has that id, is listed as
+``peer_a__calibration:calibration_offset`` (and its ``x-medkit.source`` as
+``peer_a__calibration``), so a ``PUT`` to it reaches the peer and not the local
+App. The same holds for the member half of a ``/data`` or ``/operations`` id and
+for ``x-medkit.member_ids``. An item of a member this gateway does not serve - one
+the merge left out, or one the peer never declared - is not listed.
+
 ``DELETE /api/v1/{entity_type}/{id}/configurations`` resets the nodes this
 gateway runs. A member another gateway runs is not reset by it, and the response
 says so: ``207`` instead of ``204``, with that member named and the gateway that

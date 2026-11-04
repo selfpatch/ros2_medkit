@@ -791,30 +791,36 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
   // peer sends names the LOCAL leaf here. Re-emitted verbatim it attributes the
   // peer's operation to a member that does not own it, and every id built from
   // that attribution - by this gateway or by a client reading the list - is
-  // resolved against the wrong member. The member half of the id the peer
-  // already qualified carries the same name and is rewritten with it. A member
-  // the merge dropped is not served here at all, and neither is any operation
-  // of it: returns false for such an item, which is left out of the list.
-  // Read against the peer ID index of the generation the request was validated
-  // against, which is the one the fan-out targeted.
+  // resolved against the wrong member. The member half of an id the peer
+  // already qualified (`x:calibrate`) is read against this gateway's members
+  // too, with or without member_ids beside it, and is rewritten the same way.
+  // A member the merge dropped, or one the peer never declared, is not served
+  // here at all, and neither is any operation of it: returns false for an item
+  // whose id is qualified by such a member, or none of whose members is served,
+  // which is left out of the list. Read against the peer ID index of the
+  // generation the request was validated against, which is the one the fan-out
+  // targeted.
   const auto retarget_to_local_member = [agg, &entity_info](dto::OperationItem & item, const std::string & peer_name) {
-    if (agg == nullptr || peer_name.empty() || !item.x_medkit.has_value() || !item.x_medkit->member_ids.has_value() ||
-        item.x_medkit->member_ids->size() != 1) {
+    if (agg == nullptr || peer_name.empty()) {
       return true;
     }
-    const std::string reported = item.x_medkit->member_ids->front();
-    const auto local = served_member_id(entity_info.peer_ids, peer_name, reported);
-    if (!local) {
+    if (item.x_medkit.has_value() && item.x_medkit->member_ids.has_value()) {
+      std::vector<std::string> members;
+      for (const auto & reported : *item.x_medkit->member_ids) {
+        if (auto local = served_member_id(entity_info.peer_ids, peer_name, reported)) {
+          members.push_back(std::move(*local));
+        }
+      }
+      if (members.empty() && !item.x_medkit->member_ids->empty()) {
+        return false;
+      }
+      item.x_medkit->member_ids = std::move(members);
+    }
+    auto id = served_member_qualified_id(entity_info.peer_ids, peer_name, item.id);
+    if (!id) {
       return false;
     }
-    if (*local == reported) {
-      return true;
-    }
-    item.x_medkit->member_ids = std::vector<std::string>{*local};
-    auto parsed = http::parse_member_qualified_id(item.id, true);
-    if (parsed.has_member && parsed.member_id == reported) {
-      item.id = http::make_member_qualified_id(*local, parsed.item_id);
-    }
+    item.id = std::move(*id);
     return true;
   };
 
