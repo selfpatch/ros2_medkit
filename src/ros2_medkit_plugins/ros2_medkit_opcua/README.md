@@ -811,15 +811,17 @@ replacement and restarting is the whole gesture.
   session is dropped, no link-state clear is sent, and the reconnect loop keeps
   trying. The check runs on every session the reconnect arm opens. A session
   open62541 re-opens on its own after a channel drop is caught wherever
-  `run_iterate` runs, which is every shape with native alarms on (the event
-  pump and the poll cycle both iterate): after each iterate the client reads
-  its session state, and a session that fell below ACTIVATED after having been
-  active is disconnected explicitly, so the next session is the arm's, checked
-  against the binding, with the native alarm subscription re-created on it.
+  `run_iterate` runs, which is every shape with native alarms on, or
+  data-change subscription mode active (the event pump, the poll cycle and,
+  in subscription mode, the steps between two polls all iterate): after each
+  iterate the client reads its session state, and a session that fell below
+  ACTIVATED after having been active is disconnected explicitly, so the next
+  session is the arm's, checked against the binding, with the native alarm
+  and data-change subscriptions re-created on it.
   That is what makes a swap visible where nothing reads a value: the
   config-less deployment with native alarms and no node map, at any poll
   cadence. open62541 re-opens a session only from `run_iterate`, so with native
-  alarms off nothing is re-opened underneath: a node map's scalar read fails
+  alarms off in poll mode nothing is re-opened underneath: a node map's scalar read fails
   with a connection-closed code, the client is marked down, and the arm's next
   session is checked the same way. The re-created subscription carries device
   alarms; that is proven for a swap followed by the bound server's return and
