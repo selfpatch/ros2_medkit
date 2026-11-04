@@ -191,6 +191,11 @@ void SSEStreamProxy::reader_loop() {
     // below. The dup is this class's to close and nothing else's.
     struct SocketHandleGuard {
       SSEStreamProxy * self;
+      // Owns the release of one socket, so it is neither copied nor moved.
+      SocketHandleGuard(const SocketHandleGuard &) = delete;
+      SocketHandleGuard & operator=(const SocketHandleGuard &) = delete;
+      SocketHandleGuard(SocketHandleGuard &&) = delete;
+      SocketHandleGuard & operator=(SocketHandleGuard &&) = delete;
       ~SocketHandleGuard() {
         std::lock_guard<std::mutex> lock(self->socket_mutex_);
         if (self->active_socket_ >= 0) {
