@@ -1460,7 +1460,16 @@ data items naming a topic, which bounds its published and subscribed topics to
 dependencies. A Function's ``depends-on`` links are kept once each in the order
 the peer listed them, with a set beside the list: searching the list for every
 link cost the square of its length, in a parse that runs after the request's
-deadline is disarmed. A refusal is thrown where the bound is reached (``PeerFetchRefused``)
+deadline is disarmed. So are a Function's hosts and a Component's
+``dependsOn`` (``keep_first_of_each``), and the merge emits each served host and
+dependency once (``resolve_hosts``, ``resolve_references``): a list names
+members, and a member named twice is one member. Kept twice, it is visited
+twice by every collection over the entity's members - a Function hosting one
+App of 1000 operations 200,000 times, inside the record bound, made the first
+``GET /functions/f/operations/docs`` scan those operations 200,000 times under
+the cache's shared lock (1.9 s, against 0.06 s for the App alone). The cache
+indexes each host once per Function as well, whatever declared it (see the
+entity cache's relationship indexes). A refusal is thrown where the bound is reached (``PeerFetchRefused``)
 and turned into the fetch's failure, so the refresh for that peer is discarded
 whole and its last complete declaration stays, as for an oversized answer. A
 gateway serving the demo nodes reports 16 entities, 3 operations and 33 topics

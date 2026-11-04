@@ -703,7 +703,7 @@ entity: 1000 Apps answering 100000 operations each stay inside every bound
 above and would keep some 100 million records. One App may report at most
 1000 operations and 1000 data items naming a topic (so at most 1000 topics it
 publishes and 1000 it subscribes to), one Component or Function at most 1000
-dependencies, each kept once, and one refresh keeps at most 250,000
+dependencies, each kept once (a Function's hosts are kept once each too), and one refresh keeps at most 250,000
 records of one peer - entities, operations, topics, and the entries of the
 lists entities carry (tags, hosts, dependencies, identity fields) - holding at
 most 16 MiB of text. Each record is counted before it is kept. Past any of

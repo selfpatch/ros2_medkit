@@ -236,8 +236,8 @@ class EntityMerger {
   bool drop_if_unaddressable(Kind kind, const std::string & original_id, const std::string & generated_id);
 
   /// A Function's hosts, which name the peer's own Apps or Components, as the
-  /// IDs they are served under; a dropped one, and one the peer declared
-  /// neither as App nor as Component, is removed.
+  /// IDs they are served under, each once; a dropped one, and one the peer
+  /// declared neither as App nor as Component, is removed.
   void resolve_hosts(std::vector<std::string> & hosts) const;
 
   /// The IDs of one type the peer declares, or nullptr when they are not

@@ -1020,8 +1020,21 @@ void ThreadSafeEntityCache::rebuild_relationship_indexes() {
   // word, so a Function hosting a Component reported none of that Component's
   // resources. Both halves are indexed now; a host id that resolves to neither
   // is still skipped, because there is nothing to point at.
+  //
+  // Each host is indexed once per Function. A Function listing one App twice
+  // hosts it once, and every collection over the Function's members walks this
+  // index: a host kept 200,000 times made each one scan that App's operations
+  // 200,000 times under the shared lock. The other indexes need no such guard:
+  // each is built from a single-valued field (an App's component, a
+  // Component's area or parent, an Area's parent), and reconcile keeps one
+  // slot per ID, so a slot is pushed at most once.
+  std::unordered_set<std::string> hosts_seen;
   functions_.for_each_live([&](uint32_t, const Function & func) {
+    hosts_seen.clear();
     for (const auto & host_id : func.hosts) {
+      if (!hosts_seen.insert(host_id).second) {
+        continue;
+      }
       const uint32_t * app_slot = app_index_.find(host_id);
       if (app_slot && apps_.is_live(*app_slot)) {
         function_to_apps_.get_or_create(func.id).push_back(*app_slot);

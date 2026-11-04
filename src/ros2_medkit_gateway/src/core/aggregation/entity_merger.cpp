@@ -194,15 +194,30 @@ void resolve_references(std::vector<std::string> & ids, const std::unordered_map
                              return unresolvable(id, drops, declared);
                            }),
             ids.end());
-  for (auto & id : ids) {
-    apply_rename(id, renames);
+  // Each served ID once: a peer that names one dependency twice names one
+  // dependency.
+  std::unordered_set<std::string> seen;
+  size_t kept = 0;
+  for (size_t i = 0; i < ids.size(); ++i) {
+    apply_rename(ids[i], renames);
+    if (seen.insert(ids[i]).second) {
+      if (kept != i) {
+        ids[kept] = std::move(ids[i]);
+      }
+      ++kept;
+    }
   }
+  ids.resize(kept);
 }
 }  // namespace
 
 void EntityMerger::resolve_hosts(std::vector<std::string> & hosts) const {
   std::vector<std::string> resolved;
   resolved.reserve(hosts.size());
+  // Each served host once: a Function hosting one App twice hosts it once, and
+  // a host kept twice made every collection over the Function's members visit
+  // it twice.
+  std::unordered_set<std::string> seen;
   for (const auto & host : hosts) {
     // The peer's App when it declares one by that ID - what a host usually is -
     // and its Component otherwise. Without the peer's declaration, an App this
@@ -219,7 +234,10 @@ void EntityMerger::resolve_hosts(std::vector<std::string> & hosts) const {
       continue;
     }
     auto it = renames.find(host);
-    resolved.push_back(it != renames.end() ? it->second : host);
+    const std::string & served = it != renames.end() ? it->second : host;
+    if (seen.insert(served).second) {
+      resolved.push_back(served);
+    }
   }
   hosts = std::move(resolved);
 }

@@ -329,6 +329,20 @@ tl::expected<std::vector<T>, size_t> parse_collection(const nlohmann::json & res
   return result;
 }
 
+/// `ids` with each one kept once, at its first place. A relationship list a peer
+/// sends names members, and a member named twice is one member: kept twice, a
+/// Function hosting one App 200,000 times made every collection over its
+/// members scan that App's operations 200,000 times, under the cache's lock.
+void keep_first_of_each(std::vector<std::string> & ids) {
+  std::unordered_set<std::string> seen;
+  seen.reserve(ids.size());
+  ids.erase(std::remove_if(ids.begin(), ids.end(),
+                           [&seen](const std::string & id) {
+                             return !seen.insert(id).second;
+                           }),
+            ids.end());
+}
+
 /// The string under `key`, or empty when the key is absent or holds something else.
 std::string string_at(const nlohmann::json & j, const char * key) {
   auto it = j.find(key);
@@ -412,6 +426,7 @@ Component parse_component(const nlohmann::json & j) {
                                " dependencies for Component '" + comp.id + "'");
       }
       comp.depends_on = xm["dependsOn"].get<std::vector<std::string>>();
+      keep_first_of_each(comp.depends_on);
     }
     // Asset-identity nameplate (with per-field provenance). Emitted by peers under
     // x-medkit.identity only when populated; parse it back so identity survives
@@ -696,6 +711,7 @@ Function parse_function(const nlohmann::json & j) {
     func.source = xm.value("source", "");
     if (xm.contains("hosts") && xm["hosts"].is_array()) {
       func.hosts = xm["hosts"].get<std::vector<std::string>>();
+      keep_first_of_each(func.hosts);
     }
   }
   // The Function detail serves `translation_id`; `translationId` is what this
