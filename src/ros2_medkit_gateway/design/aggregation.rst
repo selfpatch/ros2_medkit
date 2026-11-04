@@ -717,9 +717,16 @@ for the same reason - ``GET`` for its status, ``PUT`` to apply a capability and
    GET /api/v1/functions/vehicle_health/operations/peer_long_calibration:long_calibration/executions/{exec}
      -> GET /api/v1/apps/peer_long_calibration/operations/long_calibration/executions/{exec}
 
-An App's own operations name no member: the App owns them, so the status,
-stop and cancel of an execution on a peer's App go to that peer, as its start
-did, addressed by the App's id there. An id that does not resolve to exactly
+An entity routed whole to a peer - a peer's own App, a Component the peer
+contributes as a leaf - is that peer's, and so are its executions: their
+status, stop and cancel are forwarded to it whole, as its start was and as
+every other route of the entity is (``validate_entity_for_route``), without
+reading this gateway's cached operations. Resolving them from the cache
+instead found no owner for an operation the cache does not list - a plugin
+operation with no ROS path, one the peer added since the last refresh - and
+answered a local ``404`` for an execution the start had just created on the
+peer. The cached operations pick the owner only on a grouping entity, whose
+member holds the execution. There, an id that does not resolve to exactly
 one owned operation is left to the local path, whose key is the execution id
 alone: resolving is how the owning gateway
 is found, not a second place for these routes to refuse a request. So a

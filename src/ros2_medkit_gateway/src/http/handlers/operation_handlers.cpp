@@ -291,6 +291,16 @@ std::optional<ErrorInfo> refuse_if_ambiguous(const AggregatedOperations & ops, c
 /// the executions collection already resolves it by, and the three follow-up
 /// verbs reach the goals the collection hands out.
 ///
+/// An entity routed whole to a peer is that peer's, and so are its executions
+/// and the operations they run: the request is forwarded to it whole, as every
+/// other route of the entity is (validate_entity_for_route), without reading
+/// this gateway's cached operations. Resolved from the cache instead, an
+/// operation it does not list - a plugin operation with no ROS path, one the
+/// peer added since the last refresh - was started through this gateway, since
+/// the POST is forwarded whole, and its status, stop and cancel then found no
+/// owner here and answered a local 404. The cache picks the owner only for a
+/// grouping entity, whose member holds the execution.
+///
 /// An id this gateway cannot resolve to exactly one owned operation is left to
 /// the local path: the execution id is the key there, and the answer it gives
 /// for an id naming no goal is the answer this route already owes. Resolving is
@@ -300,6 +310,14 @@ http::Result<MemberDispatch> dispatch_execution_to_owner(const HandlerContext & 
                                                          const std::string & operation_id,
                                                          const std::string & execution_id) {
   const auto entity_info = ctx.get_entity_info(entity_id);
+  if (entity_info.is_remote) {
+    auto routed = ctx.validate_entity_for_route(req, entity_id);
+    if (!routed) {
+      return tl::unexpected(flatten_validator_error(routed.error()));
+    }
+    // A refresh landed in between and the entity is served here now: it is
+    // resolved below like any local one.
+  }
   const auto & cache = ctx.services().entity_cache();
   auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
   if (!lookup) {
