@@ -72,6 +72,22 @@ bool describe_failure_is_cancel(const action_msgs::msg::GoalStatusArray & msg, b
   return saw_canceled;
 }
 
+// Runs a node callback unless the context is shut down. A graph or entity call
+// racing with shutdown throws; that ends the callback quietly.
+template <typename F>
+void run_unless_shutdown(F && fn) {
+  if (!rclcpp::ok()) {
+    return;
+  }
+  try {
+    fn();
+  } catch (const std::exception &) {
+    if (rclcpp::ok()) {
+      throw;
+    }
+  }
+}
+
 }  // namespace
 
 ActionStatusBridgeNode::ActionStatusBridgeNode(const rclcpp::NodeOptions & options)
@@ -81,13 +97,17 @@ ActionStatusBridgeNode::ActionStatusBridgeNode(const rclcpp::NodeOptions & optio
   // Fast retry timer, created up front but kept disarmed (cancelled) until a
   // report is actually deferred, so an idle bridge does no periodic work.
   retry_timer_ = create_wall_timer(std::chrono::duration<double>(retry_period_sec_), [this]() {
-    reconcile_pending();
+    run_unless_shutdown([this]() {
+      reconcile_pending();
+    });
   });
   retry_timer_->cancel();
 
   rescan_actions();
   rescan_timer_ = create_wall_timer(std::chrono::duration<double>(rescan_period_sec_), [this]() {
-    rescan_actions();
+    run_unless_shutdown([this]() {
+      rescan_actions();
+    });
   });
 
   RCLCPP_INFO(get_logger(), "ActionStatusBridge started (prefix=%s, aborted_severity=%u, rescan=%.1fs, retry=%.0fms)",
@@ -206,7 +226,9 @@ void ActionStatusBridgeNode::rescan_actions() {
     auto sub = create_subscription<action_msgs::msg::GoalStatusArray>(
         topic, qos,
         [this, action_name](const action_msgs::msg::GoalStatusArray::ConstSharedPtr & msg) {
-          status_callback(action_name, msg);
+          run_unless_shutdown([&]() {
+            status_callback(action_name, msg);
+          });
         },
         sub_options);
     subs_.emplace(topic, sub);
