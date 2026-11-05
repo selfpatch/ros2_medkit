@@ -14,9 +14,11 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ros2_medkit_fault_detection/fault_detection.hpp"
@@ -39,9 +41,16 @@ namespace ros2_medkit_gateway {
 ///    last reading neither counts nor completes a wait, and the point keeps its
 ///    state.
 ///  * A subscription reports changes only, so a cached value is the current
-///    one. Each data change is a sample, and while a value holds, each timer
-///    pass (``Pass::kTick``, once per poll interval) is one more. A pass caused
-///    by another node's change does not count for this point.
+///    one. A data change that starts a wait is its first sample. While the wait
+///    is open, a data change or a timer pass (``Pass::kTick``, once per poll
+///    interval) counts as one more sample only when at least the minimum sample
+///    spacing (the poll interval) passed since that fault's last counted
+///    sample. So a fault gets at most one sample per poll interval, as under
+///    polling, whether its value holds or keeps moving. A pass caused by another
+///    node's change, and a recheck (``Pass::kRecheck``), count no sample; they
+///    only let a ``raise_after_ms`` wait end on time. A node not seen since the
+///    link was lost is skipped on every pass, so its old value neither starts,
+///    completes nor clears anything.
 ///
 /// Points without a raise qualifier raise and clear exactly as before.
 class DetectionPipeline {
@@ -50,8 +59,9 @@ class DetectionPipeline {
 
   /// Why ``evaluate`` runs.
   enum class Pass {
-    kValues,  // new values arrived (a poll cycle or a data change)
-    kTick,    // the poll loop's timer, only under a subscription
+    kValues,   // new values arrived (a poll cycle or a data change)
+    kTick,     // the poll loop's timer, only under a subscription
+    kRecheck,  // time passed between ticks, only under a subscription
   };
 
   struct Change {
@@ -61,6 +71,13 @@ class DetectionPipeline {
 
   /// A good value of ``node_id`` arrived.
   void record_sample(const std::string & node_id);
+
+  /// Under a subscription, the least time between two counted samples of one
+  /// waiting fault. The poller sets it to the poll interval. Zero (the default)
+  /// counts every data change and every tick.
+  void set_min_sample_spacing(std::chrono::milliseconds spacing) {
+    min_spacing_ = spacing;
+  }
 
   /// Evaluate every entry against ``values`` and return the raise/clear edges.
   /// ``alarms`` is updated with each fault's current state as the fault manager
@@ -76,18 +93,32 @@ class DetectionPipeline {
   /// True while a fault waits to qualify, so a subscription needs timer passes.
   bool has_pending() const;
 
+  /// True while a fault with a ``raise_after_ms`` rule waits to qualify, so a
+  /// recheck between ticks can end it. A samples-only wait needs no recheck.
+  bool has_pending_duration() const;
+
   /// Translate an OPC UA value into the evaluator's value type.
   static ros2_medkit::fault_detection::Value to_fd_value(const OpcuaValue & v);
 
  private:
   ros2_medkit::fault_detection::FaultTransitionTracker tracker_;
   ros2_medkit::fault_detection::RaiseQualifierFilter qualifier_;
-  // Good values received per node, and the count each node had when it was
-  // last evaluated. ``received_`` has one counter per node the poller reads,
-  // so it is bounded by the node map. ``evaluated_`` is rebuilt every pass from
-  // the entries evaluated, so it never holds more than the detection entries.
-  std::unordered_map<std::string, std::uint64_t> received_;
-  std::unordered_map<std::string, std::uint64_t> evaluated_;
+  // What the pipeline knows about the samples of one node.
+  struct NodeSamples {
+    std::uint64_t received{0};    // good values received
+    std::uint64_t evaluated{0};   // ``received`` when the node was last evaluated
+    bool seen_since_link{false};  // got a sample since the link was last lost
+  };
+  // One entry per node the poller records a sample for, so it is bounded by
+  // the node map. Updated in place on every pass.
+  std::unordered_map<std::string, NodeSamples> nodes_;
+  // Fault codes of entries with a ``raise_after_ms`` rule, bounded by the
+  // fault codes the node map declares.
+  std::unordered_set<std::string> duration_codes_;
+  // Under a subscription: when each fault last counted a sample, and the least
+  // time between two. Bounded by the fault codes the node map declares.
+  std::unordered_map<std::string, Clock::time_point> last_counted_;
+  std::chrono::milliseconds min_spacing_{0};
 };
 
 }  // namespace ros2_medkit_gateway

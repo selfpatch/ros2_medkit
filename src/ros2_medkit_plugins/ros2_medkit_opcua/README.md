@@ -393,11 +393,18 @@ nodes:
 #   - polling: one per successful read, so `raise_after_samples: N` takes about
 #     N x `poll_interval_ms`. A failed read is not a sample and does not complete
 #     `raise_after_ms`; the wait continues on the next successful read.
-#   - subscriptions: one per data change, and while the value holds, one more per
-#     `poll_interval_ms`, since the server sends nothing for a steady value.
-#     Changes of other points do not count.
+#   - subscriptions: the data change that starts a wait is the first sample.
+#     After it, a fault counts at most one more sample per `poll_interval_ms`,
+#     from a data change or, while the value holds, from the poll (the server
+#     sends nothing for a steady value). So samples stay one poll apart, as with
+#     polling, whether the value holds or keeps moving, and
+#     `raise_after_samples: N` takes N-1 to N poll intervals after the change.
+#     Changes of other points do not count, and a point that has not reported
+#     since a reconnect is not looked at until it does.
 # The check runs once per `poll_interval_ms`, so a raise can come up to one poll
-# interval after `raise_after_ms` ends. A single healthy reading restarts the
+# interval after `raise_after_ms` ends. With subscriptions and a
+# `subscription_interval_ms` shorter than the poll, a waiting `raise_after_ms`
+# is also checked every `subscription_interval_ms`, so it ends on time. A single healthy reading restarts the
 # wait. A lost connection also restarts it, since nothing was seen while the link
 # was down. Only the raise waits: the clear is immediate. Each bit of a status
 # word and each code of an enum waits on its own. A fault that is still waiting
