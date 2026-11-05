@@ -28,15 +28,28 @@ ResourceChangeNotifier::~ResourceChangeNotifier() {
 }
 
 NotifierSubscriptionId ResourceChangeNotifier::subscribe(NotifierFilter filter, NotifierCallback callback) {
+  auto entry = std::make_shared<const SubscriptionEntry>(SubscriptionEntry{std::move(filter), std::move(callback)});
   std::lock_guard<std::mutex> lock(sub_mutex_);
   auto id = next_id_.fetch_add(1);
-  subscriptions_.emplace(id, SubscriptionEntry{std::move(filter), std::move(callback)});
+  subscriptions_.emplace(id, std::move(entry));
   return id;
 }
 
 void ResourceChangeNotifier::unsubscribe(NotifierSubscriptionId id) {
-  std::lock_guard<std::mutex> lock(sub_mutex_);
-  subscriptions_.erase(id);
+  // Declared before the lock, so it is released after it: the callback's captures may unsubscribe too.
+  std::shared_ptr<const SubscriptionEntry> removed;
+  std::unique_lock<std::mutex> lock(sub_mutex_);
+  auto it = subscriptions_.find(id);
+  if (it != subscriptions_.end()) {
+    removed = std::move(it->second);
+    subscriptions_.erase(it);
+  }
+  // On the worker the only call in progress is the caller's own, and waiting for it would deadlock.
+  if (std::this_thread::get_id() != worker_id_.load()) {
+    running_cv_.wait(lock, [this, id]() {
+      return running_id_ != id;
+    });
+  }
 }
 
 void ResourceChangeNotifier::notify(const std::string & collection, const std::string & entity_id,
@@ -141,6 +154,8 @@ bool ResourceChangeNotifier::matches_filter(const NotifierFilter & filter, const
 }
 
 void ResourceChangeNotifier::worker_loop() {
+  worker_id_.store(std::this_thread::get_id());
+  std::vector<NotifierSubscriptionId> targets;
   while (true) {
     std::vector<ResourceChange> batch;
 
@@ -159,35 +174,52 @@ void ResourceChangeNotifier::worker_loop() {
       queue_.clear();
     }
 
-    // Snapshot subscriptions to avoid holding sub_mutex_ while calling callbacks
-    std::vector<SubscriptionEntry> snapshot;
-    {
-      std::lock_guard<std::mutex> lock(sub_mutex_);
-      snapshot.reserve(subscriptions_.size());
-      for (const auto & [id, entry] : subscriptions_) {
-        snapshot.push_back(entry);
-      }
-    }
-
     for (const auto & change : batch) {
-      for (const auto & entry : snapshot) {
-        if (!matches_filter(entry.filter, change)) {
-          continue;
-        }
-        try {
-          entry.callback(change);
-        } catch (const std::exception & e) {
-          if (error_logger_) {
-            error_logger_(std::string("Exception in subscriber callback: ") + e.what());
-          }
-        } catch (...) {
-          if (error_logger_) {
-            error_logger_("Unknown exception in subscriber callback");
+      targets.clear();
+      {
+        std::lock_guard<std::mutex> lock(sub_mutex_);
+        for (const auto & [id, entry] : subscriptions_) {
+          if (matches_filter(entry->filter, change)) {
+            targets.push_back(id);
           }
         }
+      }
+      for (const auto id : targets) {
+        deliver(id, change);
       }
     }
   }
+}
+
+void ResourceChangeNotifier::deliver(NotifierSubscriptionId id, const ResourceChange & change) {
+  std::shared_ptr<const SubscriptionEntry> entry;
+  {
+    std::lock_guard<std::mutex> lock(sub_mutex_);
+    auto it = subscriptions_.find(id);
+    if (it == subscriptions_.end()) {
+      return;  // Unsubscribed after the targets were collected.
+    }
+    entry = it->second;
+    running_id_ = id;
+  }
+  try {
+    entry->callback(change);
+  } catch (const std::exception & e) {
+    if (error_logger_) {
+      error_logger_(std::string("Exception in subscriber callback: ") + e.what());
+    }
+  } catch (...) {
+    if (error_logger_) {
+      error_logger_("Unknown exception in subscriber callback");
+    }
+  }
+  // Dropped before running_id_ clears, so a callback removed during the call is destroyed before unsubscribe returns.
+  entry.reset();
+  {
+    std::lock_guard<std::mutex> lock(sub_mutex_);
+    running_id_ = 0;
+  }
+  running_cv_.notify_all();
 }
 
 void ResourceChangeNotifier::set_max_queue_size(size_t max_size) {

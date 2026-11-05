@@ -17,7 +17,9 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -29,6 +31,35 @@
 #include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 
 using namespace ros2_medkit_gateway;
+
+namespace {
+
+// A one-shot gate. wait_for() returns true once open() was called.
+class Latch {
+ public:
+  void open() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      open_ = true;
+    }
+    cv_.notify_all();
+  }
+  bool wait_for(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return cv_.wait_for(lock, timeout, [this] {
+      return open_;
+    });
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  bool open_{false};
+};
+
+constexpr std::chrono::milliseconds kWait{5000};
+
+}  // namespace
 
 // In every test below, ResourceChangeNotifier is declared AFTER all shared
 // state (promises, atomics, futures) that callbacks capture by reference.
@@ -453,4 +484,112 @@ TEST(ResourceChangeNotifier, QueueOverflow_DropsOldest) {
     EXPECT_NE(std::find(received_indices.begin(), received_indices.end(), expected), received_indices.end())
         << "Expected index " << expected << " to be delivered";
   }
+}
+
+// --- Unsubscribe ends delivery ---
+
+TEST(ResourceChangeNotifier, UnsubscribeWaitsForRunningCallback) {
+  Latch entered;
+  Latch release;
+  std::atomic<bool> callback_returned{false};
+  std::atomic<bool> unsubscribe_returned{false};
+  std::atomic<bool> callback_done_at_return{false};
+
+  ResourceChangeNotifier notifier;
+  const auto id = notifier.subscribe({"data", "", ""}, [&](const ResourceChange & /*change*/) {
+    entered.open();
+    release.wait_for(kWait);
+    callback_returned = true;
+  });
+  notifier.notify("data", "sensor", "temp", {}, ChangeType::UPDATED);
+  EXPECT_TRUE(entered.wait_for(kWait));
+
+  std::thread unsubscriber([&] {
+    notifier.unsubscribe(id);
+    callback_done_at_return = callback_returned.load();
+    unsubscribe_returned = true;
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  EXPECT_FALSE(unsubscribe_returned.load()) << "unsubscribe returned while the callback was running";
+  release.open();
+  unsubscriber.join();
+  EXPECT_TRUE(callback_done_at_return.load()) << "the callback was still running when unsubscribe returned";
+}
+
+TEST(ResourceChangeNotifier, UnsubscribedCallbackGetsNoRestOfBatch) {
+  Latch blocker_entered;
+  Latch release_blocker;
+  Latch observer_done;
+  std::atomic<int> removed_calls{0};
+  std::atomic<int> observer_calls{0};
+  std::atomic<NotifierSubscriptionId> removed_id{0};
+
+  ResourceChangeNotifier notifier;
+  notifier.subscribe({"data", "blocker", ""}, [&](const ResourceChange & /*change*/) {
+    blocker_entered.open();
+    release_blocker.wait_for(kWait);
+  });
+  removed_id = notifier.subscribe({"data", "sensor", ""}, [&](const ResourceChange & /*change*/) {
+    removed_calls.fetch_add(1);
+  });
+  notifier.subscribe({"data", "sensor", ""}, [&](const ResourceChange & /*change*/) {
+    if (observer_calls.fetch_add(1) + 1 == 2) {
+      observer_done.open();
+    }
+  });
+  notifier.subscribe({"data", "remover", ""}, [&](const ResourceChange & /*change*/) {
+    notifier.unsubscribe(removed_id.load());
+  });
+
+  // The worker holds in the blocker while the next three changes queue up, so they form one batch.
+  notifier.notify("data", "blocker", "hold", {}, ChangeType::UPDATED);
+  EXPECT_TRUE(blocker_entered.wait_for(kWait));
+  notifier.notify("data", "sensor", "temp", {{"n", 1}}, ChangeType::UPDATED);
+  notifier.notify("data", "remover", "go", {}, ChangeType::UPDATED);
+  notifier.notify("data", "sensor", "temp", {{"n", 2}}, ChangeType::UPDATED);
+  release_blocker.open();
+
+  EXPECT_TRUE(observer_done.wait_for(kWait));
+  // Finishes the batch and joins the worker.
+  notifier.shutdown();
+  EXPECT_EQ(removed_calls.load(), 1) << "the removed callback got a change queued after its removal";
+  EXPECT_EQ(observer_calls.load(), 2) << "the other subscriber missed a change of the batch";
+}
+
+TEST(ResourceChangeNotifier, UnsubscribeFromOwnCallbackDoesNotDeadlock) {
+  Latch blocker_entered;
+  Latch release_blocker;
+  Latch unsubscribe_returned;
+  std::atomic<int> calls{0};
+  std::atomic<NotifierSubscriptionId> self_id{0};
+
+  auto notifier = std::make_unique<ResourceChangeNotifier>();
+  ResourceChangeNotifier * raw = notifier.get();
+  notifier->subscribe({"data", "blocker", ""}, [&](const ResourceChange & /*change*/) {
+    blocker_entered.open();
+    release_blocker.wait_for(kWait);
+  });
+  self_id = notifier->subscribe({"data", "sensor", ""}, [&, raw](const ResourceChange & /*change*/) {
+    calls.fetch_add(1);
+    raw->unsubscribe(self_id.load());
+    unsubscribe_returned.open();
+  });
+
+  // Two changes in one batch, then one in a later batch.
+  notifier->notify("data", "blocker", "hold", {}, ChangeType::UPDATED);
+  EXPECT_TRUE(blocker_entered.wait_for(kWait));
+  notifier->notify("data", "sensor", "temp", {{"n", 1}}, ChangeType::UPDATED);
+  notifier->notify("data", "sensor", "temp", {{"n", 2}}, ChangeType::UPDATED);
+  release_blocker.open();
+
+  const bool returned = unsubscribe_returned.wait_for(kWait);
+  EXPECT_TRUE(returned) << "unsubscribe from its own callback did not return";
+  if (!returned) {
+    // The worker is stuck inside the callback and would never join. Leave it so the test fails instead of hanging.
+    (void)notifier.release();
+    return;
+  }
+  notifier->notify("data", "sensor", "temp", {{"n", 3}}, ChangeType::UPDATED);
+  notifier->shutdown();
+  EXPECT_EQ(calls.load(), 1) << "the callback was called again after it unsubscribed";
 }
