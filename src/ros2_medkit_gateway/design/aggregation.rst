@@ -757,8 +757,9 @@ member. There, an id that does not resolve to exactly
 one owned operation is left to the local path, which finds the goal by the
 execution id and answers it only through the entity it was started through,
 by type and id, or through the member a qualified id names, by its own type
-and id: an execution started through the Area answers ``404`` through the
-Function that shares its id. Resolving is how the owning gateway
+and id, and only under an id naming its own operation: an execution started
+through the Area answers ``404`` through the Function that shares its id, and
+under ``operations/missing`` or another operation of the Area. Resolving is how the owning gateway
 is found, not a second place for these routes to refuse a request. So a
 locally-owned execution is answered here exactly as before, and an id naming no
 goal gets the same ``404`` it always did.

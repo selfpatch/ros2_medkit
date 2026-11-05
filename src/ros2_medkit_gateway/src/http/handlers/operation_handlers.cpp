@@ -166,6 +166,43 @@ bool goal_belongs_to(const ActionGoalInfo & goal, SovdEntityType entity_type, co
   return false;
 }
 
+/// The name a tracked goal's operation is listed under: the last segment of
+/// its action's path. A goal is tracked only for an action of this gateway's
+/// own ROS graph, and runtime introspection names every such action so.
+std::string goal_operation_name(const ActionGoalInfo & goal) {
+  const auto slash = goal.action_path.rfind('/');
+  return slash == std::string::npos ? goal.action_path : goal.action_path.substr(slash + 1);
+}
+
+/// True when `goal` is an execution of the operation `parsed` names on the
+/// entity of `entity_type` and `entity_id`, whose operations are `ops`.
+///
+/// An execution belongs to the operation that started it as well as to the
+/// entity: the item half has to name the goal's operation, by its name or its
+/// ROS path, so `operations/missing/executions/{goal}` - or another operation's
+/// executions - is no address of it. A member half has to name the member that
+/// holds the operation: the one the goal was started on, or the one `ops`
+/// records as the owner of its action. The goal's own action is what is
+/// matched, not the operations the cache lists now, so the execution of an
+/// action server that has gone stays answerable - its status, and a cancel
+/// that reports the server unavailable.
+bool is_execution_of(const ActionGoalInfo & goal, SovdEntityType entity_type, const std::string & entity_id,
+                     const AggregatedOperations & ops, const http::MemberQualifiedId & parsed) {
+  if (!http::operation_item_id_names(goal_operation_name(goal), goal.action_path, parsed.item_id) ||
+      !goal_belongs_to(goal, entity_type, entity_id, ops, parsed)) {
+    return false;
+  }
+  if (!parsed.has_member) {
+    return true;
+  }
+  const bool started_here = goal.entity_type == entity_type && goal.entity_id == entity_id;
+  if (!started_here && goal.entity_id == parsed.member_id) {
+    return true;
+  }
+  const auto owner = ops.owner_by_path.find(goal.action_path);
+  return owner != ops.owner_by_path.end() && owner->second == parsed.member_id;
+}
+
 /// The operation an item id resolves to inside one entity's operations.
 struct ResolvedOperation {
   std::optional<ServiceInfo> service;
@@ -492,7 +529,8 @@ dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std
 }
 
 /// Look up a tracked action goal, and refuse it through any entity other than
-/// the one it was started on, by type and id (goal_belongs_to).
+/// the one it was started on, by type and id, and under any operation but its
+/// own (is_execution_of).
 ///
 /// `ActionGoalInfo` carries the owning entity, so the check costs nothing -
 /// and without it a goal id is a global handle: an execution started on one
@@ -506,9 +544,6 @@ tl::expected<ActionGoalInfo, ErrorInfo> owned_goal(const HandlerContext & ctx, O
                                                    const std::string & operation_id, const std::string & execution_id) {
   auto goal_info = operation_mgr->get_tracked_goal(execution_id);
   if (goal_info.has_value()) {
-    if (goal_info->entity_type == entity_type && goal_info->entity_id == entity_id) {
-      return *goal_info;
-    }
     // The executions collection lists a goal under the member a qualified id
     // names, so the item routes have to accept that same id: a client that
     // reads the collection and follows an id it was handed must not be told
@@ -519,14 +554,19 @@ tl::expected<ActionGoalInfo, ErrorInfo> owned_goal(const HandlerContext & ctx, O
     // ADDRESSED entity aggregates - not that the member named is one of its
     // members. Without this gate any aggregate could name the owner of
     // someone else's goal and read, stop or cancel it from an unrelated URI.
-    // The entity the route names, by its type (route_entity_type).
+    //
+    // The entity the route names, by its type (route_entity_type). One the
+    // cache no longer holds has no operations and no members, and answers
+    // only for the goals started through it.
     const auto entity_info = ctx.get_entity_info(entity_id, entity_type);
     const auto & cache = ctx.services().entity_cache();
+    AggregatedOperations ops;
     if (auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id)) {
-      const auto parsed = http::parse_member_qualified_id(operation_id, lookup->ops.is_aggregated);
-      if (goal_belongs_to(*goal_info, entity_type, entity_id, lookup->ops, parsed)) {
-        return *goal_info;
-      }
+      ops = std::move(lookup->ops);
+    }
+    const auto parsed = http::parse_member_qualified_id(operation_id, ops.is_aggregated);
+    if (is_execution_of(*goal_info, entity_type, entity_id, ops, parsed)) {
+      return *goal_info;
     }
   }
   return tl::make_unexpected(
@@ -1412,8 +1452,9 @@ http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executio
       // qualified id names, because that member is how the caller selects it.
       // Both readings are legitimate, so either match keeps the execution -
       // testing only one of them empties the collection for the other - and
-      // each is by type and id, as for the execution's own routes.
-      if (!goal_belongs_to(goal, entity_info.sovd_type(), entity_id, ops, parsed)) {
+      // each is by type and id and by the operation, the rule the execution's
+      // own routes answer by.
+      if (!is_execution_of(goal, entity_info.sovd_type(), entity_id, ops, parsed)) {
         continue;
       }
       dto::ExecutionId item;
