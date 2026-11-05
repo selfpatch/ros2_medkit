@@ -17,6 +17,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_event_source.hpp"
@@ -24,7 +25,8 @@
 
 namespace ros2_medkit_gateway {
 
-/// Fault events from the fault manager's events topic.
+/// Fault events from the fault manager's events topic. The ROS subscription is
+/// created on the first subscribe() and kept for the source's life.
 class Ros2FaultEventSource final : public FaultEventSource {
  public:
   /// @param node Node the subscription lives on; must outlive this object.
@@ -36,17 +38,23 @@ class Ros2FaultEventSource final : public FaultEventSource {
   Ros2FaultEventSource(Ros2FaultEventSource &&) = delete;
   Ros2FaultEventSource & operator=(Ros2FaultEventSource &&) = delete;
 
-  void subscribe(Callback callback) override;
-  void unsubscribe() override;
+  [[nodiscard]] FaultEventSubscription subscribe(Callback callback) override;
 
  private:
+  /// One subscription's callback. `mutex` is held while it runs, so removal waits for it.
+  struct Subscriber {
+    std::mutex mutex;
+    Callback callback;  ///< Null once removed. Guarded by `mutex`.
+  };
+
   void on_message(const ros2_medkit_msgs::msg::FaultEvent & msg);
+  void remove(const std::shared_ptr<Subscriber> & subscriber);
 
   rclcpp::Node & node_;
   std::string topic_;
-  /// Held while a callback runs, so unsubscribe() waits for it.
-  std::mutex callback_mutex_;
-  Callback callback_;
+  /// Guards subscribers_ and subscription_. Never held while a callback runs.
+  std::mutex subscribers_mutex_;
+  std::vector<std::shared_ptr<Subscriber>> subscribers_;
   rclcpp::Subscription<ros2_medkit_msgs::msg::FaultEvent>::SharedPtr subscription_;
 };
 

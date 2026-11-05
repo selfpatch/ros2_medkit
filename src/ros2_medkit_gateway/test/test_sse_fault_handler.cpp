@@ -844,3 +844,33 @@ TEST_F(SSEFaultHandlerTest, DisconnectReleasesTrackedClientSlot) {
 
   EXPECT_EQ(handler_->connected_clients(), 0u);
 }
+
+TEST_F(SSEFaultHandlerTest, TwoHandlersShareOneSource) {
+  // Both handlers subscribe to the node's one fault event source.
+  auto second = std::make_unique<SSEFaultHandler>(*ctx_, std::make_shared<SSEClientTracker>(1));
+
+  auto spin_until = [this](auto done) {
+    for (int i = 0; i < 500 && !done(); ++i) {  // up to ~5s, generous for sanitizer runs
+      executor_->spin_some();
+      std::this_thread::sleep_for(10ms);
+    }
+    return done();
+  };
+
+  const uint64_t first_before = handler_->events_received();
+  const uint64_t second_before = second->events_received();
+  publisher_->publish(make_fault_event(FaultEvent::EVENT_CONFIRMED, "SHARED_ONE", 10));
+  EXPECT_TRUE(spin_until([&] {
+    return handler_->events_received() > first_before && second->events_received() > second_before;
+  })) << "first handler received "
+      << handler_->events_received() - first_before << ", second received "
+      << second->events_received() - second_before;
+
+  second.reset();
+
+  const uint64_t after_reset = handler_->events_received();
+  publisher_->publish(make_fault_event(FaultEvent::EVENT_CONFIRMED, "SHARED_TWO", 11));
+  EXPECT_TRUE(spin_until([&] {
+    return handler_->events_received() > after_reset;
+  })) << "first handler stopped receiving once the second was destroyed";
+}

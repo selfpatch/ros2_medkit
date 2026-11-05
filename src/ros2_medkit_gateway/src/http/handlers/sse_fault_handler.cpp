@@ -67,9 +67,8 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
                     keepalive_interval.count(), kKeepaliveIntervalSec);
   }
 
-  fault_source_ = ctx_.services().fault_events();
-  if (fault_source_ != nullptr) {
-    fault_source_->subscribe([this](const fd::FaultEventRecord & event) {
+  if (auto * fault_source = ctx_.services().fault_events(); fault_source != nullptr) {
+    fault_subscription_ = fault_source->subscribe([this](const fd::FaultEventRecord & event) {
       on_fault_event(event);
     });
   }
@@ -103,7 +102,7 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
       });
 
   MEDKIT_LOG_INFO(HandlerContext::logger(), "SSE fault handler initialized, event source %s, max_clients=%zu",
-                  fault_source_ != nullptr ? "attached" : "absent", client_tracker_->max_clients());
+                  fault_subscription_ ? "attached" : "absent", client_tracker_->max_clients());
 }
 
 SSEFaultHandler::~SSEFaultHandler() {
@@ -127,9 +126,7 @@ SSEFaultHandler::~SSEFaultHandler() {
 }
 
 void SSEFaultHandler::request_shutdown() {
-  if (fault_source_ != nullptr) {
-    fault_source_->unsubscribe();
-  }
+  fault_subscription_.reset();
   if (peer_relay_) {
     peer_relay_->shutdown();
   }
