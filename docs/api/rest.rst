@@ -2545,7 +2545,10 @@ Create Trigger
           Accepts ``severity`` (log level: ``debug``, ``info``, ``warning``,
           ``error``, ``fatal``; default: ``info``) and ``marker`` (descriptive
           message text; default: ``"Trigger fired"``). The log entry includes
-          trigger metadata (trigger ID, condition type, resource URI).
+          trigger metadata (trigger ID, condition type, resource URI). It is
+          an entry of the trigger's own entity, by type and id, so it reaches
+          that entity's ``logs`` triggers and not those of an entity of
+          another type that shares the id.
 
    **Response 201 Created:**
 

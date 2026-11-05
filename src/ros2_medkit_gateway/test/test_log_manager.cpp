@@ -326,7 +326,7 @@ TEST_F(LogManagerBufferTest, GetLogsPrefixMatchesDotNotationLoggerNames) {
 
 // @verifies REQ_INTEROP_061
 TEST_F(LogManagerBufferTest, AddLogEntry_EntryRetrievable) {
-  mgr_->add_log_entry("my_node", "info", "trigger fired", json::object());
+  mgr_->add_log_entry(ros2_medkit_gateway::SovdEntityType::APP, "my_node", "info", "trigger fired", json::object());
 
   // The entry must appear in get_logs() for the matching node
   auto result = mgr_->get_logs({"/my_node"}, false, "", "", "");
@@ -339,7 +339,7 @@ TEST_F(LogManagerBufferTest, AddLogEntry_EntryRetrievable) {
 // @verifies REQ_INTEROP_061
 TEST_F(LogManagerBufferTest, AddLogEntry_InvalidSeverityFallsBackToInfo) {
   // "verbose" is not a valid SOVD severity; implementation falls back to INFO (level 20)
-  mgr_->add_log_entry("my_node", "verbose", "test message", json::object());
+  mgr_->add_log_entry(ros2_medkit_gateway::SovdEntityType::APP, "my_node", "verbose", "test message", json::object());
 
   auto result = mgr_->get_logs({"/my_node"}, false, "", "", "");
   ASSERT_TRUE(result.has_value());
@@ -351,7 +351,7 @@ TEST_F(LogManagerBufferTest, AddLogEntry_InvalidSeverityFallsBackToInfo) {
 // @verifies REQ_INTEROP_061
 TEST_F(LogManagerBufferTest, AddLogEntry_MetadataAppendedToMessage) {
   json meta = {{"trigger_id", "trig_1"}, {"entity", "sensor"}};
-  mgr_->add_log_entry("my_node", "warning", "threshold exceeded", meta);
+  mgr_->add_log_entry(ros2_medkit_gateway::SovdEntityType::APP, "my_node", "warning", "threshold exceeded", meta);
 
   auto result = mgr_->get_logs({"/my_node"}, false, "", "", "");
   ASSERT_TRUE(result.has_value());
@@ -364,7 +364,7 @@ TEST_F(LogManagerBufferTest, AddLogEntry_MetadataAppendedToMessage) {
 
 // @verifies REQ_INTEROP_061
 TEST_F(LogManagerBufferTest, AddLogEntry_EmptyMetadataNoSuffix) {
-  mgr_->add_log_entry("my_node", "debug", "clean message", json::object());
+  mgr_->add_log_entry(ros2_medkit_gateway::SovdEntityType::APP, "my_node", "debug", "clean message", json::object());
 
   auto result = mgr_->get_logs({"/my_node"}, false, "", "", "");
   ASSERT_TRUE(result.has_value());

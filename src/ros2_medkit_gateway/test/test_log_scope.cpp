@@ -35,7 +35,7 @@ namespace {
 
 class NullLogSource : public LogSource {
  public:
-  void start(EntryCallback) override {
+  void start(EntryCallback /*callback*/) override {
   }
   void stop() override {
   }
@@ -105,11 +105,11 @@ class LogScopeTest : public ::testing::Test {
 
     cache_.update_all({area}, {cell, box}, {ext, temp}, {line});
 
-    mgr_.add_log_entry("ext-plc", "info", "plc entry", {});
-    mgr_.add_log_entry("/plant/node1", "info", "node1 entry", {});
-    mgr_.add_log_entry("/plant/temp", "info", "temp entry", {});
-    mgr_.add_log_entry("plc-box", "info", "box entry", {});
-    mgr_.add_log_entry("/other/node", "info", "other entry", {});
+    mgr_.add_log_entry(SovdEntityType::APP, "ext-plc", "info", "plc entry", {});
+    mgr_.add_log_entry(SovdEntityType::APP, "/plant/node1", "info", "node1 entry", {});
+    mgr_.add_log_entry(SovdEntityType::APP, "/plant/temp", "info", "temp entry", {});
+    mgr_.add_log_entry(SovdEntityType::APP, "plc-box", "info", "box entry", {});
+    mgr_.add_log_entry(SovdEntityType::APP, "/other/node", "info", "other entry", {});
   }
 
   ThreadSafeEntityCache cache_;
