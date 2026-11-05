@@ -34,6 +34,7 @@
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
+#include "ros2_medkit_gateway/core/trigger_host.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 using json = nlohmann::json;
@@ -209,25 +210,11 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
     log_settings = body.log_settings;
   }
 
-  // For data triggers, resolve the resource_path URI segment to a full ROS 2 topic name.
-  // The resource_path from parse_resource_uri is e.g. "/temperature" (URI segment), but the
-  // ROS 2 topic name is e.g. "/sensor/temperature". We look up the entity's topics from the
-  // cache and find the one whose name ends with the resource_path.
+  // For data triggers, resolve the resource_path to a ROS 2 topic of the entity, as a deferred retry does:
+  // "/temperature" binds to "/sensor/temperature".
   std::string resolved_topic_name;
   if (parsed->collection == "data" && !parsed->resource_path.empty()) {
-    const auto & cache = ctx_.services().entity_cache();
-    auto aggregated = cache.get_entity_data(entity_id);
-    for (const auto & topic : aggregated.topics) {
-      // Match: topic.name ends with the resource_path (e.g., topic "/sensor/temperature"
-      // ends with "/temperature"). Also accept exact match.
-      if (topic.name == parsed->resource_path ||
-          (topic.name.size() > parsed->resource_path.size() &&
-           topic.name.compare(topic.name.size() - parsed->resource_path.size(), parsed->resource_path.size(),
-                              parsed->resource_path) == 0)) {
-        resolved_topic_name = topic.name;
-        break;
-      }
-    }
+    resolved_topic_name = resolve_trigger_topic(ctx_.services().entity_cache(), entity_id, parsed->resource_path);
     if (resolved_topic_name.empty() && entity_result->is_plugin) {
       // Plugin data points are enumerable right now, so a name the plugin does
       // not have can be rejected outright with a suggestion - parking it would
@@ -610,7 +597,7 @@ tl::expected<TriggerParsedResourceUri, std::string> TriggerHandlers::parse_resou
     parsed.entity_type = match[1].str();
     parsed.entity_id = match[2].str();
     parsed.collection = match[3].str();
-    // Decoded as the GET path is, so a trigger watches the item GET reads. Before the '..' check.
+    // Percent-decoded as the GET path is, before the '..' check.
     parsed.resource_path = match[4].matched ? httplib::detail::decode_url(match[4].str(), false) : "";
 
     // Security: reject '..' as a path segment (not as substring of e.g. '/..foo')

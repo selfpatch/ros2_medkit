@@ -50,17 +50,6 @@ std::vector<std::string> apps_under(const ThreadSafeEntityCache & cache, const s
   return {};
 }
 
-std::string topic_of(const ThreadSafeEntityCache & cache, const std::string & entity_id,
-                     const std::string & resource_path) {
-  for (const auto & topic : cache.get_entity_data(entity_id).topics) {
-    if (topic.name == resource_path ||
-        (topic.name.size() > resource_path.size() &&
-         topic.name.compare(topic.name.size() - resource_path.size(), resource_path.size(), resource_path) == 0)) {
-      return topic.name;
-    }
-  }
-  return "";
-}
 }  // namespace
 
 void register_builtin_conditions(ConditionRegistry & conditions) {
@@ -76,6 +65,19 @@ std::string resolve_trigger_entity(const ThreadSafeEntityCache & cache, const st
     entity_id = cache.resolve_node_to_app(node_fqn.substr(1));
   }
   return entity_id;
+}
+
+std::string resolve_trigger_topic(const ThreadSafeEntityCache & cache, const std::string & entity_id,
+                                  const std::string & resource_path) {
+  // "//x" is the separator slash followed by the item "/x", whose topic path is "/x".
+  const std::string path = resource_path.rfind("//", 0) == 0 ? resource_path.substr(1) : resource_path;
+  for (const auto & topic : cache.get_entity_data(entity_id).topics) {
+    if (topic.name == path || (topic.name.size() > path.size() &&
+                               topic.name.compare(topic.name.size() - path.size(), path.size(), path) == 0)) {
+      return topic.name;
+    }
+  }
+  return "";
 }
 
 TriggerHost make_trigger_host(const TriggerHostConfig & config, ResourceChangeNotifier & notifier,
@@ -128,7 +130,7 @@ TriggerHost make_trigger_host(const TriggerHostConfig & config, ResourceChangeNo
     return cache->find_entity(entity_id).has_value();
   });
   host.manager->set_resolve_topic_fn([cache](const std::string & entity_id, const std::string & resource_path) {
-    return topic_of(*cache, entity_id, resource_path);
+    return resolve_trigger_topic(*cache, entity_id, resource_path);
   });
   host.manager->set_warn_log_fn(warn);
   host.manager->set_unresolved_timeout(wiring.unresolved_timeout);

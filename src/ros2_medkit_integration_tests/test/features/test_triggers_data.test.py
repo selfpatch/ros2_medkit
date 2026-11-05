@@ -473,13 +473,8 @@ class TestTriggersData(GatewayTestCase):
         self.assertEqual(r.json()['status'], 'active')
         self.assertIn('event_source', r.json())
 
-    # @verifies REQ_INTEROP_029
-    # @verifies REQ_INTEROP_097
-    def test_15_trigger_on_percent_encoded_topic_path_fires(self):
-        """A trigger on the documented percent-encoded topic URI resolves the topic and fires."""
-        resource = (
-            f'{API_BASE_PATH}/apps/{self.app_id}/data/powertrain%2Fengine%2Ftemperature'
-        )
+    def _assert_trigger_on_uri_fires(self, resource):
+        """Create an OnChange trigger on `resource` and assert it delivers an event."""
         get = requests.get(
             self.BASE_URL.removesuffix(API_BASE_PATH) + resource, timeout=5,
         )
@@ -525,9 +520,23 @@ class TestTriggersData(GatewayTestCase):
 
         self.assertTrue(
             received_events,
-            'the trigger on the percent-encoded topic URI delivered no event',
+            f'the trigger on {resource} delivered no event',
         )
         self.assertIn('payload', received_events[0])
+
+    # @verifies REQ_INTEROP_029
+    # @verifies REQ_INTEROP_097
+    def test_15_trigger_on_percent_encoded_topic_path_fires(self):
+        """A trigger on the documented percent-encoded topic URI resolves the topic and fires."""
+        self._assert_trigger_on_uri_fires(
+            f'{API_BASE_PATH}/apps/{self.app_id}/data/powertrain%2Fengine%2Ftemperature')
+
+    # @verifies REQ_INTEROP_029
+    # @verifies REQ_INTEROP_097
+    def test_16_trigger_on_encoded_leading_slash_topic_path_fires(self):
+        """The listed item id, leading slash included, encoded as one segment, fires."""
+        self._assert_trigger_on_uri_fires(
+            f'{API_BASE_PATH}/apps/{self.app_id}/data/%2Fpowertrain%2Fengine%2Ftemperature')
 
     # ------------------------------------------------------------------
     # Error handling
