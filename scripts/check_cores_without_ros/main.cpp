@@ -1082,9 +1082,9 @@ httplib::Result post_trigger(httplib::Client & client, const std::string & resou
   return client.Post("/api/v1/apps/plugin_app/triggers", body.dump(), "application/json");
 }
 
-// Triggers on a host with no ROS node: a fault confirmation from the host's single event source (shared with the fault
-// SSE stream through the fan-out) fires a fault trigger, a plugin-served data item fires a data trigger when it crosses
-// a threshold, and the trigger count is bounded.
+// Triggers on a host with no ROS node: a fault confirmation from the host's single event source (subscribed to by the
+// fault SSE stream, the freeze-frame capture and the trigger feed) fires a fault trigger, a plugin-served data item
+// fires a data trigger when it crosses a threshold, and the trigger count is bounded.
 bool check_triggers() {
   bool ok = true;
   MinimalServices services;
@@ -1095,9 +1095,10 @@ bool check_triggers() {
   plugin.pinned = 10;
   plugin.wrapped = true;
   ControlledFaultEvents upstream;
-  gw::FaultEventFanOut fan_out(upstream);
-  auto sse_branch = fan_out.make_branch();
-  services.set_fault_events(sse_branch.get());
+  services.set_fault_events(&upstream);
+  auto capture = gw::make_freeze_frame_capture(gw::FreezeFrameCaptureConfig{}, upstream, services.plugin_manager());
+  ok &= check(capture != nullptr, "the freeze-frame capture builds on the shared event source");
+  services.set_freeze_frames(capture.get());
   gw::ResourceChangeNotifier notifier;
   gw::ConditionRegistry conditions;
   gw::register_builtin_conditions(conditions);
@@ -1107,8 +1108,7 @@ bool check_triggers() {
   gw::TriggerHostWiring wiring;
   wiring.cache = &services.entity_cache();
   wiring.polled_plugins = services.plugin_manager();
-  auto trigger_branch = fan_out.make_branch();
-  wiring.fault_events = trigger_branch.get();
+  wiring.fault_events = &upstream;
   auto host = gw::make_trigger_host(config, notifier, conditions, wiring);
   ok &= check(host.max_triggers == 3 && host.data_poll_interval_ms == 100,
               "the host builds with the configured trigger limit and polling interval");
@@ -1177,6 +1177,10 @@ bool check_triggers() {
     return !fault_reader.events().empty();
   });
   ok &= check(fault_fired, "a confirmation from the host's event source fires the fault trigger");
+  ok &= check(capture && wait_until([&] {
+                return !capture->frames_for("TRIGGER_FAULT").empty();
+              }),
+              "the freeze-frame capture on the same source holds a frame for the confirmation");
   if (fault_fired) {
     const auto event = fault_reader.events().front();
     ok &= check(event.contains("payload") && event["payload"].value("fault_code", "") == "TRIGGER_FAULT" &&
