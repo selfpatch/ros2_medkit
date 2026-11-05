@@ -22,7 +22,7 @@ Tank.Level of 42.0. The node map gives each a detection rule:
   * Tank.Level > 40, no qualifier: active from the first read. The control
     that shows the detection path is live in each leg.
   * StatusWord bit 0 with raise_after_ms: 3000.
-  * FaultCode > 0 with raise_after_samples: 4.
+  * FaultCode > 0 with raise_after_samples: 2.
 
 The test writes the registers through the fixture's stdin and reads which
 faults are CONFIRMED from the fault manager over the gateway's /faults, so a
@@ -33,7 +33,14 @@ no further updates. Each leg has its own fault manager. Per leg:
   * a StatusWord blip shorter than the window never shows up,
   * a held StatusWord shows up no sooner than 3 s after the write,
   * the clear is immediate,
-  * a held FaultCode shows up after four samples, not on the first.
+  * ten FaultCode blips shorter than one poll never show up, each with two
+    changes (5, 6, then 0), so two quick changes are one sample,
+  * a held FaultCode shows up after two samples, not on the first.
+
+The subscription leg uses a subscription interval well below the poll
+interval, so data changes arrive between polls, as they do in the field. A
+third leg runs subscriptions with a 60 s poll and checks that a held StatusWord
+still shows up just after 3 s, not at the next poll.
 
 Usage: test_opcua_raise_qualifier.test.py <test_alarm_server>
 """
@@ -57,8 +64,16 @@ CONTROL = 'TANK_ABOVE_40'
 HELD = 'STATUS_BIT0_HELD'
 REPEATED = 'FAULT_CODE_REPEATED'
 HOLD_MS = 3000
-SAMPLES = 4
+SAMPLES = 2
 POLL_MS = 500
+# Subscription leg: changes arrive between polls, every SUB_MS.
+SUB_MS = 50
+BLIPS = 10
+BLIP_S = 0.25
+BLIP_GAP_S = 0.8  # longer than one poll
+# Duration leg: a poll so slow that only the recheck between polls can end
+# raise_after_ms on time.
+SLOW_POLL_MS = 60000
 
 failures = []
 
@@ -217,7 +232,8 @@ def node_map_text():
     )
 
 
-def write_params(path, *, port, plugin, server_port, node_map, manifest, subscriptions):
+def write_params(path, *, port, plugin, server_port, node_map, manifest, subscriptions,
+                 poll_ms=POLL_MS):
     """Render a gateway params file for one transport."""
     path.write_text('\n'.join([
         'ros2_medkit_gateway:',
@@ -229,9 +245,9 @@ def write_params(path, *, port, plugin, server_port, node_map, manifest, subscri
         f'    plugins.opcua.path: "{plugin}"',
         f'    plugins.opcua.endpoint_url: "opc.tcp://127.0.0.1:{server_port}"',
         f'    plugins.opcua.node_map_path: "{node_map}"',
-        f'    plugins.opcua.poll_interval_ms: {POLL_MS}',
+        f'    plugins.opcua.poll_interval_ms: {poll_ms}',
         f'    plugins.opcua.prefer_subscriptions: {"true" if subscriptions else "false"}',
-        f'    plugins.opcua.subscription_interval_ms: {POLL_MS}.0',
+        f'    plugins.opcua.subscription_interval_ms: {SUB_MS if subscriptions else POLL_MS}.0',
         '    discovery.mode: "hybrid"',
         f'    discovery.manifest_path: "{manifest}"',
         '    discovery.manifest_strict_validation: false',
@@ -274,6 +290,14 @@ def active(faults_url):
         return None
     return {item.get('fault_code') for item in listing.get('items', [])
             if item.get('status') == 'CONFIRMED'}
+
+
+def ever_reported(faults_url, code):
+    """Return whether the fault manager holds <code> in any status, or None if unreadable."""
+    listing = http_json(faults_url)
+    if not isinstance(listing, dict):
+        return None
+    return any(item.get('fault_code') == code for item in listing.get('items', []))
 
 
 def first_active(faults_url, code, deadline, period=0.1):
@@ -371,7 +395,33 @@ def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, sub
             time.sleep(0.1)
         check(cleared is not None, f'{mode}: {HELD} clears once StatusWord is 0')
 
-        # 4. Samples. Under a subscription the register sends one change and
+        # 4. Short blips. Each one is shorter than a poll, so polling never
+        #    reads it twice, and under a subscription the tick that follows a
+        #    change must not count as a second sample. The gap between two blips
+        #    is longer than a poll, so a healthy read always lands in between:
+        #    with a shorter gap, two reads in a row can each catch a different
+        #    blip, and polling rightly raises.
+        longest = 0.0
+        for _ in range(BLIPS):
+            blip_start = time.monotonic()
+            set_register(server, server_log, 'FaultCode', 5)
+            time.sleep(BLIP_S / 2)
+            set_register(server, server_log, 'FaultCode', 6)
+            time.sleep(BLIP_S / 2)
+            set_register(server, server_log, 'FaultCode', 0)
+            longest = max(longest, time.monotonic() - blip_start)
+            time.sleep(BLIP_GAP_S)
+        check(longest < POLL_MS / 1000.0,
+              f'{mode}: the longest FaultCode blip lasted {longest:.2f} s, less than one poll')
+        # A blip that got through is raised and cleared again at once, so look
+        # for the fault in any status: this leg's fault manager has never been
+        # told about it before.
+        time.sleep(1.5 * SCALE)
+        check(ever_reported(faults_url, REPEATED) is False,
+              f'{mode}: {BLIPS} short FaultCode blips never raise {REPEATED}, '
+              'not even for a moment')
+
+        # 5. Samples. Under a subscription the register sends one change and
         #    the poll loop counts one more sample per cycle while it holds.
         check(set_register(server, server_log, 'FaultCode', 5), f'{mode}: FaultCode set to 5')
         elapsed = first_active(faults_url, REPEATED, (SAMPLES * POLL_MS / 1000.0 + 6.0) * SCALE)
@@ -391,6 +441,52 @@ def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, sub
         try:
             set_register(server, server_log, 'StatusWord', 0)
             set_register(server, server_log, 'FaultCode', 0)
+        except (BrokenPipeError, ValueError, OSError):
+            pass
+
+
+def run_duration_leg(workdir, env, plugin, server, server_log, server_port, manifest):
+    """Subscriptions with a 60 s poll: raise_after_ms must still end on time."""
+    print('--- duration leg (subscriptions, 60 s poll) ---')
+    node_map = workdir / 'nodes.yaml'
+    node_map.write_text(node_map_text())
+    port = free_port()
+    params = workdir / 'gateway_duration.yaml'
+    write_params(params, port=port, plugin=plugin, server_port=server_port, node_map=node_map,
+                 manifest=manifest, subscriptions=True, poll_ms=SLOW_POLL_MS)
+    log = workdir / 'gateway_duration.log'
+    fm_log = workdir / 'fault_manager_duration.log'
+    fm = start_fault_manager(fm_log, env)
+    if not check(fm is not None, 'duration: fault_manager_node started'):
+        print(fm_log.read_text(errors='replace')[-3000:], file=sys.stderr)
+        return
+    gw = start_gateway(params, log, env)
+    status_url = f'http://127.0.0.1:{port}/api/v1/components/{COMPONENT}/x-plc-status'
+    faults_url = f'http://127.0.0.1:{port}/api/v1/faults?status=all'
+    try:
+        # Waiting for the control rule also waits until reports reach the fault
+        # manager, so the timing below starts with the sink ready.
+        ready = first_active(faults_url, CONTROL, 90 * SCALE, period=0.5) is not None
+        if not check(ready, f'duration: {CONTROL} CONFIRMED with a 60 s poll'):
+            print(log.read_text(errors='replace')[-3000:], file=sys.stderr)
+            return
+        status = http_json(status_url) or {}
+        if not check(status.get('mode') == 'subscription',
+                     'duration: the plugin runs in subscription mode '
+                     f'(got {status.get("mode")!r})'):
+            return
+        check(set_register(server, server_log, 'StatusWord', 1), 'duration: StatusWord set to 1')
+        elapsed = first_active(faults_url, HELD, (HOLD_MS / 1000.0 + 5.0) * SCALE)
+        check(elapsed is not None, f'duration: a held StatusWord raises {HELD}')
+        if elapsed is not None:
+            check(HOLD_MS / 1000.0 - 0.1 <= elapsed <= HOLD_MS / 1000.0 + 1.5 * SCALE,
+                  f'duration: {HELD} shows up just after {HOLD_MS} ms, not at the next '
+                  f'60 s poll (after {elapsed:.2f} s)')
+    finally:
+        terminate(gw)
+        terminate(fm)
+        try:
+            set_register(server, server_log, 'StatusWord', 0)
         except (BrokenPipeError, ValueError, OSError):
             pass
 
@@ -432,6 +528,7 @@ def main():
             return 1
         for subscriptions in (False, True):
             run_leg(workdir, env, plugin, server, server_log, server_port, manifest, subscriptions)
+        run_duration_leg(workdir, env, plugin, server, server_log, server_port, manifest)
 
         if failures:
             print(f'FAIL: {len(failures)} expectation(s) not met:', file=sys.stderr)
