@@ -85,6 +85,7 @@ class FaultEventSource {
 
   /// Deliver events to `callback` until the returned handle ends.
   /// The callback may run on any thread.
+  /// It must not throw: the exception escapes into the delivering thread and later subscribers miss the event.
   [[nodiscard]] virtual FaultEventSubscription subscribe(Callback callback) = 0;
 };
 
