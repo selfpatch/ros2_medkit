@@ -577,7 +577,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: ubuntu:20.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -589,7 +589,7 @@ jobs:
             libsqlite3-dev libssl-dev nlohmann-json3-dev libyaml-cpp-dev
 
       - name: Build the ROS-free cores
-        run: CXX=g++-9 cmake -S scripts/check_cores_without_ros -B /tmp/b && cmake --build /tmp/b
+        run: CXX=g++-9 cmake -S scripts/check_cores_without_ros -B /tmp/b && cmake --build /tmp/b --parallel "$(nproc)"
 
       - name: Build the core in hosts with their own httplib, at C++14
         run: CXX=g++-9 scripts/check_cores_without_ros/hosts/run.sh

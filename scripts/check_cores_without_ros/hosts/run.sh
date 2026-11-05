@@ -25,11 +25,11 @@ trap 'rm -rf "$empty"' EXIT
 # Version 0.26 has no multipart API the handlers use: the target must be ignored. Its include
 # directory holds no httplib.h, so using it fails the build. GLOBAL so that CMake 3.16 accepts it.
 cmake -S "$here" -B /tmp/host_new -DHOST_HTTPLIB_VERSION=0.26.0 -DHOST_HTTPLIB_INCLUDE="$empty" -DHOST_HTTPLIB_GLOBAL=ON
-cmake --build /tmp/host_new
+cmake --build /tmp/host_new --parallel "$(nproc)"
 /tmp/host_new/check_gateway_core_host
 
 # An unversioned target from find_package() is not GLOBAL: CMake 3.16 and 3.17 cannot alias it.
 cmake -S "$here" -B /tmp/host_unversioned -DHOST_HTTPLIB_INCLUDE="$vendored"
-cmake --build /tmp/host_unversioned
+cmake --build /tmp/host_unversioned --parallel "$(nproc)"
 /tmp/host_unversioned/check_gateway_core_host
 echo "Host variants OK."
