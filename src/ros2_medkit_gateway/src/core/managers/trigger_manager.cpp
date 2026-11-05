@@ -1063,6 +1063,7 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
       auto tid_copy = state->info.id;
       auto log_settings_copy = state->info.log_settings;
       auto entity_id_copy = state->info.entity_id;
+      const SovdEntityType entity_type_copy = trigger_entity_type(state->info.entity_type);
       auto condition_type_copy = state->info.condition_type;
       auto resource_uri_copy = state->info.resource_uri;
       bool is_persistent = state->info.persistent;
@@ -1099,7 +1100,7 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
         evaluating_trigger_ = true;
         try {
           log_manager_->add_log_entry(
-              entity_id_copy, ls.value("severity", "info"), ls.value("marker", "Trigger fired"),
+              entity_type_copy, entity_id_copy, ls.value("severity", "info"), ls.value("marker", "Trigger fired"),
               {{"trigger_id", tid_copy}, {"condition_type", condition_type_copy}, {"resource", resource_uri_copy}});
         } catch (...) {
           // Don't let log entry failure prevent trigger delivery

@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/core/log_types.hpp"
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/core/providers/log_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/log_provider_registry.hpp"
 #include "ros2_medkit_gateway/core/transports/log_source.hpp"
@@ -143,13 +144,17 @@ class LogManager {
    * same path as on_log_entry(). If a ResourceChangeNotifier is set, emits a
    * "logs" CREATED notification so triggers can observe log changes.
    *
+   * @param entity_type The type of the entity: the "logs" notification names
+   *                    its entity by type and id, and ids are unique per type
+   *                    only - a trigger on a Component writes the Component's
+   *                    entry, not that of an App sharing its id
    * @param entity_id  Entity to associate the log with (used as logger name)
    * @param severity   SOVD severity string (debug, info, warning, error, fatal)
    * @param message    Human-readable log message
    * @param metadata   Additional JSON metadata stored in the message (appended)
    */
-  void add_log_entry(const std::string & entity_id, const std::string & severity, const std::string & message,
-                     const nlohmann::json & metadata);
+  void add_log_entry(SovdEntityType entity_type, const std::string & entity_id, const std::string & severity,
+                     const std::string & message, const nlohmann::json & metadata);
 
   /// Set the ResourceChangeNotifier for emitting log change events.
   /// Called by GatewayNode after both LogManager and the notifier are available.
