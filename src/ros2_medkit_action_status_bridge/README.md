@@ -31,8 +31,8 @@ generically, by observing the goal-status topic.
 - `fault_code` is `<PREFIX>_<ACTION>_ABORTED` (or `_CANCELED`), e.g.
   `ACTION_NAVIGATE_TO_POSE_ABORTED`. `source_id` is the action **server's node
   FQN** (resolved from the status topic's publisher, e.g. `/bt_navigator`), so
-  the fault associates with that node's SOVD entity; it falls back to the action
-  name only if no publisher is visible.
+  the fault associates with that node's SOVD entity. The first report waits up to
+  5 s for that name to resolve; it falls back to the action name only after that.
 
 ## Per-action state, not per-goal
 

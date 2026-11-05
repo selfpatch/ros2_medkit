@@ -100,6 +100,7 @@ if(BUILD_TESTING)
   )
   medkit_add_launch_test(test_integration test/test_integration.test.py TIMEOUT 120)
   medkit_add_launch_test(test_sigint_exit test/test_sigint_exit.test.py TIMEOUT 120)
+  medkit_add_launch_test(test_source_resolution test/test_source_resolution.test.py TIMEOUT 180)
 
   ros2_medkit_relax_vendor_warnings()
 endif()

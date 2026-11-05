@@ -41,6 +41,10 @@ constexpr size_t kMaxActionPart = 48;
 // Longest status suffix that may follow the action part, "_CANCELED".
 constexpr size_t kMaxStatusSuffix = 9;
 
+// How long a first report waits for the action server's node name to resolve
+// before it falls back to the action name as source.
+constexpr std::chrono::seconds kSourceResolveGrace{5};
+
 bool contains_substr(const std::vector<std::string> & list, const std::string & value) {
   for (const auto & item : list) {
     if (!item.empty() && value.find(item) != std::string::npos) {
@@ -285,6 +289,7 @@ void ActionStatusBridgeNode::prune_vanished(const std::map<std::string, std::str
         }
       }
       reporters_.erase(action_name);
+      source_wait_since_.erase(action_name);
     }
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
@@ -316,8 +321,7 @@ ActionStatusBridgeNode::ActionState ActionStatusBridgeNode::derive_state(const a
 }
 
 ActionStatusBridgeNode::ActionState
-ActionStatusBridgeNode::apply_message(const std::string & action_name, const action_msgs::msg::GoalStatusArray & msg,
-                                      ros2_medkit_fault_reporter::FaultReporter * reporter) {
+ActionStatusBridgeNode::record_desired(const std::string & action_name, const action_msgs::msg::GoalStatusArray & msg) {
   const ActionState net = derive_state(msg, canceled_is_fault_);
   if (net == ActionState::kUnknown) {
     return ActionState::kUnknown;  // no terminal verdict in this message
@@ -336,6 +340,15 @@ ActionStatusBridgeNode::apply_message(const std::string & action_name, const act
     } else if (heal_on_succeeded_) {  // net == kHealthy
       desired.net = ActionState::kHealthy;
     }
+  }
+  return net;
+}
+
+ActionStatusBridgeNode::ActionState
+ActionStatusBridgeNode::apply_message(const std::string & action_name, const action_msgs::msg::GoalStatusArray & msg,
+                                      ros2_medkit_fault_reporter::FaultReporter * reporter) {
+  if (record_desired(action_name, msg) == ActionState::kUnknown) {
+    return ActionState::kUnknown;
   }
 
   const ActionState delivered = reconcile(action_name, reporter);
@@ -422,6 +435,9 @@ void ActionStatusBridgeNode::reconcile_pending() {
     }
   }
   for (const auto & action_name : pending) {
+    if (source_pending(action_name)) {
+      continue;  // the retry timer stays armed and tries again
+    }
     reconcile(action_name, reporter_for(action_name));
   }
 
@@ -483,7 +499,28 @@ void ActionStatusBridgeNode::status_callback(const std::string & action_name,
   // valid for this call - prune_vanished() only erases reporters_ from that same
   // thread, never concurrently. This invariant must hold if a multi-threaded
   // executor is ever introduced.
+  if (source_pending(action_name)) {
+    record_desired(action_name, *msg);
+    update_retry_timer();
+    return;
+  }
   apply_message(action_name, *msg, reporter_for(action_name));
+}
+
+bool ActionStatusBridgeNode::source_pending(const std::string & action_name) {
+  {
+    std::lock_guard<std::mutex> lock(reporters_mutex_);
+    if (reporters_.find(action_name) != reporters_.end()) {
+      return false;
+    }
+  }
+  if (!server_fqn_for_action(action_name).empty()) {
+    return false;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  std::lock_guard<std::mutex> lock(reporters_mutex_);
+  const auto since = source_wait_since_.emplace(action_name, now).first->second;
+  return now - since < kSourceResolveGrace;
 }
 
 ros2_medkit_fault_reporter::FaultReporter * ActionStatusBridgeNode::reporter_for(const std::string & action_name) {
@@ -508,6 +545,7 @@ ros2_medkit_fault_reporter::FaultReporter * ActionStatusBridgeNode::reporter_for
   auto reporter = std::make_unique<ros2_medkit_fault_reporter::FaultReporter>(this->shared_from_this(), source_id);
   auto * raw = reporter.get();
   reporters_[action_name] = std::move(reporter);
+  source_wait_since_.erase(action_name);
   return raw;
 }
 
