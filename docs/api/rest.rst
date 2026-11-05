@@ -2496,10 +2496,18 @@ Create Trigger
         - Yes
         - Full SOVD resource URI to observe (e.g. ``/api/v1/apps/{id}/data/{topic}``,
           ``/api/v1/apps/{id}/faults``, ``/api/v1/areas/{id}/faults``).
-          Must reference the same entity as the route. The path is
-          percent-decoded as a GET path is, so the trigger watches the item
-          that GET of the same URI returns. ``observed_resource`` echoes the
-          URI as sent.
+          Must reference the same entity as the route. The path after the
+          collection is percent-decoded as a GET path is, and
+          ``observed_resource`` echoes the URI as sent. A data trigger binds
+          to the first topic of the entity whose name equals the decoded path
+          or ends with it, so ``.../data/temperature`` binds to
+          ``/powertrain/engine/temperature``. As in GET, the item may carry
+          its own leading slash (``.../data/%2Fpowertrain%2Fengine%2Ftemperature``).
+          When the data list of a plugin-owned entity can be read and is not
+          empty, a name missing from it is refused with 400. A plugin item with no topic
+          delivers events only on a host that polls plugin items (see the
+          gateway README); the ROS 2 gateway node does not poll, so there
+          such a trigger is accepted and delivers no event.
       * - ``trigger_condition``
         - Yes
         - Object with ``condition_type`` and condition-specific parameters.
