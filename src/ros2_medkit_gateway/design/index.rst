@@ -717,8 +717,9 @@ It consists of five main components:
    - Observers (TriggerManager) register callbacks with filters
    - ``notify()`` is non-blocking - pushes to an internal queue processed by a dedicated worker thread
    - Filters support collection, entity_id, and resource_path matching
-   - ``unsubscribe(id)`` returns once that callback is not running, and the callback is never called again, so an
-     observer can be destroyed right after it unsubscribes. Called from a callback, it returns at once.
+   - ``unsubscribe(id)`` from another thread returns once that callback is not running, and the callback is never
+     called again, so an observer can be destroyed right after it unsubscribes. From inside a notifier callback it
+     returns at once, the current invocation continues, and the callback is not called again after it returns.
    - **Teardown contract:** producers hold a non-owning ``ResourceChangeNotifier *``, so every producer must be
      quiesced before the notifier is destroyed. ``notify()``'s internal drain guard only protects calls that are
      already in progress - it cannot help a call that starts after the object is freed. Most producers notify from

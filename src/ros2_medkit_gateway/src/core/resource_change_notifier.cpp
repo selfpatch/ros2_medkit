@@ -213,11 +213,11 @@ void ResourceChangeNotifier::deliver(NotifierSubscriptionId id, const ResourceCh
       error_logger_("Unknown exception in subscriber callback");
     }
   }
-  // Dropped before running_id_ clears, so a callback removed during the call is destroyed before unsubscribe returns.
+  // Dropped before running_id_ clears, so an unsubscribe waiting on another thread drops the last reference.
   entry.reset();
   {
     std::lock_guard<std::mutex> lock(sub_mutex_);
-    running_id_ = 0;
+    running_id_.reset();
   }
   running_cv_.notify_all();
 }
