@@ -24,14 +24,15 @@ namespace fd = ros2_medkit::fault_detection;
 
 TriggerFaultFeed::TriggerFaultFeed(FaultEventSource & source, ResourceChangeNotifier & notifier,
                                    NodeToEntityFn resolver)
-  : source_(source), notifier_(notifier), resolver_(std::move(resolver)) {
-  source_.subscribe([this](const fd::FaultEventRecord & event) {
+  : notifier_(notifier)
+  , resolver_(std::move(resolver))
+  , subscription_(source.subscribe([this](const fd::FaultEventRecord & event) {
     on_event(event);
-  });
+  })) {
 }
 
 TriggerFaultFeed::~TriggerFaultFeed() {
-  source_.unsubscribe();
+  subscription_.reset();
 }
 
 void TriggerFaultFeed::set_node_to_entity_resolver(NodeToEntityFn resolver) {

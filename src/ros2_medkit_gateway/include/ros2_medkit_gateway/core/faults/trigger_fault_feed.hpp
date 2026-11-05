@@ -26,13 +26,14 @@ namespace ros2_medkit_gateway {
 ///
 /// The entity of an event is the first reporting source, mapped by the resolver when it knows the source and by its
 /// last path segment otherwise. The resource path is "/" plus the fault code; the value is the fault JSON plus
-/// `event_type`. A host gives it its own branch of a `FaultEventFanOut` when other consumers share the source.
+/// `event_type`. The feed holds one subscription on the source, so other consumers can subscribe to the same source.
 class TriggerFaultFeed {
  public:
   /// Maps a reporting source to an entity id. Returns an empty string for a source it does not know.
   using NodeToEntityFn = std::function<std::string(const std::string &)>;
 
   /// Subscribes to `source` at once. `source` and `notifier` must outlive the feed.
+  /// Destroying the feed ends its subscription and waits for a running callback.
   TriggerFaultFeed(FaultEventSource & source, ResourceChangeNotifier & notifier, NodeToEntityFn resolver = {});
   ~TriggerFaultFeed();
   TriggerFaultFeed(const TriggerFaultFeed &) = delete;
@@ -46,9 +47,9 @@ class TriggerFaultFeed {
  private:
   void on_event(const ros2_medkit::fault_detection::FaultEventRecord & event);
 
-  FaultEventSource & source_;
   ResourceChangeNotifier & notifier_;
   NodeToEntityFn resolver_;
+  FaultEventSubscription subscription_;
 };
 
 }  // namespace ros2_medkit_gateway

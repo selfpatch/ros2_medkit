@@ -91,8 +91,9 @@ store from it:
   the ``TriggerManager`` from a ``TriggerHostConfig`` (the ``triggers.*``
   names and defaults, plus ``data_poll_interval_ms``), wires the entity lookups
   to the entity cache and restores persistent triggers. Fault triggers are fed
-  by a ``TriggerFaultFeed`` over a ``FaultEventSource`` (a ``FaultEventFanOut``
-  branch when the source is shared). A data trigger with a known topic reads
+  by a ``TriggerFaultFeed`` that holds one ``FaultEventSubscription`` on a
+  ``FaultEventSource``, so it can share the source with the fault SSE stream
+  and the freeze-frame capture. A data trigger with a known topic reads
   from the ``TopicSubscriptionTransport``. Any other data trigger reads from a
   ``DataItemSource``; ``PollingDataItemSource`` reads the item through
   ``read_plugin_data_item`` once per ``data_poll_interval_ms`` and delivers the
