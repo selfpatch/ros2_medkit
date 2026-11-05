@@ -35,6 +35,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
@@ -2613,6 +2614,86 @@ nodes:
   // unmatched sink): the buffer was swapped out and dispatched to the server.
   EXPECT_GT(cleared_received.load(std::memory_order_relaxed), 0)
       << "flush_pending_reports never dispatched - swap-vs-push path not covered";
+}
+
+TEST(OpcuaPluginConcurrency, BufferedReportsAreDispatchedInOrder) {
+  // Flushes run on the poll thread, the event pump thread and the REST thread.
+  // One thread buffers numbered reports (each send_or_buffer also flushes),
+  // another only flushes. A flush that swapped out an older batch must not
+  // dispatch it after a later flush dispatched a newer one, or a clear could
+  // reach the fault manager before the raise it answers. Dispatches take an
+  // uneven time, so without one flush at a time they finish out of order.
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_dispatch_order");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_dispatch_order_faultmgr");
+  auto report_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ReportFault>(
+      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> &,
+                                        const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & res) {
+        res->accepted = true;
+      });
+
+  const auto yaml_path = std::filesystem::temp_directory_path() / "test_opcua_dispatch_order.yaml";
+  std::ofstream(yaml_path) << R"(
+area_id: order_plc
+component_id: order_runtime
+nodes:
+  - node_id: "ns=2;i=1"
+    entity_id: tank
+    data_name: level
+    data_type: float
+)";
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["node_map_path"] = yaml_path.string();
+  config["endpoint_url"] = "opc.tcp://127.0.0.1:1";  // nothing listening: no PLC traffic
+  config["poll_interval_ms"] = 100;
+  plugin.configure(config);
+  RealNodePluginContext ctx(node.get());
+  ctx.entities["tank"] = {SovdEntityType::APP, "tank", "/order_plc", "/order_plc/order_runtime/tank"};
+  plugin.set_context(ctx);
+  ScopedExecutorSpin spinner({node, fault_manager});
+  auto probe = node->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!probe->service_is_ready() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_TRUE(probe->service_is_ready()) << "stub ReportFault server never became discoverable";
+  std::remove(yaml_path.string().c_str());
+
+  constexpr int kReports = 3000;
+  std::mutex log_mutex;
+  std::vector<int> log;
+  std::atomic<bool> done{false};
+  std::thread flusher([&] {
+    while (!done.load()) {
+      plugin.flush_pending_reports_for_test();
+    }
+  });
+  for (int n = 0; n < kReports; ++n) {
+    OpcuaPlugin::PendingFaultDispatch entry;
+    entry.kind = OpcuaPlugin::PendingFaultDispatch::Kind::Report;
+    entry.fault_code = "ORDER";
+    entry.dispatch = [&log, &log_mutex, n] {
+      std::this_thread::sleep_for(std::chrono::microseconds(n % 2 ? 80 : 5));
+      std::lock_guard<std::mutex> lock(log_mutex);
+      log.push_back(n);
+    };
+    plugin.send_or_buffer_for_test(std::move(entry));
+  }
+  plugin.flush_pending_reports_for_test();
+  done = true;
+  flusher.join();
+  plugin.shutdown();
+
+  std::lock_guard<std::mutex> lock(log_mutex);
+  ASSERT_EQ(log.size(), static_cast<size_t>(kReports)) << "every buffered report is dispatched once";
+  int out_of_order = 0;
+  for (size_t i = 1; i < log.size(); ++i) {
+    if (log[i] < log[i - 1]) {
+      ++out_of_order;
+    }
+  }
+  EXPECT_EQ(out_of_order, 0) << "of " << log.size() << " dispatches";
 }
 
 // The SOVD per-entity route DELETE /{entity}/faults/{code} lands on

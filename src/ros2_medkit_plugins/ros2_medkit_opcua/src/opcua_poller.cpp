@@ -1480,6 +1480,12 @@ void OpcuaPoller::evaluate_alarms(DetectionPipeline::Pass pass) {
     return;
   }
 
+  // The poll thread and, with native alarms on, the event pump thread both get
+  // here (the pump's iterate runs data-change callbacks too). Working out the
+  // edges and sending them is one step under detection_mutex_, so a clear
+  // worked out later can never be sent before a raise worked out earlier.
+  std::lock_guard<std::mutex> detection_lock(detection_mutex_);
+
   // Collect raise/clear edges while holding the snapshot mutex.
   std::vector<DetectionPipeline::Change> changes;
   {
@@ -1487,6 +1493,10 @@ void OpcuaPoller::evaluate_alarms(DetectionPipeline::Pass pass) {
     changes = detection_.evaluate(detection_entries, snapshot_.values, using_subscriptions_.load(), pass,
                                   DetectionPipeline::Clock::now(), snapshot_.alarms);
   }  // snapshot_mutex_ released
+
+  if (const auto delay = handover_delay_for_test_us_.load(); delay > 0) {
+    std::this_thread::sleep_for(std::chrono::microseconds(delay));
+  }
 
   // Fire callbacks outside of locks
   if (!changes.empty()) {
