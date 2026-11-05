@@ -54,7 +54,6 @@
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/entity_discovery.hpp"
 #include "ros2_medkit_gateway/core/fault_trigger_host.hpp"
-#include "ros2_medkit_gateway/core/faults/fault_event_fan_out.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_event_source.hpp"
 #include "ros2_medkit_gateway/core/faults/freeze_frame_capture.hpp"
 #include "ros2_medkit_gateway/core/gateway_services.hpp"
@@ -1348,17 +1347,13 @@ bool check_plugin_context_and_fault_triggers() {
   plugins.set_context(*context);
 
   ControlledFaultEvents upstream;
-  gw::FaultEventFanOut fan_out(upstream);
-  auto sse_branch = fan_out.make_branch();
-  auto capture_branch = fan_out.make_branch();
-  auto capture =
-      gw::make_freeze_frame_capture(gw::FreezeFrameCaptureConfig{}, *capture_branch, services.plugin_manager());
+  auto capture = gw::make_freeze_frame_capture(gw::FreezeFrameCaptureConfig{}, upstream, services.plugin_manager());
   ok &= check(capture != nullptr, "the core builds a freeze-frame capture over the loaded plugin");
   if (!capture) {
     return false;
   }
   services.set_freeze_frames(capture.get());
-  services.set_fault_events(sse_branch.get());
+  services.set_fault_events(&upstream);
   auto & transport = services.fault_transport();
   transport.serve_detail("SPEED_HIGH", "plugin_app");
   // A report accepted by the host's fault manager confirms on the host's single event source.
