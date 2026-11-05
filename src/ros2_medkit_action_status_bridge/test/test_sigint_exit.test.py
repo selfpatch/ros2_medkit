@@ -26,6 +26,7 @@ import launch
 import launch_testing.actions
 
 RUNS = 40
+STARTUP_RUNS = 80
 
 
 def generate_test_description():
@@ -67,3 +68,35 @@ class TestSigintExit(unittest.TestCase):
         self.assertEqual(
             failures, [],
             f'{len(failures)} of {RUNS} runs did not exit 0: {failures[:3]}')
+
+    def test_sigint_during_startup_exits_cleanly(self):
+        """SIGINT within the first milliseconds, while the constructor scans."""
+        exe = os.path.join(
+            get_package_prefix('ros2_medkit_action_status_bridge'),
+            'lib', 'ros2_medkit_action_status_bridge', 'action_status_bridge_node')
+        rng = random.Random(11)
+        failures = []
+        for run in range(STARTUP_RUNS):
+            proc = subprocess.Popen(
+                [exe], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            # Spread the signal over the whole startup, from before rclcpp::init()
+            # installs its handler to well after the first scan.
+            delay = rng.random() * 0.25
+            try:
+                proc.wait(timeout=delay)
+            except subprocess.TimeoutExpired:
+                pass
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGINT)
+            try:
+                out, _ = proc.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, _ = proc.communicate()
+            # -2: SIGINT before rclcpp::init() installed its handler; the default
+            # action ends the process and no bridge code runs.
+            if proc.returncode not in (0, -signal.SIGINT):
+                failures.append((run, round(delay, 3), proc.returncode, out[-300:]))
+        self.assertEqual(
+            failures, [],
+            f'{len(failures)} of {STARTUP_RUNS} runs aborted: {failures[:3]}')

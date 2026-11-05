@@ -17,8 +17,15 @@
 
 int main(int argc, char * argv[]) {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<ros2_medkit_action_status_bridge::ActionStatusBridgeNode>();
-  rclcpp::spin(node);
+  try {
+    auto node = std::make_shared<ros2_medkit_action_status_bridge::ActionStatusBridgeNode>();
+    rclcpp::spin(node);
+  } catch (const std::exception &) {
+    // SIGINT during startup invalidates the context under the constructor.
+    if (rclcpp::ok()) {
+      throw;
+    }
+  }
   rclcpp::shutdown();
   return 0;
 }
