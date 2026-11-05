@@ -160,12 +160,8 @@ class TestMultiCollectionSubscriptions(GatewayTestCase):
         self.assertIn('event_source', data)
         self.assertTrue(data['event_source'].endswith('/events'))
 
-    def test_encoded_topic_subscription_matches_get(self):
-        """A percent-encoded topic URI delivers the data GET of that URI returns.
-
-        @verifies REQ_INTEROP_089
-        """
-        encoded = quote(self.topic_id.lstrip('/'), safe='')
+    def _assert_encoded_topic_matches_get(self, encoded):
+        """Check that a subscription on an encoded topic URI delivers what GET returns."""
         resource = f'/api/v1/apps/{self.app_id}/data/{encoded}'
         r = self._create_subscription(resource, interval='fast')
         self.assertEqual(r.status_code, 201, f'Create failed: {r.text}')
@@ -190,6 +186,21 @@ class TestMultiCollectionSubscriptions(GatewayTestCase):
         sample = event['payload']
         self.assertEqual(sample['id'], get.json()['id'])
         self.assertEqual(set(sample['data']), set(get.json()['data']))
+
+    def test_encoded_topic_subscription_matches_get(self):
+        """Topic path encoded without its leading slash.
+
+        @verifies REQ_INTEROP_089
+        """
+        self._assert_encoded_topic_matches_get(
+            quote(self.topic_id.lstrip('/'), safe=''))
+
+    def test_encoded_topic_with_leading_slash_matches_get(self):
+        """Topic id encoded as listed, leading slash included.
+
+        @verifies REQ_INTEROP_089
+        """
+        self._assert_encoded_topic_matches_get(quote(self.topic_id, safe=''))
 
     def test_faults_subscription_create(self):
         """Create a subscription on faults collection.

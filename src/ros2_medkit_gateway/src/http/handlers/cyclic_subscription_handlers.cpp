@@ -177,6 +177,14 @@ CyclicSubscriptionHandlers::post_subscription(const http::TypedRequest & req,
     }
   }
 
+  // GET refuses an update id that fails the entity-id rules; so does a subscription.
+  if (parsed->collection == "updates") {
+    if (auto id_ok = ctx_.validate_entity_id(parsed->resource_path); !id_ok) {
+      return tl::unexpected(make_error(400, ERR_X_MEDKIT_INVALID_RESOURCE_URI, id_ok.error(),
+                                       json{{"parameter", "resource"}, {"value", resource}}));
+    }
+  }
+
   // Check sampler is registered
   if (!sampler_registry_.has_sampler(parsed->collection)) {
     return tl::unexpected(make_error(400, ERR_X_MEDKIT_COLLECTION_NOT_AVAILABLE,
@@ -483,7 +491,7 @@ CyclicSubscriptionHandlers::parse_resource_uri(const std::string & resource) {
     parsed.entity_type = "";  // server-level, no entity
     parsed.entity_id = "";
     parsed.collection = "updates";
-    parsed.resource_path = match[1].str();  // update package ID
+    parsed.resource_path = httplib::detail::decode_url(match[1].str(), false);  // update package ID
     return parsed;
   }
 
