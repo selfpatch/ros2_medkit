@@ -48,14 +48,16 @@ else()
   set(_gwc_yaml_cpp yaml-cpp)
 endif()
 
+# A host-provided httplib::httplib is used only when it is older than 0.20: 0.20 removed the
+# multipart API the handlers use. An unversioned target is trusted.
 if(NOT TARGET cpp_httplib_target)
-  if(TARGET httplib::httplib)
-    add_library(cpp_httplib_target ALIAS httplib::httplib)
+  add_library(cpp_httplib_target INTERFACE)
+  if(TARGET httplib::httplib AND (NOT DEFINED httplib_VERSION OR httplib_VERSION VERSION_LESS "0.20"))
+    target_link_libraries(cpp_httplib_target INTERFACE httplib::httplib)
   else()
-    add_library(cpp_httplib_target INTERFACE)
     target_include_directories(cpp_httplib_target SYSTEM INTERFACE "${_gwc_root}/src/vendored/cpp_httplib")
-    target_link_libraries(cpp_httplib_target INTERFACE Threads::Threads)
   endif()
+  target_link_libraries(cpp_httplib_target INTERFACE Threads::Threads)
 endif()
 if(NOT TARGET tl::expected)
   add_library(tl_expected_iface INTERFACE)
@@ -122,6 +124,9 @@ target_link_libraries(gateway_core
     Threads::Threads
     ${CMAKE_DL_LIBS}
 )
+
+# The public headers use C++17, so every consumer compiles as C++17 or newer.
+target_compile_features(gateway_core PUBLIC cxx_std_17)
 
 set_target_properties(gateway_core PROPERTIES
   POSITION_INDEPENDENT_CODE ON
