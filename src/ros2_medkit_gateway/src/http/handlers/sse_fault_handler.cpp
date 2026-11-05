@@ -29,6 +29,8 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_json.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_json.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
@@ -250,6 +252,14 @@ void SSEFaultHandler::on_fault_event(const fd::FaultEventRecord & event) {
 }
 
 void SSEFaultHandler::on_peer_event(const StreamEvent & event) {
+  // The peer writes the event, and the payload is serialized again below once
+  // the attribution is added, which recurses once per level: judged on its
+  // text before it is parsed, as every other body a peer sends is.
+  if (const auto shape = judge_peer_json(event.data); shape != PeerJsonShape::kAcceptable) {
+    MEDKIT_LOG_WARN(HandlerContext::logger(), "Discarding fault event relayed from peer '%s': it %s",
+                    event.peer_name.c_str(), describe_peer_json_shape(shape).c_str());
+    return;
+  }
   auto payload = nlohmann::json::parse(event.data, nullptr, false);
   if (payload.is_discarded() || !payload.is_object()) {
     MEDKIT_LOG_WARN(HandlerContext::logger(), "Discarding unparseable fault event relayed from peer '%s'",
@@ -293,7 +303,32 @@ void SSEFaultHandler::on_peer_event(const StreamEvent & event) {
   if (!payload.contains("x-medkit") || !payload["x-medkit"].is_object()) {
     payload["x-medkit"] = nlohmann::json::object();
   }
-  payload["x-medkit"]["peer"] = event.peer_name;
+  auto & attribution = payload["x-medkit"];
+  // The peer names that entity by its own ID (`entity_type` is the collection,
+  // `apps`), and a stream consumer addresses it here:
+  // /{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}. An App the merge
+  // renamed is the local namesake here under the peer's ID, so the ID is named
+  // by the one served here, and one the merge dropped, or the peer never
+  // declared, is taken out of the attribution: the event still says which peer
+  // raised it. Read against the newest index; an event belongs to no request.
+  if (attribution.contains("entity_id") && attribution["entity_id"].is_string()) {
+    const std::string peer_id = attribution["entity_id"].get<std::string>();
+    const std::string collection = attribution.contains("entity_type") && attribution["entity_type"].is_string()
+                                       ? attribution["entity_type"].get<std::string>()
+                                       : std::string{};
+    const auto index = ctx_.services().entity_cache().get_peer_id_index();
+    const auto segment = locate_entity_segment("/" + collection + "/" + peer_id);
+    const auto served = segment && segment->collection_pos == 0
+                            ? served_entity_id(index, segment->type, event.peer_name, peer_id)
+                            : served_member_id(index, event.peer_name, peer_id);
+    if (served) {
+      attribution["entity_id"] = *served;
+    } else {
+      attribution.erase("entity_id");
+      attribution.erase("entity_type");
+    }
+  }
+  attribution["peer"] = event.peer_name;
   queued.relayed_payload = payload.dump();
 
   enqueue(std::move(queued));

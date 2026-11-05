@@ -177,7 +177,9 @@ Server Capabilities
 
    - ``peers`` - array of peer status objects for every configured or
      discovered peer. Each carries ``name``, ``url`` and ``status``
-     (``"online"`` or ``"offline"``).
+     (``"online"`` or ``"offline"``). A peer is ``"offline"`` until its first
+     health check, which runs with the first peer merge right after startup;
+     until that merge is done the peer's entities answer ``404``.
 
    The ``discovery`` object carries a ``linking`` sub-object describing
    how manifest apps were bound to runtime ROS nodes: ``linked_count``,
@@ -721,9 +723,11 @@ the path form is the one ``/data`` already uses for a topic.
 its own leaves as its own tree names them, and an App whose id collided with a
 local one is merged here under ``<peer>__<id>`` - so the name the peer sends
 names the LOCAL leaf. Items arriving through the peer fan-out are re-attributed
-to the id the merge gave their owner, both in ``x-medkit.member_ids`` and in the
-member half of the item id, so ``secondary_gateway__shared_sensor:calibrate``
-addresses the peer's copy and ``shared_sensor:calibrate`` the local one.
+to the id the merge gave their owner, in ``x-medkit.member_ids``, in a
+configuration's ``x-medkit.source`` and in the member half of the item id, so
+``secondary_gateway__shared_sensor:calibrate`` addresses the peer's copy and
+``shared_sensor:calibrate`` the local one. An item of a member the merge left
+out, or one the peer never declared, is not listed: no id here addresses it.
 
 **Availability on a listed item describes its member.** ``x-medkit.available``
 is emitted only as ``false``, and only when the gateway that owns the item is
@@ -1082,7 +1086,18 @@ Execute Operations
    the execution id exists, and the listing above shows an entity only the
    executions started through it. The same action reached through two entities
    (an app and the function that aggregates it) therefore keeps two separate
-   execution collections.
+   execution collections. An entity is its type and its id: an area and a
+   function that share an id are two entities, and an execution started
+   through ``/areas/{id}`` answers ``404`` through ``/functions/{id}``. Through
+   a grouping entity, a qualified operation id (``{member}:{operation}``) also
+   reaches the executions started on that member, an app or a component of the
+   grouping by its own type. An execution belongs to its operation too: it
+   answers only under an id that names the operation it was started under, by
+   its name, its ROS path, or qualified by the member that holds it, and
+   ``404`` under any other, even on the entity it was started through. This
+   holds while the operation's server is gone, so its status and a cancel stay
+   answerable there, under a qualified id as well: the member that holds the
+   operation is recorded when the execution is started.
 
    **Example Response (completed action):**
 
@@ -2440,6 +2455,13 @@ against each change and only fire when the condition is met.
    hierarchy-scoped monitoring. Area-level triggers catch changes from all
    descendant entities within the area.
 
+A trigger belongs to its entity by type and id, as every entity route does:
+an area and a function that share an id are two entities, so a change of the
+area does not fire the function's triggers, and the function's routes neither
+list nor read, change or delete the area's. Through the hierarchy a trigger
+catches the changes of the apps under its entity. A software update's status
+names no entity of a type - only its update id - and is matched by that id.
+
 **Observable resource collections:**
 
 - ``data`` - Topic data changes (driven by ``TriggerTopicSubscriber``)
@@ -2523,7 +2545,10 @@ Create Trigger
           Accepts ``severity`` (log level: ``debug``, ``info``, ``warning``,
           ``error``, ``fatal``; default: ``info``) and ``marker`` (descriptive
           message text; default: ``"Trigger fired"``). The log entry includes
-          trigger metadata (trigger ID, condition type, resource URI).
+          trigger metadata (trigger ID, condition type, resource URI). It is
+          an entry of the trigger's own entity, by type and id, so it reaches
+          that entity's ``logs`` triggers and not those of an entity of
+          another type that shares the id.
 
    **Response 201 Created:**
 
@@ -3892,7 +3917,9 @@ why, one entry per name, with ``reason`` one of:
    * - ``timeout``
      - A budget ran out. Which one is named in the message: the connect budget
        means the peer never accepted the connection, a read or write budget
-       means it did and the gateway stopped waiting.
+       means it did and the gateway stopped waiting, and
+       ``aggregation.request_deadline_ms`` means the peer kept answering but
+       had not finished when the request's deadline came.
    * - ``unreachable``
      - No usable answer arrived: connection refused, no route, TLS or redirect
        failure, or the peer died while the answer was arriving.
@@ -3904,14 +3931,25 @@ why, one entry per name, with ``reason`` one of:
      - The peer's body passed the peer-response size limit.
    * - ``invalid-response``
      - The peer answered with something that is not the JSON the route
-       promises.
+       promises, including a body that nests arrays and objects more than 64
+       levels deep or holds more than 1,000,000 values (array elements and
+       object members, counted at every level). Such a body is refused before
+       it is parsed.
    * - ``too-deep``
      - Global ``GET /faults`` only. The request had already passed through 16
        gateways, so this gateway did not ask the peer.
 
+A peer that answers ``404`` with error code ``entity-not-found`` holds nothing
+by the id in the path. It contributes no items and is not a failed peer, so it
+neither marks the answer partial nor appears in ``failed_peers``.
+
 On the global ``GET /faults`` a peer that could not reach one of its own
 peers is reported partial in turn. The entry names both hops,
-``<peer>/<its peer>``, with the reason the peer gave.
+``<peer>/<its peer>``, with the reason the peer gave. One peer's answer adds
+each name once and at most 1024 of them, and no more than 64 KiB of names and
+reasons. A name longer than 1024 bytes is not listed, and a reason longer than
+64 bytes reads ``unreachable``. A peer that names more still makes the answer
+partial; the names past the bound are not listed.
 
 Without ``peer_failures`` a client cannot tell a busy subsystem from a dead
 one, which is the whole of what a partial answer is asked.
@@ -3951,7 +3989,10 @@ had to match on the text in ``parameters.details`` to learn it was a timeout.
 
 **Fault streaming on an aggregating gateway.** ``GET /faults/stream`` on a
 gateway with peers relays their streams into its own. Each relayed event
-carries ``x-medkit.peer`` naming the gateway that raised the fault. The relay
+carries ``x-medkit.peer`` naming the gateway that raised the fault, and the
+entity the peer attributed it to (``x-medkit.entity_type`` and ``entity_id``)
+by the id it is served under here, or not at all when this gateway does not
+serve it. The relay
 is open only while a client is attached, because it holds one SSE client slot
 on each peer and ``sse.max_clients`` defaults to 2. Replay via
 ``Last-Event-ID`` covers this gateway's own ids: two peers number their events

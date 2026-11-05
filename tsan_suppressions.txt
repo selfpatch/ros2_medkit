@@ -44,8 +44,16 @@ race:UA_DateTime_localTimeUtcOffset
 # instead of demangled httplib:: symbols; match by library name as well
 # so the stripped frames are also covered.
 race:httplib::*
-called_from_lib:libcpp-httplib.so.0.14
-called_from_lib:libcpp-httplib.so
+# By library name as a race suppression, not as called_from_lib. With
+# called_from_lib TSan skips the interceptors the library calls, so a mutex
+# it locks goes unseen - but Client::stop() jumps to ClientImpl::stop(),
+# which ends in a tail call (jmp pthread_mutex_unlock@plt). The unlock then
+# returns straight into the caller outside the library and is tracked, and
+# every stop() of a client with a call in flight (PeerClient::shutdown())
+# was reported as an unlock of an unlocked mutex. As a race suppression the
+# library's lock and unlock are both tracked, and only the data races in its
+# frames are suppressed.
+race:libcpp-httplib.so
 
 # rclcpp/glibc: unlock-of-unlocked-mutex in __gthread_mutex_unlock during
 # test teardown when executor threads race with node destruction.

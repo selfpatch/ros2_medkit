@@ -46,7 +46,12 @@ to the same capacity at construction. Used for all index maps:
 - ``area_index_``, ``component_index_``, ``app_index_``,
   ``function_index_`` - map entity ID to slot ID (O(1) lookup)
 - ``component_to_apps_``, ``area_to_components_``, etc. - relationship
-  indexes (parent ID to child slot ID list)
+  indexes (parent ID to child slot ID list), each slot at most once per
+  parent: ``function_to_apps_`` and ``function_to_components_`` are built from
+  ``Function::hosts``, a list, and index a host listed twice once, so every
+  collection over a Function's members visits each member once; the others
+  are built from a single-valued field (an App's component, a Component's
+  area or parent, an Area's parent), and reconcile keeps one slot per ID
 - ``operation_index_`` - operation full_path to owning entity reference
 - ``topic_type_cache_`` - topic name to message type
 

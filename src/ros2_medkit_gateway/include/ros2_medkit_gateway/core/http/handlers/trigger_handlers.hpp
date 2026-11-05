@@ -102,6 +102,11 @@ class TriggerHandlers {
   /// Extract entity type string from request path
   static std::string extract_entity_type(const std::string & path);
 
+  /// True when `trig` is a trigger of the entity the route of `req` names: its
+  /// type and its id. Ids are unique per type only, so an Area's trigger is not
+  /// read, changed or deleted through the Function that shares its id.
+  static bool on_route(const TriggerInfo & trig, const http::TypedRequest & req, const std::string & entity_id);
+
   HandlerContext & ctx_;
   TriggerManager & trigger_mgr_;
   std::shared_ptr<SSEClientTracker> client_tracker_;

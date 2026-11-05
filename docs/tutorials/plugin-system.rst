@@ -281,7 +281,8 @@ providing access to gateway data and utilities:
      for the allowed pattern and the rationale.
 
 - ``get_entity(id)`` - look up any entity (area, component, app, function) from the discovery cache
-- ``list_entity_faults(entity_id)`` - query faults for an entity
+- ``list_entity_faults(entity_id)`` - query faults for an entity: the local ones, plus those of the peers the
+  entity names among its ``contributors`` (none for an entity only this gateway holds)
 - ``validate_entity_for_route(req, res, entity_id)`` - validate entity exists and matches the route type, auto-sending SOVD errors on failure
 - ``register_capability()`` / ``register_entity_capability()`` - register custom capabilities on entities
 
@@ -1020,11 +1021,27 @@ Plugins export ``plugin_api_version()`` which must return the gateway's ``PLUGIN
 If the version does not match, the plugin is rejected with a clear error message suggesting
 a rebuild against matching gateway headers.
 
-The current API version is **7**. It is incremented when the ``PluginContext`` vtable changes
+The current API version is **8**. It is incremented when the ``PluginContext`` vtable changes
 or breaking changes are made to ``GatewayPlugin`` or provider interfaces. A change to the layout
 of a type that crosses the plugin boundary, such as the entity models in ``IntrospectionInput`` /
 ``NewEntities``, bumps the version too. A plugin built against the old layout would read those
 types wrongly, so it must be rebuilt even when its source compiles unchanged.
+
+What version 8 changes for a plugin author:
+
+- ``ResourceChange`` and ``NotifierFilter`` carry the entity type of a change
+  (``SovdEntityType entity_type``), next to its ``entity_id``. An entity id is unique within its
+  type only - an area and a function may share one - so a change names its entity by both, and
+  triggers match a change by both.
+- ``ResourceChangeNotifier::notify()`` takes the entity type as its second argument:
+  ``notify(collection, entity_type, entity_id, resource_path, value, change_type)``. A plugin
+  that publishes changes passes the type of the entity the change is of, or
+  ``SovdEntityType::UNKNOWN`` for a change that names no entity type, which triggers match by id
+  alone. A call written for version 7 does not compile against version 8 headers.
+- A ``NotifierFilter`` left at ``SovdEntityType::UNKNOWN`` matches every type, as a filter
+  written for version 7 did; set it to receive the changes of one type only.
+- Every plugin has to be rebuilt against the version 8 headers: the loader refuses a ``.so`` that
+  reports version 7. A plugin that does not use the notifier needs no source change.
 
 Build Requirements
 ------------------

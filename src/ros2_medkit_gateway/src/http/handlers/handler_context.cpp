@@ -17,6 +17,8 @@
 #include <unordered_set>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_json.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/gateway_services.hpp"
@@ -53,15 +55,19 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
   EntityInfo info;
   info.id = entity_id;
 
-  // Helper: check routing table for remote entity metadata
-  auto apply_routing = [this](EntityInfo & ei) {
+  // Helper: the aggregation metadata of the entity found, read off that entity:
+  // the peer it is forwarded to and the peers it fans out to come from the same
+  // cache generation as the entity itself, and a local entity sharing a routed
+  // id stays local.
+  auto apply_routing = [this](EntityInfo & ei, const auto & entity) {
     if (aggregation_mgr_) {
-      auto peer = aggregation_mgr_->find_peer_for_entity(ei.id);
+      auto peer = aggregation_mgr_->find_owning_peer(entity);
       if (peer) {
         ei.is_remote = true;
         ei.peer_name = *peer;
         ei.peer_url = aggregation_mgr_->get_peer_url(*peer);
       }
+      ei.peer_targets = peer_targets_of(entity);
     }
     // Check plugin ownership (only if not already a remote entity)
     if (!ei.is_remote) {
@@ -87,7 +93,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
           info.fqn = component->fqn;
           info.id_field = "component_id";
           info.error_name = "Component";
-          apply_routing(info);
+          apply_routing(info, *component);
           return info;
         }
         break;
@@ -100,7 +106,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
           info.fqn = fqn;
           info.id_field = "app_id";
           info.error_name = "App";
-          apply_routing(info);
+          apply_routing(info, *app);
           return info;
         }
         break;
@@ -112,7 +118,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
           info.fqn = area->namespace_path;
           info.id_field = "area_id";
           info.error_name = "Area";
-          apply_routing(info);
+          apply_routing(info, *area);
           return info;
         }
         break;
@@ -124,7 +130,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
           info.fqn = "";
           info.id_field = "function_id";
           info.error_name = "Function";
-          apply_routing(info);
+          apply_routing(info, *func);
           return info;
         }
         break;
@@ -148,7 +154,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     info.fqn = component->fqn;
     info.id_field = "component_id";
     info.error_name = "Component";
-    apply_routing(info);
+    apply_routing(info, *component);
     return info;
   }
 
@@ -160,7 +166,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     info.fqn = fqn;
     info.id_field = "app_id";
     info.error_name = "App";
-    apply_routing(info);
+    apply_routing(info, *app);
     return info;
   }
 
@@ -171,7 +177,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     info.fqn = area->namespace_path;
     info.id_field = "area_id";
     info.error_name = "Area";
-    apply_routing(info);
+    apply_routing(info, *area);
     return info;
   }
 
@@ -182,7 +188,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     info.fqn = "";
     info.id_field = "function_id";
     info.error_name = "Function";
-    apply_routing(info);
+    apply_routing(info, *func);
     return info;
   }
 
@@ -249,6 +255,169 @@ namespace {
 
 using http::detail::tl_forward_response;
 
+/// `path` as sent to the peer `entity` is routed to: the entity it names is
+/// named by the id that peer knows it by. That id is read off the entity's
+/// recorded rename (its peer targets), so an entity this gateway renamed on
+/// collision is asked for under its original id and a peer's own entity
+/// whose id merely starts with `<peer>__` under that id.
+std::string path_on_peer(const std::string & path, const EntityInfo & entity) {
+  auto segment = locate_entity_segment(path);
+  if (!segment || path.compare(segment->id_pos, segment->id_len, entity.id) != 0) {
+    return path;
+  }
+  for (const auto & target : entity.peer_targets) {
+    if (target.peer == entity.peer_name) {
+      return with_entity_id(path, *segment, target.id);
+    }
+  }
+  return path;
+}
+
+/// The `type` an entity detail of the collection `type` names itself by.
+std::string route_type_name(SovdEntityType type) {
+  switch (type) {
+    case SovdEntityType::AREA:
+      return "area";
+    case SovdEntityType::COMPONENT:
+      return "component";
+    case SovdEntityType::APP:
+      return "app";
+    case SovdEntityType::FUNCTION:
+      return "function";
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+      break;
+  }
+  return "";
+}
+
+/// Replace a forwarded discovery response with a 502 naming why it is not
+/// served: `what` the body does, after the peer's name. The peer's headers
+/// that describe its body go with it.
+void refuse_forwarded_discovery(httplib::Response & res, const std::string & peer, const std::string & what) {
+  for (const char * header : {"ETag", "Cache-Control", "Last-Modified", "Location", "X-Medkit-Local-Only"}) {
+    res.headers.erase(header);
+  }
+  json error_body;
+  error_body["error_code"] = ERR_VENDOR_ERROR;
+  error_body["vendor_code"] = "x-medkit-peer-unavailable";
+  error_body["message"] = "Discovery response from peer '" + peer + "' " + what + " and is not served";
+  res.status = 502;
+  res.set_content(error_body.dump(), "application/json");
+}
+
+/// A discovery response `peer` answered for a forwarded GET, with every entity
+/// it names named by the id this gateway serves it under. The peer describes
+/// its own tree in its own ids, and an entity this gateway renamed on
+/// collision is another entity here under the peer's id, so its self link,
+/// resource links and relationships would lead a client following them to the
+/// wrong entity. A response whose body changes loses the peer's ETag, which
+/// describes the body the peer sent.
+///
+/// A body nested deeper than kMaxPeerJsonDepth, or holding more than
+/// kMaxPeerJsonValues values, is refused (502), not passed through: it cannot
+/// be walked safely or parsed cheaply, and served untranslated it would name
+/// entities by the peer's ids as if they were this gateway's, which is the
+/// answer the rewrite exists to prevent. No discovery response comes near
+/// either bound, so only a broken or hostile peer is refused. The text is
+/// judged before it is parsed, so no deep or huge value is built. So is a body
+/// whose rewrite would add more than kMaxServedIdRewriteGrowth bytes: one that
+/// names a renamed entity in far more objects than its size accounts for.
+///
+/// The detail of an entity, `peer_path` without a resource after the id (the
+/// trailing slash every route accepts is none), has to describe the entity it
+/// was asked for: an `id` other than the peer's id
+/// for it, or a `type` other than the route's - a `type` that is not a string
+/// included - is refused (502). Served, a detail of the peer's App `sensor`
+/// saying it is App `admin` would present as this gateway's account of
+/// whichever entity holds `admin` here. A detail that names no type is of the
+/// route's, and its `id` and `name` are rewritten as that type's.
+void rewrite_forwarded_discovery(const httplib::Request & req, const std::string & peer_path, const std::string & peer,
+                                 httplib::Response & res, const std::shared_ptr<const PeerIdIndex> & peer_ids) {
+  if (req.method != "GET" || res.status != 200 || !is_discovery_route(req.path)) {
+    return;
+  }
+  if (const auto shape = judge_peer_json(res.body); shape != PeerJsonShape::kAcceptable) {
+    refuse_forwarded_discovery(res, peer, describe_peer_json_shape(shape));
+    return;
+  }
+  auto body = nlohmann::json::parse(res.body, nullptr, false);
+  if (body.is_discarded()) {
+    return;
+  }
+  std::optional<SovdEntityType> detail_type;
+  const std::string peer_route = without_route_trailing_slash(peer_path);
+  if (const auto segment = locate_entity_segment(peer_route); segment && !segment->has_subpath) {
+    const std::string asked = peer_route.substr(segment->id_pos, segment->id_len);
+    const auto id = body.is_object() ? body.find("id") : body.end();
+    const std::string said = id != body.end() && id->is_string() ? id->get<std::string>() : std::string{};
+    if (said != asked) {
+      refuse_forwarded_discovery(res, peer,
+                                 said.empty() ? "names no entity for '" + asked + "'"
+                                              : "describes entity '" + said + "' rather than the '" + asked +
+                                                    "' it was asked for");
+      return;
+    }
+    const auto type = body.find("type");
+    if (type != body.end() && !type->is_string()) {
+      refuse_forwarded_discovery(res, peer,
+                                 "describes '" + asked + "' with a type that is not a string, not as '" +
+                                     route_type_name(segment->type) + "'");
+      return;
+    }
+    if (type != body.end() && type->get<std::string>() != route_type_name(segment->type)) {
+      refuse_forwarded_discovery(res, peer,
+                                 "describes '" + asked + "' as '" + type->get<std::string>() + "' rather than '" +
+                                     route_type_name(segment->type) + "'");
+      return;
+    }
+    detail_type = segment->type;
+  }
+  // The items of a relationship collection are of the type the relationship
+  // lists when they name none the walk recognizes.
+  switch (rewrite_to_served_ids(body, peer, peer_ids, detail_type, relationship_items(peer_path))) {
+    case ServedIdRewrite::kUnchanged:
+      return;
+    case ServedIdRewrite::kTooDeep:
+      refuse_forwarded_discovery(res, peer, describe_peer_json_shape(PeerJsonShape::kTooDeep));
+      return;
+    case ServedIdRewrite::kTooLarge:
+      refuse_forwarded_discovery(res, peer,
+                                 "would grow by more than " + std::to_string(kMaxServedIdRewriteGrowth) +
+                                     " bytes when named by the IDs served here");
+      return;
+    case ServedIdRewrite::kRewritten:
+      break;
+  }
+  auto content_type = res.get_header_value("Content-Type");
+  res.set_content(body.dump(), content_type.empty() ? "application/json" : content_type);
+  res.headers.erase("ETag");
+}
+
+/// The `Location` `peer` answered a forwarded request with, naming the entity
+/// it addresses by the id this gateway serves it under (served_entity_uri),
+/// read against `peer_ids`, the index of the generation the forward was
+/// resolved in. The peer builds it from the route it received, which names
+/// the entity by the peer's id: for an entity this gateway renamed on
+/// collision that id is the local namesake's here, and an async execution or
+/// a lock followed through it would be looked up on the wrong entity. A
+/// `Location` naming an entity this gateway does not serve is removed.
+void translate_forwarded_location(httplib::Response & res, const std::string & peer,
+                                  const std::shared_ptr<const PeerIdIndex> & peer_ids) {
+  if (!res.has_header("Location")) {
+    return;
+  }
+  const auto location = res.get_header_value("Location");
+  auto served = served_entity_uri(peer_ids, peer, location);
+  if (served && *served == location) {
+    return;
+  }
+  res.headers.erase("Location");
+  if (served) {
+    res.set_header("Location", *served);
+  }
+}
+
 }  // namespace
 
 http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(const http::TypedRequest & req,
@@ -277,7 +446,20 @@ http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(cons
   const auto & raw_req = req.raw_for_framework();
 #pragma GCC diagnostic pop
   auto expected_type = extract_entity_type_from_path(raw_req.path);
+  // The entity and the peer ID index an answer from its peer is read against
+  // come from one cache generation. A refresh replaces both under one lock, so
+  // an index that is the same before and after the lookup is the one the
+  // entity was published with; a different one means a refresh landed in
+  // between, and the lookup is made again. Each retry needs a whole refresh
+  // to complete between two reads of a pointer, so the loop ends.
+  const auto & cache = services_.entity_cache();
+  auto peer_ids = cache.get_peer_id_index();
   auto entity_info = get_entity_info(entity_id, expected_type);
+  for (auto latest = cache.get_peer_id_index(); latest != peer_ids; latest = cache.get_peer_id_index()) {
+    peer_ids = std::move(latest);
+    entity_info = get_entity_info(entity_id, expected_type);
+  }
+  entity_info.peer_ids = std::move(peer_ids);
 
   if (entity_info.type == EntityType::UNKNOWN) {
     // Step 3: Check if entity exists in ANY collection (for better error message).
@@ -330,7 +512,11 @@ http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(cons
       return tl::unexpected(ErrorVariant{std::move(err)});
     }
     if (tl_forward_response != nullptr) {
-      aggregation_mgr_->forward_request(entity_info.peer_name, raw_req, *tl_forward_response);
+      const std::string peer_path = path_on_peer(raw_req.path, entity_info);
+      aggregation_mgr_->forward_request(entity_info.peer_name, raw_req, *tl_forward_response, peer_path);
+      rewrite_forwarded_discovery(raw_req, peer_path, entity_info.peer_name, *tl_forward_response,
+                                  entity_info.peer_ids);
+      translate_forwarded_location(*tl_forward_response, entity_info.peer_name, entity_info.peer_ids);
     }
     return tl::unexpected(ErrorVariant{http::Forwarded{}});
   }
@@ -363,21 +549,45 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
   if (aggregation_mgr_ == nullptr) {
     return MemberDispatch::kServeLocally;
   }
-  auto peer = aggregation_mgr_->find_peer_for_entity(member_id);
-  if (!peer) {
-    return MemberDispatch::kServeLocally;
-  }
 
   // Only an App or a Component can be addressed on the peer; those are the two
   // collections a resource route exists under. A member that is neither names
-  // nothing this gateway can re-address, so the local path answers for it.
+  // nothing this gateway can re-address, so the local path answers for it. The
+  // owner is read off the member found, not off its id alone, so a local member
+  // whose id a peer's entity also routes under stays local.
+  //
+  // The member is addressed on the peer by the id that peer knows it by, read
+  // off the member's recorded rename like its owner.
+  //
+  // The member and the peer ID index the peer's answer is read against come
+  // from one cache generation, the same way validate_entity_for_route reads
+  // them: an index that is the same before and after the lookup is the one
+  // the member was published with.
   const auto & cache = services_.entity_cache();
   std::string collection;
-  if (cache.get_app(member_id)) {
-    collection = "apps";
-  } else if (cache.get_component(member_id)) {
-    collection = "components";
-  } else {
+  std::optional<std::string> peer;
+  std::string member_on_peer;
+  const auto look_up_member = [&]() {
+    collection.clear();
+    peer.reset();
+    member_on_peer.clear();
+    if (auto app = cache.get_app(member_id)) {
+      collection = "apps";
+      peer = aggregation_mgr_->find_owning_peer(*app);
+      member_on_peer = peer ? peer_entity_id(*app, *peer) : member_id;
+    } else if (auto component = cache.get_component(member_id)) {
+      collection = "components";
+      peer = aggregation_mgr_->find_owning_peer(*component);
+      member_on_peer = peer ? peer_entity_id(*component, *peer) : member_id;
+    }
+  };
+  auto peer_ids = cache.get_peer_id_index();
+  look_up_member();
+  for (auto latest = cache.get_peer_id_index(); latest != peer_ids; latest = cache.get_peer_id_index()) {
+    peer_ids = std::move(latest);
+    look_up_member();
+  }
+  if (collection.empty() || !peer) {
     return MemberDispatch::kServeLocally;
   }
 
@@ -390,7 +600,8 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
 #pragma GCC diagnostic pop
   if (tl_forward_response != nullptr) {
     aggregation_mgr_->forward_request(*peer, raw_req, *tl_forward_response,
-                                      api_path("/" + collection + "/" + member_id + "/" + member_resource_path));
+                                      api_path("/" + collection + "/" + member_on_peer + "/" + member_resource_path));
+    translate_forwarded_location(*tl_forward_response, *peer, peer_ids);
   }
   return MemberDispatch::kForwarded;
 }

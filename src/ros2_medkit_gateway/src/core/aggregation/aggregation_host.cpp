@@ -14,11 +14,9 @@
 
 #include "ros2_medkit_gateway/core/aggregation/aggregation_host.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <mutex>
-#include <string_view>
 #include <unordered_set>
 #include <utility>
 
@@ -112,6 +110,9 @@ AggregationHost::~AggregationHost() {
 }
 
 void AggregationHost::shutdown() {
+  if (shutdown_requested_.exchange(true)) {
+    return;
+  }
   // mDNS first: it must not add peers while the calls are being cancelled.
   if (mdns_) {
     mdns_->stop();
@@ -119,10 +120,11 @@ void AggregationHost::shutdown() {
   manager_->shutdown();
 }
 
-std::optional<std::unordered_map<std::string, std::string>>
-AggregationHost::merge_peers(std::vector<Area> & areas, std::vector<Component> & components, std::vector<App> & apps,
-                             std::vector<Function> & functions) {
-  if (manager_->peer_count() == 0) {
+std::optional<AggregationHost::MergedPeers> AggregationHost::merge_peers(std::vector<Area> & areas,
+                                                                         std::vector<Component> & components,
+                                                                         std::vector<App> & apps,
+                                                                         std::vector<Function> & functions) {
+  if (shutdown_requested_.load() || manager_->peer_count() == 0) {
     return std::nullopt;
   }
   manager_->check_all_health();
@@ -131,39 +133,10 @@ AggregationHost::merge_peers(std::vector<Area> & areas, std::vector<Component> &
   components = std::move(merged.components);
   apps = std::move(merged.apps);
   functions = std::move(merged.functions);
-  auto routing_table = std::move(merged.routing_table);
-  manager_->update_routing_table(routing_table);
+  MergedPeers result{std::move(merged.routing_table), std::move(merged.drops)};
+  manager_->update_routing_table(result.routing_table);
   manager_->set_leaf_warnings(std::move(merged.leaf_warnings));
-
-  // Per-entity peer contributors: entity id -> names of the peers that host or contribute to it. This covers routed
-  // leaves (also in the routing table) and merged or hierarchical entities (areas, functions, parent components).
-  // Fan-out helpers use the map to ask only the peers that own the entity. EntityMerger writes "peer:<name>"
-  // entries; anything else, including "local", is ignored.
-  std::unordered_map<std::string, std::vector<std::string>> peer_contributors;
-  static constexpr std::string_view kPeerPrefix = "peer:";
-  auto collect_contributors = [&peer_contributors](const auto & entities) {
-    for (const auto & e : entities) {
-      for (const auto & c : e.contributors) {
-        if (c.rfind(kPeerPrefix, 0) != 0) {
-          continue;
-        }
-        std::string peer_name = c.substr(kPeerPrefix.size());
-        if (peer_name.empty()) {
-          continue;
-        }
-        auto & list = peer_contributors[e.id];
-        if (std::find(list.begin(), list.end(), peer_name) == list.end()) {
-          list.push_back(std::move(peer_name));
-        }
-      }
-    }
-  };
-  collect_contributors(areas);
-  collect_contributors(components);
-  collect_contributors(apps);
-  collect_contributors(functions);
-  manager_->update_peer_contributors(std::move(peer_contributors));
-  return routing_table;
+  return result;
 }
 
 }  // namespace ros2_medkit_gateway

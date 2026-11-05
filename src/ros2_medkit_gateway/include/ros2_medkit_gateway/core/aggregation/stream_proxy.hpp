@@ -24,6 +24,8 @@
 #include <thread>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/aggregation/peer_resolver.hpp"
+
 namespace ros2_medkit_gateway {
 
 /**
@@ -142,6 +144,10 @@ class SSEStreamProxy : public StreamProxy {
   std::string path_;
   std::string peer_name_;
   httplib::Headers headers_;
+  /// The peer's host name, resolved by the reader with a bound before each
+  /// connect, never by cpp-httplib inside one: a resolver that does not answer
+  /// would park the reader where close() cannot reach it.
+  PeerResolver resolver_;
   std::atomic<bool> connected_{false};
   std::atomic<bool> should_stop_{false};
   std::atomic<bool> non_sse_content_type_{false};
@@ -183,13 +189,11 @@ class SSEStreamProxy : public StreamProxy {
 
   /// Guarded because the reader thread publishes it and close() reads it.
   ///
-  /// The socket, NOT the httplib::Client. Calling Client::stop() while another
-  /// thread is inside Get() unlocks one of cpp-httplib's own mutexes from a
-  /// thread that never locked it; TSan reports "unlock of an unlocked mutex
-  /// (or by a wrong thread)" and glibc's pthread debug mode treats it as fatal.
-  /// That is the same hazard PeerClient documents when it explains why it never
-  /// stops its health-check client. Shutting the socket down instead wakes the
-  /// blocked read through the kernel and touches none of the library's state.
+  /// The socket, NOT the httplib::Client. Client::stop() takes the client's
+  /// socket lock, which the reader holds while it connects, so close() could
+  /// wait on it; shutting the socket down wakes the blocked read through the
+  /// kernel, takes no lock the reader holds and touches none of the library's
+  /// state.
   std::mutex socket_mutex_;
   int active_socket_{-1};
 };

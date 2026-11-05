@@ -39,9 +39,9 @@ void ResourceChangeNotifier::unsubscribe(NotifierSubscriptionId id) {
   subscriptions_.erase(id);
 }
 
-void ResourceChangeNotifier::notify(const std::string & collection, const std::string & entity_id,
-                                    const std::string & resource_path, const nlohmann::json & value,
-                                    ChangeType change_type) {
+void ResourceChangeNotifier::notify(const std::string & collection, SovdEntityType entity_type,
+                                    const std::string & entity_id, const std::string & resource_path,
+                                    const nlohmann::json & value, ChangeType change_type) {
   // Prevent destruction while we're inside this function. The counter is
   // incremented BEFORE checking the shutdown flag (both seq_cst) so that
   // shutdown() is guaranteed to see the increment and wait for us to finish.
@@ -68,6 +68,7 @@ void ResourceChangeNotifier::notify(const std::string & collection, const std::s
 
   ResourceChange change;
   change.collection = collection;
+  change.entity_type = entity_type;
   change.entity_id = entity_id;
   change.resource_path = resource_path;
   change.value = value;
@@ -131,6 +132,10 @@ bool ResourceChangeNotifier::matches_filter(const NotifierFilter & filter, const
   }
   // Empty entity_id = match all; non-empty = exact match
   if (!filter.entity_id.empty() && filter.entity_id != change.entity_id) {
+    return false;
+  }
+  // UNKNOWN entity_type = match all; set = exact match
+  if (filter.entity_type != SovdEntityType::UNKNOWN && filter.entity_type != change.entity_type) {
     return false;
   }
   // Empty resource_path = match all; non-empty = exact match

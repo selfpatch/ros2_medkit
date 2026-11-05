@@ -17,8 +17,12 @@
 
 #include <algorithm>
 #include <future>
+#include <initializer_list>
+#include <optional>
 #include <random>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -32,6 +36,26 @@
 namespace ros2_medkit_gateway {
 
 namespace {
+
+/// The most entries one peer's partial answer adds to a fan-out's
+/// failed_peers: the peers that peer could not reach itself. The list comes
+/// from a body the peer writes, so without this bound only the size limit on
+/// that body would limit the entries, and the answer built from them.
+constexpr size_t kMaxNestedPeerFailures = 1024;
+
+/// The longest failed-peer name read from a peer's partial answer. A longer
+/// one is not listed, and the answer stays partial.
+constexpr size_t kMaxNestedPeerNameLength = 1024;
+
+/// The longest reason read from a peer's `peer_failures`. The reasons a
+/// gateway gives are short words (peer_failure_reason); a longer one is read
+/// as `unreachable`, what a peer that gives no reason means.
+constexpr size_t kMaxNestedPeerReasonLength = 64;
+
+/// The most bytes of names and reasons one peer's partial answer adds to a
+/// fan-out. Each entry copies its reason, so without it a peer naming the
+/// same failed peer many times with one long reason multiplies its body.
+constexpr size_t kMaxNestedPeerFailureBytes = 64 * 1024;
 
 std::string make_instance_id() {
   static constexpr char kHex[] = "0123456789abcdef";
@@ -400,6 +424,20 @@ void mark_all_unreachable(std::vector<Entity> & entities) {
   }
 }
 
+/// `parts` joined into one string, built in a single pass.
+std::string concat(std::initializer_list<std::string_view> parts) {
+  size_t size = 0;
+  for (auto part : parts) {
+    size += part.size();
+  }
+  std::string out;
+  out.reserve(size);
+  for (auto part : parts) {
+    out += part;
+  }
+  return out;
+}
+
 }  // namespace
 
 void AggregationManager::remember_declaration(const std::string & peer_name, const PeerEntities & entities) {
@@ -592,56 +630,70 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
     to_merge.push_back(std::move(replayed));
   }
 
+  // Every collision met this pass: a stable key and the line that reports it.
+  std::vector<std::pair<std::string, std::string>> collisions;
+
   for (auto & pfr : to_merge) {
+    // Every ID already in the merged set, whatever its type, before this peer is
+    // folded in. The merger keeps the peer's entities out of those IDs unless the
+    // two are the same entity merged by design. The peer's own IDs are passed too,
+    // so an ID generated for one of its entities is never one it declares.
+    EntityMerger merger(pfr.peer_name,
+                        EntityMerger::collect_ids(merged.areas, merged.components, merged.apps, merged.functions),
+                        EntityMerger::collect_ids(pfr.entities.areas, pfr.entities.components, pfr.entities.apps,
+                                                  pfr.entities.functions));
+    // Areas, then Components, then Apps, then Functions: each step reads the
+    // renames of the ones before it to keep the peer's references pointing at
+    // the IDs its entities are served under.
+    merged.areas = merger.merge_areas(merged.areas, pfr.entities.areas);
+    merged.components = merger.merge_components(merged.components, pfr.entities.components);
+    merged.apps = merger.merge_apps(merged.apps, pfr.entities.apps);
+    merged.functions = merger.merge_functions(merged.functions, pfr.entities.functions);
+
+    // The Components this peer claims, by the IDs they are served under, so the
+    // classification below routes a prefixed Component under its prefixed ID.
     PeerClaim claim;
     claim.peer_name = pfr.peer_name;
+    const auto & renamed_components = merger.get_renames().components;
     for (const auto & c : pfr.entities.components) {
-      claim.claimed_entity_ids.insert(c.id);
+      auto renamed = renamed_components.find(c.id);
+      const std::string & served_id = renamed != renamed_components.end() ? renamed->second : c.id;
+      if (merger.get_routing_table().count(served_id) > 0u) {
+        claim.claimed_entity_ids.insert(served_id);
+      }
     }
     peer_component_claims.push_back(std::move(claim));
 
-    EntityMerger merger(pfr.peer_name);
-    merged.areas = merger.merge_areas(merged.areas, pfr.entities.areas);
-    merged.components = merger.merge_components(merged.components, pfr.entities.components);
-    // Merge apps BEFORE functions so that collision-prefixed App IDs are known
-    // when we need to remap Function hosts below.
-    merged.apps = merger.merge_apps(merged.apps, pfr.entities.apps);
-
-    // Build a map of original remote App IDs to their (possibly prefixed) final IDs.
-    // When merge_apps prefixes a remote App (e.g., "camera_driver" -> "peer_b__camera_driver"),
-    // Function hosts referencing the original ID need to be updated to the prefixed ID.
-    std::unordered_map<std::string, std::string> app_id_remap;
-    for (const auto & [routed_id, peer_name_val] : merger.get_routing_table()) {
-      // Check if this is a prefixed App ID (contains SEPARATOR)
-      std::string sep = EntityMerger::SEPARATOR;
-      auto sep_pos = routed_id.find(sep);
-      if (sep_pos != std::string::npos) {
-        std::string original_id = routed_id.substr(sep_pos + sep.size());
-        app_id_remap[original_id] = routed_id;
-      }
-    }
-
-    // Remap Function hosts from original remote App IDs to their prefixed IDs
-    // before merging functions.
-    for (auto & func : pfr.entities.functions) {
-      for (auto & host : func.hosts) {
-        auto remap_it = app_id_remap.find(host);
-        if (remap_it != app_id_remap.end()) {
-          host = remap_it->second;
-        }
-      }
-    }
-
-    merged.functions = merger.merge_functions(merged.functions, pfr.entities.functions);
-
     for (const auto & [id, name] : merger.get_routing_table()) {
       merged.routing_table[id] = name;
-      // Log collision-prefixed entities to help operators diagnose naming conflicts
-      if (id.find(EntityMerger::SEPARATOR) != std::string::npos) {
-        if (logger) {
-          MEDKIT_LOG_WARN(*logger, "Entity ID collision: '%s' prefixed for peer '%s'", id.c_str(), name.c_str());
-        }
+    }
+    // Collision-prefixed and dropped entities, logged to help operators
+    // diagnose naming conflicts - once each, see `collisions` below.
+    const auto & renames = merger.get_renames();
+    const std::pair<const char *, const std::unordered_map<std::string, std::string> *> renamed_by_type[] = {
+        {"Area", &renames.areas},
+        {"Component", &renames.components},
+        {"App", &renames.apps},
+        {"Function", &renames.functions}};
+    for (const auto & [type_name, renamed] : renamed_by_type) {
+      for (const auto & [original_id, served_id] : *renamed) {
+        collisions.emplace_back(concat({pfr.peer_name, "\n", type_name, "\n", original_id}),
+                                concat({"Entity ID collision: ", type_name, " '", original_id, "' from peer '",
+                                        pfr.peer_name, "' prefixed to '", served_id, "'"}));
       }
+    }
+    if (const auto & drops = merger.get_drops();
+        !drops.areas.empty() || !drops.components.empty() || !drops.apps.empty() || !drops.functions.empty()) {
+      auto & recorded = merged.drops[pfr.peer_name];
+      recorded.areas.insert(drops.areas.begin(), drops.areas.end());
+      recorded.components.insert(drops.components.begin(), drops.components.end());
+      recorded.apps.insert(drops.apps.begin(), drops.apps.end());
+      recorded.functions.insert(drops.functions.begin(), drops.functions.end());
+    }
+    for (const auto & dropped : merger.get_dropped()) {
+      collisions.emplace_back(concat({pfr.peer_name, "\n", dropped}),
+                              concat({"Entity ID collision: ", dropped, " from peer '", pfr.peer_name,
+                                      "' not served, and the peer's references to it are removed"}));
     }
   }
 
@@ -668,22 +720,71 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
   }
   merged.leaf_warnings = std::move(classified.leaf_warnings);
 
+  for (const auto & w : merged.leaf_warnings) {
+    std::string peers_str;
+    for (size_t i = 0; i < w.peer_names.size(); ++i) {
+      if (i > 0u) {
+        peers_str += ", ";
+      }
+      peers_str += w.peer_names[i];
+    }
+    collisions.emplace_back(concat({"leaf\n", w.entity_id, "\n", peers_str}),
+                            concat({"Leaf Component '", w.entity_id, "' announced by multiple peers: ", peers_str,
+                                    ". Routing uses last-writer-wins."}));
+  }
+
+  // A collision is a standing property of the peers' declarations and is met
+  // again on every refresh, so it is logged when it first appears and not
+  // again until it has gone away and come back. The current set replaces the
+  // remembered one, which is what re-arms a collision that went away.
+  std::vector<const std::string *> new_collisions;
+  {
+    std::lock_guard<std::mutex> lock(logged_collisions_mutex_);
+    std::unordered_set<std::string> current;
+    for (const auto & [key, message] : collisions) {
+      if (current.insert(key).second && logged_collisions_.count(key) == 0u) {
+        new_collisions.push_back(&message);
+      }
+    }
+    logged_collisions_ = std::move(current);
+  }
+
   if (logger) {
     for (const auto & msg : classified.malformed_parent_warnings) {
       MEDKIT_LOG_WARN(*logger, "Aggregation: %s", msg.c_str());
     }
-    for (const auto & w : merged.leaf_warnings) {
-      std::string peers_str;
-      for (size_t i = 0; i < w.peer_names.size(); ++i) {
-        if (i > 0u) {
-          peers_str += ", ";
-        }
-        peers_str += w.peer_names[i];
-      }
-      MEDKIT_LOG_WARN(*logger, "Leaf Component '%s' announced by multiple peers: %s. Routing uses last-writer-wins.",
-                      w.entity_id.c_str(), peers_str.c_str());
+    for (const auto * message : new_collisions) {
+      MEDKIT_LOG_WARN(*logger, "%s", message->c_str());
     }
   }
+
+  // Each entity carries its own routing decision, so a request reads it off
+  // the entity it found, from the same cache generation, and never off a table
+  // a later merge has already replaced. An entry is the entity's only when the
+  // entity is that peer's: an Area, App or Function is routed when the peer
+  // declared it alone (its `source`), a Component also when the peer is merged
+  // into it - the classification above leaves Component entries only for
+  // Components. Set on every entity, so nothing from a previous merge survives.
+  auto stamp_routes = [&merged](auto & entities, bool merged_contributor_routes) {
+    for (auto & entity : entities) {
+      entity.routed_to.clear();
+      auto it = merged.routing_table.find(entity.id);
+      if (it == merged.routing_table.end()) {
+        continue;
+      }
+      const std::string tag = "peer:" + it->second;
+      const bool own = entity.source == tag ||
+                       (merged_contributor_routes && std::find(entity.contributors.begin(), entity.contributors.end(),
+                                                               tag) != entity.contributors.end());
+      if (own) {
+        entity.routed_to = it->second;
+      }
+    }
+  };
+  stamp_routes(merged.areas, false);
+  stamp_routes(merged.components, true);
+  stamp_routes(merged.apps, false);
+  stamp_routes(merged.functions, false);
 
   return merged;
 }
@@ -710,63 +811,6 @@ std::optional<std::string> AggregationManager::find_peer_for_entity(const std::s
     return it->second;
   }
   return std::nullopt;
-}
-
-std::string AggregationManager::local_member_id(const std::string & peer_name, const std::string & member_id) const {
-  if (peer_name.empty() || member_id.empty()) {
-    return member_id;
-  }
-  const std::string prefixed = peer_name + EntityMerger::SEPARATOR + member_id;
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  auto it = routing_table_.find(prefixed);
-  // The routing entry has to belong to THIS peer. Another peer can own an
-  // entity whose id happens to read like this peer's prefix, and answering with
-  // it would re-address the item to a gateway that never sent it.
-  return (it != routing_table_.end() && it->second == peer_name) ? prefixed : member_id;
-}
-
-void AggregationManager::update_peer_contributors(
-    std::unordered_map<std::string, std::vector<std::string>> contributors) {
-  // Drop entries with empty contributor lists - they would be indistinguishable
-  // from "local-only" lookups and only waste space.
-  for (auto it = contributors.begin(); it != contributors.end();) {
-    if (it->second.empty()) {
-      it = contributors.erase(it);
-    } else {
-      ++it;
-    }
-  }
-  std::unique_lock<std::shared_mutex> lock(mutex_);
-  peer_contributors_by_entity_ = std::move(contributors);
-}
-
-bool AggregationManager::has_peer_contributors(const std::string & entity_id) const {
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  if (routing_table_.count(entity_id) > 0u) {
-    return true;
-  }
-  auto it = peer_contributors_by_entity_.find(entity_id);
-  return it != peer_contributors_by_entity_.end() && !it->second.empty();
-}
-
-std::vector<std::string> AggregationManager::get_peer_contributors(const std::string & entity_id) const {
-  std::shared_lock<std::shared_mutex> lock(mutex_);
-  std::vector<std::string> result;
-  // Routed-leaf entry wins ordering: it always reflects the authoritative
-  // owner of the entity's runtime state.
-  auto rt_it = routing_table_.find(entity_id);
-  if (rt_it != routing_table_.end()) {
-    result.push_back(rt_it->second);
-  }
-  auto pc_it = peer_contributors_by_entity_.find(entity_id);
-  if (pc_it != peer_contributors_by_entity_.end()) {
-    for (const auto & name : pc_it->second) {
-      if (std::find(result.begin(), result.end(), name) == result.end()) {
-        result.push_back(name);
-      }
-    }
-  }
-  return result;
 }
 
 std::string AggregationManager::get_peer_url(const std::string & peer_name) const {
@@ -818,21 +862,13 @@ void AggregationManager::forward_request(const std::string & peer_name, const ht
     return;
   }
 
-  // Strip peer prefix from entity ID in the path if present.
-  // When entity ID collision causes renaming (e.g., camera_driver -> peer_b__camera_driver),
-  // the peer only knows the entity by its original ID (camera_driver), so we must strip
-  // the prefix before forwarding.
-  // Anchor to path segment boundary: the prefix must appear right after '/' to avoid
-  // false matches inside other path segments (e.g., "v1" matching "/api/v1/").
-  std::string forwarded_path = target_path;
-  std::string prefix = peer_name + EntityMerger::SEPARATOR;
-  auto prefix_pos = forwarded_path.find(prefix);
-  if (prefix_pos != std::string::npos && prefix_pos > 0 && forwarded_path[prefix_pos - 1] == '/') {
-    forwarded_path.erase(prefix_pos, prefix.size());
-  }
-
+  // The path is sent as given. A caller that forwards a request for an entity
+  // this gateway renamed on collision names it by the id the peer knows it by,
+  // which only the rename the merge recorded on the entity can say: reading
+  // `<peer>__` off the path would also strip it from a peer's own entity whose
+  // id merely starts that way.
   httplib::Request modified_req = req;
-  modified_req.path = forwarded_path;
+  modified_req.path = target_path;
 
   peer->forward_request(modified_req, res);
 }
@@ -907,6 +943,13 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
       pr.peer_name = peer->name();
 
       auto result = peer->forward_and_get_json("GET", path, auth_header, headers);
+      if (!result.has_value() && result.error().kind == PeerFailureKind::kEntityNotFound) {
+        // The peer holds nothing by the id in the path, so it has nothing to
+        // add. That is an answer, not a failed peer: counting it as one marks
+        // a complete result partial and names a healthy peer as failed.
+        pr.success = true;
+        return pr;
+      }
       if (!result.has_value()) {
         pr.success = false;
         pr.failure_reason = peer_failure_reason(result.error().kind);
@@ -925,34 +968,61 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
                                 x_medkit->contains("partial") && (*x_medkit)["partial"].is_boolean() &&
                                 (*x_medkit)["partial"].get<bool>();
       if (peer_partial) {
+        // The failed peers the peer names, each once and up to
+        // kMaxNestedPeerFailures of them, then the reason it gives for each,
+        // read in one pass over peer_failures: matching every name against
+        // every entry is quadratic in what the peer chose to send. The first
+        // entry naming a peer is its reason. A peer that predates
+        // peer_failures names no reason; its partial flag meant a peer call
+        // that failed, which is what unreachable says.
         std::vector<std::string> nested_names;
+        std::unordered_map<std::string, std::optional<std::string>> reasons;
         if (auto names = x_medkit->find("failed_peers"); names != x_medkit->end() && names->is_array()) {
           for (const auto & name : *names) {
-            if (name.is_string()) {
+            if (nested_names.size() == kMaxNestedPeerFailures) {
+              break;
+            }
+            if (name.is_string() && name.get_ref<const std::string &>().size() <= kMaxNestedPeerNameLength &&
+                reasons.emplace(name.get<std::string>(), std::nullopt).second) {
               nested_names.push_back(name.get<std::string>());
             }
           }
         }
-        for (const auto & name : nested_names) {
-          // A peer that predates peer_failures names no reason. Its partial
-          // flag meant a peer call that failed, which is what unreachable says.
-          std::string reason = "unreachable";
-          if (auto failures = x_medkit->find("peer_failures"); failures != x_medkit->end() && failures->is_array()) {
-            for (const auto & failure : *failures) {
-              if (!failure.is_object()) {
-                continue;
-              }
-              const auto named = failure.find("peer");
-              const auto why = failure.find("reason");
-              if (named != failure.end() && named->is_string() && named->get<std::string>() == name) {
-                if (why != failure.end() && why->is_string()) {
-                  reason = why->get<std::string>();
-                }
-                break;
-              }
+        size_t unsettled = reasons.size();
+        if (auto failures = x_medkit->find("peer_failures"); failures != x_medkit->end() && failures->is_array()) {
+          for (const auto & failure : *failures) {
+            if (unsettled == 0) {
+              break;
             }
+            if (!failure.is_object()) {
+              continue;
+            }
+            const auto named = failure.find("peer");
+            if (named == failure.end() || !named->is_string()) {
+              continue;
+            }
+            auto reason = reasons.find(named->get_ref<const std::string &>());
+            if (reason == reasons.end() || reason->second.has_value()) {
+              continue;
+            }
+            const auto why = failure.find("reason");
+            const bool readable = why != failure.end() && why->is_string() &&
+                                  why->get_ref<const std::string &>().size() <= kMaxNestedPeerReasonLength;
+            reason->second = readable ? why->get<std::string>() : "unreachable";
+            --unsettled;
           }
-          pr.nested_failures.push_back(dto::PeerFailure{pr.peer_name + "/" + name, std::move(reason)});
+        }
+        // Listed in the order the peer named them until the next entry would
+        // take the answer past kMaxNestedPeerFailureBytes. The names left out
+        // keep the answer partial all the same.
+        size_t added_bytes = 0;
+        for (const auto & name : nested_names) {
+          auto failure = dto::PeerFailure{pr.peer_name + "/" + name, reasons[name].value_or("unreachable")};
+          added_bytes += failure.peer.size() + failure.reason.size();
+          if (added_bytes > kMaxNestedPeerFailureBytes) {
+            break;
+          }
+          pr.nested_failures.push_back(std::move(failure));
         }
         // Partial with nobody named breaks the contract this route promises.
         if (pr.nested_failures.empty()) {

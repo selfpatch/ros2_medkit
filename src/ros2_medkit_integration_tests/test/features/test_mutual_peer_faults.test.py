@@ -112,19 +112,20 @@ def generate_test_description():
         extra_env=c_env,
     )
 
-    delayed = TimerAction(
-        period=2.0,
-        actions=(
-            create_demo_nodes(['lidar_sensor'], lidar_faulty=True)
-            + create_demo_nodes(['lidar_sensor'], lidar_faulty=True, extra_env=b_env)
-            + create_demo_nodes(['lidar_sensor'], lidar_faulty=True, extra_env=c_env)
-            + [
-                create_fault_manager_node(rosbag_enabled=False),
-                create_fault_manager_node(rosbag_enabled=False, extra_env=b_env),
-                create_fault_manager_node(rosbag_enabled=False, extra_env=c_env),
-            ]
-        ),
-    )
+    # The faults are told apart by when each fault manager first saw its own,
+    # so the three lidars start half a second apart. Started together they
+    # report within microseconds of each other, and two first_occurred stamps
+    # can come out equal.
+    delayed = [
+        TimerAction(
+            period=2.0 + 0.5 * index,
+            actions=(
+                create_demo_nodes(['lidar_sensor'], lidar_faulty=True, extra_env=env)
+                + [create_fault_manager_node(rosbag_enabled=False, extra_env=env)]
+            ),
+        )
+        for index, env in enumerate((None, b_env, c_env))
+    ]
 
     return (
         LaunchDescription([
@@ -132,7 +133,7 @@ def generate_test_description():
             gateway_a,
             gateway_b,
             gateway_c,
-            delayed,
+            *delayed,
             launch_testing.actions.ReadyToTest(),
         ]),
         {'gateway_node': gateway_a, 'gateway_b': gateway_b, 'gateway_c': gateway_c},

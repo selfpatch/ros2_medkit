@@ -19,14 +19,20 @@
 #include <httplib.h>
 
 #include <atomic>
+#include <condition_variable>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <shared_mutex>
 #include <string>
+#include <thread>
 #include <tl/expected.hpp>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/aggregation/peer_json.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_resolver.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
@@ -71,6 +77,7 @@ enum class PeerFailureKind : uint8_t {
   kErrorStatus,      ///< The peer answered, with a status outside 2xx.
   kTooLarge,         ///< The body passed the peer-response size limit.
   kInvalidResponse,  ///< The peer answered with something that is not the JSON the route promises.
+  kEntityNotFound,   ///< The peer answered 404 `entity-not-found`: it holds nothing by the id asked about.
 };
 
 /// A peer call that failed, and why. Kept together because every caller that
@@ -136,11 +143,115 @@ struct PeerTimeouts {
   /// Write budget for every call. cpp-httplib defaults this to 5 s.
   int write_ms{5000};
 
-  /// Every budget set to the same value - the pre-split shape, for a caller
-  /// that is not testing the split.
+  /// The longest one request may run, from its connect to the last byte of
+  /// the answer, however steadily the peer keeps sending: each read budget
+  /// above bounds one read, not the answer. Never less, for a request, than
+  /// its connect, write and read budgets added up, so no request is cut before
+  /// its own budgets are spent; the health check keeps its own, the sum of its
+  /// capped connect and read budgets.
+  int request_deadline_ms{30000};
+
+  /// Every read, connect and write budget set to the same value - the
+  /// pre-split shape, for a caller that is not testing the split. The request
+  /// deadline keeps its default.
   static PeerTimeouts uniform(int ms) {
     return PeerTimeouts{ms, ms, ms, ms};
   }
+};
+
+/**
+ * @brief The per-call clients in flight against one peer, each with the
+ * deadline of the request it is making.
+ *
+ * cpp-httplib bounds each read, not an answer, so a peer that sends a byte
+ * at a time inside the read budget holds a request for as long as it keeps
+ * sending. Every request is armed with a deadline as it starts and disarmed
+ * when it returns; a reaper thread stops the client of a request still
+ * running at its deadline, as stop_all() stops every client at shutdown, and
+ * the request fails.
+ *
+ * stop() takes the client's socket lock, which the request holds while it
+ * connects and, over TLS, through the whole handshake - a handshake whose
+ * timeout restarts on every fragment the peer sends. A stop() alone would
+ * wait as long as such a peer kept sending, so a request is cancelled through
+ * its socket first: the registry holds a duplicate of the socket each
+ * request creates (attach_socket), and cancelling shuts that down, which ends
+ * the connect, handshake or read the request is blocked in without taking
+ * any of the client's locks. stop() follows as before.
+ *
+ * Each stop() runs on a thread of its own with the registry mutex released,
+ * and one that waits holds up no other request: none is kept from arming,
+ * disarming or being stopped at its own deadline. The client is pinned while
+ * a stop() of it runs - remove() and disarm() wait for it - so it is never
+ * freed under the stop(), and a late stop() never lands on the client's next
+ * request.
+ */
+class PeerCallRegistry {
+ public:
+  PeerCallRegistry();
+  /// Stops the reaper and waits for it.
+  ~PeerCallRegistry();
+  PeerCallRegistry(const PeerCallRegistry &) = delete;
+  PeerCallRegistry & operator=(const PeerCallRegistry &) = delete;
+  PeerCallRegistry(PeerCallRegistry &&) = delete;
+  PeerCallRegistry & operator=(PeerCallRegistry &&) = delete;
+
+  /// `cli` is in flight; it is stopped by stop_all() until removed.
+  void add(httplib::Client * cli);
+  /// `cli` is done. Waits for a stop() of it in progress; `cli` may be freed
+  /// once this returns.
+  void remove(httplib::Client * cli);
+  /// The request `cli` starts now runs for at most `deadline`.
+  void arm(httplib::Client * cli, std::chrono::milliseconds deadline);
+  /// The request `cli` is making has created `sock`. Called from the client's
+  /// socket-options callback, before the connect. A duplicate is kept until
+  /// the request ends, so the number stays reserved and a cancel never shuts
+  /// a socket the process reused it for; a request already past its deadline
+  /// has it shut at once.
+  void attach_socket(httplib::Client * cli, int sock);
+  /// The request `cli` was making has returned. Waits for a stop() of it in
+  /// progress, so none lands on the next request, and releases the socket
+  /// duplicate. True when the request ran into its deadline and was stopped.
+  bool disarm(httplib::Client * cli);
+  /// True once the request `cli` is making has run into its deadline.
+  bool expired(httplib::Client * cli);
+  /// Shut the socket of every request in flight, then stop() every client,
+  /// each from a thread of its own, and return once every one of those stop()
+  /// calls has.
+  void stop_all();
+
+ private:
+  struct Call {
+    std::chrono::steady_clock::time_point deadline{std::chrono::steady_clock::time_point::max()};
+    bool expired{false};
+    /// stop() calls of this client running now; it is pinned while any is.
+    int stops{0};
+    /// A duplicate of the socket of the request in progress, -1 when it has
+    /// none (attach_socket).
+    int socket{-1};
+  };
+
+  void reap();
+  /// stop() `cli` from a thread of its own, `call` pinned until it returns.
+  /// Called with mutex_ held; the stop() runs without it.
+  std::future<void> stop_async(httplib::Client * cli, Call & call);
+  /// Wait, with `lock` on mutex_, until no stop() of `call` is running.
+  void wait_unpinned(std::unique_lock<std::mutex> & lock, const Call & call);
+  /// Shut the socket of the request `call` is making, if it has one. A
+  /// syscall, called with mutex_ held; it takes no lock of the client's.
+  static void shut_socket(const Call & call);
+  /// Close the socket duplicate `call` holds. Called with mutex_ held.
+  static void release_socket(Call & call);
+
+  std::mutex mutex_;
+  /// The reaper's: a deadline changed, or the registry is going away.
+  std::condition_variable wake_;
+  /// A stop() returned.
+  std::condition_variable stopped_;
+  std::unordered_map<httplib::Client *, Call> calls_;
+  bool stopping_{false};
+  /// Last, so it starts once everything it reads exists.
+  std::thread reaper_;
 };
 
 /**
@@ -150,8 +261,8 @@ struct PeerTimeouts {
  * REST API. It supports health checking, entity fetching, transparent request
  * forwarding (proxy), and JSON fan-out queries.
  *
- * Thread safety: The healthy_ flag is atomic. Client creation is lazy and
- * guarded by a mutex. All public methods are safe to call from any thread.
+ * Thread safety: The healthy_ flag is atomic, and every call makes its own
+ * HTTP client. All public methods are safe to call from any thread.
  */
 class PeerClient {
  public:
@@ -187,7 +298,9 @@ class PeerClient {
    *
    * GETs /api/v1/health on the peer. Sets the internal healthy_ flag
    * based on whether a 200 response was received, and records the peer's
-   * instance id.
+   * instance id. The call is made on its own client, so shutdown() stops it
+   * like any other, and it ends at its deadline, its capped connect and read
+   * budgets added up, however steadily the peer keeps sending.
    */
   void check_health();
 
@@ -202,10 +315,14 @@ class PeerClient {
    *
    * The result describes the peer or it does not. Any sub-request that could
    * not be read - a dead connection, a non-200 the route has no other meaning
-   * for, an oversized body, unparsable JSON - fails the whole fetch, because a
-   * picture missing a branch is indistinguishable on the wire from a peer that
-   * does not have that branch. Two statuses do carry a meaning of their own and
-   * are read rather than failed:
+   * for, an oversized body, unparsable JSON, a field of the wrong type, a detail
+   * describing another entity than the list named - fails the whole fetch,
+   * because a picture missing a branch is indistinguishable on the wire from a
+   * peer that does not have that branch. So does a refresh that would keep
+   * more of the peer than its bounds allow: more than 1000 operations or data
+   * items for one App, more than 250,000 records or 16 MiB of text in all.
+   * Two statuses do carry a meaning of their own and are read
+   * rather than failed:
    *
    * - 404 on a nested collection route: the peer predates the route. Those
    *   members are omitted and the route is named in
@@ -228,6 +345,8 @@ class PeerClient {
    * outgoing response.
    *
    * On connection failure, returns 502 with x-medkit-peer-unavailable error.
+   * Once shutdown has begun, whether before the call or while it is being
+   * admitted or is in flight, returns 503 with the same vendor code.
    *
    * @param req Incoming HTTP request to forward
    * @param res Outgoing HTTP response to populate
@@ -256,31 +375,31 @@ class PeerClient {
   /**
    * @brief Cancel every in-flight HTTP call against this peer.
    *
-   * Sets a shutdown flag (so subsequent forwards return 503 immediately
-   * without dialing the peer) and invokes ``stop()`` on every active
-   * ``httplib::Client`` registered by an in-flight forward / fetch / health
-   * call. This unblocks worker threads sitting in ``cli.Get/Post/...`` so
-   * gateway shutdown does not have to wait out the full peer read timeout.
-   * Idempotent. Safe to call from any thread.
+   * Sets a shutdown flag, after which no call against the peer starts: a
+   * forward answers 503 and every other call fails as canceled without
+   * dialing. Then invokes ``stop()`` on every active per-call
+   * ``httplib::Client`` (health check, fetch, forward), which unblocks worker
+   * threads sitting in a call so gateway shutdown does not have to wait out
+   * the full peer read timeout. A call that read the flag before it was set has its
+   * socket by the time ``stop()`` runs, so ``stop()`` shuts it (see
+   * admission_mutex_). Idempotent. Safe to call from any thread.
    */
   void shutdown();
 
  private:
-  /**
-   * @brief Ensure the underlying HTTP client exists (lazy initialization)
-   *
-   * Must be called under client_mutex_. Creates the client if it doesn't exist.
-   */
-  void ensure_client();
-
-  /// RAII helper for per-call clients: registers itself with active_clients_
-  /// on construction and unregisters on destruction. shutdown() iterates
-  /// active_clients_ and calls stop() on each so blocked I/O unwinds.
+  /// RAII helper for per-call clients: adds itself to calls_ on construction
+  /// and removes itself on destruction. shutdown() stops every client in
+  /// calls_ so blocked I/O unwinds, and calls_ stops one whose request runs
+  /// past its deadline; removing waits for a stop() in progress rather than
+  /// freeing the client under it. Whether a call made on it may start at all
+  /// is decided per call, by admission_mutex_.
   class ScopedClient {
    public:
-    /// @param read_timeout_ms Read budget for this call. Connect and write
-    /// come from the owner's PeerTimeouts, which do not vary per call kind.
-    ScopedClient(PeerClient & owner, const std::string & url, int read_timeout_ms);
+    /// @param read_timeout_ms Read budget for this call. Write comes from the
+    /// owner's PeerTimeouts, which does not vary per call kind.
+    /// @param connect_ms Connect budget for this call, the owner's when
+    /// negative. The host name is resolved within it, before any request.
+    ScopedClient(PeerClient & owner, const std::string & url, int read_timeout_ms, int connect_ms = -1);
     ~ScopedClient();
     ScopedClient(const ScopedClient &) = delete;
     ScopedClient & operator=(const ScopedClient &) = delete;
@@ -294,13 +413,29 @@ class PeerClient {
       return &cli_;
     }
 
+    /// Why no request can be made on this client - the host name did not
+    /// resolve in time, or does not resolve - or empty when one can.
+    const std::string & unresolved() const {
+      return unresolved_;
+    }
+
+    /// Point the client at the next address the host name resolved to. False
+    /// when there is none left: the host is an IP address, or every address
+    /// has been tried.
+    bool next_address();
+
    private:
     PeerClient & owner_;
     httplib::Client cli_;
+    std::vector<std::string> addresses_;
+    size_t next_address_{0};
+    std::string unresolved_;
   };
 
-  void register_active(httplib::Client * cli);
-  void unregister_active(httplib::Client * cli);
+  /// The deadline of one request whose read budget is `read_ms`:
+  /// PeerTimeouts::request_deadline_ms, or the request's connect, write and
+  /// read budgets added up when that is longer.
+  std::chrono::milliseconds request_deadline(int read_ms) const;
 
   std::string url_;
   std::string name_;
@@ -310,17 +445,27 @@ class PeerClient {
   /// rather than relaying a client's request: the health check, and any
   /// forward whose caller sent no credential to pass on. Empty for none.
   std::string peer_auth_header_;
+  /// The peer's host name, resolved with a bound before each call
+  /// (ScopedClient), never by cpp-httplib inside one.
+  PeerResolver resolver_;
   std::atomic<bool> healthy_{false};
   std::atomic<bool> shutdown_requested_{false};
 
   mutable std::mutex instance_id_mutex_;
   std::string instance_id_;
 
-  std::mutex client_mutex_;
-  std::unique_ptr<httplib::Client> client_;
+  PeerCallRegistry calls_;
 
-  std::mutex active_mutex_;
-  std::unordered_set<httplib::Client *> active_clients_;
+  /// What makes starting a call and shutdown() exclusive. A call holds it
+  /// shared from the moment it reads shutdown_requested_ until its socket
+  /// exists (released from the client's socket-options callback, which
+  /// cpp-httplib runs under the lock its stop() takes); shutdown() holds it
+  /// exclusively while it stops the active clients. So a call either sees the
+  /// flag and never dials, or is in flight when stop() runs and is shut down
+  /// by it. Without it, a call that read the flag just before shutdown() set
+  /// it dialed after stop() had found no socket to shut, and stop() on a
+  /// client between two calls did not keep the next call from dialing.
+  std::shared_mutex admission_mutex_;
 };
 
 }  // namespace ros2_medkit_gateway

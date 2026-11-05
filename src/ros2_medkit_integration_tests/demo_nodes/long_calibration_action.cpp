@@ -34,11 +34,12 @@
 #include <cstdlib>
 #include <example_interfaces/action/fibonacci.hpp>
 #include <exception>
-#include <functional>
 #include <memory>
+#include <mutex>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <thread>
+#include <vector>
 
 #include "ros2_medkit_integration_tests/demo_node_main.hpp"
 
@@ -48,35 +49,57 @@ class LongCalibrationAction : public rclcpp::Node {
   using GoalHandleFibonacci = rclcpp_action::ServerGoalHandle<Fibonacci>;
 
   LongCalibrationAction() : Node("long_calibration") {
-    using namespace std::placeholders;
-
     action_server_ = rclcpp_action::create_server<Fibonacci>(
-        this, "long_calibration", std::bind(&LongCalibrationAction::handle_goal, this, _1, _2),
-        std::bind(&LongCalibrationAction::handle_cancel, this, _1),
-        std::bind(&LongCalibrationAction::handle_accepted, this, _1));
+        this, "long_calibration",
+        [this](const rclcpp_action::GoalUUID & uuid, const std::shared_ptr<const Fibonacci::Goal> & goal) {
+          return handle_goal(uuid, goal);
+        },
+        [this](const std::shared_ptr<GoalHandleFibonacci> & goal_handle) {
+          return handle_cancel(goal_handle);
+        },
+        [this](const std::shared_ptr<GoalHandleFibonacci> & goal_handle) {
+          handle_accepted(goal_handle);
+        });
 
     RCLCPP_INFO(get_logger(), "Long calibration action server started");
   }
 
+  LongCalibrationAction(const LongCalibrationAction &) = delete;
+  LongCalibrationAction & operator=(const LongCalibrationAction &) = delete;
+  LongCalibrationAction(LongCalibrationAction &&) = delete;
+  LongCalibrationAction & operator=(LongCalibrationAction &&) = delete;
+
   void prepare_shutdown() {
     shutdown_.store(true);
-    if (execution_thread_.joinable()) {
-      execution_thread_.join();
+    std::vector<Execution> executions;
+    {
+      std::lock_guard<std::mutex> lock(executions_mutex_);
+      executions.swap(executions_);
+    }
+    for (auto & execution : executions) {
+      execution.thread.join();
     }
     action_server_.reset();
   }
 
-  ~LongCalibrationAction() {
+  ~LongCalibrationAction() override {
     prepare_shutdown();
   }
 
  private:
+  /// A goal's thread, and whether it has finished and can be joined at once.
+  struct Execution {
+    std::thread thread;
+    std::shared_ptr<std::atomic<bool>> done;
+  };
+
   rclcpp_action::Server<Fibonacci>::SharedPtr action_server_;
-  std::thread execution_thread_;
+  std::mutex executions_mutex_;
+  std::vector<Execution> executions_;  // guarded by executions_mutex_
   std::atomic<bool> shutdown_{false};
 
   rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID & uuid,
-                                          std::shared_ptr<const Fibonacci::Goal> goal) {
+                                          const std::shared_ptr<const Fibonacci::Goal> & goal) {
     (void)uuid;
     RCLCPP_INFO(get_logger(), "Received calibration goal request with order %d", goal->order);
 
@@ -89,21 +112,38 @@ class LongCalibrationAction : public rclcpp::Node {
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
-  rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<GoalHandleFibonacci> goal_handle) {
+  rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<GoalHandleFibonacci> & goal_handle) {
     (void)goal_handle;
     RCLCPP_INFO(get_logger(), "Received request to cancel calibration");
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
-  void handle_accepted(const std::shared_ptr<GoalHandleFibonacci> goal_handle) {
-    // Join any previous execution thread before starting a new one
-    if (execution_thread_.joinable()) {
-      execution_thread_.join();
+  void handle_accepted(const std::shared_ptr<GoalHandleFibonacci> & goal_handle) {
+    // Each goal runs on a thread of its own, started here and joined once it
+    // has finished, or at shutdown. This runs on the executor: joining a goal
+    // that is still running here held the executor until that goal ended, so
+    // the server answered no cancel and started no other goal meanwhile.
+    std::lock_guard<std::mutex> lock(executions_mutex_);
+    if (shutdown_.load()) {
+      return;
     }
-    execution_thread_ = std::thread(&LongCalibrationAction::execute, this, goal_handle);
+    for (auto it = executions_.begin(); it != executions_.end();) {
+      if (it->done->load()) {
+        it->thread.join();
+        it = executions_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    executions_.push_back(Execution{std::thread([this, goal_handle, done]() {
+                                      execute(goal_handle);
+                                      done->store(true);
+                                    }),
+                                    done});
   }
 
-  void execute(const std::shared_ptr<GoalHandleFibonacci> goal_handle) {
+  void execute(const std::shared_ptr<GoalHandleFibonacci> & goal_handle) {
     try {
       RCLCPP_INFO(get_logger(), "Executing calibration...");
       const auto goal = goal_handle->get_goal();

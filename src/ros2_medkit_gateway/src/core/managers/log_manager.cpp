@@ -228,7 +228,8 @@ void LogManager::on_log_entry(const LogEntry & source_entry) {
     }
 
     if (!entity_id.empty()) {
-      notifier_->notify("logs", entity_id, "", entry_to_json(entry), ChangeType::CREATED);
+      // The node's App, as resolved above or by the node's name.
+      notifier_->notify("logs", SovdEntityType::APP, entity_id, "", entry_to_json(entry), ChangeType::CREATED);
     }
   }
 }
@@ -264,8 +265,8 @@ std::size_t LogManager::dropped_entries_count() const noexcept {
 // add_log_entry (programmatic injection for trigger log_settings)
 // ---------------------------------------------------------------------------
 
-void LogManager::add_log_entry(const std::string & entity_id, const std::string & severity, const std::string & message,
-                               const nlohmann::json & metadata) {
+void LogManager::add_log_entry(SovdEntityType entity_type, const std::string & entity_id, const std::string & severity,
+                               const std::string & message, const nlohmann::json & metadata) {
   std::string normalized = normalize_fqn(entity_id);
 
   // Build a LogEntry using the same structure as source-emitted entries.
@@ -306,7 +307,7 @@ void LogManager::add_log_entry(const std::string & entity_id, const std::string 
 
   // Notify observers if a notifier is set
   if (notifier_) {
-    notifier_->notify("logs", normalized, "", entry_to_json(entry), ChangeType::CREATED);
+    notifier_->notify("logs", entity_type, normalized, "", entry_to_json(entry), ChangeType::CREATED);
   }
 }
 

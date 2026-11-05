@@ -26,6 +26,7 @@
 
 #include <vector>
 
+#include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_manager.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
@@ -81,6 +82,17 @@ struct EntityInfo {
   bool is_remote{false};  ///< True if entity was discovered from a peer gateway
   std::string peer_url;   ///< Base URL of the peer (e.g., "http://localhost:8081")
   std::string peer_name;  ///< Peer name for metadata (e.g., "subsystem_b")
+  /// The peers that contribute the entity and the ID each knows it by, read
+  /// off the cached entity this info was built from. A per-entity fan-out asks
+  /// these peers and no other, so it targets the same cache generation the
+  /// request was validated against. Empty without aggregation.
+  std::vector<PeerTarget> peer_targets;
+  /// The peer ID index of the cache generation the entity was found in, set
+  /// by validate_entity_for_route. What a peer answers for this request is
+  /// read against it (served_member_id, rewrite_to_served_ids): a refresh
+  /// that lands while the answer is on its way can rename or drop the entity
+  /// the request named, and the newest index would then name another one.
+  std::shared_ptr<const PeerIdIndex> peer_ids;
 
   // Plugin routing fields
   bool is_plugin{false};    ///< True if entity is owned by a plugin

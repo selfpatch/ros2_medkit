@@ -53,7 +53,7 @@ TEST(ResourceChangeNotifier, SubscribeAndNotify) {
   });
 
   nlohmann::json value = {{"severity", "high"}};
-  notifier.notify("faults", "temp_sensor", "fault_003", value, ChangeType::CREATED);
+  notifier.notify("faults", SovdEntityType::APP, "temp_sensor", "fault_003", value, ChangeType::CREATED);
 
   auto status = future.wait_for(std::chrono::seconds(2));
   ASSERT_EQ(status, std::future_status::ready);
@@ -80,11 +80,11 @@ TEST(ResourceChangeNotifier, FilterByCollection) {
   });
 
   // Notify on "faults" - should NOT trigger callback
-  notifier.notify("faults", "sensor", "f1", {{"x", 1}}, ChangeType::CREATED);
+  notifier.notify("faults", SovdEntityType::APP, "sensor", "f1", {{"x", 1}}, ChangeType::CREATED);
 
   // Notify on "data" - should trigger callback
   nlohmann::json data_value = {{"temperature", 42.5}};
-  notifier.notify("data", "sensor", "temp", data_value, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor", "temp", data_value, ChangeType::UPDATED);
 
   auto status = future.wait_for(std::chrono::seconds(2));
   ASSERT_EQ(status, std::future_status::ready);
@@ -109,8 +109,8 @@ TEST(ResourceChangeNotifier, EmptyEntityIdMatchesAll) {
     }
   });
 
-  notifier.notify("data", "sensor_a", "temp", {}, ChangeType::UPDATED);
-  notifier.notify("data", "sensor_b", "temp", {}, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor_a", "temp", {}, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor_b", "temp", {}, ChangeType::UPDATED);
 
   auto status = future.wait_for(std::chrono::seconds(2));
   ASSERT_EQ(status, std::future_status::ready);
@@ -130,11 +130,11 @@ TEST(ResourceChangeNotifier, SpecificEntityIdFilters) {
   });
 
   // Should NOT match - different entity
-  notifier.notify("data", "sensor_a", "temp", {{"v", 1}}, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor_a", "temp", {{"v", 1}}, ChangeType::UPDATED);
 
   // Should match
   nlohmann::json expected_val = {{"v", 2}};
-  notifier.notify("data", "sensor_b", "temp", expected_val, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor_b", "temp", expected_val, ChangeType::UPDATED);
 
   auto status = future.wait_for(std::chrono::seconds(2));
   ASSERT_EQ(status, std::future_status::ready);
@@ -159,8 +159,8 @@ TEST(ResourceChangeNotifier, EmptyResourcePathMatchesAll) {
     }
   });
 
-  notifier.notify("data", "sensor", "temperature", {}, ChangeType::UPDATED);
-  notifier.notify("data", "sensor", "humidity", {}, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor", "temperature", {}, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor", "humidity", {}, ChangeType::UPDATED);
 
   auto status = future.wait_for(std::chrono::seconds(2));
   ASSERT_EQ(status, std::future_status::ready);
@@ -180,11 +180,11 @@ TEST(ResourceChangeNotifier, SpecificResourcePathFilters) {
   });
 
   // Should NOT match - different resource_path
-  notifier.notify("data", "sensor", "temperature", {{"v", 1}}, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor", "temperature", {{"v", 1}}, ChangeType::UPDATED);
 
   // Should match
   nlohmann::json expected_val = {{"v", 2}};
-  notifier.notify("data", "sensor", "humidity", expected_val, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor", "humidity", expected_val, ChangeType::UPDATED);
 
   auto status = future.wait_for(std::chrono::seconds(2));
   ASSERT_EQ(status, std::future_status::ready);
@@ -206,7 +206,7 @@ TEST(ResourceChangeNotifier, Unsubscribe) {
   });
 
   // First notify - should trigger
-  notifier.notify("data", "sensor", "temp", {}, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor", "temp", {}, ChangeType::UPDATED);
 
   // Wait a bit for async delivery
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -216,7 +216,7 @@ TEST(ResourceChangeNotifier, Unsubscribe) {
   notifier.unsubscribe(id);
 
   // Second notify - should NOT trigger
-  notifier.notify("data", "sensor", "temp", {}, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor", "temp", {}, ChangeType::UPDATED);
 
   // Wait to confirm no additional callback
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -238,7 +238,7 @@ TEST(ResourceChangeNotifier, AsyncDispatchNonBlocking) {
   });
 
   auto start = std::chrono::steady_clock::now();
-  notifier.notify("data", "sensor", "temp", {}, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor", "temp", {}, ChangeType::UPDATED);
   auto elapsed = std::chrono::steady_clock::now() - start;
 
   // notify() should return almost immediately (well under 10ms)
@@ -276,7 +276,7 @@ TEST(ResourceChangeNotifier, MultipleSubscribersAllCalled) {
     check_done();
   });
 
-  notifier.notify("faults", "sensor", "f1", {}, ChangeType::CREATED);
+  notifier.notify("faults", SovdEntityType::APP, "sensor", "f1", {}, ChangeType::CREATED);
 
   auto status = future.wait_for(std::chrono::seconds(2));
   ASSERT_EQ(status, std::future_status::ready);
@@ -302,7 +302,7 @@ TEST(ResourceChangeNotifier, ExceptionInCallbackDoesNotBlockOthers) {
     promise.set_value(change);
   });
 
-  notifier.notify("data", "sensor", "temp", {{"v", 42}}, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor", "temp", {{"v", 42}}, ChangeType::UPDATED);
 
   auto status = future.wait_for(std::chrono::seconds(2));
   ASSERT_EQ(status, std::future_status::ready);
@@ -326,7 +326,7 @@ TEST(ResourceChangeNotifier, ChangeTypePropagation) {
       promise.set_value(change.change_type);
     });
 
-    notifier.notify("data", "sensor", "temp", {}, ct);
+    notifier.notify("data", SovdEntityType::APP, "sensor", "temp", {}, ct);
 
     auto status = future.wait_for(std::chrono::seconds(2));
     ASSERT_EQ(status, std::future_status::ready);
@@ -347,7 +347,7 @@ TEST(ResourceChangeNotifier, TimestampWithinTolerance) {
   });
 
   auto before = std::chrono::system_clock::now();
-  notifier.notify("data", "sensor", "temp", {}, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor", "temp", {}, ChangeType::UPDATED);
   auto after = std::chrono::system_clock::now();
 
   auto status = future.wait_for(std::chrono::seconds(2));
@@ -372,7 +372,7 @@ TEST(ResourceChangeNotifier, NotifyAfterShutdownIsNoop) {
   notifier.shutdown();
 
   // Should be a no-op
-  notifier.notify("data", "sensor", "temp", {}, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "sensor", "temp", {}, ChangeType::UPDATED);
 
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   EXPECT_EQ(call_count.load(), 0);
@@ -417,7 +417,7 @@ TEST(ResourceChangeNotifier, QueueOverflow_DropsOldest) {
   });
 
   // Trigger the blocking callback.
-  notifier.notify("data", "blocker", "block", {}, ChangeType::UPDATED);
+  notifier.notify("data", SovdEntityType::APP, "blocker", "block", {}, ChangeType::UPDATED);
 
   // Wait for the worker to enter the blocking callback.
   auto blocked_status = worker_blocked_future.wait_for(std::chrono::seconds(2));
@@ -426,7 +426,7 @@ TEST(ResourceChangeNotifier, QueueOverflow_DropsOldest) {
   // Now queue 10 notifications (indices 0..9). With max_queue_size=5, the
   // 5 oldest should be discarded, leaving only the 5 newest (indices 5..9).
   for (int i = 0; i < 10; ++i) {
-    notifier.notify("data", "sensor", "temp", {{"index", i}}, ChangeType::UPDATED);
+    notifier.notify("data", SovdEntityType::APP, "sensor", "temp", {{"index", i}}, ChangeType::UPDATED);
   }
 
   // Collect all delivered notifications.

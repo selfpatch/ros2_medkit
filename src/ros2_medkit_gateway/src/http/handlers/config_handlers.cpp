@@ -25,6 +25,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
@@ -485,8 +486,34 @@ ConfigHandlers::list_configurations(const http::TypedRequest & req) {
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   const auto & raw_req = req.raw_for_framework();
 #pragma GCC diagnostic pop
-  auto fan_out = fan_out_collection<dto::ConfigurationMetaData>(ctx_.aggregation_manager(), raw_req);
-  for (auto & item : fan_out.items) {
+  auto fan_out =
+      fan_out_collection<dto::ConfigurationMetaData>(ctx_.aggregation_manager(), raw_req, &entity_result->peer_targets);
+  // A peer names the member that owns a parameter as its own tree names it,
+  // in the source and in the member half of the id (`x:gain`). An App whose id
+  // collided with a local one is merged under `<peer>__<id>`, so `x` names the
+  // local leaf here, and address_parameter resolves a request for `x:gain` to
+  // that local member: a write meant for the peer's parameter changes the local
+  // one. Both are named by the served member (`<peer>__x:gain`), and an item of
+  // a member the merge dropped, or one the peer never declared, is left out:
+  // no id here addresses it. Read against the peer ID index of the generation
+  // the request was validated against, which is the one the fan-out targeted.
+  for (size_t index = 0; index < fan_out.items.size(); ++index) {
+    auto & item = fan_out.items[index];
+    const std::string peer_name = index < fan_out.item_peers.size() ? fan_out.item_peers[index] : std::string{};
+    if (!peer_name.empty()) {
+      if (item.x_medkit.has_value() && item.x_medkit->source.has_value()) {
+        auto source = served_member_id(entity_result->peer_ids, peer_name, *item.x_medkit->source);
+        if (!source) {
+          continue;
+        }
+        item.x_medkit->source = std::move(*source);
+      }
+      auto id = served_member_qualified_id(entity_result->peer_ids, peer_name, item.id);
+      if (!id) {
+        continue;
+      }
+      item.id = std::move(*id);
+    }
     response.items.push_back(std::move(item));
   }
   apply_fan_out_observability(xm, fan_out);
@@ -857,17 +884,19 @@ ConfigHandlers::delete_all_configurations(const http::TypedRequest & req) {
   // and is not reported - nothing was left undone for it.
   //
   // A member routed to a peer never contributes a local node: an id a peer
-  // announces that this gateway also declares is renamed `<peer>__<id>` by the
-  // merge, so the loop above and this one cannot name the same member.
+  // announces that this gateway also declares, under any entity type, is
+  // renamed `<peer>__<id>` by the merge, and the owner is read off the App
+  // itself, so the loop above and this one cannot name the same member.
   if (auto * agg = ctx_.aggregation_manager(); agg != nullptr) {
     for (const auto & member : cache.get_members(entity.sovd_type(), entity_id)) {
       // Apps only: a parameter belongs to a ROS node, an App is what carries
       // one, and a peer-owned Component's Apps are members in their own right.
       // Naming the Component too would report the same gap twice.
-      if (!cache.get_app(member)) {
+      auto app = cache.get_app(member);
+      if (!app) {
         continue;
       }
-      auto peer = agg->find_peer_for_entity(member);
+      auto peer = agg->find_owning_peer(*app);
       if (!peer) {
         continue;
       }
@@ -876,8 +905,10 @@ ConfigHandlers::delete_all_configurations(const http::TypedRequest & req) {
       reason += member;
       reason += "' is owned by gateway '";
       reason += *peer;
+      // That gateway knows the App by the id it was renamed from, if the merge
+      // renamed it.
       reason += "'. Reset it on that gateway, through its own /apps/";
-      reason += member;
+      reason += peer_entity_id(*app, *peer);
       reason += "/configurations route.";
 
       dto::ConfigurationDeleteResultItem entry;

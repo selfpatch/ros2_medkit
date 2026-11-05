@@ -200,7 +200,10 @@ type-specific merge rules:
 
    start
    :Receive remote entity from peer;
-   if (Entity type?) then (Area or Function)
+   if (An entity of another type, local\nor this peer's, holds the ID?) then (yes)
+       :Prefix remote ID with\npeername__ separator;
+       :Add routing entry\n(prefixed ID);
+   elseif (Entity type?) then (Area or Function)
        if (Same ID exists locally?) then (yes)
            :Merge into existing entity\n(combine relations/tags);
        else (no)
@@ -209,7 +212,7 @@ type-specific merge rules:
        endif
    elseif (Component) then
        if (Same ID exists locally?) then (yes)
-           :Merge metadata (tags, description);
+           :Merge metadata (tags, description,\nArea when the local has none);
            :Add provisional routing entry;
        else (no)
            :Add as new entity;
@@ -270,10 +273,13 @@ classification pass over the full Component set:
 
 - **Functions**: Merge by ID, combining the ``hosts`` lists from both sides.
   If both gateways expose a ``navigation`` Function, the merged entity lists
-  hosts from both gateways. Same ownership semantics as Areas. A peer host that
+  hosts from both gateways, and a local declaration that names no
+  dependencies takes the peer's. Same ownership semantics as Areas. A peer host that
   names a peer App the App merge prefixed takes the prefixed id, so it cannot
-  bind to the local App with the same id. The merge keeps the other hosts as
-  the peer listed them. After the merge and the internal-node filter, the
+  bind to the local App with the same id. The merge keeps the other hosts
+  the peer declared, as App or as Component, and removes a host the peer
+  declared as neither: by the peer's ID it would name the local entity that
+  holds that ID here. After the merge and the internal-node filter, the
   gateway keeps only the hosts that name an App or Component it serves.
 
 - **Components**: Merge by ID, combining tags and metadata. Components
@@ -286,7 +292,13 @@ classification pass over the full Component set:
     as ``parent_component_id``. Leaves are tied to exactly one ECU, so on
     collision the peer owns the runtime state (data, logs, hosts,
     operations, faults). Leaves get a routing table entry and every request
-    - detail endpoint and all sub-resources - is forwarded to the peer.
+    to their resource collections is forwarded to the peer. The detail
+    endpoint is forwarded too, except for a leaf this gateway declares itself
+    (``contributors`` includes ``"local"``): its detail is served from the
+    merged view, as its other discovery routes (``/subcomponents``,
+    ``/hosts``, ``/depends-on``) and the Area listings are, so the Area the
+    detail names is the Area that lists the Component. The local declaration
+    keeps its Area; one that names none takes the peer's.
   * **Hierarchical parent Component** - referenced as
     ``parent_component_id`` by at least one other Component in the merged
     set (local, remote, or transitively merged from any peer). The parent
@@ -302,7 +314,9 @@ classification pass over the full Component set:
 
   **Multi-peer leaf collisions** (two or more peers announce the same leaf
   Component ID) are surfaced as structured ``/health.warnings`` entries and
-  RCLCPP_WARN log lines. Routing falls back to last-writer-wins;
+  RCLCPP_WARN log lines; the log line is written when the collision first
+  appears and again only after it has gone away and come back, since every
+  refresh meets it. Routing falls back to last-writer-wins;
   rejection would not fix the deployment and would only take the gateway
   offline.
 
@@ -341,11 +355,158 @@ classification pass over the full Component set:
   separator). Apps represent individual ROS 2 nodes with unique behavior - two
   Apps with the same ID from different peers are different entities.
 
+- **Any type, ID held locally by another type**: Prefixed the same way,
+  except that a remote Area or Function first merges with a local entity of its
+  own type that shares the ID, as above. The
+  routing table is keyed by ID alone, so a routing entry for a remote Area,
+  Component, Function or App whose ID a local entity of another type holds
+  would hand that local entity's requests - writes included - to the peer.
+  The remote entity is served as ``peername__<id>`` and routed under that ID
+  instead, with the name ``peername__<name>``, cut to
+  ``EntityMerger::kMaxServedNameBytes`` (512) bytes at a UTF-8 character
+  boundary: the peer's name is bounded only by the text a refresh may read,
+  and the served name is copied into every forwarded object that names the
+  entity (below). "Local" here is everything already merged when the peer is folded
+  in: this gateway's own entities, plugin-provided ones included (they are
+  injected before the merge in every discovery mode), and those of every peer
+  merged before it. An entity of the same peer merged earlier in the same
+  pass counts too (Areas, then Components, Apps, Functions): a peer that
+  declares Area ``x`` and Component ``x`` is served as Area ``x`` and
+  Component ``peername__x``. Served under one ID, the two would share one
+  routing entry, and the classification below, which takes the entries of
+  Component IDs out of the table, would take the Area's with them.
+  A remote Component whose ID a local Component shares merges as above only
+  when no local entity of another type shares it too; otherwise it is
+  prefixed rather than merged, because the merged Component's routing entry
+  would cover the other entity. Merged Areas and Functions create no routing
+  entry and merge regardless.
+
+  A prefixed ID is reserved: it must be free of every ID already merged,
+  whatever its type, of every ID the peer itself declares (the peer's own
+  ``peername__x`` would otherwise collapse with the one generated for its
+  ``x``), and of every ID this merge generated for another remote entity,
+  whatever its type: a remote Area ``x`` and a remote Component ``x`` that
+  both collide are not both served as ``peername__x`` (the Area, merged first,
+  is). Only the same remote entity listed twice gets its ID again. A prefixed
+  ID also has to be a valid entity ID (``validate_entity_id``): a peer ID of
+  up to 256 characters is valid, and prefixed by ``peername__`` it can be
+  longer than that, an ID every request answers with ``400``, so the entity
+  would be listed and never addressable (``drop_if_unaddressable``). A remote
+  entity whose prefixed ID is taken, or is not a valid entity ID, is not
+  served at all, and a warning names it and the reason. The drop is recorded per type, and
+  every reference the peer's other entities make to it - a subarea's parent, a
+  Component's Area, parent or dependency, an App's Component or dependency, a
+  Function's host or dependency - is removed: by the peer's own ID it would
+  name the local entity that took its place. An ID a merge generated is never
+  merged into, even by an Area or Function: an entity a later peer declares
+  under that ID is another entity, and is prefixed in turn. Each rename and
+  each drop is logged once, when it first appears, and again only after it has
+  gone away and come back.
+
+  A prefixed entity keeps its references valid: a subarea names its prefixed
+  parent, a Component its prefixed Area, parent or dependency, an App its
+  prefixed Component, and a Function its prefixed hosts and dependencies.
+  A reference a peer entity makes resolves only to an entity that peer
+  declared - kept under its own ID, prefixed, or dropped - and one to an ID
+  the peer never declared is removed in the merge: a peer Function
+  ``diagnostics`` hosting ``admin``, which the peer declares neither as App
+  nor as Component, does not group the local App ``admin``. The merge pass
+  over a peer reads the peer's IDs off the entities it fetched
+  (``EntityMerger::collect_ids``).
+  A discovery response the peer answers for it - a forwarded detail, or a
+  relationship collection such as an App's ``depends-on`` - comes back in the
+  peer's own IDs, and ``validate_entity_for_route`` rewrites it to the IDs it
+  is served under here before it is sent (``rewrite_to_served_ids``): the ``id``
+  of every object that names its ``type``, of a detail that names none, which
+  is of the type its route asked for, and of an item of a relationship
+  collection that names no type the walk recognizes (none, one that is not a
+  string, one no entity has), which is of the type the relationship lists - an
+  App's ``depends-on`` Apps, its ``is-located-on`` Components and its
+  ``belongs-to`` Areas, a Component's ``subcomponents`` and ``depends-on``
+  Components and its ``hosts`` Apps, an Area's ``subareas`` Areas and its
+  ``components`` and ``contains`` Components, a Function's ``hosts`` Apps or
+  Components by what the peer declared (``relationship_items``); such an item
+  kept the peer's ID while its links were rewritten or removed, and named the
+  local namesake, and one whose type cannot be established is removed whole -
+  with its ``name``, which takes the
+  served one so a forwarded detail names the entity as the listings do -
+  every entity URI (the self link, the resource collection links, the
+  relationship links, relative or absolute; the ID is read from the path
+  alone, and a query or fragment after it is kept as sent), and the
+  relationship IDs ``x-medkit`` carries (``parent_area_id``,
+  ``parentComponentId``, ``dependsOn``, ``area``, ``component_id``,
+  ``hosts``). An entity URI the peer wrote absolute
+  (``http://peer:8080/api/v1/apps/x``) is written as a path on this gateway
+  (``/api/v1/apps/peer__x``), whether its ID is renamed or kept: the walk reads
+  every entity URI as the peer's reference by its ID, so the link has to
+  resolve through this gateway. With the peer's authority kept, a renamed
+  link reached the peer with an ID it does not know, and a kept one bypassed
+  this gateway for a peer a client may not reach, or may not be allowed to
+  call. An absolute URI that is not an entity URI - an external manual - is
+  left as sent. A reference to an
+  entity the merge dropped is removed - the collection item that describes
+  it, the link or relationship field that names it, the entry of a list of
+  IDs - because by the peer's ID it would name the local entity that took its
+  place. So is a reference to an ID the peer never declared: the index holds
+  each peer's admitted IDs per type, every entity the peer contributes by the
+  ID that peer knows it by, and only those are the peer's to name. A detail of
+  the peer's App ``sensor`` linking ``/apps/admin`` names, through this
+  gateway, the local ``admin``; the link is removed. The detail itself has to
+  describe the entity it was asked for: an ``id`` other than the peer's id for
+  it, or a ``type`` other than the route's (a ``type`` that is not a string
+  included), is refused with ``502``. A route is read as the router matched
+  it: every route takes one trailing slash (``/?$``), so ``/apps/x/`` is the
+  detail of ``x`` and ``/apps/y/depends-on/`` its relationship, rewritten and
+  checked as such (``without_route_trailing_slash``). Read as sent, the slash
+  made them a resource after the id, and the peer's answer reached the client
+  in the peer's IDs. Only
+  recorded renames are applied. They come from the
+  ``PeerIdIndex`` the refresh builds from the served entities and the merge's
+  drops and publishes in the entity cache with the entities
+  (``ThreadSafeEntityCache::update_all``). The rewrite reads, for the whole
+  body, the snapshot of the generation the request was validated against,
+  which ``validate_entity_for_route`` reads with the entity and keeps in
+  ``EntityInfo::peer_ids``; so do the fan-outs below. A refresh that lands
+  while the peer answers can rename or drop the entity the request named, and
+  the newest snapshot would then map the peer's id to the local entity that
+  took its place. A rewritten body drops the peer's ``ETag``.
+  Responses of the resource collections (data, faults, operations and the
+  rest) are passed through as the peer sent them, except for the member IDs a
+  fan-out reads off them (see the member-qualified items below): a dropped
+  member, or one the peer never declared, is removed from a data or
+  operation item's ``x-medkit.member_ids``, and an item none of whose members
+  is served here, or whose id or ``x-medkit.source`` names such a member, is
+  left out of the list. The ``Location`` of every forwarded answer is
+  translated the same way (``served_entity_uri``), and so is the entity a
+  relayed fault event is attributed to (below).
+
+  The body comes from the peer, so the walk is bounded: a body nested deeper
+  than ``kMaxPeerJsonDepth`` (64) levels, or holding more than
+  ``kMaxPeerJsonValues`` (1,000,000) values, is judged on its text before it
+  is parsed and refused with ``502`` (``x-medkit-peer-unavailable``, naming
+  the bound). It is not passed through untranslated, which would present the
+  peer's IDs as this gateway's, and it is never translated in part. No
+  discovery response comes anywhere near either bound. The dropped references of
+  an array are removed in one pass over it, so the work grows with the length
+  of the array and not with its square.
+
+  What the walk writes is bounded as well. It copies a served ID, and with it
+  a served name, into each object that names a renamed entity, so a small
+  body that names one entity many times grows by that many copies: an 8 MB
+  name repeated in 10,000 objects of a valid detail would come to about 78 GB;
+  300 of them took the gateway from 150 MB to 7.3 GB. Every replacement is
+  charged, before its value is built, by the bytes it adds to the body's JSON
+  text (escapes counted), against ``kMaxServedIdRewriteGrowth`` (10 MB, as much
+  again as the largest body a peer is read for); a body whose rewrite would
+  pass it is refused with ``502`` and not served in part. A rename adds the
+  peer's name and a separator to an ID and a name, so a discovery response
+  grows by a fraction of its own size.
+
 The ``EntityMerger::SEPARATOR`` constant (``__``) is used as the prefix
-separator for Apps. The routing table maps ``entity_id -> peer_name`` for
+separator. The routing table maps ``entity_id -> peer_name`` for
 entities whose runtime state lives on the peer: remote-only Areas and
-Functions, leaf Components (remote-only or collision-merged), and
-remote-only or prefixed Apps. Hierarchical parent Components are not in the
+Functions, leaf Components (remote-only or collision-merged), remote-only
+Apps, and every prefixed entity. Hierarchical parent Components are not in the
 routing table - they are served locally.
 
 Provenance (``x-medkit.contributors``)
@@ -381,9 +542,22 @@ its own contributor list.
 Request Routing
 ---------------
 
-When a request arrives for an entity, ``HandlerContext`` checks the routing
-table. If the entity is local, processing continues normally. If the entity
-maps to a peer, the request is forwarded transparently:
+When a request arrives for an entity, ``HandlerContext`` looks the entity up
+and reads where it is answered off the entity itself. If the entity is local,
+processing continues normally. If it is routed to a peer, the request is
+forwarded transparently.
+
+The merge builds the routing table and records each entry on the entity it
+belongs to, as ``routed_to``: an Area, App or Function when the peer declared
+it alone (its ``source`` is ``peer:<name>``), a Component also when the peer is
+merged into it. ``AggregationManager::find_owning_peer`` reads ``routed_to``
+and nothing else. The routing table is keyed by ID and published separately
+from the entity cache, so a request that consulted it could pair an entity
+from one refresh with a routing entry from the next, or with an entry that
+belongs to another entity sharing the ID. Read off the entity, the decision is
+always that entity's, from the same cache generation. Member dispatch and the
+configuration reset read the owner the same way. The table itself is still
+published (``find_peer_for_entity``) for code that runs inside the refresh.
 
 .. plantuml::
    :caption: Request Routing - Local vs Remote
@@ -398,14 +572,16 @@ maps to a peer, the request is forwarded transparently:
 
    Client -> primary : GET /api/v1/components/robot_arm__lidar/data
    primary -> ctx : validate_entity_for_route()
-   ctx -> ctx : Look up "robot_arm__lidar" in routing table
+   ctx -> ctx : Look up Component "robot_arm__lidar", read its routed_to
    ctx --> primary : entity found, peer = "robot_arm"
 
-   primary -> agg : forward_request("robot_arm", req, res)
+   primary -> agg : forward_request("robot_arm", req, res, path)
    agg -> peer : GET /api/v1/components/lidar/data
    note right
-       Path rewritten: strips peer prefix
-       from entity ID before forwarding
+       The entity is named by the id the peer
+       knows it by: the rename the merge
+       recorded on it (original_id), not the
+       spelling of the served id
    end note
    peer --> agg : 200 OK + JSON data
    agg --> primary : Copy response to client
@@ -415,7 +591,7 @@ maps to a peer, the request is forwarded transparently:
 
    Client -> primary : GET /api/v1/apps/my_node/data
    primary -> ctx : validate_entity_for_route()
-   ctx -> ctx : "my_node" not in routing table
+   ctx -> ctx : App "my_node" has no routed_to
    ctx --> primary : entity found, local
 
    primary -> primary : Process locally via DataAccessManager
@@ -436,8 +612,8 @@ every member the other contributors hold.
 A request naming one member is a different question, and it does have a single
 answer. ``HandlerContext::dispatch_to_member`` re-addresses such a request to
 the member's own entity route - ``/apps/{member}/...`` or
-``/components/{member}/...`` - on the gateway the routing table names for that
-member:
+``/components/{member}/...``, by the id that gateway knows the member by - on
+the gateway the member is routed to:
 
 .. code-block:: text
 
@@ -477,13 +653,30 @@ means anything here. A peer describes its own tree in its own names, and an App
 whose id collided with a local one was merged under ``<peer>__<id>``, so the
 name the peer sends names the LOCAL leaf on this gateway. ``fan_out_get``
 therefore records the peer each item came from in
-``FanOutResult::item_peers``, and ``AggregationManager::local_member_id``
-resolves that name against the routing table: an item arriving through the
+``FanOutResult::item_peers``, and ``served_member_id`` resolves that name
+against the rename the merge recorded: the cached entity under
+``<peer>__<id>`` counts only when it is that peer's and was renamed from
+``<id>``, so a peer's own entity whose id merely reads like a prefix is never
+taken for one. An item arriving through the
 fan-out is re-attributed to the id the merge gave its owner, in
-``x-medkit.member_ids`` and in the member half of the item id, before any of it
-is offered to a client. Read verbatim instead, the peer's item is attributed to
-a member that does not own it, the collection offers one id for two operations,
-and the peer's copy is not addressable through the aggregate at all.
+``x-medkit.member_ids``, in ``x-medkit.source`` and in the member half of the
+item id, before any of it is offered to a client. Read verbatim instead, the
+peer's item is attributed to a member that does not own it, the collection
+offers one id for two operations, and the peer's copy is not addressable
+through the aggregate at all - and a request for it reaches the local member
+instead: the peer's configuration ``x:gain``, for a peer App ``x`` served here
+as ``peer__x``, was resolved by ``address_parameter`` to the local ``x``, and a
+``PUT`` to it changed the local parameter. The member half of an id is the
+text before its first colon, read as a member only when it can be an entity id
+(``served_member_qualified_id``), which is how ``address_parameter`` and
+``address_data_item`` read it here; an item whose member half or source names a
+member the merge dropped, or one the peer never declared, is left out, because
+no id here addresses it. ``/data``, ``/operations`` and ``/configurations`` are
+the collections whose items carry member ids. A log entry names its node by
+ROS FQN and a fault its code and the FQNs that reported it, so ``/logs`` and
+``/faults`` items carry none; bulk data, triggers, cyclic subscriptions,
+scripts and updates are not fanned out: a request for an entity a peer owns is
+forwarded to it whole, and one for any other entity is served here.
 
 Each collection keeps its own id scheme and each hands the same two halves to
 the dispatch. ``/data`` and ``/operations`` qualify only an ambiguous id and
@@ -547,15 +740,48 @@ for the same reason - ``GET`` for its status, ``PUT`` to apply a capability and
    GET /api/v1/functions/vehicle_health/operations/peer_long_calibration:long_calibration/executions/{exec}
      -> GET /api/v1/apps/peer_long_calibration/operations/long_calibration/executions/{exec}
 
-An id that does not resolve to exactly one owned operation is left to the local
-path, whose key is the execution id alone: resolving is how the owning gateway
+An entity routed whole to a peer - a peer's own App, a Component the peer
+contributes as a leaf - is that peer's, and so are its executions: their
+status, stop and cancel are forwarded to it whole, as its start was and as
+every other route of the entity is (``validate_entity_for_route``), without
+reading this gateway's cached operations. Resolving them from the cache
+instead found no owner for an operation the cache does not list - a plugin
+operation with no ROS path, one the peer added since the last refresh - and
+answered a local ``404`` for an execution the start had just created on the
+peer. The cached operations pick the owner only on a grouping entity, whose
+member holds the execution. The entity is the one the route names, looked up
+by the route's type: an Area and a Function may share an id (a namespace
+Function beside a manifest Area of that name), and by id alone a Function's
+follow-up was resolved against the Area and dispatched to the Area's peer
+member. There, an id that does not resolve to exactly
+one owned operation is left to the local path, which finds the goal by the
+execution id and answers it only through the entity it was started through,
+by type and id, or through the member a qualified id names, by its own type
+and id, and only under an id naming its own operation: an execution started
+through the Area answers ``404`` through the Function that shares its id, and
+under ``operations/missing`` or another operation of the Area. The operation
+is the goal's own action and the member a qualified id has to name is the
+owner recorded when the goal was sent, so neither depends on what the cache
+lists once the action's server has gone. Resolving is how the owning gateway
 is found, not a second place for these routes to refuse a request. So a
 locally-owned execution is answered here exactly as before, and an id naming no
 goal gets the same ``404`` it always did.
 
 The peer's ``Location`` header is carried back through the forward, because it
-names the member's own route - a path the aggregator resolves to the same
-member - and it is the only address of a resource that lives on the other side.
+is the only address of a resource that lives on the other side. The peer builds
+it from the route it received, which names the member by the peer's own id, so
+the id is translated to the one this gateway serves the member under
+(``served_entity_uri``, read against the index of the generation the forward
+was resolved in) before it is passed on: for a member renamed on collision the
+peer's id names the local namesake here, and a client following the
+``Location`` of an async execution or a lock would ask the wrong entity. The
+same applies to every forwarded request, a member dispatched through a
+grouping entity or an entity forwarded whole, and a ``Location`` naming an
+entity this gateway does not serve is removed. A ``Location`` the peer wrote
+absolute (``http://peer:8080/api/v1/...``) is passed on as a path on this
+gateway (``/api/v1/...``), renamed or not: with the peer's authority and the
+served id it reached the peer with an id the peer does not know, and with the
+peer's own id it went round this gateway, to a peer a client may not reach.
 
 The member's own gateway is the only one that can answer: the ROS service, the
 topic and the parameter behind the id exist on its graph and nowhere else. What
@@ -664,32 +890,69 @@ its first health check) or one that predates the id.
 
 A peer that answers partial makes the result partial too. Its failed peers are
 named ``<peer>/<its peer>`` with the reason it gave, so a dead gateway at the
-end of a chain shows up at the head. ``x-medkit.count`` is the length of the
-merged ``items``.
+end of a chain shows up at the head. The peer writes that list, so one answer
+contributes each name once and at most ``kMaxNestedPeerFailures`` (1024)
+names, and their reasons are read in one pass over its ``peer_failures``, the
+first entry naming a peer giving its reason; matching each name against every
+entry made the work grow with the square of what the peer sent. Every entry
+copies its reason, so a name repeated with one long reason multiplied the
+body: a name past ``kMaxNestedPeerNameLength`` (1024 bytes) is not listed, a
+reason past ``kMaxNestedPeerReasonLength`` (64 bytes) reads ``unreachable``,
+and the entries stop before they add more than ``kMaxNestedPeerFailureBytes``
+(64 KiB). ``x-medkit.count`` is the length of the merged ``items``.
 
 The path does not deduplicate a gateway reached over two different routes in
 the same request (A -> B -> C plus A -> C): C answers both, as it did before.
 
 **Target-filtered fan-out.** For per-entity paths, ``merge_peer_items()``
-asks ``AggregationManager::get_peer_contributors(id)`` for the list of
-peers that host or contribute to the entity, and passes it as a filter to
-``fan_out_get()``. Requests reach only those peers; non-contributors are
-never queried so they cannot appear in ``failed_peers``. The set unions:
+and ``fan_out_collection()`` ask only the peers the handler passes them: the
+``EntityInfo::peer_targets`` of the entity the request was validated against,
+which ``HandlerContext::get_entity_info`` reads off that cached entity's
+``contributors`` (``peer_targets_of``, stripping the ``"peer:"`` prefix). The
+list is passed as a filter to ``fan_out_get()``. Requests reach only those
+peers; non-contributors are never queried so they cannot appear in
+``failed_peers``. The ROS 2 fault listing (``list_entity_faults``) reads the
+entity's type and contributors off one copy of the entity the same way.
 
-- The routing table (remote leaves, collision-renamed peer-only entities).
-- A ``peer_contributors_by_entity_`` map maintained alongside the routing
-  table. ``gateway_node`` rebuilds both after every discovery cycle by
-  walking ``contributors`` on the merged Areas/Components/Apps/Functions,
-  stripping the ``"peer:"`` prefix and accumulating peer names per id.
-  Merged Areas/Functions with ID collisions and hierarchical parent
-  Components - both deliberately stripped from the routing table - still
-  reach their peers through this map.
+Read off the entity, the targets come from the same cache generation the
+request was validated against. A table rebuilt by the merge and published
+before the cache would, for the length of a refresh, name the peers of the
+next generation's entity for this generation's - including a peer asked
+about, and handed the caller's credential for, an entity that is still local
+here. The contributors cover remote leaves (the merge names the peer a routed
+entity is forwarded to), collision-renamed peer-only entities, and merged
+Areas/Functions and hierarchical parent Components, which are deliberately
+absent from the routing table. The id-keyed routing table is not consulted: an
+App and an Area can share an id, and the peer contributing one has nothing to
+say about the other.
 
 When the resolved list is empty (local-only entity), fan-out is skipped:
 no peer hosts the entity, so hitting peers would only produce spurious
-``partial: true`` / ``failed_peers``. Global endpoints (paths with no
+``partial: true`` / ``failed_peers``. A targeted peer that answers ``404``
+with ``entity-not-found`` - one that stopped holding the entity since the
+tables were built - contributes nothing and is not counted as failed either
+(``PeerFailureKind::kEntityNotFound``). Global endpoints (paths with no
 entity id, e.g. ``GET /api/v1/faults``) pass a ``nullptr`` filter and keep
 fan-out-to-all-healthy behavior.
+
+Each targeted peer is asked about the entity by the id it knows it by
+(``PeerTarget::id``, from ``peer_entity_id``): an entity the merge renamed is
+known to its peer by ``original_id``, every other contributor by the served id.
+A grouping Component prefixed on collision and kept local by the
+classification would otherwise be asked for as ``<peer>__<id>``, an id the peer
+holds nothing under, and its ``404`` would read as an empty answer. The rename
+is read off the entity, never off the spelling of the served id. The same
+holds for a request forwarded whole (``validate_entity_for_route``) and for one
+re-addressed to a member (``dispatch_to_member``): ``forward_request`` sends the
+path it is given.
+
+``CorePluginContext::list_entity_faults``, behind the ROS 2
+``list_entity_faults`` service, applies the same rule. It asks only the peers
+the cached entity names among its ``contributors``, each by the id it knows the
+entity by. An entity only this gateway holds asks no peer and logs no partial
+fan-out. The service has no inbound HTTP credential to forward, so each peer is
+asked with this gateway's own (``aggregation.peer_auth_header``) when one is
+configured.
 
 Entities freshly announced on a peer but not yet reflected in the local
 routing/contributor tables (a brief window between discovery cycles) are
@@ -769,7 +1032,15 @@ refreshes that gateway needs to relink its ROS graph, and then turns true.
 
 ``PeerClient::fetch_entities()`` reads a peer over several requests and either
 describes it whole or reports failure: a dead connection, a status a route has
-no other meaning for, an oversized body or unparsable JSON on any of them fails
+no other meaning for, an oversized body, a body nested deeper than
+``kMaxPeerJsonDepth`` (64) levels or holding more than ``kMaxPeerJsonValues``
+(1,000,000) values, a request still unanswered at its deadline, unparsable
+JSON or a field of the wrong type on any of them, a detail that describes
+another entity than the list named (``detail_mismatch``: another ``id``, or a
+``type`` other than the collection's - a detail replaces the listed entity, so
+a peer listing ``sensor`` and describing ``ecu`` would be served as ``ecu``),
+or a refresh keeping more of the peer than ``FetchBudget`` allows (see Refresh
+Size Limits), fails
 the fetch, because a picture missing a branch is indistinguishable on the wire
 from a peer that does not have that branch. Two statuses carry a meaning of
 their own: a ``404`` on a nested collection route (``/subareas``,
@@ -802,6 +1073,30 @@ are both healthy. Both requests carry ``X-Medkit-No-Fan-Out``, which keeps the
 peer from re-asking ITS peers: each gateway reports what it holds, the hop that
 owns an entity is the hop that answers for it, and that is also what makes the
 walk terminate.
+
+Each field is read from the key a gateway serves it under. An Area's and a
+Component's description come from the top level of the item, their namespace
+from ``x-medkit.ros2.namespace``, a Component's node from
+``x-medkit.ros2.node``, and a Function's translation id from the top-level
+``translation_id``. ``x-medkit.description``, ``x-medkit.namespace``,
+``x-medkit.fqn`` and ``translationId`` are still read when the served key is
+absent, for a peer that sends a field there. A subarea is read off the
+peer's ``/areas/{id}/subareas`` route, which serves its description and tags
+the way the top-level ``/areas`` list does, and takes that route's Area as its
+parent: the list item names none. The top-level ``/areas`` and ``/components``
+lists leave nested entities out, so subareas and subcomponents are read level
+by level, each level from the routes of the one above, down to eight levels
+below the top-level entity. An id already read is not read again, so a tree
+that loops back on itself ends there. The 1000-entity limit of the collection
+counts the nested entities with the top-level ones, and it is checked before
+each nested entity is taken, before its detail is asked for: a level is as
+wide as the peer makes it, so a check once the level was done let a peer that
+lists 1000 children under each of 999 parents cost close to a million
+requests in one refresh. A subcomponent takes its parent from its
+detail, and from the route when the detail names none or cannot be read. A
+Function's dependencies come from
+the ``_links["depends-on"]`` references its detail serves, each reduced to the
+Function id it names and kept once (see Refresh Size Limits).
 
 Availability travels the same way in the other direction. ``x-medkit.available``
 is emitted only when false, so absence means reachable, and both
@@ -884,7 +1179,12 @@ Lifecycle and the three constraints that shape it:
   aggregating gateways would relay one event round the loop.
 
 Each relayed event goes out under the aggregator's own event id, carrying the
-peer's payload with ``x-medkit.peer`` added. **Replay covers this gateway's own
+peer's payload with ``x-medkit.peer`` added. The entity the peer attributed
+the event to, ``x-medkit.entity_type`` and ``entity_id``, is named by its
+peer's ID, and a consumer addresses it here
+(``/{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}``): it is named by
+the ID served here, read against the newest peer ID index, and an entity the
+merge dropped, or the peer never declared, is taken out of the attribution. **Replay covers this gateway's own
 ids only.** Two peers number their events independently, so a ``Last-Event-ID``
 cannot address a position in a merged stream; a reconnecting client resumes
 from what the aggregator has buffered, not from each peer's own history.
@@ -953,12 +1253,97 @@ Key Classes
     HTTP client for communicating with a single peer gateway. Supports health
     checking, entity fetching, transparent request forwarding (proxy), and
     JSON-parsed responses for fan-out merging. Thread-safe via atomic health
-    flag and mutex-guarded lazy client creation.
+    flag; every call, the health check included, makes its own client.
+    ``shutdown()`` sets a flag after which no call against the peer starts,
+    and stops the per-call clients in flight. A read budget bounds each read,
+    not the answer, so a peer sending its answer a byte at a time would hold
+    a call for as long as it kept sending; the health check once used a
+    shared client that shutdown left alone, and such a peer held the
+    refresh, and the executor running it, past SIGTERM. Each request
+    therefore runs for at most its deadline, ``request_deadline_ms``
+    (``aggregation.request_deadline_ms``, 30 s), and never for less than its
+    own connect, write and read budgets added up; the health check's is its
+    connect and read budgets added up, each capped at 1 s. Starting a call and
+    shutting down are exclusive: a call holds the admission lock shared from
+    its check of the flag until its socket exists, and ``shutdown()`` holds it
+    exclusively while it stops the clients, so a call is either refused
+    (``canceled``) or in flight when its client is stopped. A client stopped
+    between two calls of an entity fetch would otherwise dial the next one,
+    since cpp-httplib's ``stop()`` only closes the socket of the call in
+    progress. ``GatewayNode`` calls
+    ``AggregationHost::shutdown()`` from a pre-shutdown callback on its
+    context as well as from its destructor (only the first call acts): on
+    SIGINT or SIGTERM the destructor runs only after the executor has finished
+    the refresh it is in, and a refresh reading peers would keep calling them
+    until it had read every one. The constructor's own refresh reads no
+    peers: ``main`` keeps the signals blocked until startup is done, so a peer
+    fetch run there held a shutdown requested meanwhile for as long as the
+    slowest peer took to read. It serves the local entities from the first
+    request on, and the first peer merge runs on the executor from a one-shot
+    timer as soon as it spins; peer entities are served once it has read every
+    peer. Until then their ids answer ``404`` and ``/health`` lists each peer
+    as ``offline``, since no health check has run yet.
+
+``PeerCallRegistry``
+    The per-call clients in flight against one peer, each with the deadline
+    of the request it is making. ``send_capped`` arms a request with its
+    deadline before it connects and disarms it when it returns; a reaper
+    thread, one per ``PeerClient``, sleeps until the earliest deadline and
+    stops the client of a request still running then, as ``stop_all()``
+    stops every client at shutdown. The request fails as a timeout naming
+    ``aggregation.request_deadline_ms``: a forward answers ``504``, a fan-out
+    names the peer ``timeout``, a fetch fails. cpp-httplib's ``stop()``
+    takes the client's socket lock, which a request holds while it connects
+    and, over TLS, through the whole handshake, whose timeout restarts on
+    every fragment the peer sends: a peer that sends its handshake a byte at
+    a time holds the ``stop()``, the deadline and shutdown for as long as it
+    keeps sending. A request is therefore
+    cancelled through its socket first. The socket-options callback hands the
+    registry each socket a request creates (``attach_socket``), before
+    admission is released; the registry keeps a ``F_DUPFD_CLOEXEC`` duplicate
+    until the request ends, so the number stays reserved and a cancel never
+    shuts a socket the process reused it for, and cancelling shuts it down,
+    which ends the connect, handshake or read without taking any lock of the
+    client's. A request that passes its deadline before it has a socket has
+    it shut as it is attached. ``stop()`` follows; each one runs on a thread
+    of its own with the registry mutex released, and one that waits keeps no
+    other request from arming, disarming or being stopped at its own
+    deadline. A client is pinned
+    while a ``stop()`` of it runs: ``remove()``, before the client is
+    destroyed, and ``disarm()``, before its next request, wait for it, so no
+    client is freed under a ``stop()`` and no late ``stop()`` lands on the
+    next request. ``stop_all()`` shuts every attached socket, then runs the
+    stops side by side and returns when the slowest has. A request cancelled
+    before it had a socket is cancelled again every 100 ms until it returns. The SSE relay has no deadline: a
+    stream has no last byte.
+
+``PeerResolver``
+    The host name of one peer, resolved by this gateway before a call is
+    admitted rather than by cpp-httplib inside it. cpp-httplib calls
+    ``getaddrinfo`` under the socket lock its ``stop()`` takes, and after the
+    admission lock is taken: a resolver that did not answer held the call,
+    every ``stop()`` of it, and shutdown's exclusive admission for as long as
+    the system resolver retried - ten seconds and more - and a forward to a
+    peer whose resolver had gone silent answered after some 12 s, the refresh
+    stalled with it, and SIGTERM took 10 s. The lookup runs on a detached
+    thread that owns its result, at most one per peer at a time, and a call
+    waits for it at most its connect budget (``aggregation.timeout_ms``,
+    capped at 1 s); ``PeerClient::ScopedClient`` then points the client at the
+    first address, and ``send_capped`` tries the next one when an address
+    refuses or does not accept the connection, as cpp-httplib does when it
+    resolves the name itself. A name that does not resolve in time makes no
+    request: the call fails as the peer being unreachable, naming the host
+    and the budget (a forward answers ``502``, a fetch fails, the health check
+    counts as failed). ``shutdown()`` cancels the wait, and an IP address is
+    not looked up. ``SSEStreamProxy`` resolves the same way before each
+    connect, within its own 5 s connect budget, waiting in 100 ms slices so
+    ``close()`` is noticed.
 
 ``EntityMerger``
     Stateless merge engine that combines local and remote entity sets using
     type-specific rules (merge by ID for Area/Function/Component, prefix on
-    collision for App). Produces a provisional routing table mapping remote
+    collision for App, prefix for any type whose ID an entity of another type
+    holds). Produces a provisional routing table mapping remote
     entity IDs to peer names - the Component entries are later refined by
     ``classify_component_routing``.
 
@@ -1044,15 +1429,118 @@ Per-Collection Limits
 ~~~~~~~~~~~~~~~~~~~~~
 
 Each entity collection (areas, components, apps, functions) is limited to 1000
-entities per peer response. If a peer returns more, the entire fetch for that
-peer is rejected. This prevents a malicious peer from causing excessive HTTP
-requests via N+1 detail fetches.
+entities per peer, nested subareas and subcomponents included. If a peer
+returns more, the entire fetch for that peer is rejected, as soon as the
+1001st is read and before any request it would cost. This prevents a
+malicious peer from causing excessive HTTP requests via N+1 detail fetches.
+No entity is built before it is counted: the items of a list that name a
+valid entity id are counted first, a nested item is checked against the
+limit before it is parsed, and an item naming no valid id is never built. An
+empty object costs the peer three bytes and the gateway a whole entity, so a
+list built first and counted after let a body within the size limit allocate
+gigabytes.
 
 Response Size Limits
 ~~~~~~~~~~~~~~~~~~~~
 
-All HTTP responses from peers are limited to 10 MB (``MAX_PEER_RESPONSE_SIZE``).
-Responses exceeding this limit are rejected.
+The body of every HTTP response from a peer is limited to 10 MB
+(``MAX_PEER_RESPONSE_SIZE``), whatever its status: the health check, every
+request of an entity fetch, forwarded requests and fan-out requests. The limit
+is enforced while the body arrives (``send_capped`` counts the bytes in its
+content receiver and stops the read at the limit), so a peer that sends more
+never has more than 10 MB of it buffered here. cpp-httplib's own calls read
+the whole body before they return it, which is why none of them is used
+against a peer. A response past the limit is rejected: a health check counts
+as failed, an entity fetch fails, a forward answers ``502`` and a fan-out
+names the peer ``too-large``.
+
+The limit covers the body and nothing else. The status line, the header
+fields, the chunk-size lines of a chunked body (with any chunk extension) and
+the trailer fields are read by cpp-httplib before the content receiver sees a
+byte, and they are not bounded: cpp-httplib 0.14 grows a line for as long as
+the peer sends it and keeps every header and trailer field it receives, so a
+peer that does not end them grows this gateway's memory for as long as it
+keeps sending.
+
+The SSE relay is not covered by the limit either. ``SSEStreamProxy`` reads a
+peer's event stream with its own cpp-httplib client and no total limit, since
+a stream has no end. It holds at most 1 MB of an event that has not ended
+(``kMaxSSEBufferSize``) and drops the connection past that.
+
+Parsed Size Limits
+~~~~~~~~~~~~~~~~~~
+
+A body within the size limit can still cost far more once parsed: the JSON
+library builds a 16-byte value for every element and member, and every object
+and string allocates on top, so a 9 MB list of three million empty objects
+parsed to some 0.6 GB. Every body a peer sends is therefore judged on its text
+before it is parsed (``judge_peer_json``), in the same scan as its depth: a
+body holding more than ``kMaxPeerJsonValues`` (1,000,000) values - array
+elements and object members, counted at every level - is refused unparsed,
+like one nested deeper than ``kMaxPeerJsonDepth``. The bound is 1000 entities
+(``MAX_ENTITIES_PER_COLLECTION``) of 1000 values each; the largest item of a
+gateway serving the demo nodes holds about 160 values (a data item with its
+message schema), its largest answer about 3000. At the bound a body of the
+costliest values, a million empty objects, parses to some 250 MB. The scan
+runs wherever a peer body is parsed: every request of an entity fetch, the
+health answer (a ``200`` whose body is refused is a failed health check, as an
+oversized one is: the peer is unhealthy), a fan-out, the error body of a
+``404`` or ``504``, a forwarded discovery response before it is rewritten
+(``502`` when refused), and each event the fault stream relays (dropped with
+a warning). Text that is not JSON is judged the same way and fails to parse
+afterwards; a health answer of that kind keeps counting as a healthy ``200``.
+
+Refresh Size Limits
+~~~~~~~~~~~~~~~~~~~
+
+Every answer of a refresh is bounded on its own, but a refresh makes requests
+per entity, so the bounds above multiply: 1000 Apps answering 100000
+operations each stay inside every one of them and would keep some 100 million
+records. ``fetch_entities()`` therefore charges every record it keeps to a
+``FetchBudget`` before keeping it - an entity, with the entries of its tags,
+hosts, dependencies and identity fields, an operation, a topic an App publishes
+or subscribes to - and refuses the fetch past ``MAX_PEER_FETCH_RECORDS``
+(250,000) records or ``MAX_PEER_FETCH_TEXT`` (16 MiB) of text in them. A
+detail that replaces the entity its list named hands the list's charge back.
+One App is also refused past ``MAX_PEER_ENTRIES_PER_APP`` (1000) operations or
+data items naming a topic, which bounds its published and subscribed topics to
+1000 each, and one Component or Function past ``MAX_PEER_DEPENDENCIES`` (1000)
+dependencies. A Function's ``depends-on`` links are kept once each in the order
+the peer listed them, with a set beside the list: searching the list for every
+link cost the square of its length, in a parse that runs after the request's
+deadline is disarmed. So are a Function's hosts and a Component's
+``dependsOn`` (``keep_first_of_each``), and the merge emits each served host and
+dependency once (``resolve_hosts``, ``resolve_references``): a list names
+members, and a member named twice is one member. Kept twice, it is visited
+twice by every collection over the entity's members - a Function hosting one
+App of 1000 operations 200,000 times, inside the record bound, made the first
+``GET /functions/f/operations/docs`` scan those operations 200,000 times under
+the cache's shared lock (1.9 s, against 0.06 s for the App alone). The cache
+indexes each host once per Function as well, whatever declared it (see the
+entity cache's relationship indexes). A refusal is thrown where the bound is reached (``PeerFetchRefused``)
+and turned into the fetch's failure, so the refresh for that peer is discarded
+whole and its last complete declaration stays, as for an oversized answer. A
+gateway serving the demo nodes reports 16 entities, 3 operations and 33 topics
+in under 1 kB of text; a peer of 245 Apps with 1000 operations each, just
+inside the record bound, took the gateway to about 200 MB.
+
+Request Deadlines
+~~~~~~~~~~~~~~~~~
+
+cpp-httplib's timeouts bound each read and write, not an answer, so a peer
+that sends a byte inside every read budget holds a request, and whatever waits
+on it - a refresh, a client - for as long as it keeps sending. Every request to
+a peer therefore has a deadline, ``aggregation.request_deadline_ms`` (30 s), but
+never less than its own connect, write and read budgets added up, so no
+request is cut before its budgets are spent; the health check's deadline is its
+connect and read budgets added up, each capped at 1 s. ``PeerCallRegistry`` stops a request
+still running at its deadline (see Key Classes), and the request fails as a
+timeout: a forward answers ``504 not-responding``, a fan-out names the peer
+``timeout``, an entity fetch fails and the refresh keeps the peer's last
+complete declaration, a health check counts as failed. The SSE relay has no
+deadline: a stream has no last byte. The deadline is armed once the peer's host
+name has resolved, which ``PeerResolver`` bounds by the connect budget (see Key
+Classes), so a call runs for at most that budget plus its deadline.
 
 Per-Peer Entity Limits
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -1087,7 +1575,11 @@ Function Host Remapping
 
 When App ID collision causes prefixing (e.g., ``camera_driver`` becomes
 ``peer_b__camera_driver``), Function entities that reference the original App ID
-in their ``hosts`` list are automatically remapped to use the prefixed ID. This
-ensures Function host references remain valid after merge. The hosts are not
-reduced at this point: the one pass at the end of the cache refresh removes
+in their ``hosts`` list are automatically remapped to use the prefixed ID; a host
+naming a prefixed Component is remapped the same way. The remapping reads the
+renames ``EntityMerger`` recorded for that peer, never the shape of an ID, so a
+peer whose own IDs contain ``__`` keeps them. This
+ensures Function host references remain valid after merge. A host the peer
+declared neither as App nor as Component is removed here. The other hosts are
+not reduced at this point: the one pass at the end of the cache refresh removes
 every host that names no served App or Component.

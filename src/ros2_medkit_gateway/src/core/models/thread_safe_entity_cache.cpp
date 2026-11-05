@@ -199,8 +199,12 @@ void ThreadSafeEntityCache::reserve(size_t capacity) {
 
 void ThreadSafeEntityCache::update_all(std::vector<Area> areas, std::vector<Component> components,
                                        std::vector<App> apps, std::vector<Function> functions,
-                                       std::unordered_map<std::string, std::string> node_to_app) {
+                                       std::unordered_map<std::string, std::string> node_to_app,
+                                       std::shared_ptr<const PeerIdIndex> peer_ids) {
   std::unique_lock lock(mutex_);
+  // Replaced whether or not the entities changed: a drop alone is a change the
+  // entity comparison below cannot see.
+  peer_id_index_ = std::move(peer_ids);
 
   bool changed = false;
   changed |= reconcile(areas_, area_index_, std::move(areas));
@@ -219,6 +223,11 @@ void ThreadSafeEntityCache::update_all(std::vector<Area> areas, std::vector<Comp
   last_update_ = std::chrono::system_clock::now();
   refresh_grew();
   generation_.fetch_add(1, std::memory_order_release);
+}
+
+std::shared_ptr<const PeerIdIndex> ThreadSafeEntityCache::get_peer_id_index() const {
+  std::shared_lock lock(mutex_);
+  return peer_id_index_;
 }
 
 void ThreadSafeEntityCache::update_areas(std::vector<Area> areas) {
@@ -568,6 +577,7 @@ AggregatedOperations ThreadSafeEntityCache::get_app_operations(const std::string
   result.services = app.services;
   result.actions = app.actions;
   result.source_ids.push_back(app_id);
+  result.source_types.push_back(SovdEntityType::APP);
 
   return result;
 }
@@ -1011,8 +1021,21 @@ void ThreadSafeEntityCache::rebuild_relationship_indexes() {
   // word, so a Function hosting a Component reported none of that Component's
   // resources. Both halves are indexed now; a host id that resolves to neither
   // is still skipped, because there is nothing to point at.
+  //
+  // Each host is indexed once per Function. A Function listing one App twice
+  // hosts it once, and every collection over the Function's members walks this
+  // index: a host kept 200,000 times made each one scan that App's operations
+  // 200,000 times under the shared lock. The other indexes need no such guard:
+  // each is built from a single-valued field (an App's component, a
+  // Component's area or parent, an Area's parent), and reconcile keeps one
+  // slot per ID, so a slot is pushed at most once.
+  std::unordered_set<std::string> hosts_seen;
   functions_.for_each_live([&](uint32_t, const Function & func) {
+    hosts_seen.clear();
     for (const auto & host_id : func.hosts) {
+      if (!hosts_seen.insert(host_id).second) {
+        continue;
+      }
       const uint32_t * app_slot = app_index_.find(host_id);
       if (app_slot && apps_.is_live(*app_slot)) {
         function_to_apps_.get_or_create(func.id).push_back(*app_slot);
@@ -1165,6 +1188,7 @@ void ThreadSafeEntityCache::collect_operations_from_apps(const std::vector<uint3
     }
     const auto & app = apps_[slot];
     result.source_ids.push_back(app.id);
+    result.source_types.push_back(SovdEntityType::APP);
 
     for (const auto & svc : app.services) {
       if (seen_paths.insert(svc.full_path).second) {
@@ -1190,6 +1214,7 @@ void ThreadSafeEntityCache::collect_operations_from_component(uint32_t comp_slot
 
   const auto & comp = components_[comp_slot];
   result.source_ids.push_back(comp.id);
+  result.source_types.push_back(SovdEntityType::COMPONENT);
 
   for (const auto & svc : comp.services) {
     if (seen_paths.insert(svc.full_path).second) {

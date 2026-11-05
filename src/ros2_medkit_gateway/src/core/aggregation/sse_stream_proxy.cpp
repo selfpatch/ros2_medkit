@@ -31,7 +31,7 @@ namespace ros2_medkit_gateway {
 
 SSEStreamProxy::SSEStreamProxy(const std::string & peer_url, const std::string & path, const std::string & peer_name,
                                httplib::Headers headers)
-  : peer_url_(peer_url), path_(path), peer_name_(peer_name), headers_(std::move(headers)) {
+  : peer_url_(peer_url), path_(path), peer_name_(peer_name), headers_(std::move(headers)), resolver_(peer_url) {
 }
 
 SSEStreamProxy::~SSEStreamProxy() {
@@ -106,10 +106,55 @@ void SSEStreamProxy::reader_loop() {
   // (1s, 2s, 4s, ..., max 30s) until should_stop_ is set.
   constexpr int kInitialBackoffMs = 1000;
   constexpr int kMaxBackoffMs = 30000;
+  // The connect budget below, which the host name is resolved within too.
+  constexpr auto kConnectBudget = std::chrono::seconds(5);
   int backoff_ms = kInitialBackoffMs;
 
+  // Sleep in small increments so we can check should_stop_ promptly.
+  const auto back_off = [this, &backoff_ms]() {
+    int slept_ms = 0;
+    while (slept_ms < backoff_ms && !should_stop_.load()) {
+      constexpr int kSleepStepMs = 100;
+      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepStepMs));
+      slept_ms += kSleepStepMs;
+    }
+    backoff_ms = std::min(backoff_ms * 2, int{kMaxBackoffMs});
+  };
+
   while (!should_stop_.load()) {
+    // Resolved here rather than by cpp-httplib inside Get(), where a resolver
+    // that does not answer would hold the reader, and close() waiting on it,
+    // for as long as the system resolver retries. Waited for in 100 ms slices,
+    // so close() is noticed, and for at most the connect budget.
+    PeerResolver::Result resolved;
+    const auto give_up = std::chrono::steady_clock::now() + kConnectBudget;
+    do {
+      resolved = resolver_.resolve(std::chrono::milliseconds(100));
+    } while (resolved.outcome == PeerResolver::Outcome::kTimedOut && !should_stop_.load() &&
+             std::chrono::steady_clock::now() < give_up);
+    if (should_stop_.load()) {
+      break;
+    }
+    if (resolved.outcome != PeerResolver::Outcome::kResolved) {
+      fprintf(stderr, "[SSEStreamProxy] peer '%s' at %s: its host name %s; retrying\n", peer_name_.c_str(),
+              peer_url_.c_str(),
+              resolved.outcome == PeerResolver::Outcome::kTimedOut ? "did not resolve within 5 s" : "does not resolve");
+      back_off();
+      continue;
+    }
+
     httplib::Client client(peer_url_);
+    // The addresses are tried in turn, as cpp-httplib tries them when it
+    // resolves the name itself. None for a host that is an IP address.
+    size_t next_address = 0;
+    const auto use_next_address = [&client, &resolved, &next_address, this]() {
+      if (next_address >= resolved.addresses.size()) {
+        return false;
+      }
+      client.set_hostname_addr_map({{resolver_.host(), resolved.addresses[next_address++]}});
+      return true;
+    };
+    use_next_address();
     // The socket is handed to this callback once cpp-httplib has created it,
     // which is where close() gets something it can interrupt. The library's own
     // defaults are applied first so overriding this hook does not drop them.
@@ -146,6 +191,11 @@ void SSEStreamProxy::reader_loop() {
     // below. The dup is this class's to close and nothing else's.
     struct SocketHandleGuard {
       SSEStreamProxy * self;
+      // Owns the release of one socket, so it is neither copied nor moved.
+      SocketHandleGuard(const SocketHandleGuard &) = delete;
+      SocketHandleGuard & operator=(const SocketHandleGuard &) = delete;
+      SocketHandleGuard(SocketHandleGuard &&) = delete;
+      SocketHandleGuard & operator=(SocketHandleGuard &&) = delete;
       ~SocketHandleGuard() {
         std::lock_guard<std::mutex> lock(self->socket_mutex_);
         if (self->active_socket_ >= 0) {
@@ -159,7 +209,7 @@ void SSEStreamProxy::reader_loop() {
     // Peers should send periodic heartbeat comments (": keepalive\n\n") to
     // prevent timeout on idle streams.
     client.set_read_timeout(300, 0);
-    client.set_connection_timeout(5, 0);
+    client.set_connection_timeout(kConnectBudget.count(), 0);
 
     // Track whether we received any data to set connected_ only after the
     // stream is actually delivering data (avoids race where is_connected()
@@ -180,105 +230,112 @@ void SSEStreamProxy::reader_loop() {
       }
     }
 
-    auto result = client.Get(
-        path_, attempt_headers,
-        [this](const httplib::Response & response) {
-          // Header callback - check status and content type before processing body
-          if (response.status != 200) {
-            rejected_status_.store(response.status);
-            return false;
-          }
-          if (should_stop_.load()) {
-            return false;
-          }
-          // Validate Content-Type is text/event-stream. A non-SSE 200 response
-          // (e.g., application/json) would be silently misinterpreted as SSE data.
-          auto ct_it = response.headers.find("Content-Type");
-          if (ct_it == response.headers.end() || ct_it->second.find("text/event-stream") == std::string::npos) {
-            // Not an SSE stream - abort connection. Log is not available here
-            // (no rclcpp logger), so we set a flag and log in the outer scope.
-            non_sse_content_type_.store(true);
-            return false;
-          }
-          return true;
-        },
-        [this, &buffer, &received_first_data, &backoff_ms](const char * data, size_t data_length) {
-          if (should_stop_.load()) {
-            return false;  // Stop receiving
-          }
-
-          // Mark connected on first chunk of data from the stream.
-          // This avoids the race condition where is_connected() returns true
-          // before the HTTP connection is actually established.
-          if (!received_first_data) {
-            received_first_data = true;
-            connected_.store(true);
-            backoff_ms = 1000;  // Reset backoff on successful connection
-          }
-
-          constexpr size_t kMaxSSEBufferSize = 1 * 1024 * 1024;  // 1MB
-
-          buffer.append(data, data_length);
-          if (buffer.size() > kMaxSSEBufferSize) {
-            return false;  // Disconnect - peer sending malformed stream
-          }
-
-          // Events end at a blank line, which SSE allows to be written either
-          // way round: "\n\n" or "\r\n\r\n". Searching only for "\n\n" never
-          // matches a CRLF stream, because "\r\n\r\n" holds "\n\r\n" and no
-          // "\n\n" - such a peer would deliver bytes for ever and never yield
-          // one event. parse_sse_data already handles CRLF within a block; it
-          // is this boundary search that has to admit both.
-          size_t pos = 0;
-          while (true) {
-            auto boundary = buffer.find("\n\n", pos);
-            size_t boundary_len = 2;
-            const auto crlf_boundary = buffer.find("\r\n\r\n", pos);
-            if (crlf_boundary != std::string::npos && (boundary == std::string::npos || crlf_boundary < boundary)) {
-              boundary = crlf_boundary;
-              boundary_len = 4;
+    // An address that refuses the connection, or does not accept it within the
+    // connect budget, has been sent nothing; the next one is tried.
+    httplib::Result result{nullptr, httplib::Error::Unknown};
+    do {
+      result = client.Get(
+          path_, attempt_headers,
+          [this](const httplib::Response & response) {
+            // Header callback - check status and content type before processing body
+            if (response.status != 200) {
+              rejected_status_.store(response.status);
+              return false;
             }
-            if (boundary == std::string::npos) {
-              break;
+            if (should_stop_.load()) {
+              return false;
+            }
+            // Validate Content-Type is text/event-stream. A non-SSE 200 response
+            // (e.g., application/json) would be silently misinterpreted as SSE data.
+            auto ct_it = response.headers.find("Content-Type");
+            if (ct_it == response.headers.end() || ct_it->second.find("text/event-stream") == std::string::npos) {
+              // Not an SSE stream - abort connection. Log is not available here
+              // (no rclcpp logger), so we set a flag and log in the outer scope.
+              non_sse_content_type_.store(true);
+              return false;
+            }
+            return true;
+          },
+          [this, &buffer, &received_first_data, &backoff_ms](const char * data, size_t data_length) {
+            if (should_stop_.load()) {
+              return false;  // Stop receiving
             }
 
-            std::string event_block = buffer.substr(pos, boundary - pos + 1);
-            pos = boundary + boundary_len;
+            // Mark connected on first chunk of data from the stream.
+            // This avoids the race condition where is_connected() returns true
+            // before the HTTP connection is actually established.
+            if (!received_first_data) {
+              received_first_data = true;
+              connected_.store(true);
+              backoff_ms = 1000;  // Reset backoff on successful connection
+            }
 
-            auto events = parse_sse_data(event_block, peer_name_);
-            for (const auto & event : events) {
-              // Recorded before dispatch, so a callback that throws still
-              // leaves the resume point at the last event actually received.
-              if (!event.id.empty()) {
-                std::lock_guard<std::mutex> lock(cursor_mutex_);
-                last_event_id_ = event.id;
+            constexpr size_t kMaxSSEBufferSize = 1 * 1024 * 1024;  // 1MB
+
+            buffer.append(data, data_length);
+            if (buffer.size() > kMaxSSEBufferSize) {
+              return false;  // Disconnect - peer sending malformed stream
+            }
+
+            // Events end at a blank line, which SSE allows to be written either
+            // way round: "\n\n" or "\r\n\r\n". Searching only for "\n\n" never
+            // matches a CRLF stream, because "\r\n\r\n" holds "\n\r\n" and no
+            // "\n\n" - such a peer would deliver bytes for ever and never yield
+            // one event. parse_sse_data already handles CRLF within a block; it
+            // is this boundary search that has to admit both.
+            size_t pos = 0;
+            while (true) {
+              auto boundary = buffer.find("\n\n", pos);
+              size_t boundary_len = 2;
+              const auto crlf_boundary = buffer.find("\r\n\r\n", pos);
+              if (crlf_boundary != std::string::npos && (boundary == std::string::npos || crlf_boundary < boundary)) {
+                boundary = crlf_boundary;
+                boundary_len = 4;
               }
-              if (callback_) {
-                // The callback is given a payload the peer wrote. One that
-                // throws on a shape it did not expect would otherwise leave the
-                // exception to escape this thread, and an exception leaving a
-                // std::thread calls std::terminate - a peer could end the
-                // gateway by sending one malformed field.
-                try {
-                  callback_(event);
-                } catch (const std::exception & e) {
-                  fprintf(stderr, "[SSEStreamProxy] dropping event from peer '%s': handler threw: %s\n",
-                          peer_name_.c_str(), e.what());
-                } catch (...) {
-                  fprintf(stderr, "[SSEStreamProxy] dropping event from peer '%s': handler threw\n",
-                          peer_name_.c_str());
+              if (boundary == std::string::npos) {
+                break;
+              }
+
+              std::string event_block = buffer.substr(pos, boundary - pos + 1);
+              pos = boundary + boundary_len;
+
+              auto events = parse_sse_data(event_block, peer_name_);
+              for (const auto & event : events) {
+                // Recorded before dispatch, so a callback that throws still
+                // leaves the resume point at the last event actually received.
+                if (!event.id.empty()) {
+                  std::lock_guard<std::mutex> lock(cursor_mutex_);
+                  last_event_id_ = event.id;
+                }
+                if (callback_) {
+                  // The callback is given a payload the peer wrote. One that
+                  // throws on a shape it did not expect would otherwise leave the
+                  // exception to escape this thread, and an exception leaving a
+                  // std::thread calls std::terminate - a peer could end the
+                  // gateway by sending one malformed field.
+                  try {
+                    callback_(event);
+                  } catch (const std::exception & e) {
+                    fprintf(stderr, "[SSEStreamProxy] dropping event from peer '%s': handler threw: %s\n",
+                            peer_name_.c_str(), e.what());
+                  } catch (...) {
+                    fprintf(stderr, "[SSEStreamProxy] dropping event from peer '%s': handler threw\n",
+                            peer_name_.c_str());
+                  }
                 }
               }
             }
-          }
 
-          // Keep unprocessed data in buffer
-          if (pos > 0) {
-            buffer.erase(0, pos);
-          }
+            // Keep unprocessed data in buffer
+            if (pos > 0) {
+              buffer.erase(0, pos);
+            }
 
-          return true;  // Continue receiving
-        });
+            return true;  // Continue receiving
+          });
+    } while (!result &&
+             (result.error() == httplib::Error::Connection || result.error() == httplib::Error::ConnectionTimeout) &&
+             !should_stop_.load() && use_next_address());
 
     // Connection ended (server closed, timeout, or error) - mark disconnected
     connected_.store(false);
@@ -307,15 +364,7 @@ void SSEStreamProxy::reader_loop() {
     }
 
     // Exponential backoff before reconnecting
-    // Sleep in small increments so we can check should_stop_ promptly
-    int slept_ms = 0;
-    while (slept_ms < backoff_ms && !should_stop_.load()) {
-      constexpr int kSleepStepMs = 100;
-      std::this_thread::sleep_for(std::chrono::milliseconds(kSleepStepMs));
-      slept_ms += kSleepStepMs;
-    }
-
-    backoff_ms = std::min(backoff_ms * 2, kMaxBackoffMs);
+    back_off();
   }
 
   // Announced so close() stops re-arming its shutdown and joins. It waits on

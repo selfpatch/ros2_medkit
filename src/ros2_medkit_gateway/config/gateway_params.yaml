@@ -603,9 +603,11 @@ ros2_medkit_gateway:
       # Default: false
       enabled: false
 
-      # Connect budget for every peer request, and the read budget for reading a
-      # peer's description of itself: health checks, entity fetching, and the
-      # collection fan-out a client waits on across every peer at once.
+      # Connect budget for every peer request, capped at 1000 ms, and the read
+      # budget for reading a peer's description of itself: health checks,
+      # entity fetching, and the collection fan-out a client waits on across
+      # every peer at once. A peer's host name is resolved within the connect
+      # budget; a resolver that does not answer in it makes the peer unreachable.
       # Milliseconds. Range 100-600000, clamped to the nearest end with a warning.
       # Default: 2000
       timeout_ms: 2000
@@ -624,6 +626,16 @@ ros2_medkit_gateway:
       # Milliseconds. Range 100-600000, clamped to the nearest end with a warning.
       # Default: 5000
       write_timeout_ms: 5000
+
+      # The longest one request to a peer may run, from its connect to the last
+      # byte of the answer, however steadily the peer keeps sending - the
+      # budgets above each bound one read, not the answer. At it the request is
+      # stopped and fails as a timeout. Never less, for a request, than its
+      # connect, write and read budgets added up; the health check keeps its own,
+      # its connect and read budgets added up, each capped at 1 s.
+      # Milliseconds. Range 100-600000, clamped to the nearest end with a warning.
+      # Default: 30000
+      request_deadline_ms: 30000
 
       # Announce this gateway's presence via mDNS
       # Default: false (opt-in to avoid surprising network behavior)

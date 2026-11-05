@@ -68,7 +68,9 @@ void TriggerFaultFeed::on_event(const fd::FaultEventRecord & event) {
   }
 
   // The leading slash matches the resource_path that parse_resource_uri() gives a trigger.
-  notifier_.notify("faults", entity_id, "/" + event.fault.fault_code, fault_json, change_type);
+  // The reporting node's App: the resolver maps a node to its App, and the
+  // fallback is the node's name, an App's id under runtime discovery.
+  notifier_.notify("faults", SovdEntityType::APP, entity_id, "/" + event.fault.fault_code, fault_json, change_type);
 }
 
 }  // namespace ros2_medkit_gateway

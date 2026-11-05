@@ -19,14 +19,18 @@
 #include <atomic>
 #include <deque>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/test_support/refused_port.hpp"
 
 using namespace ros2_medkit_gateway;
@@ -383,107 +387,136 @@ TEST(AggregationManager, routing_table_update_and_find) {
   EXPECT_FALSE(manager.find_peer_for_entity("unknown_entity").has_value());
 }
 
-TEST(AggregationManager, has_peer_contributors_covers_routing_and_merged_entities) {
+TEST(AggregationManager, peer_targets_cover_routed_and_merged_entities) {
+  // Nothing contributed by a peer - the entity is "local-only".
+  Component local;
+  local.id = "anything";
+  local.contributors = {"local"};
+  EXPECT_TRUE(peer_targets_of(local).empty());
+
+  // Routed leaf: the merge names the peer it is forwarded to among the
+  // entity's contributors. Merged / hierarchical: no routing entry, but the
+  // peers are contributors all the same. Without this signal the fan-out gate
+  // would treat aggregated Areas/Functions/parent Components as local-only.
+  Component leaf;
+  leaf.id = "remote_leaf";
+  leaf.source = "peer:peer_x";
+  leaf.contributors = {"peer:peer_x"};
+  leaf.routed_to = "peer_x";
+  Area merged_area;
+  merged_area.id = "merged_area";
+  merged_area.contributors = {"local", "peer:peer_a", "peer:peer_b"};
+  Component parent;
+  parent.id = "hierarchical_parent";
+  parent.contributors = {"local", "peer:peer_b"};
+  EXPECT_EQ(peer_targets_of(leaf), (std::vector<PeerTarget>{{"peer_x", "remote_leaf"}}));
+  EXPECT_EQ(peer_targets_of(merged_area),
+            (std::vector<PeerTarget>{{"peer_a", "merged_area"}, {"peer_b", "merged_area"}}));
+  EXPECT_EQ(peer_targets_of(parent), (std::vector<PeerTarget>{{"peer_b", "hierarchical_parent"}}));
+
+  // A routing entry alone names no target and routes nothing: the table is
+  // keyed by id and cannot tell which entity the id belongs to, nor which
+  // merge it came from. Only what the entity carries counts.
   auto config = make_config(0);
   AggregationManager manager(config);
-
-  // Initially no contributions known - everything is "local-only".
-  EXPECT_FALSE(manager.has_peer_contributors("anything"));
-
-  // Routed leaf: entry in routing table means the entity lives on a peer,
-  // which implies it has a peer contributor.
-  std::unordered_map<std::string, std::string> routing;
-  routing["remote_leaf"] = "peer_x";
-  manager.update_routing_table(routing);
-  EXPECT_TRUE(manager.has_peer_contributors("remote_leaf"));
-
-  // Merged / hierarchical: no routing entry, but gateway tracks peer
-  // contributions separately. Without this signal the fan-out gate would
-  // treat aggregated Areas/Functions/parent Components as local-only.
-  manager.update_peer_contributors({
-      {"merged_area", {"peer_a", "peer_b"}},
-      {"hierarchical_parent", {"peer_b"}},
-  });
-  EXPECT_TRUE(manager.has_peer_contributors("merged_area"));
-  EXPECT_TRUE(manager.has_peer_contributors("hierarchical_parent"));
-
-  // Still false for genuinely local entities (not in either map).
-  EXPECT_FALSE(manager.has_peer_contributors("local_only"));
-
-  // Replacing the contributor map drops entries no longer reported.
-  manager.update_peer_contributors({{"merged_area", {"peer_a"}}});
-  EXPECT_TRUE(manager.has_peer_contributors("merged_area"));
-  EXPECT_FALSE(manager.has_peer_contributors("hierarchical_parent"));
-  // Routing table is independent and still applies.
-  EXPECT_TRUE(manager.has_peer_contributors("remote_leaf"));
+  manager.update_routing_table({{"anything", "peer_x"}});
+  EXPECT_TRUE(peer_targets_of(local).empty());
+  EXPECT_FALSE(manager.find_owning_peer(local).has_value());
+  EXPECT_EQ(manager.find_owning_peer(leaf), std::optional<std::string>("peer_x"));
 }
 
-TEST(AggregationManager, get_peer_contributors_unions_routing_and_contributor_map) {
-  auto config = make_config(0);
-  AggregationManager manager(config);
-
-  // Unknown entity: empty result.
-  EXPECT_TRUE(manager.get_peer_contributors("unknown").empty());
-
-  // Routed-leaf only: single peer from routing table.
-  manager.update_routing_table({{"routed_leaf", "peer_x"}});
-  EXPECT_EQ(manager.get_peer_contributors("routed_leaf"), std::vector<std::string>{"peer_x"});
-
-  // Merged-only (not in routing table): peers come from contributor map.
-  manager.update_peer_contributors({{"merged", {"peer_a", "peer_b"}}});
-  auto merged_peers = manager.get_peer_contributors("merged");
+TEST(AggregationManager, peer_targets_read_the_entity_not_its_id) {
+  // Routed leaf: the peer it is forwarded to comes from its contributors.
+  // Merged (not in routing table): every contributing peer, in order.
+  App routed;
+  routed.id = "routed_leaf";
+  routed.source = "peer:peer_x";
+  routed.contributors = {"peer:peer_x"};
+  Function merged;
+  merged.id = "merged";
+  merged.contributors = {"local", "peer:peer_a", "peer:peer_b"};
+  EXPECT_EQ(peer_targets_of(routed), (std::vector<PeerTarget>{{"peer_x", "routed_leaf"}}));
+  auto merged_peers = peer_targets_of(merged);
   ASSERT_EQ(merged_peers.size(), 2u);
-  EXPECT_EQ(merged_peers[0], "peer_a");
-  EXPECT_EQ(merged_peers[1], "peer_b");
+  EXPECT_EQ(merged_peers[0].peer, "peer_a");
+  EXPECT_EQ(merged_peers[1].peer, "peer_b");
 
-  // Entity present in both: routing-table owner first, extra contributors
-  // appended without duplicates.
-  manager.update_routing_table({{"both", "peer_x"}});
-  manager.update_peer_contributors({{"both", {"peer_x", "peer_y"}}});
-  auto both_peers = manager.get_peer_contributors("both");
-  ASSERT_EQ(both_peers.size(), 2u);
-  EXPECT_EQ(both_peers[0], "peer_x");
-  EXPECT_EQ(both_peers[1], "peer_y");
+  // Another entity sharing the id carries its own contributors: a local-only
+  // Area named like the merged Function has no peer to ask.
+  Area same_id;
+  same_id.id = "merged";
+  same_id.contributors = {"local"};
+  EXPECT_TRUE(peer_targets_of(same_id).empty());
+
+  // An entity the merge renamed is known to its peer by the id it was renamed
+  // from, and only to that peer.
+  App renamed;
+  renamed.id = "peer_x__shared";
+  renamed.original_id = "shared";
+  renamed.source = "peer:peer_x";
+  renamed.contributors = {"peer:peer_x"};
+  EXPECT_EQ(peer_targets_of(renamed), (std::vector<PeerTarget>{{"peer_x", "shared"}}));
 }
 
-TEST(AggregationManager, local_member_id_reads_a_peers_own_name_through_the_collision_rename) {
-  auto config = make_config(0);
-  AggregationManager manager(config);
+TEST(AggregationManager, served_member_id_reads_a_peers_own_name_through_the_recorded_rename) {
+  ThreadSafeEntityCache cache;
+  auto app = [](const std::string & id, const std::string & original_id, const std::string & peer) {
+    App a;
+    a.id = id;
+    a.original_id = original_id;
+    a.source = "peer:" + peer;
+    a.contributors = {"peer:" + peer};
+    return a;
+  };
+  // The cache publishes what the merge renamed and dropped with the entities.
+  auto publish = [&cache](std::vector<App> apps, const std::unordered_map<std::string, PeerDrops> & drops = {}) {
+    auto index = std::make_shared<const PeerIdIndex>(make_peer_id_index({}, {}, apps, {}, drops));
+    cache.update_all({}, {}, std::move(apps), {}, {}, index);
+  };
 
   // A member nothing collided with keeps the name its peer uses.
-  manager.update_routing_table({{"pressure_sensor", "peer_a"}});
-  EXPECT_EQ(manager.local_member_id("peer_a", "pressure_sensor"), "pressure_sensor");
+  publish({app("pressure_sensor", "", "peer_a")});
+  EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "peer_a", "pressure_sensor"),
+            std::optional<std::string>("pressure_sensor"));
 
   // A member whose id collided is merged under the prefixed id, and that is
   // the only name that addresses it here.
-  manager.update_routing_table({{"peer_a__shared_sensor", "peer_a"}});
-  EXPECT_EQ(manager.local_member_id("peer_a", "shared_sensor"), "peer_a__shared_sensor");
+  publish({app("peer_a__shared_sensor", "shared_sensor", "peer_a")});
+  EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "peer_a", "shared_sensor"),
+            std::optional<std::string>("peer_a__shared_sensor"));
 
-  // The prefixed id has to be routed to the peer that sent the item. Another
-  // peer can own an entity whose id reads like this peer's prefix, and
-  // answering with it would re-address the item to a gateway that never sent
-  // it - here peer_b owns an entity literally called `peer_a__shared_sensor`,
-  // so peer_a's own uncollided `shared_sensor` must not be rewritten to it.
-  manager.update_routing_table({{"peer_a__shared_sensor", "peer_b"}});
-  EXPECT_EQ(manager.local_member_id("peer_a", "shared_sensor"), "shared_sensor");
+  // Only a recorded rename is reversed. Another peer can own an entity whose id
+  // reads like this peer's prefix - here peer_b owns one literally called
+  // `peer_a__shared_sensor` - and peer_a can own one itself that was never
+  // renamed; neither re-addresses peer_a's own uncollided `shared_sensor`,
+  // which peer_a declares alongside.
+  publish({app("peer_a__shared_sensor", "", "peer_b"), app("shared_sensor", "", "peer_a")});
+  EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "peer_a", "shared_sensor"),
+            std::optional<std::string>("shared_sensor"));
+  publish({app("peer_a__shared_sensor", "", "peer_a"), app("shared_sensor", "", "peer_a")});
+  EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "peer_a", "shared_sensor"),
+            std::optional<std::string>("shared_sensor"));
+
+  // A member the merge dropped is served under no id: its own names the local
+  // entity that took its place.
+  PeerDrops dropped;
+  dropped.apps = {"shared_sensor"};
+  publish({}, {{"peer_a", dropped}});
+  EXPECT_FALSE(served_member_id(cache.get_peer_id_index(), "peer_a", "shared_sensor").has_value());
 
   // An empty half names nothing to look up.
-  EXPECT_EQ(manager.local_member_id("", "shared_sensor"), "shared_sensor");
-  EXPECT_EQ(manager.local_member_id("peer_a", ""), "");
+  EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "", "shared_sensor"),
+            std::optional<std::string>("shared_sensor"));
+  EXPECT_EQ(served_member_id(cache.get_peer_id_index(), "peer_a", ""), std::optional<std::string>(""));
 }
 
-TEST(AggregationManager, update_peer_contributors_drops_empty_entries) {
-  auto config = make_config(0);
-  AggregationManager manager(config);
-
-  manager.update_peer_contributors({
-      {"with_peers", {"peer_a"}}, {"empty_entry", {}},  // caller bug / stale placeholder - must be dropped
-  });
-  EXPECT_TRUE(manager.has_peer_contributors("with_peers"));
-  // Empty list must not count as "has peer contributors" - otherwise the
-  // fan-out gate would skip fan-out with no contributor to fall back on.
-  EXPECT_FALSE(manager.has_peer_contributors("empty_entry"));
-  EXPECT_TRUE(manager.get_peer_contributors("empty_entry").empty());
+TEST(AggregationManager, peer_targets_skip_contributors_that_name_no_peer) {
+  Area area;
+  area.id = "with_peers";
+  // A "peer:" entry with no name is a caller bug or a stale placeholder: it
+  // names no peer to ask. A peer listed twice is asked once.
+  area.contributors = {"local", "peer:", "peer:peer_a", "peer:peer_a"};
+  EXPECT_EQ(peer_targets_of(area), (std::vector<PeerTarget>{{"peer_a", "with_peers"}}));
 }
 
 TEST(AggregationManager, routing_table_replaces_on_update) {
@@ -540,10 +573,11 @@ TEST(AggregationManager, get_peer_url_returns_empty_for_unknown_peer) {
 // =============================================================================
 
 // @verifies REQ_INTEROP_003
-TEST(AggregationManager, forward_strips_peer_prefix_from_path) {
-  // This tests the path rewriting logic: when a collision-renamed entity
-  // (e.g., peer_0__camera_driver) is forwarded to the peer, the peer prefix
-  // must be stripped so the peer receives the original entity ID.
+TEST(AggregationManager, forward_sends_a_peer_prefixed_path_as_given) {
+  // The path is not rewritten here: a caller forwarding a request for an entity
+  // renamed on collision (e.g., peer_0__camera_driver) names it by the id the
+  // peer knows it by, from the rename recorded on the entity. A path that still
+  // carries the prefix is sent as it is, because it can be a peer's own id.
   auto config = make_config(1);
   AggregationManager manager(config);
 
@@ -553,10 +587,8 @@ TEST(AggregationManager, forward_strips_peer_prefix_from_path) {
   req.path = "/api/v1/apps/peer_0__camera_driver/data";
   httplib::Response res;
 
-  // The peer is unreachable, so we get 502. But the test verifies the path
-  // rewriting happened. The peer_client receives the stripped path.
-  // We verify the forward completes without crashing and returns 502
-  // (peer unreachable), not 404 (wrong entity ID).
+  // The peer is unreachable, so we get 502. We verify the forward completes
+  // without crashing and returns 502 (peer unreachable).
   manager.forward_request("peer_0", req, res);
 
   // The peer is unreachable, so we get 502 (not a routing error like 404)
@@ -580,9 +612,10 @@ TEST(AggregationManager, forward_preserves_path_without_prefix) {
   EXPECT_EQ(res.status, 502);
 }
 
-TEST(AggregationManager, forward_strips_only_matching_peer_prefix) {
-  // Verify that prefix stripping only removes the correct peer prefix,
-  // not an arbitrary occurrence of the separator.
+TEST(AggregationManager, forward_to_the_peer_a_path_prefix_names_sends_it_as_given) {
+  // Forwarding to the peer whose name the entity id starts with does not
+  // strip it either: whether `peer_1__` is a rename is recorded on the entity,
+  // not spelled in the path.
   auto config = make_config(2);
   AggregationManager manager(config);
 
@@ -929,10 +962,11 @@ TEST(AggregationManager, forward_to_target_path_addresses_the_path_the_caller_ch
   EXPECT_EQ(seen_path, "/api/v1/apps/pressure_sensor/data/chassis/brakes/pressure");
 }
 
-TEST(AggregationManager, forward_to_target_path_strips_the_peer_prefix_from_the_target) {
+TEST(AggregationManager, forward_to_target_path_sends_the_target_as_given) {
   // A member renamed on collision is known to its own gateway by the original
-  // id, and the target path is built from the merged id, so the rewrite has to
-  // reach the path the caller supplied rather than the one the client sent.
+  // id, and the caller builds the target path from the rename recorded on the
+  // member. The target is sent as given: one that still reads `peer_0__...` is
+  // the peer's own id, which stripping by spelling would turn into another.
   MockPeerServer mock;
   std::string seen_path;
   mock.server().Get(R"(/api/v1/(.+))", [&seen_path](const httplib::Request & req, httplib::Response & res) {
@@ -958,7 +992,7 @@ TEST(AggregationManager, forward_to_target_path_strips_the_peer_prefix_from_the_
   manager.forward_request("peer_0", req, res, "/api/v1/apps/peer_0__shared_sensor/data/chassis/brakes/pressure");
 
   EXPECT_EQ(res.status, 200);
-  EXPECT_EQ(seen_path, "/api/v1/apps/shared_sensor/data/chassis/brakes/pressure");
+  EXPECT_EQ(seen_path, "/api/v1/apps/peer_0__shared_sensor/data/chassis/brakes/pressure");
 }
 
 TEST(AggregationManager, forward_to_target_path_refuses_a_target_outside_the_api) {
@@ -1156,10 +1190,11 @@ TEST(AggregationManager, fetch_and_merge_remaps_function_hosts_after_app_collisi
                       res.set_content(R"({"items":[]})", "application/json");
                     });
 
-  // Apps: one app "camera_driver" that will collide with local
+  // Apps: "camera_driver", which will collide with local, and "lidar_driver"
   mock.server().Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {
     nlohmann::json items = nlohmann::json::array();
     items.push_back({{"id", "camera_driver"}, {"name", "Camera Driver"}});
+    items.push_back({{"id", "lidar_driver"}, {"name", "Lidar Driver"}});
     res.set_content(nlohmann::json({{"items", items}}).dump(), "application/json");
   });
 
@@ -1205,9 +1240,10 @@ TEST(AggregationManager, fetch_and_merge_remaps_function_hosts_after_app_collisi
   auto result = manager.fetch_and_merge_peer_entities({}, {}, {local_app}, {});
 
   // The remote app should be prefixed
-  ASSERT_EQ(result.apps.size(), 2u);
+  ASSERT_EQ(result.apps.size(), 3u);
   EXPECT_EQ(result.apps[0].id, "camera_driver");            // local
   EXPECT_EQ(result.apps[1].id, "peer_cam__camera_driver");  // remote, prefixed
+  EXPECT_EQ(result.apps[2].id, "lidar_driver");             // remote, no collision
 
   // The remote function's hosts should reference the prefixed app ID
   ASSERT_EQ(result.functions.size(), 1u);
@@ -1326,7 +1362,8 @@ void install_complete_peer(httplib::Server & svr, PeerFaults & faults) {
   });
 
   svr.Get("/api/v1/components", [](const httplib::Request &, httplib::Response & res) {
-    res.set_content(R"({"items":[{"id":"robot_alpha","name":"Robot Alpha","x-medkit":{"source":"manifest"}}]})",
+    res.set_content(R"({"items":[{"id":"robot_alpha","name":"Robot Alpha","x-medkit":{"source":"manifest"}},)"
+                    R"({"id":"compute_unit","name":"Compute Unit","x-medkit":{"source":"manifest"}}]})",
                     "application/json");
   });
   // The nested list carries ids and names, as the gateway's own collection
@@ -1340,6 +1377,11 @@ void install_complete_peer(httplib::Server & svr, PeerFaults & faults) {
     res.set_content(R"({"items":[]})", "application/json");
   });
   svr.Get(R"(/api/v1/components/([^/]+))", [&faults](const httplib::Request & req, httplib::Response & res) {
+    if (req.matches[1].str() == "compute_unit") {
+      res.set_content(R"({"id":"compute_unit","name":"Compute Unit","x-medkit":{"source":"manifest"}})",
+                      "application/json");
+      return;
+    }
     if (req.matches[1].str() != "perception_ecu") {
       res.set_content(R"({"id":"robot_alpha","name":"Robot Alpha","x-medkit":{"source":"manifest"}})",
                       "application/json");
@@ -1529,7 +1571,7 @@ TEST(AggregationManager, a_peer_reporting_one_entity_as_not_responding_still_des
                       "application/json");
       return;
     }
-    res.set_content(R"({"id":"ecu_b","name":"ECU B","x-medkit":{"source":"manifest","dependsOn":["compute_unit"]}})",
+    res.set_content(R"({"id":"ecu_b","name":"ECU B","x-medkit":{"source":"manifest","dependsOn":["ecu_c"]}})",
                     "application/json");
   });
   mock.server().Get("/api/v1/apps", [](const httplib::Request &, httplib::Response & res) {

@@ -59,12 +59,20 @@ Core Parameters
    * - ``aggregation.timeout_ms``
      - int
      - ``2000``
-     - Connect budget for every peer call, and the read budget for reading a
+     - Connect budget for every peer call, capped at 1000 ms whatever is set
+       (a peer that cannot complete a TCP handshake in a second is out of reach
+       whatever the request wanted), and the read budget for reading a
        peer's description of itself: entity fetching and the collection fan-out
        a client waits on across every peer at once. Increase for high-latency
-       networks. The health check is the exception: it caps both its budgets at
-       1000 ms, because an unresponsive peer is unhealthy whether the gateway
-       waits one second or five, and the wait bounds how long shutdown takes.
+       networks. The health check caps its read budget at 1000 ms too, because
+       an unresponsive peer is unhealthy whether the gateway waits one second
+       or five. A peer's host name is resolved within the connect budget, by
+       this gateway before the call rather than by its HTTP client inside it,
+       so a resolver that does not answer costs a call at most that budget: the
+       call fails as the peer being unreachable, naming the host. A read budget
+       bounds each read, not the
+       answer: ``aggregation.request_deadline_ms`` bounds the whole of it, and
+       shutdown cancels every peer call in flight.
        Range 100-600000; a value outside it is clamped to the nearest end, and
        the clamp is logged when aggregation is enabled.
    * - ``aggregation.forward_timeout_ms``
@@ -83,10 +91,27 @@ Core Parameters
      - Budget for pushing a request body to a peer. Raise it when forwarding
        large uploads over a slow link. Range 100-600000, clamped and logged as
        above.
+   * - ``aggregation.request_deadline_ms``
+     - int
+     - ``30000``
+     - The longest one request to a peer may run, from its connect to the last
+       byte of the answer, however steadily the peer keeps sending: the budgets
+       above each bound one read or write, and a peer that sends a byte inside
+       every one of them would otherwise hold the request, and whatever waits
+       on it, for as long as it likes. At the deadline the request is stopped
+       and fails as a timeout: a forward answers ``504``, a fan-out names the
+       peer ``timeout``, a refresh discards what it read of that peer. It
+       bounds every request - the health check, each request of an entity
+       fetch, a fan-out and a forward - but is never shorter, for a request,
+       than its own connect, write and read budgets added up, so a forward is
+       not cut before ``aggregation.forward_timeout_ms`` has run out. The
+       health check keeps its own: its connect and read budgets added up,
+       each capped at 1000 ms. The default leaves the 15 s forward budget room for a 10 MB
+       answer over a slow link. Range 100-600000, clamped and logged as above.
 
 .. note::
 
-   These three are separate because they bound different things. One value
+   The three budgets are separate because they bound different things. One value
    serving as connect, metadata read and forward read at once gives an
    operation on a peer the budget of a listing, and the peer is then reported
    as unavailable while it is still working. Raising that one value also
@@ -410,17 +435,80 @@ When aggregation is enabled, entities from peers are merged with local entities:
   have the same ID, they become one entity. Areas and Functions represent logical
   groupings that span hosts. Components represent physical hosts or ECUs defined
   in manifests - the same Component across peers is the same physical entity.
+  A merged Component's resource collections are answered by the peer; its
+  detail, like its Area membership, comes from the merged view, where the local
+  declaration's Area wins and an empty one takes the peer's.
 
 - **Apps**: Prefixed on collision. If a remote App has the same ID as a local
   one, the remote App's ID is prefixed with ``peername__`` (double underscore).
   For example, App ``camera_driver`` from peer ``arm`` becomes
   ``arm__camera_driver``, and a Function host of that peer that names it does
-  too. Apps represent individual ROS 2 nodes with unique behavior. The
+  too. A prefixed entity's name is prefixed the same way (``arm__Camera
+  driver``) and cut to 512 bytes. Apps represent individual ROS 2 nodes with unique behavior. The
   aggregator does not filter a peer's Apps again: the peer applied its own
   ``filter_internal_nodes``.
 
+- **An ID held by another type**: A peer Area or Function merges with a
+  local entity of its own type when one shares its ID, whatever else holds that
+  ID. Only when none does is it prefixed for an entity of another type: a
+  peer Area ``camera_driver`` next to a local App ``camera_driver`` (and no
+  local Area by that ID) is served as Area ``arm__camera_driver``, so requests
+  for the local App stay local. A peer Component whose ID a local Component
+  shares is merged only when no entity of another type shares the ID too;
+  otherwise it is prefixed. A peer App is prefixed on any collision. The entity
+  of another type can also be one the same peer contributes: a peer that
+  declares both Area ``cell`` and Component ``cell`` is served as Area ``cell``
+  and Component ``arm__cell``, merged in that order (Areas, Components, Apps,
+  Functions), because routing is keyed by ID alone and two entities under one
+  ID would share one route. References the peer's entities make to a prefixed
+  entity (an Area, a parent, a host, a dependency) name the prefixed ID. A
+  reference to an ID the peer never declared is removed: a peer Function
+  hosting ``admin``, when the peer serves no App or Component ``admin``, would
+  otherwise group the local App ``admin``.
+
+- **A prefixed ID that is taken, or too long**: The prefixed ID must be free of
+  every ID already served, whatever its type, of every ID the peer itself
+  declares, and of every ID generated for another entity, whatever its type,
+  and it must be a valid entity ID: at most 256 characters, so a peer ID of 250
+  characters cannot be prefixed by a peer name of 5 or more. When it is not,
+  the remote entity is not served, a warning names it, and the peer's
+  references to it (an Area, a parent, a host, a dependency, a Component an App
+  is located on) are removed rather than left to name the local entity that
+  shares its ID. An ID generated by prefixing is never merged into: a peer
+  entity declared under one is another entity and is prefixed in turn. A peer
+  Area and a peer Component that both collide as ``cell`` are therefore not
+  both served as ``arm__cell``: the Area, merged first, is, and the Component
+  is left out.
+
 Requests for remote entities are transparently forwarded to the owning peer.
-The routing table maps entity IDs to peer names.
+The routing table maps entity IDs to peer names, and the merge records each
+entry on the entity the peer contributed. A request reads it off the entity it
+looked up, so a local entity never takes the route of a peer entity that
+shares its ID, and the route always belongs to the same refresh as the entity.
+A prefixed entity is forwarded under the ID its peer knows it by, and the
+discovery responses that come back (its detail, its relationship collections)
+are rewritten to the IDs this gateway serves: the entity's own ID and its name
+(``arm__Camera driver``, as the listings show it), its self, resource and
+relationship links, and the related entities' IDs. A response whose rewrite
+would add more than 10 MB to it - one naming a renamed entity in far more
+objects than its own size accounts for - is refused with ``502``. A reference to a peer
+entity that is not served (see the taken prefixed ID above), or to an ID the
+peer never declared, is removed from the response, because by the peer's ID it
+would name the local entity that holds that ID here. A forwarded detail has to
+describe the entity asked for: one naming another ``id``, or another ``type``
+(a ``type`` that is not a string included), is refused with ``502``
+(``x-medkit-peer-unavailable``). A detail that names no ``type`` is of the type
+its route asked for, and its ``id`` and ``name`` are rewritten as that type's. The ``Location`` header of any forwarded answer - an async
+execution, a lock, a created resource - is translated the same way, whether the
+entity was forwarded whole or a member was reached through a grouping entity
+(below): ``POST /apps/arm__camera/operations/calibrate/executions`` comes back
+with ``Location: /api/v1/apps/arm__camera/...``, not the peer's
+``/api/v1/apps/camera/...``, which names the local ``camera`` here. An entity
+link or ``Location`` the peer wrote absolute (``http://<peer>/api/v1/...``) comes
+back as that path on this gateway, whether its ID was renamed or not, so it
+resolves through this gateway and never names the peer's address; a link that
+is not an entity URI is left as the peer sent it. A
+``Location`` naming an entity this gateway does not serve is removed.
 
 An entity that draws its resources from members - an Area, a merged Function, a
 hierarchical parent Component - is deliberately absent from that table, because
@@ -459,6 +547,16 @@ whose members are all owned by peers - a parent gateway that runs no ROS node of
 its own - and on one that runs a single node beside peer-owned members. Neither
 shape changes the ids the entity's listing offers.
 
+The items a peer lists for such an entity name their member by the peer's id,
+and the listing here names it by the id served here: a peer's
+``calibration:calibration_offset``, for a peer App ``calibration`` served here as
+``peer_a__calibration`` because a local App has that id, is listed as
+``peer_a__calibration:calibration_offset`` (and its ``x-medkit.source`` as
+``peer_a__calibration``), so a ``PUT`` to it reaches the peer and not the local
+App. The same holds for the member half of a ``/data`` or ``/operations`` id and
+for ``x-medkit.member_ids``. An item of a member this gateway does not serve - one
+the merge left out, or one the peer never declared - is not listed.
+
 ``DELETE /api/v1/{entity_type}/{id}/configurations`` resets the nodes this
 gateway runs. A member another gateway runs is not reset by it, and the response
 says so: ``207`` instead of ``204``, with that member named and the gateway that
@@ -473,6 +571,12 @@ and architecture diagrams.
 
 Health and Partial Results
 --------------------------
+
+At startup the gateway serves its local entities from the first request on and
+reads its peers right after, in the first refresh its executor runs: the
+constructor does not wait for them, so SIGINT or SIGTERM during startup is not
+held up by a slow peer. Until that first merge has read every peer, a peer's
+entities answer ``404`` and ``/health`` lists each peer as ``offline``.
 
 Entity collection endpoints (``GET /api/v1/areas``, ``/components``, ``/apps``,
 ``/functions``) serve data from the local entity cache, which is populated
@@ -517,8 +621,12 @@ A cache refresh reads a peer over several requests: the four entity lists, the
 nested ``subareas`` and ``subcomponents`` collections, the per-entity detail
 that carries a Component's relationships and a Function's hosts, and each app's
 ``operations``. If any of them cannot be read - connection failure, a status
-the route has no other meaning for, an oversized body, unparsable JSON - the
-refresh for that peer is discarded whole. A partial picture is never published
+the route has no other meaning for, an oversized body, a body nested more than
+64 levels deep or holding more than 1,000,000 values, a refresh keeping more of the
+peer than its bounds allow (both in Peer Response Limits), unparsable JSON, a field of the wrong type (a name that is a number, a tag that
+is not a string), a detail that describes another entity than the list named
+(another ``id``, or a ``type`` other than the collection's), a request still unanswered at ``aggregation.request_deadline_ms`` -
+the refresh for that peer is discarded whole. A partial picture is never published
 as a complete one, and the peer's last complete declaration is left in place.
 
 What clients see then depends on the peer's health check:
@@ -565,6 +673,63 @@ without the read-back the head of a three-gateway chain reports a leaf behind a
 dead gateway as reachable. Retention never contradicts what a peer said - it
 only ever sets ``available`` to false, and it does so when the peer itself
 stopped answering, which already covers everything behind it.
+
+Peer Response Limits
+~~~~~~~~~~~~~~~~~~~~
+
+The body of a peer's answer is read no further than 10 MB, whatever its
+status, on the health check, the entity fetch of a refresh, a forwarded
+request and a fan-out. A body past that is an oversized body: the health
+check fails, the refresh for that peer is discarded, a forward answers
+``502`` and a fan-out names the peer ``too-large``.
+
+The limit covers the body and nothing else. The status line, the header
+fields, the chunk-size lines of a chunked body and the trailer fields are read
+by cpp-httplib before the limit applies, and they are not bounded: a peer that
+does not end them grows this gateway's memory for as long as it keeps sending.
+The SSE relay of a peer's event stream is not covered either: it reads the
+stream with its own client and no total limit, holds at most 1 MB of an event
+that has not ended, and drops the connection past that.
+
+A body is also judged on its text before it is parsed, because a parsed body
+costs many times its text: a list of three million empty objects, 9 MB, came to
+some 0.6 GB. A body nested more than 64 levels deep, or holding more than
+1,000,000 values - array elements and object members, counted at every level -
+is refused unparsed, the same as an oversized one: a health answer of that
+shape is a failed health check, even with status ``200``. That is 1000 entities of
+1000 values each, far above anything a gateway serves: the largest item of a
+gateway serving the demo nodes holds about 160 values, its largest answer about
+3000. The relayed events of a peer's fault stream are judged the same way, and
+one past either bound is dropped with a warning.
+
+A refresh also bounds what it keeps of one peer across all of its requests,
+because each answer is bounded on its own but a refresh makes requests per
+entity: 1000 Apps answering 100000 operations each stay inside every bound
+above and would keep some 100 million records. One App may report at most
+1000 operations and 1000 data items naming a topic (so at most 1000 topics it
+publishes and 1000 it subscribes to), one Component or Function at most 1000
+dependencies, each kept once (a Function's hosts are kept once each too), and one refresh keeps at most 250,000
+records of one peer - entities, operations, topics, and the entries of the
+lists entities carry (tags, hosts, dependencies, identity fields) - holding at
+most 16 MiB of text. Each record is counted before it is kept. Past any of
+these the refresh for that peer is discarded whole, like an oversized answer:
+it is logged at ``WARN`` as a failed fetch naming the bound, and the peer's last
+complete declaration stays. A gateway serving the demo nodes reports 16
+entities, 3 operations and 33 topics in under 1 kB of text; a peer of 245 Apps
+with 1000 operations each, just inside the record bound, took this gateway to
+about 200 MB, and one Component carrying a 9 MB description to about 210 MB.
+
+One request to a peer, the health check included, runs for at most
+``aggregation.request_deadline_ms`` (see Core Parameters) however steadily the
+peer sends - a TLS handshake sent a byte at a time included - from the moment
+the peer's host name has resolved. Resolving takes
+at most the connect budget (``aggregation.timeout_ms``, capped at 1 s for the
+connect), because this gateway resolves the name itself with that bound: left
+to the HTTP client, a resolver that did not answer held a call, anything
+stopping it and shutdown for as long as the system resolver retried, ten
+seconds and more. The SSE relay is the exception to the deadline, since a
+stream has no last byte; it resolves the name within its own 5 s connect
+budget.
 
 .. _aggregation-breaking-changes:
 

@@ -162,10 +162,14 @@ TEST(PeerFailureReason, every_kind_has_a_distinct_wire_token) {
   // The tokens are documented in docs/api/rest.rst and read by clients. Two
   // kinds sharing one token would put the defect back: a client could not tell
   // those two events apart, which is the whole of what this carries.
-  const PeerFailureKind kinds[] = {PeerFailureKind::kNone,           PeerFailureKind::kTimeout,
-                                   PeerFailureKind::kUnreachable,    PeerFailureKind::kCanceled,
-                                   PeerFailureKind::kErrorStatus,    PeerFailureKind::kTooLarge,
-                                   PeerFailureKind::kInvalidResponse};
+  const PeerFailureKind kinds[] = {PeerFailureKind::kNone,
+                                   PeerFailureKind::kTimeout,
+                                   PeerFailureKind::kUnreachable,
+                                   PeerFailureKind::kCanceled,
+                                   PeerFailureKind::kErrorStatus,
+                                   PeerFailureKind::kTooLarge,
+                                   PeerFailureKind::kInvalidResponse,
+                                   PeerFailureKind::kEntityNotFound};
   std::set<std::string> tokens;
   for (auto kind : kinds) {
     tokens.insert(peer_failure_reason(kind));
