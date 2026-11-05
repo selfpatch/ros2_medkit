@@ -315,8 +315,8 @@ TEST_F(TriggerManagerRoutingTest, OrphanedTriggerSweepUnsubscribes) {
   manager_->sweep_orphaned_triggers();
 
   EXPECT_EQ(transport_->alive_count(), 1u) << "Orphan sweep must unsubscribe gone_app's transport handle";
-  EXPECT_TRUE(manager_->list("gone_app").empty());
-  EXPECT_EQ(manager_->list("alive_app").size(), 1u);
+  EXPECT_TRUE(manager_->list("apps", "gone_app").empty());
+  EXPECT_EQ(manager_->list("apps", "alive_app").size(), 1u);
 }
 
 TEST_F(TriggerManagerRoutingTest, MultipleTriggersIndependentSubscriptions) {
@@ -359,7 +359,7 @@ TEST_F(TriggerManagerRoutingTest, CreateReturnsErrorWhenSubscribeReturnsNullHand
 
   // Rollback contract: the trigger must not be visible to subsequent
   // queries, and no transport handle should be left alive.
-  EXPECT_TRUE(manager_->list(req.entity_id).empty());
+  EXPECT_TRUE(manager_->list("apps", req.entity_id).empty());
   EXPECT_EQ(transport_->alive_count(), 0u);
 }
 
@@ -372,15 +372,16 @@ TEST_F(TriggerManagerRoutingTest, RestoreDefersSubscriptionInsteadOfSubscribingD
   // The trigger is visible, and nothing has been subscribed yet: restore hands
   // the trigger to deferred resolution, whose budget is tied to the entity
   // being discovered, rather than parking an attempt on a clock of its own.
-  auto triggers = restored_mgr->list("sensor_a");
+  auto triggers = restored_mgr->list("apps", "sensor_a");
   ASSERT_EQ(triggers.size(), 1u);
   EXPECT_EQ(triggers[0].id, "trig_restore_defer_1");
   EXPECT_EQ(transport_->total_subscribes(), 0u) << "restore must not subscribe straight from the persisted topic";
 
   // Deferred resolution then does the subscribing, from the entity cache.
-  restored_mgr->set_resolve_topic_fn([](const std::string & entity_id, const std::string & resource_path) {
-    return "/" + entity_id + resource_path;
-  });
+  restored_mgr->set_resolve_topic_fn(
+      [](const std::string & entity_id, const std::string & /*entity_type*/, const std::string & resource_path) {
+        return "/" + entity_id + resource_path;
+      });
   restored_mgr->retry_unresolved_triggers();
 
   EXPECT_EQ(transport_->total_subscribes(), 1u);
@@ -399,7 +400,7 @@ TEST_F(TriggerManagerRoutingTest, RestoreSubscribesDirectlyWhenThereIsNothingToR
   auto restored_mgr = make_restoring_manager();
   restored_mgr->load_persistent_triggers();
 
-  EXPECT_EQ(restored_mgr->list("sensor_a").size(), 1u);
+  EXPECT_EQ(restored_mgr->list("apps", "sensor_a").size(), 1u);
   EXPECT_EQ(transport_->total_subscribes(), 1u);
   EXPECT_EQ(transport_->alive_count(), 1u);
   EXPECT_EQ(transport_->last_subscribed_topic(), "/sensor_a/temperature");
@@ -420,7 +421,8 @@ TEST_F(TriggerManagerRoutingTest, RestoredTriggerKeepsResolvingPastTheBudgetWhil
   // Nothing resolves while the entity is undiscovered, and the budget is spent
   // several times over.
   bool entity_known = false;
-  restored_mgr->set_resolve_topic_fn([&entity_known](const std::string & entity_id, const std::string & resource_path) {
+  restored_mgr->set_resolve_topic_fn([&entity_known](const std::string & entity_id, const std::string & /*entity_type*/,
+                                                     const std::string & resource_path) {
     return entity_known ? "/" + entity_id + resource_path : std::string{};
   });
   restored_mgr->set_unresolved_timeout(std::chrono::seconds(0));
@@ -455,7 +457,7 @@ TEST_F(TriggerManagerRoutingTest, RestoredTriggerGivesUpLoudlyOnceItsEntityHasBe
     warnings.push_back(m);
   });
   restored_mgr->load_persistent_triggers();
-  restored_mgr->set_resolve_topic_fn([](const std::string &, const std::string &) {
+  restored_mgr->set_resolve_topic_fn([](const std::string &, const std::string &, const std::string &) {
     return std::string{};
   });
   restored_mgr->set_unresolved_timeout(std::chrono::seconds(0));
@@ -494,7 +496,7 @@ TEST_F(TriggerManagerRoutingTest, ApiCreatedTriggerBudgetRunsFromCreationNotFrom
   manager_->set_warn_log_fn([&warnings](const std::string & m) {
     warnings.push_back(m);
   });
-  manager_->set_resolve_topic_fn([](const std::string &, const std::string &) {
+  manager_->set_resolve_topic_fn([](const std::string &, const std::string &, const std::string &) {
     return std::string{};
   });
   manager_->set_unresolved_timeout(std::chrono::seconds(0));
@@ -516,9 +518,10 @@ TEST_F(TriggerManagerRoutingTest, DeferredResolutionDropsEntriesWhoseTriggerIsGo
   ASSERT_TRUE(created.has_value()) << created.error().message;
   ASSERT_TRUE(manager_->remove(created->id));
 
-  manager_->set_resolve_topic_fn([](const std::string & entity_id, const std::string & resource_path) {
-    return "/" + entity_id + resource_path;
-  });
+  manager_->set_resolve_topic_fn(
+      [](const std::string & entity_id, const std::string & /*entity_type*/, const std::string & resource_path) {
+        return "/" + entity_id + resource_path;
+      });
   manager_->retry_unresolved_triggers();
 
   EXPECT_EQ(transport_->total_subscribes(), 0u) << "a removed trigger must not acquire a subscription";
@@ -533,7 +536,7 @@ TEST_F(TriggerManagerRoutingTest, UnresolvedTriggerExpiryWarnsAndStopsRetrying) 
   manager_->set_warn_log_fn([&warnings](const std::string & m) {
     warnings.push_back(m);
   });
-  manager_->set_resolve_topic_fn([](const std::string &, const std::string &) {
+  manager_->set_resolve_topic_fn([](const std::string &, const std::string &, const std::string &) {
     return std::string{};
   });
 
@@ -556,7 +559,7 @@ TEST_F(TriggerManagerRoutingTest, UnresolvedTriggerExpiryWarnsAndStopsRetrying) 
   // silently-dead state the warning is there to expose.
   manager_->retry_unresolved_triggers();
   EXPECT_EQ(warnings.size(), 1u);
-  auto listed = manager_->list("plc_app");
+  auto listed = manager_->list("apps", "plc_app");
   ASSERT_EQ(listed.size(), 1u);
   EXPECT_EQ(listed[0].status, TriggerStatus::ACTIVE);
   EXPECT_TRUE(listed[0].resolved_topic_name.empty());

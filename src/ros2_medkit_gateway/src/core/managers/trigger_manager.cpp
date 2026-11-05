@@ -29,6 +29,24 @@ namespace {
 std::string data_item_name(const std::string & resource_path) {
   return (!resource_path.empty() && resource_path.front() == '/') ? resource_path.substr(1) : resource_path;
 }
+
+/// The entity type a trigger's `entity_type` ("apps", "components", "areas",
+/// "functions") names, UNKNOWN for anything else.
+SovdEntityType trigger_entity_type(const std::string & entity_type) {
+  if (entity_type == "apps") {
+    return SovdEntityType::APP;
+  }
+  if (entity_type == "components") {
+    return SovdEntityType::COMPONENT;
+  }
+  if (entity_type == "areas") {
+    return SovdEntityType::AREA;
+  }
+  if (entity_type == "functions") {
+    return SovdEntityType::FUNCTION;
+  }
+  return SovdEntityType::UNKNOWN;
+}
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -208,7 +226,7 @@ void TriggerManager::retry_unresolved_triggers() {
                            "cannot fire until that entity is discovered.");
       }
 
-      std::string topic_name = resolve_topic_fn_(entry.entity_id, entry.resource_path);
+      std::string topic_name = resolve_topic_fn_(entry.entity_id, entry.entity_type, entry.resource_path);
       if (!topic_name.empty()) {
         // Update the trigger's resolved_topic_name + register a transport
         // handle whose lifetime is tied to the trigger entry (cleared on
@@ -219,10 +237,11 @@ void TriggerManager::retry_unresolved_triggers() {
         }
         const std::string trigger_id = entry.trigger_id;
         const std::string entity_id = entry.entity_id;
+        const SovdEntityType entity_type = trigger_entity_type(entry.entity_type);
         const std::string resource_path = entry.resource_path;
         auto handle = topic_transport_->subscribe(
-            topic_name, /*msg_type=*/"", [this, entity_id, resource_path](const nlohmann::json & sample) {
-              notifier_.notify("data", entity_id, resource_path, sample, ChangeType::UPDATED);
+            topic_name, /*msg_type=*/"", [this, entity_type, entity_id, resource_path](const nlohmann::json & sample) {
+              notifier_.notify("data", entity_type, entity_id, resource_path, sample, ChangeType::UPDATED);
             });
         if (handle) {
           topic_handles_[trigger_id] = std::move(handle);
@@ -310,20 +329,31 @@ void TriggerManager::sweep_orphaned_triggers() {
   }
 }
 
-bool TriggerManager::matches_entity(const TriggerState & state, const std::string & notification_entity_id) const {
+bool TriggerManager::matches_entity(const TriggerState & state, const ResourceChange & change) const {
+  // An id names an entity within its type only: an Area and a Function may
+  // share one, and by id alone a change of the Area fired the Function's
+  // triggers. A change that names no type (an update's status, by its update
+  // id) is matched by its id.
+  const bool untyped = change.entity_type == SovdEntityType::UNKNOWN;
+
   // Direct match
-  if (state.info.entity_id == notification_entity_id) {
+  if ((untyped || change.entity_type == trigger_entity_type(state.info.entity_type)) &&
+      state.info.entity_id == change.entity_id) {
     return true;
   }
 
-  // Hierarchy match: check if notification entity is a descendant
+  // Hierarchy match: check if the changed entity is a descendant. The
+  // descendants are the Apps under the trigger's entity.
+  if (!untyped && change.entity_type != SovdEntityType::APP) {
+    return false;
+  }
   std::lock_guard<std::mutex> lock(hierarchy_mutex_);
   if (!entity_children_fn_) {
     return false;
   }
 
   auto children = entity_children_fn_(state.info.entity_id, state.info.entity_type);
-  return std::find(children.begin(), children.end(), notification_entity_id) != children.end();
+  return std::find(children.begin(), children.end(), change.entity_id) != children.end();
 }
 
 // ---------------------------------------------------------------------------
@@ -430,9 +460,10 @@ tl::expected<TriggerInfo, TriggerCreateError> TriggerManager::create(const Trigg
   // no item source, deferred resolution waits for the topic (retry_unresolved_triggers() picks it up).
   if (req.collection == "data") {
     const std::string entity_id = req.entity_id;
+    const SovdEntityType entity_type = trigger_entity_type(req.entity_type);
     const std::string resource_path = req.resource_path;
-    const auto notify_sample = [this, entity_id, resource_path](const nlohmann::json & sample) {
-      notifier_.notify("data", entity_id, resource_path, sample, ChangeType::UPDATED);
+    const auto notify_sample = [this, entity_type, entity_id, resource_path](const nlohmann::json & sample) {
+      notifier_.notify("data", entity_type, entity_id, resource_path, sample, ChangeType::UPDATED);
     };
     // A failed subscribe rolls the trigger back, so the caller does not get a 201 for a trigger that will never
     // deliver. A persisted record goes too, so a restart does not bring a doomed trigger back.
@@ -467,8 +498,8 @@ tl::expected<TriggerInfo, TriggerCreateError> TriggerManager::create(const Trigg
       // The entity was validated to exist before this request was accepted, so
       // it counts as seen and the give-up budget runs from now.
       const auto queued_at = std::chrono::steady_clock::now();
-      unresolved_data_triggers_.push_back(
-          {info_copy.id, req.entity_id, req.resource_path, queued_at, queued_at, /*waiting_reported=*/false});
+      unresolved_data_triggers_.push_back({info_copy.id, req.entity_id, req.entity_type, req.resource_path, queued_at,
+                                           queued_at, /*waiting_reported=*/false});
     }
   }
 
@@ -489,12 +520,12 @@ std::optional<TriggerInfo> TriggerManager::get(const std::string & trigger_id) {
   return state->info;
 }
 
-std::vector<TriggerInfo> TriggerManager::list(const std::string & entity_id) {
+std::vector<TriggerInfo> TriggerManager::list(const std::string & entity_type, const std::string & entity_id) {
   std::lock_guard<std::mutex> lock(triggers_mutex_);
   std::vector<TriggerInfo> result;
   for (const auto & [id, state] : triggers_) {
     std::lock_guard<std::mutex> sub_lock(state->mtx);
-    if (state->info.entity_id == entity_id) {
+    if (state->info.entity_type == entity_type && state->info.entity_id == entity_id) {
       result.push_back(state->info);
     }
   }
@@ -816,15 +847,18 @@ size_t TriggerManager::load_persistent_triggers() {
 
       const std::string trigger_id = state->info.id;
       const std::string entity_id = state->info.entity_id;
+      const std::string entity_type_name = state->info.entity_type;
+      const SovdEntityType entity_type = trigger_entity_type(entity_type_name);
       const std::string resource_path = state->info.resource_path;
       // With an item source, a stored trigger that had no topic is read from its item. A reader that cannot answer yet
       // delivers nothing and is asked again, so it needs no deferred resolution.
       if (data_source_ && state->info.collection == "data" && !resource_path.empty() &&
           (!topic_transport_ || state->info.resolved_topic_name.empty())) {
-        auto handle = data_source_->watch(
-            entity_id, data_item_name(resource_path), [this, entity_id, resource_path](const nlohmann::json & sample) {
-              notifier_.notify("data", entity_id, resource_path, sample, ChangeType::UPDATED);
-            });
+        auto handle = data_source_->watch(entity_id, data_item_name(resource_path),
+                                          [this, entity_type, entity_id, resource_path](const nlohmann::json & sample) {
+                                            notifier_.notify("data", entity_type, entity_id, resource_path, sample,
+                                                             ChangeType::UPDATED);
+                                          });
         if (handle) {
           topic_handles_[trigger_id] = std::move(handle);
         } else {
@@ -848,18 +882,18 @@ size_t TriggerManager::load_persistent_triggers() {
         // parked on a clock that starts now and runs out long before a late
         // entity arrives.
         if (!resource_path.empty()) {
-          unresolved_data_triggers_.push_back({trigger_id, entity_id, resource_path, std::chrono::steady_clock::now(),
-                                               std::nullopt,
+          unresolved_data_triggers_.push_back({trigger_id, entity_id, entity_type_name, resource_path,
+                                               std::chrono::steady_clock::now(), std::nullopt,
                                                /*waiting_reported=*/false});
         } else if (!state->info.resolved_topic_name.empty()) {
           // A stored row carrying a topic but no resource_path has nothing for
           // the entity cache to re-resolve, so the persisted topic is all there
           // is to go on.
-          auto handle = topic_transport_->subscribe(state->info.resolved_topic_name, /*msg_type=*/"",
-                                                    [this, entity_id, resource_path](const nlohmann::json & sample) {
-                                                      notifier_.notify("data", entity_id, resource_path, sample,
-                                                                       ChangeType::UPDATED);
-                                                    });
+          auto handle = topic_transport_->subscribe(
+              state->info.resolved_topic_name, /*msg_type=*/"",
+              [this, entity_type, entity_id, resource_path](const nlohmann::json & sample) {
+                notifier_.notify("data", entity_type, entity_id, resource_path, sample, ChangeType::UPDATED);
+              });
           if (handle) {
             topic_handles_[trigger_id] = std::move(handle);
           } else {
@@ -958,7 +992,7 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
     // Release sub_lock before calling matches_entity (it acquires hierarchy_mutex_)
     sub_lock.unlock();
 
-    if (!matches_entity(*state, change.entity_id)) {
+    if (!matches_entity(*state, change)) {
       continue;
     }
 

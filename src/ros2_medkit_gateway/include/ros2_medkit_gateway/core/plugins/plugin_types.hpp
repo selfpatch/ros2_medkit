@@ -40,11 +40,19 @@ namespace ros2_medkit_gateway {
 ///       so a pre-compiled v6 `.so` is rejected. Out-of-tree plugins must be
 ///       recompiled against v7 headers; in-tree plugins that `return
 ///       PLUGIN_API_VERSION` pick up the bump automatically.
+/// - v8: ResourceChange and NotifierFilter carry the entity type of the change
+///       (SovdEntityType), and ResourceChangeNotifier::notify takes it as its
+///       second argument. An id names an entity within its type only, so a
+///       change of an Area no longer fires the triggers of a Function that
+///       shares its id. Source-incompatible for a plugin that calls notify():
+///       pass the type of the entity the change is of (UNKNOWN for a change
+///       that names no entity type, which triggers match by id alone). As for
+///       every bump, a pre-compiled v7 `.so` is rejected.
 ///
 /// The version is bumped when the PluginContext vtable changes, when a
 /// GatewayPlugin or provider interface changes incompatibly, and when a type
 /// that crosses the plugin boundary changes layout.
-constexpr int PLUGIN_API_VERSION = 7;
+constexpr int PLUGIN_API_VERSION = 8;
 
 /// Log severity levels for plugin logging callback
 enum class PluginLogLevel { kInfo, kWarn, kError };

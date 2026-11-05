@@ -50,6 +50,44 @@ std::vector<std::string> apps_under(const ThreadSafeEntityCache & cache, const s
   return {};
 }
 
+/// The data of the entity of `entity_type` ("apps", "components", "areas",
+/// "functions") and `entity_id`. Ids are unique per type only, so the lookup is
+/// by both: by id alone, a trigger on a Function read the topics of the Area
+/// that shares its id.
+AggregatedData data_of(const ThreadSafeEntityCache & cache, const std::string & entity_id,
+                       const std::string & entity_type) {
+  if (entity_type == "apps") {
+    return cache.get_app_data(entity_id);
+  }
+  if (entity_type == "components") {
+    return cache.get_component_data(entity_id);
+  }
+  if (entity_type == "areas") {
+    return cache.get_area_data(entity_id);
+  }
+  if (entity_type == "functions") {
+    return cache.get_function_data(entity_id);
+  }
+  return {};
+}
+
+/// True when the entity of `entity_type` and `entity_id` is in the cache.
+bool entity_exists(const ThreadSafeEntityCache & cache, const std::string & entity_id,
+                   const std::string & entity_type) {
+  if (entity_type == "apps") {
+    return cache.has_app(entity_id);
+  }
+  if (entity_type == "components") {
+    return cache.has_component(entity_id);
+  }
+  if (entity_type == "areas") {
+    return cache.has_area(entity_id);
+  }
+  if (entity_type == "functions") {
+    return cache.has_function(entity_id);
+  }
+  return false;
+}
 }  // namespace
 
 void register_builtin_conditions(ConditionRegistry & conditions) {
@@ -68,10 +106,10 @@ std::string resolve_trigger_entity(const ThreadSafeEntityCache & cache, const st
 }
 
 std::string resolve_trigger_topic(const ThreadSafeEntityCache & cache, const std::string & entity_id,
-                                  const std::string & resource_path) {
+                                  const std::string & entity_type, const std::string & resource_path) {
   // "//x" is the separator slash followed by the item "/x", whose topic path is "/x".
   const std::string path = resource_path.rfind("//", 0) == 0 ? resource_path.substr(1) : resource_path;
-  for (const auto & topic : cache.get_entity_data(entity_id).topics) {
+  for (const auto & topic : data_of(cache, entity_id, entity_type).topics) {
     if (topic.name == path || (topic.name.size() > path.size() &&
                                topic.name.compare(topic.name.size() - path.size(), path.size(), path) == 0)) {
       return topic.name;
@@ -126,12 +164,15 @@ TriggerHost make_trigger_host(const TriggerHostConfig & config, ResourceChangeNo
   host.manager->set_entity_children_fn([cache](const std::string & entity_id, const std::string & entity_type) {
     return apps_under(*cache, entity_id, entity_type);
   });
-  host.manager->set_entity_exists_fn([cache](const std::string & entity_id, const std::string & /*entity_type*/) {
-    return cache->find_entity(entity_id).has_value();
+  // By type and id: a Function whose namesake Area is still discovered has
+  // gone all the same, and its trigger is orphaned.
+  host.manager->set_entity_exists_fn([cache](const std::string & entity_id, const std::string & entity_type) {
+    return entity_exists(*cache, entity_id, entity_type);
   });
-  host.manager->set_resolve_topic_fn([cache](const std::string & entity_id, const std::string & resource_path) {
-    return resolve_trigger_topic(*cache, entity_id, resource_path);
-  });
+  host.manager->set_resolve_topic_fn(
+      [cache](const std::string & entity_id, const std::string & entity_type, const std::string & resource_path) {
+        return resolve_trigger_topic(*cache, entity_id, entity_type, resource_path);
+      });
   host.manager->set_warn_log_fn(warn);
   host.manager->set_unresolved_timeout(wiring.unresolved_timeout);
   if (wiring.log_manager != nullptr) {
