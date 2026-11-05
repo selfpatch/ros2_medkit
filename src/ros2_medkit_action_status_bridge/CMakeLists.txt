@@ -99,6 +99,7 @@ if(BUILD_TESTING)
     DESTINATION share/${PROJECT_NAME}
   )
   medkit_add_launch_test(test_integration test/test_integration.test.py TIMEOUT 120)
+  medkit_add_launch_test(test_sigint_exit test/test_sigint_exit.test.py TIMEOUT 120)
 
   ros2_medkit_relax_vendor_warnings()
 endif()
