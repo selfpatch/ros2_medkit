@@ -1096,7 +1096,8 @@ Execute Operations
    its name, its ROS path, or qualified by the member that holds it, and
    ``404`` under any other, even on the entity it was started through. This
    holds while the operation's server is gone, so its status and a cancel stay
-   answerable there.
+   answerable there, under a qualified id as well: the member that holds the
+   operation is recorded when the execution is started.
 
    **Example Response (completed action):**
 
