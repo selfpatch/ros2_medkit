@@ -228,7 +228,8 @@ void LogManager::on_log_entry(const LogEntry & source_entry) {
     }
 
     if (!entity_id.empty()) {
-      notifier_->notify("logs", entity_id, "", entry_to_json(entry), ChangeType::CREATED);
+      // The node's App, as resolved above or by the node's name.
+      notifier_->notify("logs", SovdEntityType::APP, entity_id, "", entry_to_json(entry), ChangeType::CREATED);
     }
   }
 }
@@ -306,7 +307,7 @@ void LogManager::add_log_entry(const std::string & entity_id, const std::string 
 
   // Notify observers if a notifier is set
   if (notifier_) {
-    notifier_->notify("logs", normalized, "", entry_to_json(entry), ChangeType::CREATED);
+    notifier_->notify("logs", SovdEntityType::APP, normalized, "", entry_to_json(entry), ChangeType::CREATED);
   }
 }
 

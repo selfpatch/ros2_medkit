@@ -721,7 +721,13 @@ It consists of five main components:
    - Subscribes to ``ResourceChangeNotifier`` for resource change events
    - Evaluates conditions using registered ``ConditionEvaluator`` instances via the ``ConditionRegistry``
    - Uses O(1) dispatch indexing by ``{collection, entity_id}`` for efficient notification matching
-   - Supports entity hierarchy matching (area-level triggers catch descendant changes)
+   - Matches a change to a trigger by the entity's type and id, as everywhere an entity is named: ids are unique per
+     type only, so a change of an Area does not fire the triggers of a Function that shares its id. A change that names
+     no entity type (an update's status, by its update id) is matched by id
+   - Supports entity hierarchy matching (area-level triggers catch descendant changes): the descendants are the Apps
+     under the trigger's entity, so only an App's change matches through the hierarchy
+   - Lists, reads, updates and deletes a trigger only through the route of its own entity, by type and id; resolves a
+     data trigger's topic, and judges a trigger orphaned, against the entity of its type
    - Manages pending events for SSE stream pickup with per-trigger mutexes
    - Persists triggers via the ``TriggerStore`` interface
    - Data-trigger ROS subscriptions are routed through ``TopicSubscriptionTransport`` (``Ros2TopicSubscriptionTransport`` adapter wraps ``TriggerTopicSubscriber``)
@@ -731,7 +737,8 @@ It consists of five main components:
    - Producers (FaultManager, DataAccessManager, UpdateManager, OperationManager, LogManager) call ``notify()``
    - Observers (TriggerManager) register callbacks with filters
    - ``notify()`` is non-blocking - pushes to an internal queue processed by a dedicated worker thread
-   - Filters support collection, entity_id, and resource_path matching
+   - A change names its entity by type (``SovdEntityType``) and id; filters support collection, entity type, entity_id,
+     and resource_path matching
    - **Teardown contract:** producers hold a non-owning ``ResourceChangeNotifier *``, so every producer must be
      quiesced before the notifier is destroyed. ``notify()``'s internal drain guard only protects calls that are
      already in progress - it cannot help a call that starts after the object is freed. Most producers notify from

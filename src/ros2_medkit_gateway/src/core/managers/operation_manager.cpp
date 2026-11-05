@@ -576,6 +576,7 @@ void OperationManager::on_status_callback(const std::string & action_path, const
                                           ActionGoalStatus status) {
   ActionGoalStatus previous = ActionGoalStatus::UNKNOWN;
   std::string entity_id;
+  SovdEntityType entity_type = SovdEntityType::UNKNOWN;
   bool changed = false;
   bool match = false;
   {
@@ -591,6 +592,7 @@ void OperationManager::on_status_callback(const std::string & action_path, const
       it->second.last_update = std::chrono::system_clock::now();
       changed = true;
       entity_id = it->second.entity_id;
+      entity_type = it->second.entity_type;
     }
   }
 
@@ -599,7 +601,7 @@ void OperationManager::on_status_callback(const std::string & action_path, const
     goal_json["goal_id"] = goal_id;
     goal_json["action_path"] = action_path;
     goal_json["status"] = action_status_to_string(status);
-    notifier_->notify("operations", entity_id, goal_id, goal_json);
+    notifier_->notify("operations", entity_type, entity_id, goal_id, goal_json);
   }
 }
 

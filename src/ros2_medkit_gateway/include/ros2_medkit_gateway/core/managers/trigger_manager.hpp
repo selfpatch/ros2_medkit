@@ -114,8 +114,9 @@ class TriggerManager {
   /// Get a trigger by ID.
   std::optional<TriggerInfo> get(const std::string & trigger_id);
 
-  /// List all triggers for a given entity.
-  std::vector<TriggerInfo> list(const std::string & entity_id);
+  /// List all triggers for the entity of `entity_type` ("apps", "components",
+  /// "areas", "functions") and `entity_id`.
+  std::vector<TriggerInfo> list(const std::string & entity_type, const std::string & entity_id);
 
   /// Update a trigger's lifetime.
   tl::expected<TriggerInfo, TriggerCreateError> update(const std::string & trigger_id, int new_lifetime);
@@ -166,9 +167,11 @@ class TriggerManager {
   /// Called by GatewayNode after both TriggerManager and LogManager are available.
   void set_log_manager(LogManager * log_manager);
 
-  /// Resolves a resource_path to a full ROS 2 topic name for a given entity.
-  /// Returns the topic name, or empty string if unresolvable.
-  using ResolveTopicFn = std::function<std::string(const std::string & entity_id, const std::string & resource_path)>;
+  /// Resolves a resource_path to a full ROS 2 topic name for the entity of
+  /// `entity_type` ("apps", "components", "areas", "functions") and
+  /// `entity_id`. Returns the topic name, or empty string if unresolvable.
+  using ResolveTopicFn = std::function<std::string(const std::string & entity_id, const std::string & entity_type,
+                                                   const std::string & resource_path)>;
 
   /// Set the topic name resolver. Called by GatewayNode after cache is available.
   void set_resolve_topic_fn(ResolveTopicFn fn);
@@ -246,8 +249,9 @@ class TriggerManager {
   void remove_from_dispatch_index(const std::string & trigger_id, const std::string & collection,
                                   const std::string & entity_id);
 
-  /// Check if the notification entity matches the trigger's entity (direct or hierarchy).
-  bool matches_entity(const TriggerState & state, const std::string & notification_entity_id) const;
+  /// Check if the entity a change is of matches the trigger's entity (direct
+  /// or hierarchy), by type and id.
+  bool matches_entity(const TriggerState & state, const ResourceChange & change) const;
 
   /// Check if a trigger has expired.
   bool is_expired(const TriggerState & state) const;
@@ -323,6 +327,7 @@ class TriggerManager {
   struct UnresolvedTrigger {
     std::string trigger_id;
     std::string entity_id;
+    std::string entity_type;
     std::string resource_path;
     std::chrono::steady_clock::time_point created_at;
     /// When this gateway first found the trigger's entity in discovery, empty

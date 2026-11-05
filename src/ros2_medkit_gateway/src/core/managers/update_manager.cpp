@@ -66,7 +66,9 @@ void UpdateManager::notify_status_change(const std::string & id, const UpdateSta
   if (!notifier_) {
     return;
   }
-  notifier_->notify("updates", id, id, update_status_to_json(status));
+  // An update is named by its update id, which names no entity of a type, so
+  // the change carries none and is matched by that id.
+  notifier_->notify("updates", SovdEntityType::UNKNOWN, id, id, update_status_to_json(status));
 }
 
 tl::expected<std::vector<std::string>, UpdateError> UpdateManager::list_updates(const UpdateFilter & filter) {

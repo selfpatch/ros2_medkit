@@ -27,6 +27,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
+
 namespace ros2_medkit_gateway {
 
 /// Type of resource change that occurred.
@@ -34,7 +36,12 @@ enum class ChangeType { CREATED, UPDATED, DELETED };
 
 /// Describes a single resource change event.
 struct ResourceChange {
-  std::string collection;     ///< "faults", "updates", "data", "x-custom"
+  std::string collection;  ///< "faults", "updates", "data", "x-custom"
+  /// The type of the entity the change is of. An id names an entity within
+  /// its type only - an Area and a Function may share one - so a change names
+  /// its entity by both. UNKNOWN for a change that names no entity type, such
+  /// as an update's status by its update id.
+  SovdEntityType entity_type{SovdEntityType::UNKNOWN};
   std::string entity_id;      ///< "temp_sensor"
   std::string resource_path;  ///< "fault_003" or "temperature"
   nlohmann::json value;       ///< The changed item (not full collection)
@@ -47,6 +54,9 @@ struct NotifierFilter {
   std::string collection;     ///< Optional - empty = all collections (catch-all)
   std::string entity_id;      ///< Optional - empty = all entities
   std::string resource_path;  ///< Optional - empty = all resources
+  /// Optional - UNKNOWN = all types. Set, a change has to be of this type: an
+  /// `entity_id` names an entity within its type only.
+  SovdEntityType entity_type{SovdEntityType::UNKNOWN};
 };
 
 using NotifierCallback = std::function<void(const ResourceChange &)>;
@@ -80,10 +90,12 @@ class ResourceChangeNotifier {
   /// Remove a subscription by ID. No-op if ID not found.
   void unsubscribe(NotifierSubscriptionId id);
 
-  /// Report a resource change. Non-blocking - pushes to async work queue.
-  /// After shutdown(), this is a no-op.
-  void notify(const std::string & collection, const std::string & entity_id, const std::string & resource_path,
-              const nlohmann::json & value, ChangeType change_type = ChangeType::UPDATED);
+  /// Report a resource change of the entity of `entity_type` and `entity_id`
+  /// (see ResourceChange::entity_type). Non-blocking - pushes to async work
+  /// queue. After shutdown(), this is a no-op.
+  void notify(const std::string & collection, SovdEntityType entity_type, const std::string & entity_id,
+              const std::string & resource_path, const nlohmann::json & value,
+              ChangeType change_type = ChangeType::UPDATED);
 
   /// Shut down the worker thread. After this, notify() is a no-op.
   /// Safe to call multiple times.

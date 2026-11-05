@@ -2454,6 +2454,13 @@ against each change and only fire when the condition is met.
    hierarchy-scoped monitoring. Area-level triggers catch changes from all
    descendant entities within the area.
 
+A trigger belongs to its entity by type and id, as every entity route does:
+an area and a function that share an id are two entities, so a change of the
+area does not fire the function's triggers, and the function's routes neither
+list nor read, change or delete the area's. Through the hierarchy a trigger
+catches the changes of the apps under its entity. A software update's status
+names no entity of a type - only its update id - and is matched by that id.
+
 **Observable resource collections:**
 
 - ``data`` - Topic data changes (driven by ``TriggerTopicSubscriber``)
