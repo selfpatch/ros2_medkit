@@ -296,9 +296,6 @@ class SSEFaultHandler {
   HandlerContext & ctx_;
   std::shared_ptr<SSEClientTracker> client_tracker_;
 
-  /// Fault event source; null on a host without a fault manager.
-  FaultEventSource * fault_source_{nullptr};
-
   /// Relays the peers' fault streams into this one on an aggregating gateway.
   /// Always constructed; it opens nothing when this gateway has no peers.
   std::unique_ptr<PeerFaultRelay> peer_relay_;
@@ -330,6 +327,10 @@ class SSEFaultHandler {
 
   /// Keepalive interval used by the streaming loop
   std::chrono::milliseconds keepalive_interval_;
+
+  /// Delivery from the fault event source; empty on a host without a fault
+  /// manager. Last data member, so it ends before the members its callback uses.
+  FaultEventSubscription fault_subscription_;
 
   /// Maximum events to buffer (for reconnecting clients)
   static constexpr size_t kMaxBufferedEvents = 100;

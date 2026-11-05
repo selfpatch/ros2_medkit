@@ -499,7 +499,7 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   std::unique_ptr<TriggerFaultSubscriber> trigger_fault_subscriber_;
   // Zero-config freeze-frames for plugin-backed entities (nullptr when disabled)
   std::unique_ptr<EntityFreezeFrameCapture> entity_freeze_frame_capture_;
-  // Destroyed after rest_server_, whose SSE fault handler holds a pointer to it.
+  // Destroyed after rest_server_, whose SSE fault handler holds a subscription to it.
   std::unique_ptr<Ros2FaultEventSource> fault_event_source_;
   // Config-less threshold-rule engine + its dedicated evaluation loop (issue
   // #235). The thread is joined in ~GatewayNode BEFORE plugin/fault shutdown.
