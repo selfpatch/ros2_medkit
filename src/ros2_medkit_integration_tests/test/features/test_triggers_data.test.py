@@ -473,6 +473,62 @@ class TestTriggersData(GatewayTestCase):
         self.assertEqual(r.json()['status'], 'active')
         self.assertIn('event_source', r.json())
 
+    # @verifies REQ_INTEROP_029
+    # @verifies REQ_INTEROP_097
+    def test_15_trigger_on_percent_encoded_topic_path_fires(self):
+        """A trigger on the documented percent-encoded topic URI resolves the topic and fires."""
+        resource = (
+            f'{API_BASE_PATH}/apps/{self.app_id}/data/powertrain%2Fengine%2Ftemperature'
+        )
+        get = requests.get(
+            self.BASE_URL.removesuffix(API_BASE_PATH) + resource, timeout=5,
+        )
+        self.assertEqual(get.status_code, 200, get.text)
+
+        r = requests.post(
+            f'{self.BASE_URL}/apps/{self.app_id}/triggers',
+            json={
+                'resource': resource,
+                'trigger_condition': {'condition_type': 'OnChange'},
+                'multishot': True,
+                'lifetime': 60,
+            },
+            timeout=5,
+        )
+        self.assertEqual(r.status_code, 201, r.text)
+        trig = r.json()
+        self.addCleanup(self._delete_trigger, trig['id'])
+        self.assertEqual(trig['observed_resource'], resource)
+
+        events_url = (
+            f'{self.BASE_URL}{trig["event_source"].removeprefix(API_BASE_PATH)}'
+        )
+        received_events = []
+        got_event = threading.Event()
+
+        def collect_events():
+            try:
+                with requests.get(events_url, stream=True, timeout=20) as resp:
+                    for line in resp.iter_lines(decode_unicode=True):
+                        if line and line.startswith('data: '):
+                            received_events.append(json.loads(line[6:]))
+                            got_event.set()
+                            break
+            except requests.exceptions.RequestException:
+                pass
+
+        thread = threading.Thread(target=collect_events, daemon=True)
+        thread.start()
+        # temp_sensor publishes at ~1Hz.
+        got_event.wait(timeout=20)
+        thread.join(timeout=5)
+
+        self.assertTrue(
+            received_events,
+            'the trigger on the percent-encoded topic URI delivered no event',
+        )
+        self.assertIn('payload', received_events[0])
+
     # ------------------------------------------------------------------
     # Error handling
     # ------------------------------------------------------------------

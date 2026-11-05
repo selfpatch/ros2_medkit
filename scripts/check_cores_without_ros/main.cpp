@@ -278,14 +278,23 @@ class CheckDataPlugin : public gw::GatewayPlugin, public gw::DataProvider {
   }
   tl::expected<gw::dto::DataListResult, gw::DataProviderErrorInfo>
   list_data(const std::string & /*entity_id*/) override {
-    return gw::dto::DataListResult{
-        {{"items", gw::json::array({{{"id", "speed"}, {"name", "speed"}, {"value", speed.load()}}})}}};
+    auto items = gw::json::array({{{"id", "speed"}, {"name", "speed"}, {"value", speed.load()}}});
+    if (!item_name.empty()) {
+      items.push_back({{"id", item_name}, {"name", item_name}, {"value", item_value.load()}});
+    }
+    return gw::dto::DataListResult{{{"items", std::move(items)}}};
   }
   tl::expected<gw::dto::DataValue, gw::DataProviderErrorInfo> read_data(const std::string & /*entity_id*/,
                                                                         const std::string & resource_name) override {
-    ++read_calls;
-    const int pinned_value = pinned.load();
-    const int value = pinned_value >= 0 ? pinned_value : ++reads;
+    int value = 0;
+    if (!item_name.empty() && resource_name == item_name) {
+      ++item_reads;
+      value = item_value.load();
+    } else {
+      ++read_calls;
+      const int pinned_value = pinned.load();
+      value = pinned_value >= 0 ? pinned_value : ++reads;
+    }
     if (wrapped) {
       return gw::dto::DataValue{
           {{"id", resource_name}, {"data", {{"value", value}}}, {"x-medkit", {{"source", "plugin"}}}}};
@@ -304,6 +313,10 @@ class CheckDataPlugin : public gw::GatewayPlugin, public gw::DataProvider {
   std::atomic<int> read_calls{0};
   // True: reads answer the body of a topic item, {id, data, x-medkit}, with the value inside data.
   std::atomic<bool> wrapped{false};
+  // Non-empty: a second item with this name, listed and read with item_value. Set before the server starts.
+  std::string item_name;
+  std::atomic<int> item_value{0};
+  std::atomic<int> item_reads{0};
 };
 
 // A fault event feed the check drives by hand. Every live subscriber gets each event.
@@ -1094,6 +1107,9 @@ bool check_triggers() {
   auto & plugin = services.add_data_plugin({"plugin_app"});
   plugin.pinned = 10;
   plugin.wrapped = true;
+  // A client percent-encodes the space in a URI path.
+  plugin.item_name = "Motor Speed";
+  plugin.item_value = 10;
   ControlledFaultEvents upstream;
   services.set_fault_events(&upstream);
   auto capture = gw::make_freeze_frame_capture(gw::FreezeFrameCaptureConfig{}, upstream, services.plugin_manager());
@@ -1216,6 +1232,37 @@ bool check_triggers() {
     client.Delete("/api/v1/apps/plugin_app/triggers/" + data_id);
   }
   data_reader.join();
+
+  // Data trigger on a plugin item addressed by its percent-encoded name, as GET addresses it.
+  auto encoded_trigger =
+      post_trigger(client, "/api/v1/apps/plugin_app/data/Motor%20Speed",
+                   {{"condition_type", "EnterRange"}, {"lower_bound", 50}, {"upper_bound", 100}}, "/value");
+  const bool encoded_created = encoded_trigger && encoded_trigger->status == 201;
+  ok &= check(encoded_created, "a data trigger on a plugin item with a percent-encoded name is created");
+  if (!encoded_created && encoded_trigger) {
+    std::printf("      %d %s\n", encoded_trigger->status, encoded_trigger->body.c_str());
+  }
+  const auto encoded_json =
+      encoded_trigger ? nlohmann::json::parse(encoded_trigger->body, nullptr, false) : nlohmann::json();
+  const std::string encoded_id = encoded_json.is_object() ? encoded_json.value("id", "") : "";
+  TriggerEventReader encoded_reader(running.port(),
+                                    encoded_json.is_object() ? encoded_json.value("event_source", "") : "");
+  const bool encoded_polled = wait_until([&] {
+    return plugin.item_reads.load() >= 5;
+  });
+  ok &= check(encoded_polled, "the host reads that item again and again under its decoded name");
+  ok &= check(encoded_reader.events().empty(), "the trigger does not fire while the item is below the range");
+  plugin.item_value = 60;
+  const bool encoded_fired = wait_until([&] {
+    return !encoded_reader.events().empty();
+  });
+  ok &= check(encoded_fired, "the trigger fires when the item enters the range");
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  ok &= check(encoded_reader.events().size() == 1, "the trigger on the encoded name fires once, not on every sample");
+  if (!encoded_id.empty()) {
+    client.Delete("/api/v1/apps/plugin_app/triggers/" + encoded_id);
+  }
+  encoded_reader.join();
 
   // The count limit.
   std::vector<std::string> ids;
