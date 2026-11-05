@@ -107,7 +107,9 @@ ActionStatusBridgeNode::ActionStatusBridgeNode(const rclcpp::NodeOptions & optio
   });
   retry_timer_->cancel();
 
-  rescan_actions();
+  run_unless_shutdown([this]() {
+    rescan_actions();
+  });
   rescan_timer_ = create_wall_timer(std::chrono::duration<double>(rescan_period_sec_), [this]() {
     run_unless_shutdown([this]() {
       rescan_actions();
