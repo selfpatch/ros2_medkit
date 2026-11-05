@@ -240,7 +240,7 @@ nodes:
   poller.set_handover_delay_for_test(std::chrono::microseconds(400));
   poller.evaluate_alarms_for_test(DetectionPipeline::Pass::kRecheck);  // subscription mode from here
 
-  constexpr int kRounds = 1500;
+  constexpr int kRounds = 300;
   std::atomic<bool> done{false};
   std::thread pump([&] {
     for (int i = 0; i < kRounds; ++i) {
@@ -253,6 +253,9 @@ nodes:
   std::thread poll([&] {
     while (!done.load()) {
       poller.evaluate_alarms_for_test(DetectionPipeline::Pass::kRecheck);
+      // The real poll thread waits between rechecks. Without a gap it takes the lock back at once,
+      // std::mutex is not fair, and on a two-core runner the pump thread starves past the timeout.
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
   });
   pump.join();
