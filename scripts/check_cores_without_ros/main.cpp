@@ -820,10 +820,23 @@ gw::App online_app(const std::string & id, const std::string & name) {
   return app;
 }
 
-// Items of a collection body, or an empty array.
-nlohmann::json items_of(const httplib::Result & res) {
-  return res ? nlohmann::json::parse(res->body, nullptr, false).value("items", nlohmann::json::array())
-             : nlohmann::json::array();
+// Items of a collection body; nullopt when the request failed, did not answer 200 or has no `items` array.
+std::optional<nlohmann::json> items_of(const httplib::Result & res) {
+  if (!res || res->status != 200) {
+    return std::nullopt;
+  }
+  const auto body = nlohmann::json::parse(res->body, nullptr, false);
+  if (!body.is_object() || !body.contains("items") || !body["items"].is_array()) {
+    return std::nullopt;
+  }
+  return body["items"];
+}
+
+// True when `listing` is a valid collection that contains an item with `id`.
+bool lists_id(const std::optional<nlohmann::json> & listing, const std::string & id) {
+  return listing && std::any_of(listing->begin(), listing->end(), [&](const nlohmann::json & item) {
+           return item.value("id", "") == id;
+         });
 }
 
 // A lock taken over HTTP with a short expiry is reaped by the core: the lock is gone and the cyclic subscriptions in
@@ -846,6 +859,9 @@ bool check_lock_reaping() {
     auto client = make_client(running.port());
     const auto sub = subscribe(client, "/api/v1/apps/lock_app/faults", "lock_app");
     ok &= check(!sub.first.empty(), "a cyclic subscription is created before the lock");
+    const std::string listing_path = "/api/v1/apps/lock_app/cyclic-subscriptions";
+    ok &= check(lists_id(items_of(client.Get(listing_path)), sub.first),
+                "the subscription is listed before the lock expires");
     const nlohmann::json lock_body = {{"lock_expiration", 1}, {"scopes", {"cyclic-subscriptions"}}};
     auto acquired = client.Post("/api/v1/apps/lock_app/locks", httplib::Headers{{"X-Client-Id", "check_client"}},
                                 lock_body.dump(), "application/json");
@@ -856,7 +872,8 @@ bool check_lock_reaping() {
     });
     ok &= check(lock_gone, "the expired lock is gone");
     const bool sub_gone = wait_until([&] {
-      return items_of(client.Get("/api/v1/apps/lock_app/cyclic-subscriptions")).empty();
+      const auto listing = items_of(client.Get(listing_path));
+      return listing && !lists_id(listing, sub.first);
     });
     ok &= check(sub_gone, "the expiry removed the cyclic subscriptions in the lock scope");
   }
