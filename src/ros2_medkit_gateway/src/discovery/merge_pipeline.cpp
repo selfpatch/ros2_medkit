@@ -504,11 +504,18 @@ MergeResult MergePipeline::execute() {
   std::vector<std::pair<size_t, std::vector<Function>>> function_layers;
 
   // RuntimeLinker needs runtime-only apps (nodes as Apps, not merged with
-  // manifest apps). Manifest apps lack bound_fqn until linked.
+  // manifest apps). A manifest app gets its bound_fqn from linking only: the
+  // linker takes back whatever the id merge copied in from a same-id node.
   std::vector<App> runtime_apps;
 
+  // The runtime layer's apps that go into the merge (after gap-fill), so the
+  // linker knows which same-id node, if any, the merge folded into a manifest
+  // app instead of guessing it from the merged fields.
+  std::vector<App> merged_runtime_apps;
+
   // The manifest's apps exactly as declared, before any merging. Needed to
-  // honour inherit_runtime_resources=false: see the restore below.
+  // honour inherit_runtime_resources=false (see the restore below) and to tell
+  // the linker which apps the manifest declares.
   std::vector<App> manifest_declared_apps;
 
   for (size_t i = 0; i < layers_.size(); ++i) {
@@ -547,6 +554,7 @@ MergeResult MergePipeline::execute() {
     // the linker needs all runtime apps to bind manifest apps to live nodes.
     if (layers_[i]->provides_runtime_apps()) {
       runtime_apps = layers_[i]->get_linking_apps();
+      merged_runtime_apps = output.apps;
     }
     if (layers_[i]->name() == "manifest") {
       manifest_declared_apps = output.apps;
@@ -612,11 +620,13 @@ MergeResult MergePipeline::execute() {
 
   // inherit_runtime_resources=false must mean the app exposes only what the
   // manifest declares. Gating RuntimeLinker::enrich_app is not enough to
-  // deliver that: merge_entities<App>() has already run, and its LIVE_DATA
-  // field group unions the runtime layer's topics, services and actions into
-  // any app the two layers contribute under the same id - which is exactly
-  // what a manifest app named after the node it binds to looks like. So the
-  // flag would silently do nothing in the most natural configuration.
+  // deliver that: merge_entities<App>() has already run, and under the shipped
+  // policies (runtime LIVE_DATA authoritative over the manifest's enrichment)
+  // its LIVE_DATA field group replaces the app's topics, services and actions
+  // with the runtime layer's for any app the two layers contribute under the
+  // same id - which is exactly what a manifest app named after the node it
+  // binds to looks like. So the flag would silently do nothing in the most
+  // natural configuration.
   //
   // Restore the declared collections here, after the merge and before
   // linking. The manifest layer is the authority on what it declared, so this
@@ -641,7 +651,13 @@ MergeResult MergePipeline::execute() {
 
   // Post-merge linking: bind manifest apps to runtime nodes (Apps, not Components)
   if (linker_) {
-    auto linking = linker_->link(result.apps, runtime_apps, manifest_config_, protected_entity_ids_);
+    std::unordered_set<std::string> declared_app_ids;
+    declared_app_ids.reserve(manifest_declared_apps.size());
+    for (const auto & app : manifest_declared_apps) {
+      declared_app_ids.insert(app.id);
+    }
+    auto linking = linker_->link(result.apps, runtime_apps, merged_runtime_apps, declared_app_ids, manifest_config_,
+                                 protected_entity_ids_);
 
     // Replace apps with linked versions (have is_online, bound_fqn set)
     result.apps = std::move(linking.linked_apps);

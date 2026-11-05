@@ -19,6 +19,8 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 
 #include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace ros2_medkit_gateway {
 namespace discovery {
@@ -67,13 +69,93 @@ bool topic_path_matches(const std::string & topic, const std::string & topic_nam
   return false;
 }
 
+/// Erase from @p entries every entry whose key is also a key in @p theirs.
+template <typename T, typename KeyFn>
+void erase_by_key(std::vector<T> & entries, const std::vector<T> & theirs, KeyFn key_fn) {
+  if (entries.empty() || theirs.empty()) {
+    return;
+  }
+  std::unordered_set<std::string> drop;
+  drop.reserve(theirs.size());
+  for (const auto & entry : theirs) {
+    drop.insert(key_fn(entry));
+  }
+  entries.erase(std::remove_if(entries.begin(), entries.end(),
+                               [&](const T & entry) {
+                                 return drop.count(key_fn(entry)) > 0;
+                               }),
+                entries.end());
+}
+
+/// Remove from @p app the topics, services and actions @p runtime_app has:
+/// topics by name (publishes and subscribes separately), services and actions
+/// by full path - the same keys the merge uses when it combines them.
+void remove_resources_of(App & app, const App & runtime_app) {
+  const auto by_value = [](const std::string & topic) -> const std::string & {
+    return topic;
+  };
+  erase_by_key(app.topics.publishes, runtime_app.topics.publishes, by_value);
+  erase_by_key(app.topics.subscribes, runtime_app.topics.subscribes, by_value);
+  erase_by_key(app.services, runtime_app.services, [](const ServiceInfo & s) -> const std::string & {
+    return s.full_path;
+  });
+  erase_by_key(app.actions, runtime_app.actions, [](const ActionInfo & a) -> const std::string & {
+    return a.full_path;
+  });
+}
+
+/// Undo what the merge took from a runtime app that shares a manifest app's id.
+///
+/// merge_entities<App>() joins entities by id alone. So when the runtime
+/// layer's app for a running node has a manifest app's id, the merge folds it
+/// into that app; with the default merge policies (runtime authoritative for
+/// STATUS and LIVE_DATA) the app then carries that node's bound_fqn, is_online
+/// and topics, services and actions - whatever its ros_binding says. Only
+/// linking may tie a manifest app to a node, so that state is taken back off
+/// before matching, and a match re-derives it.
+///
+/// @p merged_same_id is the runtime layer's app with this id that actually
+/// went into the merge, or nullptr. Contribution is that fact, not something
+/// inferred from the merged fields: a status override can keep the node's FQN
+/// off the app while its live data still comes in, and gap-fill
+/// (allow_heuristic_apps false, a namespace filter) keeps the node's app out
+/// of the merge while the linker still sees the node.
+///
+/// - A ROS app (not external): bound_fqn and is_online are cleared outright.
+///   The merged node's topics, services and actions are removed by value, and
+///   only while inherit_runtime_resources is on. With the flag off the
+///   pipeline has already restored the declared collections, so removing by
+///   value could only hit a declared entry the node shares. Removal, not a
+///   reset to empty, keeps entries another layer contributed under other keys.
+/// - An external app: it is not linked, and a plugin may serve it, so its
+///   state stays as merged when no same-id runtime app went into the merge.
+///   When one did, its status and live data have (with the default merge
+///   policies) already replaced the serving plugin's, so the state is taken
+///   back the same way and the app reads offline with no resources. An
+///   external app needs an id that no ROS node uses.
+///
+/// The node itself stays an orphan: it has no app of its own, because the
+/// merge consumed its runtime app under the manifest app's id.
+void strip_same_id_runtime_state(App & app, const App * merged_same_id, bool inherit_runtime_resources) {
+  if (app.external.value_or(false) && merged_same_id == nullptr) {
+    return;
+  }
+  app.bound_fqn.reset();
+  app.is_online = false;
+  if (merged_same_id != nullptr && inherit_runtime_resources) {
+    remove_resources_of(app, *merged_same_id);
+  }
+}
+
 }  // namespace
 
 RuntimeLinker::RuntimeLinker(rclcpp::Node * node, bool filter_internal_nodes)
   : node_(node), filter_internal_nodes_(filter_internal_nodes) {
 }
 
-LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const std::vector<App> & runtime_apps,
+LinkingResult RuntimeLinker::link(const std::vector<App> & apps, const std::vector<App> & runtime_apps,
+                                  const std::vector<App> & merged_runtime_apps,
+                                  const std::unordered_set<std::string> & manifest_app_ids,
                                   const ManifestConfig & config,
                                   const std::unordered_set<std::string> & protected_ids) {
   LinkingResult result;
@@ -81,10 +163,32 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const 
   // Track which runtime nodes have been matched
   std::set<std::string> matched_nodes;
 
-  // Process each manifest app
-  for (const auto & manifest_app : manifest_apps) {
+  // The runtime layer's apps that went into the merge, by id: the only ones
+  // the merge can have folded into a manifest app of the same id.
+  std::unordered_map<std::string, const App *> merged_runtime_by_id;
+  merged_runtime_by_id.reserve(merged_runtime_apps.size());
+  for (const auto & rt_app : merged_runtime_apps) {
+    merged_runtime_by_id.emplace(rt_app.id, &rt_app);
+  }
+
+  for (const auto & app : apps) {
+    // Apps the manifest does not declare - heuristic apps for unmanifested
+    // nodes, plugin apps - are not the linker's to bind. They keep the
+    // is_online, bound_fqn and resources their own layer reported, the same as
+    // in the modes without a linker, and are not counted as unlinked. They
+    // still go through the duplicate suppression below.
+    if (manifest_app_ids.count(app.id) == 0) {
+      result.linked_apps.push_back(app);
+      continue;
+    }
+
+    const App & manifest_app = app;
     App linked_app = manifest_app;  // Copy
-    linked_app.is_online = false;
+    // Clears is_online and bound_fqn on a ROS app; an external app keeps the
+    // merged values unless a same-id runtime app went into the merge.
+    const auto merged_it = merged_runtime_by_id.find(manifest_app.id);
+    strip_same_id_runtime_state(linked_app, merged_it != merged_runtime_by_id.end() ? merged_it->second : nullptr,
+                                config.inherit_runtime_resources);
 
     // External apps don't need ROS binding
     if (manifest_app.external.value_or(false)) {
