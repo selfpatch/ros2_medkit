@@ -308,10 +308,35 @@ Areas
           {
             "id": "powertrain",
             "name": "Powertrain",
-            "href": "/api/v1/areas/powertrain"
+            "href": "/api/v1/areas/powertrain",
+            "x-medkit": {
+              "source": "manifest",
+              "ros2": {"namespace": "/powertrain"}
+            }
           }
         ]
       }
+
+   .. note::
+
+      **ros2_medkit extension:** an Area's ``x-medkit`` carries, each field
+      omitted when it has no value:
+
+      - ``source`` - where the Area comes from: ``manifest`` for a manifest
+        Area, ``plugin`` for one a discovery plugin introduced, and on a
+        gateway with aggregation enabled ``peer:<name>`` for an Area only a
+        peer holds (an Area both sides hold keeps the local source, as
+        Components do). Served on the list, the detail,
+        ``/areas/{area_id}/subareas`` and the resolved ``/apps/{app_id}/belongs-to``
+        item. A gateway aggregating this one reads an Area's origin from it, and
+        keeps a ``manifest`` Area while this gateway is not answering (see
+        :ref:`Peer Refresh Completeness <aggregation-peer-refresh-completeness>`).
+      - ``ros2.namespace`` - the ROS 2 namespace the Area maps to.
+      - ``parent_area_id`` - the parent of a subarea (detail only).
+      - ``contributors`` - the merge inputs on a gateway with aggregation
+        enabled (detail only).
+      - ``missing`` and ``unresolved_component`` - only on a
+        ``/apps/{app_id}/belongs-to`` item whose Area cannot be resolved.
 
 ``GET /api/v1/areas/{area_id}``
    Get area capabilities and metadata.
