@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
 #include <utility>
@@ -38,53 +39,81 @@ SlotFaultEvents::SlotFaultEvents(rclcpp::Node * node, ros2_common::Ros2Subscript
 }
 
 SlotFaultEvents::~SlotFaultEvents() {
-  unsubscribe();
-}
-
-void SlotFaultEvents::subscribe(Callback callback) {
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    callback_ = std::move(callback);
-    if (slot_) {
-      return;
-    }
+    std::lock_guard<std::mutex> lock(subscribers_mutex_);
+    subscribers_.clear();
   }
-  // The topic comes from the gateway node (it owns fault_manager.namespace);
-  // the subscription itself is created on the executor's dedicated _sub node so
-  // it never races rcl's hash-map on the main node (issue #375).
-  auto slot = ros2_common::Ros2SubscriptionSlot::create_typed<ros2_medkit_msgs::msg::FaultEvent>(
-      exec_, topic_, rclcpp::QoS(100).reliable(),
-      [this](const std::shared_ptr<const ros2_medkit_msgs::msg::FaultEvent> & msg) {
-        on_message(*msg);
-      });
-  if (!slot) {
-    RCLCPP_ERROR(logger_, "EntityFreezeFrameCapture: failed to subscribe to %s: %s", topic_.c_str(),
-                 slot.error().c_str());
-    return;
-  }
-  std::lock_guard<std::mutex> lock(mutex_);
-  slot_ = std::move(*slot);
-}
-
-void SlotFaultEvents::unsubscribe() {
   std::unique_ptr<ros2_common::Ros2SubscriptionSlot> dropped;
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    callback_ = nullptr;
+    std::lock_guard<std::mutex> lock(slot_mutex_);
     dropped = std::move(slot_);
   }
   // Not a synchronous barrier: the slot posts an async destroy with a bounded
   // deadline, so use-after-free safety also relies on the owner tearing down
   // the subscription executor (joining its worker) before this object's node
   // dies - keep that ordering in main.cpp / gateway_node shutdown. A late
-  // callback before that teardown finds no callback set and drops its event.
+  // callback before that teardown finds no subscriber and drops its event.
   dropped.reset();
 }
 
+FaultEventSubscription SlotFaultEvents::subscribe(Callback callback) {
+  {
+    // Held across the create, so concurrent first subscribers make one slot.
+    std::lock_guard<std::mutex> lock(slot_mutex_);
+    if (!slot_) {
+      // The topic comes from the gateway node (it owns fault_manager.namespace);
+      // the subscription itself is created on the executor's dedicated _sub node so
+      // it never races rcl's hash-map on the main node (issue #375).
+      auto slot = ros2_common::Ros2SubscriptionSlot::create_typed<ros2_medkit_msgs::msg::FaultEvent>(
+          exec_, topic_, rclcpp::QoS(100).reliable(),
+          [this](const std::shared_ptr<const ros2_medkit_msgs::msg::FaultEvent> & msg) {
+            on_message(*msg);
+          });
+      if (!slot) {
+        RCLCPP_ERROR(logger_, "EntityFreezeFrameCapture: failed to subscribe to %s: %s", topic_.c_str(),
+                     slot.error().c_str());
+        return FaultEventSubscription{};
+      }
+      slot_ = std::move(*slot);
+    }
+  }
+  auto subscriber = std::make_shared<Subscriber>();
+  subscriber->callback = std::move(callback);
+  {
+    std::lock_guard<std::mutex> lock(subscribers_mutex_);
+    subscribers_.push_back(subscriber);
+  }
+  return FaultEventSubscription([this, subscriber]() {
+    remove(subscriber);
+  });
+}
+
+void SlotFaultEvents::remove(const std::shared_ptr<Subscriber> & subscriber) {
+  {
+    std::lock_guard<std::mutex> lock(subscribers_mutex_);
+    subscribers_.erase(std::remove(subscribers_.begin(), subscribers_.end(), subscriber), subscribers_.end());
+  }
+  // Waits for a running callback. A delivery that copied the list before the
+  // erase finds the callback null.
+  std::lock_guard<std::mutex> lock(subscriber->mutex);
+  subscriber->callback = nullptr;
+}
+
 void SlotFaultEvents::on_message(const ros2_medkit_msgs::msg::FaultEvent & msg) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (callback_) {
-    callback_(ros2::conversions::from_msg(msg));
+  std::vector<std::shared_ptr<Subscriber>> targets;
+  {
+    std::lock_guard<std::mutex> lock(subscribers_mutex_);
+    targets = subscribers_;
+  }
+  if (targets.empty()) {
+    return;
+  }
+  const auto record = ros2::conversions::from_msg(msg);
+  for (const auto & subscriber : targets) {
+    std::lock_guard<std::mutex> lock(subscriber->mutex);
+    if (subscriber->callback) {
+      subscriber->callback(record);
+    }
   }
 }
 
@@ -93,7 +122,7 @@ void SlotFaultEvents::wait_for_publisher(const std::function<bool()> & should_ab
   while (std::chrono::steady_clock::now() < deadline && !should_abort()) {
     try {
       {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(slot_mutex_);
         if (!slot_) {
           return;
         }
@@ -113,17 +142,22 @@ void SlotFaultEvents::wait_for_publisher(const std::function<bool()> & should_ab
 EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, ros2_common::Ros2SubscriptionExecutor & exec,
                                                    DataProviderResolver resolver, RouteDataFetcher route_fetcher,
                                                    size_t max_faults, StandingFaultLister standing_lister)
-  : ros2_capture_detail::SlotFaultEvents(node, exec)
-  , FreezeFrameCapture(
-        static_cast<ros2_capture_detail::SlotFaultEvents &>(*this), FreezeFrameCaptureConfig{true, max_faults},
-        Hooks{PluginDataReaders{std::move(resolver), std::move(route_fetcher)}, std::move(standing_lister),
-              [this](const std::function<bool()> & should_abort) {
-                wait_for_publisher(should_abort);
-              }})
-  , logger_(node->get_logger()) {
-  RCLCPP_INFO(logger_, "EntityFreezeFrameCapture initialized, subscribed to %s", topic().c_str());
+  : logger_(node->get_logger())
+  , events_(node, exec)
+  , capture_(std::make_unique<FreezeFrameCapture>(
+        events_, FreezeFrameCaptureConfig{true, max_faults},
+        FreezeFrameCapture::Hooks{PluginDataReaders{std::move(resolver), std::move(route_fetcher)},
+                                  std::move(standing_lister),
+                                  [&events = events_](const std::function<bool()> & should_abort) {
+                                    events.wait_for_publisher(should_abort);
+                                  }})) {
+  RCLCPP_INFO(logger_, "EntityFreezeFrameCapture initialized, subscribed to %s", events_.topic().c_str());
 }
 
 EntityFreezeFrameCapture::~EntityFreezeFrameCapture() = default;
+
+std::vector<FreezeFrameSource::Frame> EntityFreezeFrameCapture::frames_for(const std::string & fault_code) const {
+  return capture_->frames_for(fault_code);
+}
 
 }  // namespace ros2_medkit_gateway
