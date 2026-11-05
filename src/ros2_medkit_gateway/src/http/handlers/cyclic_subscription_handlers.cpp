@@ -456,7 +456,8 @@ CyclicSubscriptionHandlers::parse_resource_uri(const std::string & resource) {
     parsed.entity_type = match[1].str();
     parsed.entity_id = match[2].str();
     parsed.collection = match[3].str();
-    parsed.resource_path = match[4].matched ? match[4].str() : "";
+    // Decoded as the GET path is, so a subscription reads the item GET reads. Before the '..' check.
+    parsed.resource_path = match[4].matched ? httplib::detail::decode_url(match[4].str(), false) : "";
 
     // Security: reject '..' as a path segment (not as substring of e.g. '/..foo')
     if (!parsed.resource_path.empty()) {
