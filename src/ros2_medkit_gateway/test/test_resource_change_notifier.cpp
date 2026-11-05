@@ -593,3 +593,28 @@ TEST(ResourceChangeNotifier, UnsubscribeFromOwnCallbackDoesNotDeadlock) {
   notifier->shutdown();
   EXPECT_EQ(calls.load(), 1) << "the callback was called again after it unsubscribed";
 }
+
+TEST(ResourceChangeNotifier, UnsubscribeOfIdZeroIsNoOp) {
+  // The call runs on a detached thread that owns the notifier, so a hang fails the test instead of blocking it.
+  // The thread starts before shutdown(), so it cannot reuse the thread id of the joined worker.
+  const auto unsubscribe_zero_returns = [](bool shut_down_first) {
+    auto notifier = std::make_shared<ResourceChangeNotifier>();
+    auto go = std::make_shared<Latch>();
+    auto done = std::make_shared<Latch>();
+    std::thread([notifier, go, done]() mutable {
+      go->wait_for(kWait);
+      notifier->unsubscribe(0);
+      notifier.reset();
+      done->open();
+    }).detach();
+    if (shut_down_first) {
+      notifier->shutdown();
+    }
+    notifier.reset();
+    go->open();
+    return done->wait_for(kWait);
+  };
+
+  EXPECT_TRUE(unsubscribe_zero_returns(false)) << "unsubscribe(0) on a fresh notifier did not return";
+  EXPECT_TRUE(unsubscribe_zero_returns(true)) << "unsubscribe(0) after shutdown() did not return";
+}

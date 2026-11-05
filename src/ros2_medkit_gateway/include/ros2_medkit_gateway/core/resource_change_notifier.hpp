@@ -22,6 +22,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -79,8 +80,9 @@ class ResourceChangeNotifier {
   NotifierSubscriptionId subscribe(NotifierFilter filter, NotifierCallback callback);
 
   /// Remove a subscription by ID. No-op if ID not found.
-  /// On return the callback is not running and is never called again, so its captures may be destroyed. Called from
-  /// a callback (the worker thread), it returns at once. The caller must not hold a lock that the callback takes.
+  /// From another thread: returns once the callback is not running, and the callback is never called again.
+  /// From inside a notifier callback: returns at once, the current invocation continues, and the callback is not
+  /// called again after it returns. The caller must not hold a lock that the callback takes.
   void unsubscribe(NotifierSubscriptionId id);
 
   /// Report a resource change. Non-blocking - pushes to async work queue.
@@ -118,8 +120,8 @@ class ResourceChangeNotifier {
   std::mutex sub_mutex_;
   std::unordered_map<NotifierSubscriptionId, std::shared_ptr<const SubscriptionEntry>> subscriptions_;
   std::atomic<uint64_t> next_id_{1};
-  /// The subscription whose callback the worker runs, 0 when none. Guarded by sub_mutex_.
-  NotifierSubscriptionId running_id_{0};
+  /// The subscription whose callback the worker runs, empty when none. Guarded by sub_mutex_.
+  std::optional<NotifierSubscriptionId> running_id_;
   /// Signalled when running_id_ clears.
   std::condition_variable running_cv_;
 
