@@ -2158,7 +2158,8 @@ collection.
    - ``resource`` (string, required): Full SOVD resource URI to observe
      (e.g. ``/api/v1/apps/{id}/data/{topic}``, ``/api/v1/apps/{id}/faults``,
      ``/api/v1/functions/{id}/x-medkit-graph``). The URI ends at the collection
-     unless that collection's sampler narrows its payload to a named resource
+     unless that collection's sampler narrows its payload to a named resource.
+     The path is percent-decoded as a GET path is, so the subscription reads the item that GET of the same URI returns.
    - ``protocol`` (string, optional): Transport protocol. Only ``"sse"`` supported. Default: ``"sse"``
    - ``interval`` (string, required): One of ``fast``, ``normal``, ``slow``
    - ``duration`` (integer, required): Subscription lifetime in seconds.
