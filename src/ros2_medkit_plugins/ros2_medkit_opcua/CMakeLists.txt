@@ -675,15 +675,19 @@ if(BUILD_TESTING)
       LABELS "integration"
       TIMEOUT 300)
     # raise_after_samples / raise_after_ms through a real gateway and fault
-    # manager, on the poll and the subscription transport. Each leg can wait
-    # about 180 s in the worst case, so TIMEOUT covers both legs.
+    # manager: a poll leg, a subscription leg and a subscription leg with a
+    # 60 s poll. Worst case of each of the first two: fault manager 30 s, ready
+    # 90 s, checks and sleeps 43 s, 38 fixture writes at 2 s each 76 s, process
+    # stops 32 s, so about 271 s. The third: 30 + 90 + 8 s of waits, 2 writes
+    # 4 s, stops 32 s, so about 164 s. With the server (25 s start, 8 s stop)
+    # that is about 739 s.
     medkit_add_wrapped_test(test_opcua_raise_qualifier
       COMMAND "${Python3_EXECUTABLE}"
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_raise_qualifier.test.py"
               "${CMAKE_BINARY_DIR}/test_alarm_server")
     set_tests_properties(test_opcua_raise_qualifier PROPERTIES
       LABELS "integration"
-      TIMEOUT 450)
+      TIMEOUT 900)
     # This one boots a real gateway and fault manager, so it needs a domain, and
     # it builds its own command line - hence the generic wrapper rather than an
     # ament test runner.
