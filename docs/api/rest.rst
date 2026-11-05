@@ -1091,7 +1091,12 @@ Execute Operations
    through ``/areas/{id}`` answers ``404`` through ``/functions/{id}``. Through
    a grouping entity, a qualified operation id (``{member}:{operation}``) also
    reaches the executions started on that member, an app or a component of the
-   grouping by its own type.
+   grouping by its own type. An execution belongs to its operation too: it
+   answers only under an id that names the operation it was started under, by
+   its name, its ROS path, or qualified by the member that holds it, and
+   ``404`` under any other, even on the entity it was started through. This
+   holds while the operation's server is gone, so its status and a cancel stay
+   answerable there.
 
    **Example Response (completed action):**
 
