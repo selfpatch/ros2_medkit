@@ -114,10 +114,23 @@ which evaluations are new samples:
 
 - Polling reads every point each cycle, so a value that did not arrive in this cycle is
   left over from a failed read. It is skipped, and every point keeps its state.
-- A subscription reports changes only. Each data change is a sample. While a fault waits,
-  the poll loop runs an extra pass each ``poll_interval_ms`` that counts one more sample of
-  the value the point holds, and lets ``raise_after_ms`` end on time. A pass caused by
-  another point's change does not count.
+- A subscription reports changes only. The data change that starts a wait is its first
+  sample. While a fault waits, the poll loop runs an extra pass each ``poll_interval_ms``
+  for the value the point holds. A data change or such a pass counts one more sample only
+  when a full poll interval passed since that fault's last counted sample, so samples stay
+  one poll apart, as under polling, whether the value holds or keeps moving. A point that
+  has not reported since the link came back is skipped, so a value from before an outage
+  never counts. While a
+  ``raise_after_ms`` wait is open and ``subscription_interval_ms`` is shorter than the poll,
+  the poll thread also rechecks every ``subscription_interval_ms`` between polls, so the wait
+  ends on time; a recheck, like a pass caused by another point's change, counts no sample.
+- ``evaluate_alarms`` runs on the poll thread, on the event pump thread with native alarms
+  on, and on any thread that makes a synchronous client call (open62541 delivers subscription
+  callbacks during those as well). It works out the raise and clear edges and hands them to the plugin under
+  one lock, and the plugin sends its buffered reports one batch at a time, so a clear is
+  never sent before a raise that was worked out earlier. The fault manager serves
+  ``ReportFault`` and ``ClearFault`` as two services, so two requests sent within a moment of
+  each other are not guaranteed to be handled in the order they were sent.
 
 When the connection drops, faults that are still waiting start over, because nothing was
 observed while the link was down. Faults already raised stay raised. The clear is never

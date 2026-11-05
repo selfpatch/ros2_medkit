@@ -1866,6 +1866,12 @@ void OpcuaPlugin::send_or_buffer(PendingFaultDispatch entry) {
 }
 
 void OpcuaPlugin::flush_pending_reports() {
+  // One flush at a time, from the swap to the last dispatch. Flushes run on the
+  // poll thread, the event pump thread and the REST thread; without this, one
+  // thread could swap out an older batch and dispatch it after another thread
+  // dispatched a newer one, so a clear could reach the fault manager before
+  // the raise it answers.
+  std::lock_guard<std::mutex> dispatch_lock(dispatch_mutex_);
   // Keep the reports buffered until the sink is discoverable (checked outside the
   // lock; rclcpp client state is thread-safe).
   if (!fault_clients_->report || !fault_clients_->report->service_is_ready()) {

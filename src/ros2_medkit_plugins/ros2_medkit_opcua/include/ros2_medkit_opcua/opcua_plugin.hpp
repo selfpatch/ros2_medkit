@@ -579,6 +579,16 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
     std::function<void()> dispatch;
   };
 
+  /// ``send_or_buffer`` and ``flush_pending_reports`` reached from a test, with
+  /// a dispatch the test provides, so it can check the order dispatches run in
+  /// when several threads flush. Not part of the plugin's supported surface.
+  void send_or_buffer_for_test(PendingFaultDispatch entry) {
+    send_or_buffer(std::move(entry));
+  }
+  void flush_pending_reports_for_test() {
+    flush_pending_reports();
+  }
+
   // What ``enqueue_pending_dispatch`` did, so the caller can log it.
   enum class PendingEnqueueOutcome {
     Buffered,               ///< appended, nothing lost
@@ -923,6 +933,11 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // never held across the actual dispatch (async_send_request) to keep ROS I/O out
   // of the critical section.
   std::mutex pending_reports_mutex_;
+  // Held by flush_pending_reports() from the swap to the last dispatch, so
+  // batches reach the fault manager in the order they were buffered. Lock
+  // order: dispatch_mutex_, then pending_reports_mutex_ (taken inside it for
+  // the swap only), never the other way round.
+  std::mutex dispatch_mutex_;
   std::vector<PendingFaultDispatch> pending_reports_;
 
   // Where the fault store's answer is parked between the executor thread that
