@@ -31,6 +31,8 @@ not installed, so the PostgreSQL backend is not built.
   nothing, and the jobs then wait at most one period.
 - A `correlation.cleanup_interval_sec` of 9e9 does not overflow the due time.
 
+`hosts/` holds two more plain-CMake hosts that build `gateway_core` with their own `httplib::httplib` target and compile their own code as C++14: one with a version 0.26 target whose include directory has no `httplib.h` (the vendored header must be used), one with an unversioned non-global target (CMake 3.16 cannot alias it). `hosts/run.sh` builds both and runs in the Dockerfile and in the CI job.
+
 The Dockerfile also runs `ldd` on the binary and fails when `rclcpp` appears.
 
 The script sends only the needed source directories to `docker build` as the build

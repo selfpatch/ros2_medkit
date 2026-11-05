@@ -591,6 +591,9 @@ jobs:
       - name: Build the ROS-free cores
         run: CXX=g++-9 cmake -S scripts/check_cores_without_ros -B /tmp/b && cmake --build /tmp/b
 
+      - name: Build the core in hosts with their own httplib, at C++14
+        run: CXX=g++-9 scripts/check_cores_without_ros/hosts/run.sh
+
       - name: Run the check program and verify it links no ROS library
         run: |
           ldd /tmp/b/check_cores_without_ros | tee /tmp/ldd.txt

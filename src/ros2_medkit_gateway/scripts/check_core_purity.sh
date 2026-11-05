@@ -104,9 +104,23 @@ compile_check() {
 }
 export -f compile_check
 echo "Core purity: ${#ROS_FREE_SOURCES[@]} sources, ${#ROS_FREE_HEADERS[@]} headers compiled without ROS."
-failed=$(printf '%s\n' "${ROS_FREE_SOURCES[@]}" "${ROS_FREE_HEADERS[@]}" |
-  xargs -P "$(nproc)" -I{} bash -c 'compile_check {} || echo FAILED' | tee /dev/stderr | grep -c '^FAILED' || true)
+# Each compile_check prints one "CHECKED" line, so the verdict counts files compiled and does not
+# depend on the pipeline status alone.
+expected=$((${#ROS_FREE_SOURCES[@]} + ${#ROS_FREE_HEADERS[@]}))
+results=$(mktemp)
+trap 'rm -f "$results"' EXIT
+xargs_status=0
+printf '%s\n' "${ROS_FREE_SOURCES[@]}" "${ROS_FREE_HEADERS[@]}" |
+  xargs -P "$(nproc)" -I{} bash -c 'compile_check {} && echo CHECKED || { echo CHECKED; echo FAILED; }' |
+  tee "$results" >&2 || xargs_status=$?
+failed=$(grep -c '^FAILED' "$results" || true)
+checked=$(grep -c '^CHECKED' "$results" || true)
 violations=$((violations + failed))
+if [ "$xargs_status" -ne 0 ] || [ "$checked" -ne "$expected" ]; then
+  echo "Core purity check did not run: checked $checked of $expected files (xargs status $xargs_status)."
+  exit 1
+fi
+echo "Core purity: $checked of $expected files compiled."
 
 if [ "$violations" -gt 0 ]; then
   echo ""
