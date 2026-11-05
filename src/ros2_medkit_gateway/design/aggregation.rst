@@ -1112,7 +1112,14 @@ link that is down.
 ``AggregationManager`` never records a failed fetch as the peer's declaration,
 so the last complete one survives; it re-checks that peer's health to decide
 whether to replay it marked unavailable (health check failed) or exactly as it
-was last read (health check still passes).
+was last read (health check still passes). What it records is the declaration
+alone: the entities the peer served with ``x-medkit.source: manifest``, which
+``PeerClient`` keeps as ``declared_source`` before it stamps ``peer:<name>``
+over ``source``. Every type carries that field on the routes the fetch reads,
+an Area on the list, the ``subareas`` items and the detail, so a peer's declared
+Areas are retained as its Components, Apps and Functions are. The marking has
+nothing to set on an Area or a Function: a grouping entity is a view over its
+members, and the members carry the availability.
 
 The same field on a listed ITEM answers for that item's member and for nothing
 else. ``/operations`` and ``/data`` hold back the copies their declared tree

@@ -60,7 +60,10 @@ inline constexpr std::string_view dto_name<XMedkitRos2> = "XMedkitRos2";
 // ---------------------------------------------------------------------------
 // XMedkitArea - x-medkit payload for Area entities.
 //
-// Populated by handle_get_area / handle_list_areas:
+// Populated by handle_get_area / handle_list_areas / handle_get_subareas and the
+// resolved item of handle_app_belongs_to:
+//   source               <- area.source (omitted when empty); what a gateway
+//                           aggregating this one reads the Area's origin from
 //   ros2.namespace       <- area.namespace_path
 //   parent_area_id       <- area.parent_area_id  (detail only, via ext.add())
 //   contributors         <- area.contributors    (detail only)
@@ -70,6 +73,7 @@ inline constexpr std::string_view dto_name<XMedkitRos2> = "XMedkitRos2";
 //   unresolved_component <- component_id that could not be resolved (belongs-to only)
 // ---------------------------------------------------------------------------
 struct XMedkitArea {
+  std::optional<std::string> source;
   std::optional<XMedkitRos2> ros2;
   std::optional<std::string> parent_area_id;
   std::optional<std::vector<std::string>> contributors;
@@ -79,7 +83,8 @@ struct XMedkitArea {
 
 template <>
 inline constexpr auto dto_fields<XMedkitArea> =
-    std::make_tuple(field("ros2", &XMedkitArea::ros2), field("parent_area_id", &XMedkitArea::parent_area_id),
+    std::make_tuple(field("source", &XMedkitArea::source), field("ros2", &XMedkitArea::ros2),
+                    field("parent_area_id", &XMedkitArea::parent_area_id),
                     field("contributors", &XMedkitArea::contributors), field("missing", &XMedkitArea::missing),
                     field("unresolved_component", &XMedkitArea::unresolved_component));
 

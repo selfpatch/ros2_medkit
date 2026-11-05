@@ -614,6 +614,8 @@ action. Individual entity requests for remote entities (e.g.,
 ``GET /api/v1/apps/{id}``) return ``502 Bad Gateway`` if the owning peer
 is unreachable.
 
+.. _aggregation-peer-refresh-completeness:
+
 Peer Refresh Completeness
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -637,6 +639,20 @@ What clients see then depends on the peer's health check:
 - Health check passes: the retained declaration is served unchanged and the
   incomplete refresh is logged at ``WARN``. Availability is untouched - the
   peer can still be reached; this gateway merely failed to read all of it.
+
+The declaration is what the peer declared, nothing more: the entities it serves
+with ``x-medkit.source: manifest``, of all four types. An entity the peer
+discovered from its ROS graph describes a graph this gateway cannot observe
+once the peer is silent, so it leaves until the peer answers again.
+
+A retained Area is a grouping entity: a view over its members, with no
+``x-medkit.available`` of its own. It keeps its place in ``/areas`` (or under
+its parent's ``subareas``) as the peer declared it, and its members say what
+can be reached: a Component the peer declared in it is listed under
+``/areas/{area_id}/components`` with ``available: false``, and one the peer
+discovered at runtime has left. A retained Area can therefore be empty of
+Components. A retained Function is the same kind of entity: it carries no
+availability of its own, and its hosts carry theirs.
 
 A peer that starts answering again is read again on the next refresh, and a
 retained declaration is replayed only for a peer that could not be read - so

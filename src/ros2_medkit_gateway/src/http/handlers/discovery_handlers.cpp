@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <set>
 #include <variant>
 
@@ -63,6 +64,28 @@ void set_x_medkit_available(dto::XMedkitComponent & x_medkit, bool available) {
   if (!available) {
     x_medkit.available = false;
   }
+}
+
+/// The x-medkit an Area item carries on every route that lists one: its source
+/// and its ROS 2 namespace, each omitted when empty, and no object at all when
+/// both are. The source is what a gateway aggregating this one reads the Area's
+/// origin from, and so decides whether it keeps the Area while this gateway is
+/// not answering; on an aggregating gateway it is the source the merge
+/// assigned, as for every other entity type.
+std::optional<dto::XMedkitArea> area_item_x_medkit(const Area & area) {
+  dto::XMedkitArea x_medkit;
+  if (!area.source.empty()) {
+    x_medkit.source = area.source;
+  }
+  if (!area.namespace_path.empty()) {
+    dto::XMedkitRos2 ros2;
+    ros2.ns = area.namespace_path;
+    x_medkit.ros2 = ros2;
+  }
+  if (!x_medkit.source && !x_medkit.ros2) {
+    return std::nullopt;
+  }
+  return x_medkit;
 }
 
 /// Check if a capability name is already present in the capabilities array
@@ -242,13 +265,7 @@ http::Result<dto::Collection<dto::AreaListItem>> DiscoveryHandlers::get_areas(co
         item.tags = area.tags;
       }
 
-      if (!area.namespace_path.empty()) {
-        dto::XMedkitRos2 ros2;
-        ros2.ns = area.namespace_path;
-        dto::XMedkitArea ext;
-        ext.ros2 = ros2;
-        item.x_medkit = ext;
-      }
+      item.x_medkit = area_item_x_medkit(area);
 
       response.items.push_back(std::move(item));
     }
@@ -336,12 +353,7 @@ http::Result<dto::AreaDetail> DiscoveryHandlers::get_area(const http::TypedReque
     }
     detail.links = links.build();
 
-    dto::XMedkitArea x_medkit_area;
-    if (!area.namespace_path.empty()) {
-      dto::XMedkitRos2 ros2;
-      ros2.ns = area.namespace_path;
-      x_medkit_area.ros2 = ros2;
-    }
+    dto::XMedkitArea x_medkit_area = area_item_x_medkit(area).value_or(dto::XMedkitArea{});
     if (!area.parent_area_id.empty()) {
       x_medkit_area.parent_area_id = area.parent_area_id;
     }
@@ -469,13 +481,7 @@ http::Result<dto::Collection<dto::AreaListItem>> DiscoveryHandlers::get_subareas
         item.tags = subarea.tags;
       }
 
-      if (!subarea.namespace_path.empty()) {
-        dto::XMedkitRos2 ros2;
-        ros2.ns = subarea.namespace_path;
-        dto::XMedkitArea x_medkit_area;
-        x_medkit_area.ros2 = ros2;
-        item.x_medkit = x_medkit_area;
-      }
+      item.x_medkit = area_item_x_medkit(subarea);
 
       response.items.push_back(std::move(item));
     }
@@ -1414,6 +1420,7 @@ http::Result<dto::Collection<dto::AreaListItem>> DiscoveryHandlers::get_app_belo
 
         if (snapshot.area) {
           item.name = snapshot.area->name.empty() ? area_id_ref : snapshot.area->name;
+          item.x_medkit = area_item_x_medkit(*snapshot.area);
         } else {
           item.name = area_id_ref;
           dto::XMedkitArea x_medkit_area;
