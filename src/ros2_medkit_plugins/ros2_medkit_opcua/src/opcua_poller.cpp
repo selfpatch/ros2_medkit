@@ -223,6 +223,12 @@ void OpcuaPoller::start(const PollerConfig & config) {
   }
 
   config_ = config;
+  {
+    // Under a subscription a waiting fault counts at most one sample per poll,
+    // as it would under polling.
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    detection_.set_min_sample_spacing(config_.poll_interval);
+  }
   running_ = true;
 
   // Same position as the reconnect arm's: whatever the owner must settle before
@@ -1356,9 +1362,10 @@ void OpcuaPoller::poll_loop() {
     } else {
       // A subscription is silent while a value holds, so a point waiting on
       // raise_after_* would never be looked at again. While something waits,
-      // each cycle counts as one more sample of the value it holds. A data
-      // change between this check and the pass only moves the result by one
-      // cycle: evaluate() reads the state again under the lock.
+      // each cycle counts as one more sample of a value that held since the
+      // previous cycle (see DetectionPipeline). A data change between this
+      // check and the pass only moves the result by one cycle: evaluate() reads
+      // the state again under the lock.
       bool waiting = false;
       {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
@@ -1393,8 +1400,8 @@ void OpcuaPoller::poll_loop() {
     // In subscription mode the wait is cut into steps of the subscription
     // interval with an iterate after each one, so a data change reaches the
     // plugin within about one publishing interval and not once per poll. The
-    // iterate stays on this thread: the data-change callbacks evaluate alarms
-    // against node_map_, which only this thread may read without a lock.
+    // iterate stays on this thread, with the ticks and rechecks that read the
+    // same state.
     const bool pump_subscriptions = using_subscriptions_.load();
     const auto step = pump_subscriptions
                           ? subscription_pump_interval(config_.subscription_interval_ms, config_.poll_interval)
@@ -1422,6 +1429,16 @@ void OpcuaPoller::poll_loop() {
         break;
       }
       client_.run_iterate(50);
+      // While a fault waits on raise_after_ms, check it on every step, so the
+      // wait ends on time and not at the next poll. A recheck counts no sample.
+      bool waiting = false;
+      {
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        waiting = detection_.has_pending_duration();
+      }
+      if (waiting) {
+        evaluate_alarms(DetectionPipeline::Pass::kRecheck);
+      }
     }
   }
 }
