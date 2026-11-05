@@ -2496,7 +2496,10 @@ Create Trigger
         - Yes
         - Full SOVD resource URI to observe (e.g. ``/api/v1/apps/{id}/data/{topic}``,
           ``/api/v1/apps/{id}/faults``, ``/api/v1/areas/{id}/faults``).
-          Must reference the same entity as the route.
+          Must reference the same entity as the route. The path is
+          percent-decoded as a GET path is, so the trigger watches the item
+          that GET of the same URI returns. ``observed_resource`` echoes the
+          URI as sent.
       * - ``trigger_condition``
         - Yes
         - Object with ``condition_type`` and condition-specific parameters.
