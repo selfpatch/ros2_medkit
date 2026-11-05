@@ -181,11 +181,12 @@ std::string goal_operation_name(const ActionGoalInfo & goal) {
 /// entity: the item half has to name the goal's operation, by its name or its
 /// ROS path, so `operations/missing/executions/{goal}` - or another operation's
 /// executions - is no address of it. A member half has to name the member that
-/// holds the operation: the one the goal was started on, or the one `ops`
-/// records as the owner of its action. The goal's own action is what is
-/// matched, not the operations the cache lists now, so the execution of an
-/// action server that has gone stays answerable - its status, and a cancel
-/// that reports the server unavailable.
+/// holds the operation: the one the goal was started on, or the one recorded
+/// as the owner of its action when the goal was sent (ActionGoalInfo::
+/// owner_id). The goal's own record is what is matched, not the operations
+/// the cache lists now, so the execution of an action server that has gone
+/// stays answerable under each of its ids - its status, and a cancel that
+/// reports the server unavailable.
 bool is_execution_of(const ActionGoalInfo & goal, SovdEntityType entity_type, const std::string & entity_id,
                      const AggregatedOperations & ops, const http::MemberQualifiedId & parsed) {
   if (!http::operation_item_id_names(goal_operation_name(goal), goal.action_path, parsed.item_id) ||
@@ -199,8 +200,7 @@ bool is_execution_of(const ActionGoalInfo & goal, SovdEntityType entity_type, co
   if (!started_here && goal.entity_id == parsed.member_id) {
     return true;
   }
-  const auto owner = ops.owner_by_path.find(goal.action_path);
-  return owner != ops.owner_by_path.end() && owner->second == parsed.member_id;
+  return started_here && !goal.owner_id.empty() && goal.owner_id == parsed.member_id;
 }
 
 /// The operation an item id resolves to inside one entity's operations.
@@ -564,7 +564,10 @@ tl::expected<ActionGoalInfo, ErrorInfo> owned_goal(const HandlerContext & ctx, O
     if (auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id)) {
       ops = std::move(lookup->ops);
     }
-    const auto parsed = http::parse_member_qualified_id(operation_id, ops.is_aggregated);
+    // A goal with a recorded owner was started through a grouping, whose
+    // qualified ids stay its addresses after its members are gone.
+    const auto parsed =
+        http::parse_member_qualified_id(operation_id, ops.is_aggregated || !goal_info->owner_id.empty());
     if (is_execution_of(*goal_info, entity_type, entity_id, ops, parsed)) {
       return *goal_info;
     }
@@ -1262,8 +1265,13 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
       action_type = *body.type;
     }
 
+    // The member that owns the action, for a grouping entity - the one whose
+    // operation ids can be qualified: recorded with the goal, as the grouping
+    // stops listing the action when its server goes.
+    const auto owner = ops.owner_by_path.find(action_info->full_path);
+    const std::string owner_id = ops.is_aggregated && owner != ops.owner_by_path.end() ? owner->second : std::string{};
     auto action_result = operation_mgr->send_action_goal(action_info->full_path, action_type, goal_data, entity_id,
-                                                         entity_info.sovd_type());
+                                                         entity_info.sovd_type(), owner_id);
 
     if (action_result.success && action_result.goal_accepted) {
       dto::ExecutionCreateAsync async_dto;

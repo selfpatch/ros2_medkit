@@ -215,7 +215,7 @@ void OperationManager::inject_tracked_goal_for_testing(ActionGoalInfo info) {
 
 void OperationManager::track_goal(const std::string & goal_id, const std::string & action_path,
                                   const std::string & action_type, const std::string & entity_id,
-                                  SovdEntityType entity_type) {
+                                  SovdEntityType entity_type, const std::string & owner_id) {
   std::lock_guard<std::mutex> lock(goals_mutex_);
   ActionGoalInfo info;
   info.goal_id = goal_id;
@@ -223,6 +223,7 @@ void OperationManager::track_goal(const std::string & goal_id, const std::string
   info.action_type = action_type;
   info.entity_id = entity_id;
   info.entity_type = entity_type;
+  info.owner_id = owner_id;
   info.status = ActionGoalStatus::ACCEPTED;
   info.created_at = std::chrono::system_clock::now();
   info.last_update = info.created_at;
@@ -231,7 +232,8 @@ void OperationManager::track_goal(const std::string & goal_id, const std::string
 
 ActionSendGoalResult OperationManager::send_action_goal(const std::string & action_path,
                                                         const std::string & action_type, const json & goal,
-                                                        const std::string & entity_id, SovdEntityType entity_type) {
+                                                        const std::string & entity_id, SovdEntityType entity_type,
+                                                        const std::string & owner_id) {
   ActionSendGoalResult result;
   result.success = false;
   result.goal_accepted = false;
@@ -245,7 +247,7 @@ ActionSendGoalResult OperationManager::send_action_goal(const std::string & acti
                                         std::chrono::duration<double>(service_call_timeout_sec_));
 
   if (result.success && result.goal_accepted && !result.goal_id.empty()) {
-    track_goal(result.goal_id, action_path, action_type, entity_id, entity_type);
+    track_goal(result.goal_id, action_path, action_type, entity_id, entity_type, owner_id);
     subscribe_to_action_status(action_path);
     update_goal_status(result.goal_id, ActionGoalStatus::EXECUTING);
   }
@@ -257,7 +259,8 @@ ActionSendGoalResult OperationManager::send_component_action_goal(const std::str
                                                                   const std::string & operation_name,
                                                                   const std::optional<std::string> & action_type,
                                                                   const json & goal, const std::string & entity_id,
-                                                                  SovdEntityType entity_type) {
+                                                                  SovdEntityType entity_type,
+                                                                  const std::string & owner_id) {
   ActionSendGoalResult result;
   std::string resolved_type;
   std::string action_path;
@@ -297,7 +300,7 @@ ActionSendGoalResult OperationManager::send_component_action_goal(const std::str
     return result;
   }
 
-  return send_action_goal(action_path, resolved_type, goal, entity_id, entity_type);
+  return send_action_goal(action_path, resolved_type, goal, entity_id, entity_type, owner_id);
 }
 
 ActionCancelResult OperationManager::cancel_action_goal(const std::string & action_path, const std::string & goal_id) {
