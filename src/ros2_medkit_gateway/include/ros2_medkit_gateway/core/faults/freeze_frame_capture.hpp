@@ -94,8 +94,8 @@ class FreezeFrameCapture : public FreezeFrameSource {
     EventsReadyWaiter events_ready;
   };
 
-  /// @param events Feed of fault events. Dedicated to this object: it subscribes on
-  ///        construction and unsubscribes on destruction. Must outlive this object.
+  /// @param events Feed of fault events. Subscribed on construction; the subscription
+  ///        ends on destruction. Other subscribers may share it. Must outlive this object.
   FreezeFrameCapture(FaultEventSource & events, const FreezeFrameCaptureConfig & config, Hooks hooks);
 
   ~FreezeFrameCapture() override;
@@ -121,7 +121,6 @@ class FreezeFrameCapture : public FreezeFrameSource {
   std::optional<Frame> capture_via_route(const std::string & entity_id, const std::string & fault_code);
   void log_fallback_failure_once(const std::string & fault_code, const std::string & message);
 
-  FaultEventSource & events_;
   PluginDataReaders readers_;
   StandingFaultLister standing_lister_;
   EventsReadyWaiter events_ready_;
@@ -142,12 +141,14 @@ class FreezeFrameCapture : public FreezeFrameSource {
   std::deque<ros2_medkit::fault_detection::FaultEventRecord> queue_;
   bool stop_{false};
   std::thread capture_thread_;
+  /// Declared last, so destroyed first: if the constructor throws, delivery ends before the queue goes.
+  FaultEventSubscription subscription_;
 };
 
 /// Builds the capture over the data of the plugins in `plugins`.
 ///
 /// A host attaches the result with `GatewayServices::freeze_frames()`, and passes:
-/// - `events`: a feed of its own for this capture alone (see the constructor);
+/// - `events`: its fault event source, which may also feed the fault SSE stream;
 /// - `plugins`: the manager that owns the entities;
 /// - `standing_lister` and `events_ready`: optional, see `Hooks`.
 ///

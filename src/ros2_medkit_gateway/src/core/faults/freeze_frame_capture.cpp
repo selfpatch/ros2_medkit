@@ -37,12 +37,11 @@ constexpr size_t kMaxLoggedFaultCodes = 1024;
 }  // namespace
 
 FreezeFrameCapture::FreezeFrameCapture(FaultEventSource & events, const FreezeFrameCaptureConfig & config, Hooks hooks)
-  : events_(events)
-  , readers_(std::move(hooks.readers))
+  : readers_(std::move(hooks.readers))
   , standing_lister_(std::move(hooks.standing_lister))
   , events_ready_(std::move(hooks.events_ready))
   , max_faults_(config.max_faults > 0 ? config.max_faults : 1) {
-  events_.subscribe([this](const fd::FaultEventRecord & event) {
+  subscription_ = events.subscribe([this](const fd::FaultEventRecord & event) {
     on_fault_event(event);
   });
   capture_thread_ = std::thread([this] {
@@ -51,6 +50,8 @@ FreezeFrameCapture::FreezeFrameCapture(FaultEventSource & events, const FreezeFr
 }
 
 FreezeFrameCapture::~FreezeFrameCapture() {
+  // Returns once no callback runs, so none sees the teardown below.
+  subscription_.reset();
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     stop_ = true;
@@ -61,7 +62,6 @@ FreezeFrameCapture::~FreezeFrameCapture() {
   if (capture_thread_.joinable()) {
     capture_thread_.join();
   }
-  events_.unsubscribe();
 }
 
 std::vector<FreezeFrameCapture::Frame> FreezeFrameCapture::frames_for(const std::string & fault_code) const {

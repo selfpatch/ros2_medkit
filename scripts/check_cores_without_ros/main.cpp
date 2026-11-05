@@ -51,7 +51,6 @@
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/entity_discovery.hpp"
-#include "ros2_medkit_gateway/core/faults/fault_event_fan_out.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_event_source.hpp"
 #include "ros2_medkit_gateway/core/faults/freeze_frame_capture.hpp"
 #include "ros2_medkit_gateway/core/gateway_services.hpp"
@@ -288,16 +287,21 @@ class CheckDataPlugin : public gw::GatewayPlugin, public gw::DataProvider {
   std::atomic<int> speed{10};
 };
 
-// A fault event feed the check drives by hand.
+// A fault event feed the check drives by hand. Every live subscriber gets each event.
 class ControlledFaultEvents : public gw::FaultEventSource {
  public:
-  void subscribe(Callback callback) override {
+  [[nodiscard]] gw::FaultEventSubscription subscribe(Callback callback) override {
     std::lock_guard<std::mutex> lock(mutex_);
-    callback_ = std::move(callback);
-  }
-  void unsubscribe() override {
-    std::lock_guard<std::mutex> lock(mutex_);
-    callback_ = nullptr;
+    const auto id = next_id_++;
+    subscribers_.emplace_back(id, std::move(callback));
+    return gw::FaultEventSubscription([this, id] {
+      std::lock_guard<std::mutex> inner(mutex_);
+      subscribers_.erase(std::remove_if(subscribers_.begin(), subscribers_.end(),
+                                        [id](const std::pair<uint64_t, Callback> & entry) {
+                                          return entry.first == id;
+                                        }),
+                         subscribers_.end());
+    });
   }
   void confirm(const std::string & fault_code, const std::string & source) {
     ros2_medkit::fault_detection::FaultEventRecord event;
@@ -305,14 +309,15 @@ class ControlledFaultEvents : public gw::FaultEventSource {
     event.fault.fault_code = fault_code;
     event.fault.reporting_sources = {source};
     std::lock_guard<std::mutex> lock(mutex_);
-    if (callback_) {
-      callback_(event);
+    for (const auto & entry : subscribers_) {
+      entry.second(event);
     }
   }
 
  private:
-  std::mutex mutex_;
-  Callback callback_;
+  std::mutex mutex_;  ///< Held while callbacks run, so ending a subscription waits for them.
+  uint64_t next_id_{0};
+  std::vector<std::pair<uint64_t, Callback>> subscribers_;
 };
 
 class NoParameterTransport : public gw::ParameterTransport {
@@ -735,33 +740,21 @@ gw::App hosted_app() {
   return app;
 }
 
-// Two consumers on ONE upstream fault event source: the fault SSE stream (read over HTTP) and the freeze-frame
-// capture. Returns {the SSE stream carried the confirmation, the capture holds a frame for it}.
-std::pair<bool, bool> share_one_event_source(bool through_fan_out) {
+// Two consumers on ONE fault event source: the fault SSE stream (read over HTTP) and the freeze-frame capture.
+// Returns {the SSE stream carried the confirmation, the capture holds a frame for it}.
+std::pair<bool, bool> share_one_event_source() {
   MinimalServices services;
   auto plugin_app = hosted_app();
   plugin_app.id = "plugin_app";
   services.mutable_cache().update_apps({plugin_app});
   services.add_data_plugin({"plugin_app"});
-  ControlledFaultEvents upstream;
-  gw::FaultEventFanOut fan_out(upstream);
-  std::unique_ptr<gw::FaultEventSource> sse_branch;
-  std::unique_ptr<gw::FaultEventSource> capture_branch;
-  gw::FaultEventSource * sse_source = &upstream;
-  gw::FaultEventSource * capture_source = &upstream;
-  if (through_fan_out) {
-    sse_branch = fan_out.make_branch();
-    capture_branch = fan_out.make_branch();
-    sse_source = sse_branch.get();
-    capture_source = capture_branch.get();
-  }
-  auto capture =
-      gw::make_freeze_frame_capture(gw::FreezeFrameCaptureConfig{}, *capture_source, services.plugin_manager());
+  ControlledFaultEvents events;
+  auto capture = gw::make_freeze_frame_capture(gw::FreezeFrameCaptureConfig{}, events, services.plugin_manager());
   if (!capture) {
     return {false, false};
   }
   services.set_freeze_frames(capture.get());
-  services.set_fault_events(sse_source);
+  services.set_fault_events(&events);
   RunningServer running(services);
   std::atomic<bool> sse_seen{false};
   std::atomic<bool> stream_done{false};
@@ -783,7 +776,7 @@ std::pair<bool, bool> share_one_event_source(bool through_fan_out) {
   });
   // The stream attaches asynchronously, so the confirmation is repeated until the stream has seen one.
   for (int i = 1; i <= 60 && !sse_seen; ++i) {
-    upstream.confirm("SHARED_" + std::to_string(i), "plugin_app");
+    events.confirm("SHARED_" + std::to_string(i), "plugin_app");
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
   stream_done = true;
@@ -1183,14 +1176,11 @@ static int run() {
     }
   }
 
-  // One upstream event source shared by the fault SSE stream and the capture.
+  // One fault event source shared by the fault SSE stream and the capture.
   {
-    const auto shared = share_one_event_source(true);
-    ok &= check(shared.first, "through the fan-out the fault SSE stream carries the confirmation");
-    ok &= check(shared.second, "through the fan-out the capture frames the same confirmation");
-    const auto unshared = share_one_event_source(false);
-    ok &= check(unshared.first != unshared.second,
-                "without the fan-out one source serves one consumer only: the later subscriber replaces the earlier");
+    const auto shared = share_one_event_source();
+    ok &= check(shared.first, "on a shared fault event source the fault SSE stream carries the confirmation");
+    ok &= check(shared.second, "on the same source the capture frames the confirmation");
   }
 
   // A host that registers the samplers, a transport and a bulk-data store gets subscriptions and bulk data.

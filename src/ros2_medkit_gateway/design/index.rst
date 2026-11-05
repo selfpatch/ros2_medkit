@@ -60,16 +60,16 @@ store from it:
   plugin's ``DataProvider``, else its ``x-plc-data`` route) on a thread of its
   own, keeps the frames up to ``FreezeFrameCaptureConfig::max_faults`` (oldest
   fault evicted first), and serves them as ``FreezeFrameSource``. The host
-  passes the config, a ``FaultEventSource`` that serves this capture alone,
-  and the ``PluginManager``. ``FaultEventSource::subscribe`` replaces an
-  earlier callback, so a host with one upstream source puts a
-  ``FaultEventFanOut`` (``core/faults/fault_event_fan_out.hpp``) in front of
-  it and gives the capture and the fault SSE stream a branch each. The host
-  also returns the capture from
+  passes the config, a ``FaultEventSource`` and the ``PluginManager``. A
+  source serves several subscribers, each ``FaultEventSubscription`` ending
+  only its own delivery, so the capture and the fault SSE stream can share
+  the source the host returns from ``GatewayServices::fault_events()``. The
+  host also returns the capture from
   ``GatewayServices::freeze_frames()``. The ROS 2 node feeds the same class
-  through ``EntityFreezeFrameCapture``, which subscribes on the shared
-  subscription executor and holds the startup catch-up until the events
-  subscription has matched a publisher.
+  through ``EntityFreezeFrameCapture``, which owns its event source and the
+  capture (built in that order, destroyed in reverse), subscribes on the
+  shared subscription executor and holds the startup catch-up until the
+  events subscription has matched a publisher.
 * ``GET /`` reports ``bulk_data`` true only when a store exists or rosbags are
   served, and ``cyclic_subscriptions`` true only when a transport and at least
   one sampler are registered.
