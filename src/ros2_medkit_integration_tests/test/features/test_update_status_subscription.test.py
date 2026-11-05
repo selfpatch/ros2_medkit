@@ -195,6 +195,51 @@ class TestUpdateStatusSubscription(GatewayTestCase):
         sub_ids = [s['id'] for s in items]
         self.assertIn(sub_id, sub_ids)
 
+    def _create_update_subscription(self, update_id_segment):
+        return requests.post(
+            f'{self.BASE_URL}/apps/{self.app_id}/cyclic-subscriptions',
+            json={
+                'resource': f'/api/v1/updates/{update_id_segment}/status',
+                'interval': 'fast',
+                'duration': 60,
+            },
+            timeout=5,
+        )
+
+    def test_02b_encoded_update_id_matches_get(self):
+        """A percent-encoded update id delivers the status GET returns."""
+        self._register_package('sub-enc-pkg')
+        encoded = '%73ub-enc-pkg'
+        r = self._create_update_subscription(encoded)
+        self.assertEqual(r.status_code, 201, f'Create failed: {r.text}')
+        body = r.json()
+        self.addCleanup(self._cleanup_subscription, body['id'])
+        self.assertEqual(
+            body['observed_resource'], f'/api/v1/updates/{encoded}/status')
+
+        event = None
+        with requests.get(f'http://127.0.0.1:{PORT}{body["event_source"]}',
+                          stream=True, timeout=15) as stream:
+            for line in stream.iter_lines(decode_unicode=True):
+                if line and line.startswith('data:'):
+                    event = json.loads(line[len('data:'):].strip())
+                    break
+        self.assertIsNotNone(event, 'SSE stream ended without an event')
+        self.assertNotIn('error', event, f'Sample failed: {event}')
+
+        get = requests.get(
+            f'{self.BASE_URL}/updates/{encoded}/status', timeout=5)
+        self.assertEqual(get.status_code, 200, get.text)
+        self.assertEqual(event['payload'], get.json())
+
+    def test_02c_update_id_refused_by_get_is_refused(self):
+        """An id GET refuses (here '..' hidden as %2E%2E) is refused at create."""
+        get = requests.get(
+            f'{self.BASE_URL}/updates/%2E%2E/status', timeout=5)
+        self.assertEqual(get.status_code, 400, get.text)
+        r = self._create_update_subscription('%2E%2E')
+        self.assertEqual(r.status_code, 400, r.text)
+
     def test_03_sse_stream_delivers_update_progress(self):
         """SSE stream delivers status snapshots during update prepare."""
         self._register_package('sub-sse-pkg')

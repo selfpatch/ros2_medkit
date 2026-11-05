@@ -41,28 +41,30 @@ namespace {
 using Sampled = tl::expected<nlohmann::json, std::string>;
 
 Sampled sample_data(GatewayServices & services, const std::string & entity_id, const std::string & resource_path) {
+  // The item is what follows the separator slash, as in GET /{entity}/data/{item}.
+  const std::string item_name =
+      (!resource_path.empty() && resource_path.front() == '/') ? resource_path.substr(1) : resource_path;
   // A plugin-owned entity is read through its provider, as GET /{entity}/data/{item} does.
   auto * plugins = services.plugin_manager();
   if (plugins != nullptr && plugins->get_entity_owner(entity_id)) {
-    const std::string item_name =
-        (!resource_path.empty() && resource_path.front() == '/') ? resource_path.substr(1) : resource_path;
     auto item = read_plugin_data_item(plugins, entity_id, item_name);
     if (!item) {
       return tl::make_unexpected(item.error().message);
     }
     return std::move(item->content);
   }
-  auto sample = sample_data_topic(*services.data_access_manager(), to_full_topic_path(resource_path));
+  const std::string topic_path = to_full_topic_path(item_name);
+  auto sample = sample_data_topic(*services.data_access_manager(), topic_path);
   if (!sample) {
     return tl::make_unexpected(std::string{"Topic sample failed: "} + sample.error().message);
   }
   if (sample->has_data && sample->data.has_value()) {
     nlohmann::json payload;
-    payload["id"] = resource_path;
+    payload["id"] = topic_path;
     payload["data"] = *sample->data;
     return payload;
   }
-  return tl::make_unexpected("Topic data not available: " + resource_path);
+  return tl::make_unexpected("Topic data not available: " + topic_path);
 }
 
 Sampled sample_faults(GatewayServices & services, const std::string & entity_id) {
