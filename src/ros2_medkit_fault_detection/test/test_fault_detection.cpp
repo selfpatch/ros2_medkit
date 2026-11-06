@@ -593,8 +593,12 @@ TEST(RaiseQualifierFilter, StatusBitsQualifyIndependently) {
   EXPECT_EQ(second[0].fault_code, "A");
   auto third = p.step(word(0b10), rule, q, t);  // A clears, B: 2nd sample
   ASSERT_EQ(third.size(), 2u);
-  EXPECT_FALSE(find(third, "A")->active);
-  EXPECT_TRUE(find(third, "B")->active);
+  const auto * a = find(third, "A");
+  const auto * b = find(third, "B");
+  ASSERT_NE(a, nullptr);
+  ASSERT_NE(b, nullptr);
+  EXPECT_FALSE(a->active);
+  EXPECT_TRUE(b->active);
 }
 
 TEST(RaiseQualifierFilter, EnumCodeSwitchWaitsForTheNewCode) {
