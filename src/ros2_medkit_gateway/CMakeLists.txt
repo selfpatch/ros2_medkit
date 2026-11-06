@@ -211,7 +211,10 @@ if(BUILD_TESTING)
   # build-and-test runners without breaking the build.
   find_package(ament_cmake_clang_format QUIET)
   if(ament_cmake_clang_format_FOUND)
-    file(GLOB_RECURSE _format_files
+    # Paths relative to the package, where the test runs: absolute ones make its
+    # command line grow with the checkout path, and colcon stops reading a ctest
+    # output line longer than 64 KiB, so `colcon test` never returns.
+    file(GLOB_RECURSE _format_files RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
       "include/*.h" "include/*.hpp"
       "src/*.cpp" "src/*.h" "src/*.hpp"
       "test/*.cpp" "test/*.h" "test/*.hpp"
