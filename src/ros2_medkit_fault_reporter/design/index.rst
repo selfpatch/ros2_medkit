@@ -246,8 +246,15 @@ events of one code in the order they were reported. At most ``max_pending`` repo
 response, all codes together. A report past that is dropped with a warning. A report made while the
 service is not ready is dropped at once (DEBUG log, WARN for a high-severity FAILED).
 
-Responses are processed when the node is spun. If a request arrived and only its response was lost,
-the manager gets the event twice. A repeated FAILED counts toward the manager's debounce.
+Responses and retries are processed when the node is spun. Every constructor puts the retry timer on
+the node; without a timers interface it goes to the node's default callback group. A retry is sent
+whether or not the service is ready and counts toward ``max_attempts``, so a manager that restarts
+within the attempt budget receives the pending reports. If a request arrived and only its response
+was lost, the manager gets the event twice. A repeated FAILED counts toward the manager's debounce.
+
+A destroyed reporter leaves its pending reports to its delivery, which the ROS context holds until
+the last one is confirmed or dropped. When the context shuts down, each report still waiting is
+dropped with a warning that names its fault code.
 
 Thread Safety
 ~~~~~~~~~~~~~

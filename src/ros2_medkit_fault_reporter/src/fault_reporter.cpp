@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "rclcpp/node_interfaces/node_timers.hpp"
 #include "rclcpp/version.h"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 
@@ -42,15 +43,60 @@ struct FaultReporter::Delivery : std::enable_shared_from_this<FaultReporter::Del
     int64_t request_id{-1};
   };
 
-  Delivery(rclcpp::Client<ReportFault>::SharedPtr c, const rclcpp::Logger & l, const core::DeliveryConfig & cfg)
-    : client(std::move(c)), logger(l), config(cfg) {
+  // Deliveries whose reporter is destroyed while they hold reports. One per context, owned by it;
+  // the context's shutdown drops what is left, with a warning per report.
+  struct Orphans : std::enable_shared_from_this<Orphans> {
+    void watch(rclcpp::Context & owner) {
+      std::call_once(watched, [this, &owner]() {
+        std::weak_ptr<Orphans> weak = weak_from_this();
+        owner.add_on_shutdown_callback([weak]() {
+          if (auto self = weak.lock()) {
+            self->drop_all();
+          }
+        });
+      });
+    }
+
+    void adopt(const std::shared_ptr<Delivery> & delivery) {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (delivery->pending_count() > 0) {
+        held[delivery.get()] = delivery;
+      }
+    }
+
+    void forget(const Delivery * delivery) {
+      std::shared_ptr<Delivery> last;  // destroyed after the lock is released
+      std::lock_guard<std::mutex> lock(mutex);
+      auto it = held.find(delivery);
+      if (it != held.end()) {
+        last = std::move(it->second);
+        held.erase(it);
+      }
+    }
+
+    void drop_all() {
+      std::map<const Delivery *, std::shared_ptr<Delivery>> taken;
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        taken.swap(held);
+      }
+      for (auto & entry : taken) {
+        entry.second->drop_pending();
+      }
+    }
+
+    std::mutex mutex;
+    std::map<const Delivery *, std::shared_ptr<Delivery>> held;
+    std::once_flag watched;
+  };
+
+  Delivery(rclcpp::Client<ReportFault>::SharedPtr c, const rclcpp::Logger & l, const core::DeliveryConfig & cfg,
+           const rclcpp::Context::SharedPtr & ctx)
+    : client(std::move(c)), logger(l), config(cfg), context(ctx) {
   }
 
   void enqueue(const std::shared_ptr<ReportFault::Request> & request) {
     std::lock_guard<std::mutex> lock(mutex);
-    if (!timer) {
-      retry_due_locked();  // no timer: a new report is the chance to retry the older ones
-    }
     if (pending >= static_cast<size_t>(config.max_pending)) {
       RCLCPP_WARN(logger, "%zu reports wait for the FaultManager, dropping the report for '%s'", pending,
                   request->fault_code.c_str());
@@ -72,28 +118,77 @@ struct FaultReporter::Delivery : std::enable_shared_from_this<FaultReporter::Del
     return pending;
   }
 
-  void shutdown() {
-    std::lock_guard<std::mutex> lock(mutex);
-    if (timer) {
-      timer->cancel();
-      timer.reset();
+  // The reporter is destroyed. Pending reports stay here, held by the context, and are sent until
+  // confirmed or dropped like any other.
+  void release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (pending == 0) {
+        stop_timer_locked();
+        return;
+      }
     }
+    auto ctx = context.lock();
+    if (!ctx || !ctx->is_valid()) {
+      drop_pending();
+      return;
+    }
+    auto registry = ctx->get_sub_context<Orphans>();
+    registry->watch(*ctx);
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      orphans = registry;
+    }
+    registry->adopt(shared_from_this());
+    if (!ctx->is_valid()) {
+      registry->drop_all();  // the shutdown ran before the adoption
+    }
+  }
+
+  // Drops every pending report with a warning that names its fault code.
+  void drop_pending() {
+    std::lock_guard<std::mutex> lock(mutex);
+    for (const auto & [code, queue] : queues) {
+      if (!queue.empty() && queue.front().request_id >= 0) {
+        client->remove_pending_request(queue.front().request_id);
+      }
+      for (size_t i = 0; i < queue.size(); ++i) {
+        RCLCPP_WARN(logger, "Shut down before the FaultManager answered, dropping the report for '%s'", code.c_str());
+      }
+    }
+    queues.clear();
+    pending = 0;
+    stop_timer_locked();
   }
 
   void on_response(const std::string & code, const std::shared_ptr<ReportFault::Request> & request) {
-    std::lock_guard<std::mutex> lock(mutex);
-    auto it = queues.find(code);
-    if (it == queues.end() || it->second.empty() || it->second.front().request != request) {
-      return;  // the answer to an attempt that was already replaced
+    std::shared_ptr<Orphans> done;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      auto it = queues.find(code);
+      if (it == queues.end() || it->second.empty() || it->second.front().request != request) {
+        return;  // the answer to an attempt that was already replaced
+      }
+      pop_front_locked(code);
+      done = drained_orphans_locked();
     }
-    pop_front_locked(code);
+    if (done) {
+      done->forget(this);
+    }
   }
 
   void on_timer() {
-    std::lock_guard<std::mutex> lock(mutex);
-    retry_due_locked();
-    if (pending == 0 && timer) {
-      timer->cancel();
+    std::shared_ptr<Orphans> done;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      retry_due_locked();
+      if (pending == 0 && timer) {
+        timer->cancel();
+      }
+      done = drained_orphans_locked();
+    }
+    if (done) {
+      done->forget(this);
     }
   }
 
@@ -107,6 +202,18 @@ struct FaultReporter::Delivery : std::enable_shared_from_this<FaultReporter::Del
     if (timer && timer->is_canceled()) {
       timer->reset();
     }
+  }
+
+  void stop_timer_locked() {
+    if (timer) {
+      timer->cancel();
+      timer.reset();
+    }
+  }
+
+  // The registry that holds this delivery once it has nothing left to send, else null.
+  std::shared_ptr<Orphans> drained_orphans_locked() {
+    return pending == 0 ? orphans.lock() : nullptr;
   }
 
   void send_front_locked(const std::string & code) {
@@ -157,6 +264,8 @@ struct FaultReporter::Delivery : std::enable_shared_from_this<FaultReporter::Del
                     entry.attempts, code.c_str());
         pop_front_locked(code);
       } else {
+        RCLCPP_DEBUG(logger, "No response for the report for '%s', sending attempt %d of %d (service %s)", code.c_str(),
+                     entry.attempts + 1, config.max_attempts, client->service_is_ready() ? "ready" : "not ready");
         send_front_locked(code);
       }
     }
@@ -165,6 +274,8 @@ struct FaultReporter::Delivery : std::enable_shared_from_this<FaultReporter::Del
   rclcpp::Client<ReportFault>::SharedPtr client;
   rclcpp::Logger logger;
   core::DeliveryConfig config;
+  std::weak_ptr<rclcpp::Context> context;
+  std::weak_ptr<Orphans> orphans;
 };
 
 FaultReporter::FaultReporter(const rclcpp::node_interfaces::NodeBaseInterface::SharedPtr & node_base,
@@ -206,28 +317,35 @@ FaultReporter::FaultReporter(const rclcpp::node_interfaces::NodeBaseInterface::S
       node_base, node_graph, node_services, service_name, rmw_qos_profile_services_default, nullptr);
 #endif
 
-  delivery_ = std::make_shared<Delivery>(client_, logger_, delivery_config_);
+  delivery_ = std::make_shared<Delivery>(client_, logger_, delivery_config_, node_base->get_context());
+  std::weak_ptr<Delivery> weak = delivery_;
+  const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(delivery_config_.ack_timeout_sec / 2.0));
+  delivery_->timer = std::make_shared<rclcpp::WallTimer<std::function<void()>>>(
+      period,
+      [weak]() {
+        if (auto self = weak.lock()) {
+          self->on_timer();
+        }
+      },
+      node_base->get_context());
+  // Without a timers interface the timer goes to the node's default callback group all the same.
   if (node_timers) {
-    std::weak_ptr<Delivery> weak = delivery_;
-    const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::duration<double>(delivery_config_.ack_timeout_sec / 2.0));
-    delivery_->timer = std::make_shared<rclcpp::WallTimer<std::function<void()>>>(
-        period,
-        [weak]() {
-          if (auto self = weak.lock()) {
-            self->on_timer();
-          }
-        },
-        node_base->get_context());
     node_timers->add_timer(delivery_->timer, nullptr);
-    delivery_->timer->cancel();
+  } else {
+    rclcpp::node_interfaces::NodeTimers(node_base.get()).add_timer(delivery_->timer, nullptr);
   }
+  delivery_->timer->cancel();
 
   RCLCPP_DEBUG(logger_, "FaultReporter initialized for source: %s", source_id_.c_str());
 }
 
 FaultReporter::~FaultReporter() {
-  delivery_->shutdown();
+  try {
+    delivery_->release();
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(logger_, "Could not keep the pending reports of a destroyed reporter: %s", e.what());
+  }
 }
 
 size_t FaultReporter::pending_reports() const {

@@ -147,8 +147,16 @@ retry covers that gap.
 - **Not ready:** a report made while the service is not ready is dropped at once, as before.
 - **Duplicates:** if a request arrived and only its response was lost, the manager gets the event
   twice. A repeated FAILED counts toward the manager's debounce.
-- **Spinning:** responses and retries need the node to be spun. A reporter built from the raw
-  interfaces constructor without timers retries only when the next report is made.
+- **Spinning:** responses and retries need the node to be spun. Every constructor puts the retry
+  timer on the node; the raw interfaces constructor without a timers interface uses the node's
+  default callback group.
+- **Retry while not ready:** a retry is sent whether or not the service is ready, and it counts toward
+  `max_attempts`. A FaultManager that restarts within `ack_timeout_sec` x `max_attempts` (5 s by
+  default) gets the pending reports. After a crash the dead server can look ready for some seconds.
+- **Destroyed reporter:** destroying a reporter does not cancel its reports. The ones still waiting
+  are sent until confirmed or dropped after `max_attempts`, as long as the node is spun.
+- **Shutdown:** when the ROS context shuts down, each report still waiting is dropped with a warning
+  that names its fault code. Reports of a destroyed reporter whose node is gone wait until then.
 
 | Parameter | Type | Default | Range | Why |
 |-----------|------|---------|-------|-----|
