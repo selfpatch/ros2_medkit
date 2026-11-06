@@ -149,6 +149,10 @@ class CorrelationEngine {
   /// Generate unique cluster ID
   std::string generate_cluster_id(const std::string & rule_id);
 
+  /// Reassign cluster representative from remaining fault_codes and their severities
+  void reassign_representative(ClusterData & cluster,
+                               const std::map<std::string, std::string> & fault_severities) const;
+
   CorrelationConfig config_;
   std::unique_ptr<PatternMatcher> matcher_;
 
@@ -169,6 +173,9 @@ class CorrelationEngine {
 
   /// Active clusters (cluster_id -> data)
   std::map<std::string, ClusterData> active_clusters_;
+
+  /// Per-fault severities for active clusters (cluster_id -> (fault_code -> severity))
+  std::map<std::string, std::map<std::string, std::string>> active_cluster_severities_;
 
   /// Mapping from fault code to cluster ID (for faults in clusters)
   std::map<std::string, std::string> fault_to_cluster_;

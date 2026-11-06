@@ -454,11 +454,13 @@ TEST_F(CorrelationEngineTest, CleanupExpiredDoesNotBreakActiveCluster) {
   // process_clear must still find the active cluster via fault_to_cluster_
   engine.process_clear("MOTOR_COMM_FL");
 
-  // Cluster should still exist with 2 remaining fault codes
+  // Cluster should still exist with 2 remaining fault codes and updated representative
   EXPECT_EQ(1u, engine.get_cluster_count());
   auto clusters = engine.get_clusters();
   ASSERT_EQ(1u, clusters.size());
   EXPECT_EQ(2u, clusters[0].fault_codes.size());
+  EXPECT_EQ("SENSOR_TIMEOUT", clusters[0].representative_code);
+  EXPECT_EQ("ERROR", clusters[0].representative_severity);
 }
 
 // ============================================================================
@@ -760,6 +762,33 @@ TEST_F(CorrelationEngineTest, CleanupExpiredRemovesFaultToClusterEntries) {
   auto clusters = engine.get_clusters();
   ASSERT_EQ(1u, clusters.size());
   EXPECT_EQ(3u, clusters[0].fault_codes.size());
+}
+
+TEST_F(CorrelationEngineTest, ClearRepresentativeAfterNewWindowReplacesPendingReassignsActiveCluster) {
+  auto config = create_auto_cluster_config();  // highest_severity, min_count=3, window_ms=500
+  CorrelationEngine engine(config);
+
+  auto t0 = std::chrono::steady_clock::now();
+
+  // Activate first cluster: SENSOR_TIMEOUT (CRITICAL) is representative
+  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
+  engine.process_fault("SENSOR_TIMEOUT", "CRITICAL", t0 + 10ms);
+  engine.process_fault("DRIVE_COMM_ERROR", "ERROR", t0 + 20ms);
+  ASSERT_EQ(1u, engine.get_cluster_count());
+
+  // After window_ms (500ms), a new fault starts a fresh pending cluster for the same rule,
+  // replacing pending_clusters_["comm_storm"]
+  engine.process_fault("OTHER_COMM_ERROR", "WARNING", t0 + 600ms);
+
+  // Clearing the representative of the first active cluster must still reassign
+  // its representative to the next-highest remaining fault (DRIVE_COMM_ERROR)
+  engine.process_clear("SENSOR_TIMEOUT");
+
+  auto clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  EXPECT_EQ(2u, clusters[0].fault_codes.size());
+  EXPECT_EQ("DRIVE_COMM_ERROR", clusters[0].representative_code);
+  EXPECT_EQ("ERROR", clusters[0].representative_severity);
 }
 
 int main(int argc, char ** argv) {
