@@ -56,7 +56,9 @@ READY_LINE = re.compile(re.escape(f'Main executor bounded to {EXECUTOR_THREADS} 
 # Answered on the gateway's main executor, so a reply means it is spinning.
 PARAMETER_SERVICE = '/ros2_medkit_gateway/list_parameters'
 PARAMETER_CALL_TIMEOUT_SEC = 1.0 * TIME_SCALE
-HANDLER_LINE = re.compile(r'\[(\d+\.\d+)\] \[rclcpp\]: signal_handler\(SIGINT/SIGTERM\)')
+# Humble and Jazzy log signal_handler(SIGINT/SIGTERM), Lyrical logs signal_handler(signum=N).
+HANDLER_LINE = re.compile(
+    r'\[(\d+\.\d+)\] \[rclcpp\]: signal_handler\((?:SIGINT/SIGTERM|signum=\d+)\)')
 
 
 def generate_test_description():
