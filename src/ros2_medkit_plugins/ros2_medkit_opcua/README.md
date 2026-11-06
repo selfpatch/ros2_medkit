@@ -321,7 +321,7 @@ nodes:
     entity_id: tank_process
     data_name: tank_pressure
     data_type: float
-    raise_after_samples: 3         # optional: 3 new readings in a row (1..10000, default 1)
+    raise_after_samples: 3         # optional: 3 polls in a row (1..10000, default 1)
     raise_after_ms: 2000           # optional: held for 2 s without a break (0..3600000, default 0)
     alarm:
       fault_code: PLC_TANK_OVERPRESSURE_HIGH
@@ -388,23 +388,23 @@ nodes:
 # config, so the loader logs a warning and skips that bit rule while still loading
 # the rest of the config.
 #
-# Raise qualifier (`raise_after_samples`, `raise_after_ms`): when both are set,
-# both must be met. A sample is a new reading of the point:
-#   - polling: one per successful read, so `raise_after_samples: N` takes about
-#     N x `poll_interval_ms`. A failed read is not a sample and does not complete
-#     `raise_after_ms`; the wait continues on the next successful read.
-#   - subscriptions: the data change that starts a wait is the first sample.
-#     After it, a fault counts at most one more sample per `poll_interval_ms`,
-#     from a data change or, while the value holds, from the poll (the server
-#     sends nothing for a steady value). So samples stay one poll apart, as with
-#     polling, whether the value holds or keeps moving, and
-#     `raise_after_samples: N` takes N-1 to N poll intervals after the change.
-#     Changes of other points do not count, and a point that has not reported
-#     since a reconnect is not looked at until it does.
+# Raise qualifier (`raise_after_samples`, `raise_after_ms`):
+#   - polling: a sample is one successful read, so `raise_after_samples: N`
+#     raises on the Nth read in a row, (N-1) x `poll_interval_ms` after the
+#     first. When both are set, both must be met. A failed read is not a sample
+#     and does not complete `raise_after_ms`; the wait continues on the next
+#     successful read.
+#   - subscriptions: the server sends a value when it changes, not each poll,
+#     so there are no samples to count. `raise_after_samples: N` becomes a wait
+#     of (N-1) x `poll_interval_ms` from the data change that starts it, or
+#     `raise_after_ms` when that is longer. Changes of other points do not
+#     start a wait, and a point that has not reported since a reconnect is not
+#     looked at until it does. Keep the wait longer than
+#     `subscription_interval_ms`, since a change arrives once per publish.
 # The check runs once per `poll_interval_ms`, so a raise can come up to one poll
-# interval after `raise_after_ms` ends. With subscriptions and a
-# `subscription_interval_ms` shorter than the poll, a waiting `raise_after_ms`
-# is also checked every `subscription_interval_ms`, so it ends on time. A single healthy reading restarts the
+# interval after the wait ends. With subscriptions and a
+# `subscription_interval_ms` shorter than the poll, a waiting fault is also
+# checked every `subscription_interval_ms`, so it ends on time. A single healthy reading restarts the
 # wait. A lost connection also restarts it, since nothing was seen while the link
 # was down. Only the raise waits: the clear is immediate. Each bit of a status
 # word and each code of an enum waits on its own. A fault that is still waiting

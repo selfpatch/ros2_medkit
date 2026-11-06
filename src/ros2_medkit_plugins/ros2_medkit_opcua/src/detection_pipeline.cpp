@@ -35,9 +35,10 @@ DetectionPipeline::evaluate(const std::vector<const NodeMapEntry *> & entries,
   std::vector<Change> changes;
 
   for (const auto * entry : entries) {
-    // A recheck can only end a raise_after_ms wait, so only those entries
-    // need it.
-    if (pass == Pass::kRecheck && entry->raise_qualifier.min_duration.count() == 0) {
+    const fd::RaiseQualifier qualifier =
+        subscribed ? entry->raise_qualifier.for_change_notifications(poll_interval_) : entry->raise_qualifier;
+    // A recheck can only end a wait in time, so only those entries need it.
+    if (pass == Pass::kRecheck && qualifier.min_duration.count() == 0) {
       continue;
     }
     auto it = values.find(entry->node_id_str);
@@ -54,15 +55,12 @@ DetectionPipeline::evaluate(const std::vector<const NodeMapEntry *> & entries,
       node->evaluated = received;
     }
 
-    // Under a subscription a tick stands for one more sample of a value that
-    // holds; how often it may count is decided per fault below.
-    const bool tick_sample = subscribed && pass == Pass::kTick;
-
     // Under polling a value that did not arrive is left over from a failed
     // read. Every value in the cache was evaluated when it arrived, so skipping
     // it changes nothing for a point without a qualifier, and keeps a waiting
-    // point from counting it.
-    const bool fresh = arrived || tick_sample;
+    // point from counting it. Under a subscription it is the current value and
+    // lets a wait end, but it starts none.
+    const bool fresh = arrived;
     if (!fresh && !subscribed) {
       continue;
     }
@@ -72,35 +70,10 @@ DetectionPipeline::evaluate(const std::vector<const NodeMapEntry *> & entries,
       continue;
     }
 
-    auto evaluated = fd::evaluate(to_fd_value(it->second), *entry->detection);
-    std::vector<fd::FaultSignal> signals;
-    if (entry->raise_qualifier.immediate() || !subscribed || min_spacing_.count() <= 0) {
-      signals = qualifier_.apply(evaluated, entry->raise_qualifier, now, fresh);
-    } else {
-      // Under a subscription a change that starts a wait counts at once, and
-      // while the wait is open a fault counts at most one sample per spacing,
-      // so two quick changes, or a change and the tick right after it, are one
-      // sample, as under polling. Each fault of a status word keeps its own
-      // spacing.
-      signals.reserve(evaluated.size());
-      for (const auto & s : evaluated) {
-        bool counts = fresh;
-        if (counts && s.active && qualifier_.pending(s.fault_code)) {
-          const auto last = last_counted_.find(s.fault_code);
-          counts = last == last_counted_.end() || now - last->second >= min_spacing_;
-        }
-        auto out = qualifier_.apply({s}, entry->raise_qualifier, now, counts);
-        if (counts && s.active) {
-          last_counted_[s.fault_code] = now;
-        }
-        signals.insert(signals.end(), out.begin(), out.end());
-      }
-    }
+    const auto signals =
+        qualifier_.apply(fd::evaluate(to_fd_value(it->second), *entry->detection), qualifier, now, fresh);
     for (const auto & s : signals) {
       alarms[s.fault_code] = s.active;
-      if (entry->raise_qualifier.min_duration.count() > 0) {
-        duration_codes_.insert(s.fault_code);
-      }
     }
     for (auto & edge : tracker_.apply(signals)) {
       changes.push_back({entry->entity_id, std::move(edge)});
@@ -119,15 +92,6 @@ void DetectionPipeline::link_lost() {
 
 bool DetectionPipeline::has_pending() const {
   return qualifier_.has_pending();
-}
-
-bool DetectionPipeline::has_pending_duration() const {
-  for (const auto & code : duration_codes_) {
-    if (qualifier_.pending(code)) {
-      return true;
-    }
-  }
-  return false;
 }
 
 fd::Value DetectionPipeline::to_fd_value(const OpcuaValue & v) {

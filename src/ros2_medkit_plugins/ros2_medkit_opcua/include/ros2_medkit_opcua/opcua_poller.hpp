@@ -396,7 +396,7 @@ class OpcuaPoller {
     on_data_change(node_id, value);
   }
 
-  /// ``evaluate_alarms`` as the poll thread runs it for a tick or a recheck,
+  /// ``evaluate_alarms`` as the poll thread runs it for a recheck,
   /// with the poller treated as being in subscription mode.
   void evaluate_alarms_for_test(DetectionPipeline::Pass pass) {
     using_subscriptions_ = true;
@@ -531,7 +531,7 @@ class OpcuaPoller {
   DetectionPipeline detection_;
   // Held by evaluate_alarms() from working out the edges until they are handed
   // to alarm_callback_, so two threads cannot hand them over out of order: the
-  // poll thread (ticks, rechecks, polls) and whichever thread runs a data-change
+  // poll thread (rechecks, polls) and whichever thread runs a data-change
   // callback (the poll thread, the event pump thread with native alarms on,
   // or any thread that makes a synchronous client call).
   // Lock order: the client's lock (held around data-change callbacks), then
