@@ -174,8 +174,16 @@ class TestSourceResolution(unittest.TestCase):
                         pub.publish(_aborted(s + 1))
                         held.append(pub)
                 servers.append((node, held))
+            # The bridge's reader was announced before the stop, so each new writer can match it.
+            held_pubs = [p for _, held in servers for p in held]
+            deadline = time.time() + 30.0
+            while time.time() < deadline and any(
+                    p.get_subscription_count() == 0 for p in held_pubs):
+                time.sleep(0.05)
+            matched = sum(1 for p in held_pubs if p.get_subscription_count() > 0)
         finally:
             os.kill(pid, signal.SIGCONT)
+        self.assertEqual(matched, len(actions), 'a server publisher never matched the bridge')
 
         want = len(actions)
         deadline = time.time() + 30.0
