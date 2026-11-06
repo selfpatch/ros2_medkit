@@ -28,6 +28,10 @@ Key concepts:
 - **Lock breaking**: A client can forcefully replace an existing lock by setting
   ``break_lock: true`` (unless the entity is configured as non-breakable)
 - **Automatic expiry**: Locks expire after a TTL and are cleaned up periodically
+- **One entity, one lock**: A lock is held on the entity the route names, by its
+  type and id. An app and a component may share an id; each has its own lock,
+  its own configuration, and its own cyclic subscriptions, and a lock taken on
+  ``/components/x`` is not seen on ``/apps/x``
 
 Locking is supported on **components** and **apps** only. Areas cannot be locked
 directly.
@@ -215,6 +219,10 @@ Configuration is resolved with the following priority:
 2. Per-type default (``locking.defaults.components`` or ``locking.defaults.apps``)
 3. Global default (``locking.default_max_expiration``)
 
+All three are chosen by the type of the route: a manifest ``lock:`` section on
+component ``x`` configures that component, not a runtime app ``x``, which takes
+the ``locking.defaults.apps`` values.
+
 Lock Expiry
 -----------
 
@@ -252,14 +260,17 @@ entity resources.
 
 .. code-block:: cpp
 
-   // In a plugin provider method
-   auto result = context.check_lock(entity_id, client_id, "configurations");
+   // In a plugin provider method, naming the entity by its type and id
+   auto result = context.check_lock(SovdEntityType::APP, entity_id, client_id, "configurations");
    if (!result.allowed) {
      return tl::make_unexpected("Blocked by lock: " + result.denied_reason);
    }
 
 ``check_lock`` delegates to ``LockManager::check_access`` and performs the same
 two-phase check (lock-required + lock-conflict) used by the built-in handlers.
+The id-only forms (``check_lock(entity_id, ...)`` and the like) resolve a bare id
+only while one entity holds it and answer ``invalid-parameter`` otherwise; see
+:doc:`plugin-system`.
 If locking is disabled on the gateway, ``check_lock`` always returns
 ``allowed = true``.
 
@@ -267,7 +278,7 @@ If locking is disabled on the gateway, ``check_lock`` always returns
 
 .. code-block:: cpp
 
-   auto lock_result = context.acquire_lock(entity_id, client_id, {"configurations"}, 300);
+   auto lock_result = context.acquire_lock(SovdEntityType::APP, entity_id, client_id, {"configurations"}, 300);
    if (!lock_result) {
      // lock_result.error() contains LockError with code, message, status_code
      return tl::make_unexpected(lock_result.error().message);

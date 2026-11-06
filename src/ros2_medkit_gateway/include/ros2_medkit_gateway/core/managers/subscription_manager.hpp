@@ -27,6 +27,8 @@
 
 #include <tl/expected.hpp>
 
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
+
 namespace ros2_medkit_gateway {
 
 /// Cyclic subscription delivery interval (SOVD SubscriptionInterval)
@@ -45,7 +47,7 @@ std::chrono::milliseconds interval_to_duration(CyclicInterval interval);
 struct CyclicSubscriptionInfo {
   std::string id;
   std::string entity_id;
-  std::string entity_type;  // "apps" or "components"
+  std::string entity_type;  // "apps", "components" or "functions" (entity_type_from_collection reads it)
   std::string resource_uri;
   std::string collection;     // "data", "faults", "configurations", "x-medkit-*"
   std::string resource_path;  // path within collection (may be empty)
@@ -93,8 +95,9 @@ class SubscriptionManager {
   /// Get a subscription by ID
   std::optional<CyclicSubscriptionInfo> get(const std::string & sub_id) const;
 
-  /// List all subscriptions for an entity
-  std::vector<CyclicSubscriptionInfo> list(const std::string & entity_id) const;
+  /// List all subscriptions for an entity, named by its type and id: the
+  /// subscriptions of an App are not those of a Component sharing its id.
+  std::vector<CyclicSubscriptionInfo> list(SovdEntityType entity_type, const std::string & entity_id) const;
 
   /// Update interval and/or duration. Returns updated info or error.
   tl::expected<CyclicSubscriptionInfo, std::string>

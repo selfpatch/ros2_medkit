@@ -28,38 +28,38 @@ std::string LockManager::generate_lock_id() {
   return "lock_" + std::to_string(id);
 }
 
-EntityLockConfig LockManager::get_entity_config(const std::string & entity_id, const std::string & entity_type) const {
-  // Entity-specific override takes precedence
-  auto entity_it = config_.entity_overrides.find(entity_id);
-  if (entity_it != config_.entity_overrides.end()) {
-    return entity_it->second;
-  }
-
-  // Type-level default
-  auto type_it = config_.type_defaults.find(entity_type);
-  if (type_it != config_.type_defaults.end()) {
-    return type_it->second;
-  }
-
-  // Global defaults
-  return EntityLockConfig{};
-}
-
-std::string LockManager::get_entity_type_string(const std::string & entity_id) const {
-  auto entity_type = cache_.get_entity_type(entity_id);
-  switch (entity_type) {
+const char * lock_type_keyword(SovdEntityType type) {
+  switch (type) {
     case SovdEntityType::AREA:
       return "area";
     case SovdEntityType::COMPONENT:
       return "component";
     case SovdEntityType::APP:
       return "app";
-    case SovdEntityType::SERVER:
     case SovdEntityType::FUNCTION:
+      return "function";
+    case SovdEntityType::SERVER:
     case SovdEntityType::UNKNOWN:
     default:
       return "unknown";
   }
+}
+
+EntityLockConfig LockManager::get_entity_config(const MemberRef & entity) const {
+  // Entity-specific override takes precedence
+  auto entity_it = config_.entity_overrides.find(entity);
+  if (entity_it != config_.entity_overrides.end()) {
+    return entity_it->second;
+  }
+
+  // Type-level default
+  auto type_it = config_.type_defaults.find(lock_type_keyword(entity.type));
+  if (type_it != config_.type_defaults.end()) {
+    return type_it->second;
+  }
+
+  // Global defaults
+  return EntityLockConfig{};
 }
 
 bool LockManager::lock_covers_collection(const LockInfo & lock, const std::string & collection) {
@@ -70,7 +70,8 @@ bool LockManager::lock_covers_collection(const LockInfo & lock, const std::strin
   return std::find(lock.scopes.begin(), lock.scopes.end(), collection) != lock.scopes.end();
 }
 
-tl::expected<LockInfo, LockError> LockManager::acquire(const std::string & entity_id, const std::string & client_id,
+tl::expected<LockInfo, LockError> LockManager::acquire(SovdEntityType entity_type, const std::string & entity_id,
+                                                       const std::string & client_id,
                                                        const std::vector<std::string> & scopes, int expiration_seconds,
                                                        bool break_lock) {
   if (!config_.enabled) {
@@ -85,9 +86,8 @@ tl::expected<LockInfo, LockError> LockManager::acquire(const std::string & entit
     }
   }
 
-  // Resolve entity type for config lookup
-  std::string entity_type = get_entity_type_string(entity_id);
-  EntityLockConfig entity_config = get_entity_config(entity_id, entity_type);
+  const MemberRef key{entity_type, entity_id};
+  EntityLockConfig entity_config = get_entity_config(key);
 
   // Determine effective max expiration
   int max_exp = entity_config.max_expiration > 0 ? entity_config.max_expiration : config_.default_max_expiration;
@@ -105,7 +105,7 @@ tl::expected<LockInfo, LockError> LockManager::acquire(const std::string & entit
   std::unique_lock<std::shared_mutex> write_lock(mutex_);
 
   // Check for existing lock
-  auto existing_it = locks_.find(entity_id);
+  auto existing_it = locks_.find(key);
   if (existing_it != locks_.end()) {
     auto now = std::chrono::steady_clock::now();
 
@@ -138,6 +138,7 @@ tl::expected<LockInfo, LockError> LockManager::acquire(const std::string & entit
   LockInfo info;
   info.lock_id = generate_lock_id();
   info.entity_id = entity_id;
+  info.entity_type = entity_type;
   info.client_id = client_id;
   info.scopes = scopes;
   info.breakable = entity_config.breakable;
@@ -146,20 +147,21 @@ tl::expected<LockInfo, LockError> LockManager::acquire(const std::string & entit
   info.expiration_seconds = expiration_seconds;
 
   // Insert into primary storage and secondary index
-  lock_id_index_[info.lock_id] = entity_id;
-  locks_[entity_id] = info;
+  lock_id_index_[info.lock_id] = key;
+  locks_[key] = info;
 
   return info;
 }
 
-tl::expected<void, LockError> LockManager::release(const std::string & entity_id, const std::string & client_id) {
+tl::expected<void, LockError> LockManager::release(SovdEntityType entity_type, const std::string & entity_id,
+                                                   const std::string & client_id) {
   if (!config_.enabled) {
     return tl::make_unexpected(LockError{"lock-disabled", "Locking is not enabled on this gateway", 403, std::nullopt});
   }
 
   std::unique_lock<std::shared_mutex> write_lock(mutex_);
 
-  auto it = locks_.find(entity_id);
+  auto it = locks_.find(MemberRef{entity_type, entity_id});
   if (it == locks_.end()) {
     return tl::make_unexpected(
         LockError{"lock-not-found", "No lock exists for entity '" + entity_id + "'", 404, std::nullopt});
@@ -177,8 +179,8 @@ tl::expected<void, LockError> LockManager::release(const std::string & entity_id
   return {};
 }
 
-tl::expected<LockInfo, LockError> LockManager::extend(const std::string & entity_id, const std::string & client_id,
-                                                      int additional_seconds) {
+tl::expected<LockInfo, LockError> LockManager::extend(SovdEntityType entity_type, const std::string & entity_id,
+                                                      const std::string & client_id, int additional_seconds) {
   if (!config_.enabled) {
     return tl::make_unexpected(LockError{"lock-disabled", "Locking is not enabled on this gateway", 403, std::nullopt});
   }
@@ -189,8 +191,8 @@ tl::expected<LockInfo, LockError> LockManager::extend(const std::string & entity
   }
 
   // Enforce max expiration (same cap as acquire)
-  auto entity_type_str = get_entity_type_string(entity_id);
-  auto entity_cfg = get_entity_config(entity_id, entity_type_str);
+  const MemberRef key{entity_type, entity_id};
+  auto entity_cfg = get_entity_config(key);
   int max_exp = entity_cfg.max_expiration > 0 ? entity_cfg.max_expiration : config_.default_max_expiration;
   if (additional_seconds > max_exp) {
     return tl::make_unexpected(LockError{"invalid-expiration",
@@ -201,7 +203,7 @@ tl::expected<LockInfo, LockError> LockManager::extend(const std::string & entity
 
   std::unique_lock<std::shared_mutex> write_lock(mutex_);
 
-  auto it = locks_.find(entity_id);
+  auto it = locks_.find(key);
   if (it == locks_.end()) {
     return tl::make_unexpected(
         LockError{"lock-not-found", "No lock exists for entity '" + entity_id + "'", 404, std::nullopt});
@@ -226,10 +228,10 @@ tl::expected<LockInfo, LockError> LockManager::extend(const std::string & entity
   return it->second;
 }
 
-std::optional<LockInfo> LockManager::get_lock(const std::string & entity_id) const {
+std::optional<LockInfo> LockManager::get_lock(SovdEntityType entity_type, const std::string & entity_id) const {
   std::shared_lock<std::shared_mutex> read_lock(mutex_);
 
-  auto it = locks_.find(entity_id);
+  auto it = locks_.find(MemberRef{entity_type, entity_id});
   if (it == locks_.end()) {
     return std::nullopt;
   }
@@ -251,8 +253,8 @@ std::optional<LockInfo> LockManager::get_lock_by_id(const std::string & lock_id)
   return lock_it->second;
 }
 
-LockAccessResult LockManager::check_access(const std::string & entity_id, const std::string & client_id,
-                                           const std::string & collection) const {
+LockAccessResult LockManager::check_access(SovdEntityType entity_type, const std::string & entity_id,
+                                           const std::string & client_id, const std::string & collection) const {
   if (!config_.enabled) {
     return LockAccessResult{true, "", "", ""};
   }
@@ -262,14 +264,14 @@ LockAccessResult LockManager::check_access(const std::string & entity_id, const 
   // Phase 1: Check lock_required - if the entity's config requires a lock for this collection,
   // the client must hold a lock to proceed. Enforcement is opt-in via manifest lock: section
   // (no default required_scopes in gateway_params.yaml).
-  auto entity_type_str = get_entity_type_string(entity_id);
-  auto entity_cfg = get_entity_config(entity_id, entity_type_str);
+  const MemberRef key{entity_type, entity_id};
+  auto entity_cfg = get_entity_config(key);
   if (!entity_cfg.required_scopes.empty()) {
     bool collection_requires_lock = std::find(entity_cfg.required_scopes.begin(), entity_cfg.required_scopes.end(),
                                               collection) != entity_cfg.required_scopes.end();
     if (collection_requires_lock) {
       auto now_phase1 = std::chrono::steady_clock::now();
-      auto it = locks_.find(entity_id);
+      auto it = locks_.find(key);
       bool has_valid_lock =
           it != locks_.end() && it->second.client_id == client_id && it->second.expires_at > now_phase1;
       if (!has_valid_lock) {
@@ -281,8 +283,8 @@ LockAccessResult LockManager::check_access(const std::string & entity_id, const 
   // Phase 2: Check lock conflict - walk up parent chain
   // Check the entity itself
   auto now = std::chrono::steady_clock::now();
-  auto check_entity = [&](const std::string & check_id) -> std::optional<LockAccessResult> {
-    auto it = locks_.find(check_id);
+  auto check_entity = [&](const MemberRef & checked) -> std::optional<LockAccessResult> {
+    auto it = locks_.find(checked);
     if (it == locks_.end()) {
       return std::nullopt;
     }
@@ -300,7 +302,7 @@ LockAccessResult LockManager::check_access(const std::string & entity_id, const 
 
     // Check if the lock covers the requested collection
     if (lock_covers_collection(lock, collection)) {
-      return LockAccessResult{false, lock.lock_id, "Entity '" + check_id + "' is locked by another client",
+      return LockAccessResult{false, lock.lock_id, "Entity '" + checked.id + "' is locked by another client",
                               "lock-conflict"};
     }
 
@@ -308,31 +310,32 @@ LockAccessResult LockManager::check_access(const std::string & entity_id, const 
   };
 
   // Check direct entity
-  if (auto result = check_entity(entity_id)) {
+  if (auto result = check_entity(key)) {
     return *result;
   }
 
-  // Walk up parent chain: App -> Component -> Area
-  // If the entity is an App, check its parent Component
-  auto app = cache_.get_app(entity_id);
-  if (app.has_value() && !app->component_id.empty()) {
-    if (auto result = check_entity(app->component_id)) {
-      return *result;
-    }
-
-    // Check the Component's parent Area
-    auto component = cache_.get_component(app->component_id);
+  // Walk up the parent chain of the entity the route names, by its type:
+  // App -> Component -> Area, Component -> Area. A Component sharing an App's
+  // id is not the App, and is not walked from it.
+  auto check_area_of_component = [&](const std::string & component_id) -> std::optional<LockAccessResult> {
+    auto component = cache_.get_component(component_id);
     if (component.has_value() && !component->area.empty()) {
-      if (auto result = check_entity(component->area)) {
+      return check_entity(MemberRef{SovdEntityType::AREA, component->area});
+    }
+    return std::nullopt;
+  };
+  if (entity_type == SovdEntityType::APP) {
+    auto app = cache_.get_app(entity_id);
+    if (app.has_value() && !app->component_id.empty()) {
+      if (auto result = check_entity(MemberRef{SovdEntityType::COMPONENT, app->component_id})) {
+        return *result;
+      }
+      if (auto result = check_area_of_component(app->component_id)) {
         return *result;
       }
     }
-  }
-
-  // If the entity is a Component, check its parent Area
-  auto component = cache_.get_component(entity_id);
-  if (component.has_value() && !component->area.empty()) {
-    if (auto result = check_entity(component->area)) {
+  } else if (entity_type == SovdEntityType::COMPONENT) {
+    if (auto result = check_area_of_component(entity_id)) {
       return *result;
     }
   }
@@ -349,8 +352,8 @@ std::vector<ExpiredLockInfo> LockManager::cleanup_expired() {
   auto it = locks_.begin();
   while (it != locks_.end()) {
     if (it->second.expires_at <= now) {
-      expired.push_back(
-          ExpiredLockInfo{it->second.lock_id, it->second.entity_id, it->second.client_id, it->second.scopes});
+      expired.push_back(ExpiredLockInfo{it->second.lock_id, it->second.entity_id, it->second.entity_type,
+                                        it->second.client_id, it->second.scopes});
       lock_id_index_.erase(it->second.lock_id);
       it = locks_.erase(it);
     } else {

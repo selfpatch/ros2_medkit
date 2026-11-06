@@ -33,14 +33,14 @@ class PluginManager;
 /// A new watch is read at once. A read that fails delivers nothing and is tried again at the next interval.
 class PollingDataItemSource : public DataItemSource {
  public:
-  using ReadFn = std::function<tl::expected<nlohmann::json, std::string>(const std::string & entity_id,
-                                                                         const std::string & item_name)>;
+  using ReadFn = std::function<tl::expected<nlohmann::json, std::string>(
+      SovdEntityType entity_type, const std::string & entity_id, const std::string & item_name)>;
 
   PollingDataItemSource(ReadFn read, std::chrono::milliseconds interval);
   ~PollingDataItemSource() override;
 
-  std::unique_ptr<TopicSubscriptionHandle> watch(const std::string & entity_id, const std::string & item_name,
-                                                 SampleCallback callback) override;
+  std::unique_ptr<TopicSubscriptionHandle> watch(SovdEntityType entity_type, const std::string & entity_id,
+                                                 const std::string & item_name, SampleCallback callback) override;
 
  private:
   struct Shared;

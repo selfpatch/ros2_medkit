@@ -487,7 +487,7 @@ tl::expected<TriggerInfo, TriggerCreateError> TriggerManager::create(const Trigg
       std::lock_guard<std::mutex> lock(triggers_mutex_);
       topic_handles_[info_copy.id] = std::move(handle);
     } else if (data_source_ && !req.resource_path.empty()) {
-      auto handle = data_source_->watch(req.entity_id, data_item_name(req.resource_path), notify_sample);
+      auto handle = data_source_->watch(entity_type, req.entity_id, data_item_name(req.resource_path), notify_sample);
       if (!handle) {
         return roll_back("Failed to watch data item '" + req.resource_path + "' of entity '" + req.entity_id + "'");
       }
@@ -854,7 +854,7 @@ size_t TriggerManager::load_persistent_triggers() {
       // delivers nothing and is asked again, so it needs no deferred resolution.
       if (data_source_ && state->info.collection == "data" && !resource_path.empty() &&
           (!topic_transport_ || state->info.resolved_topic_name.empty())) {
-        auto handle = data_source_->watch(entity_id, data_item_name(resource_path),
+        auto handle = data_source_->watch(entity_type, entity_id, data_item_name(resource_path),
                                           [this, entity_type, entity_id, resource_path](const nlohmann::json & sample) {
                                             notifier_.notify("data", entity_type, entity_id, resource_path, sample,
                                                              ChangeType::UPDATED);

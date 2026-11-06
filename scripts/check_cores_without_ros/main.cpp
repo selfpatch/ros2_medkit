@@ -611,13 +611,17 @@ class MinimalServices : public gw::GatewayServices {
   NoFaultTransport & fault_transport() {
     return *fault_transport_;
   }
-  // Plugins exist only after this call; the plugin owns the entity ids it is given.
-  CheckDataPlugin & add_data_plugin(const std::vector<std::string> & owned_entities) {
+  // Plugins exist only after this call; the plugin owns the apps it is given.
+  CheckDataPlugin & add_data_plugin(const std::vector<std::string> & owned_apps) {
     plugins_ = std::make_unique<gw::PluginManager>();
     auto plugin = std::make_unique<CheckDataPlugin>();
     auto & ref = *plugin;
     plugins_->add_plugin(std::move(plugin));
-    plugins_->register_entity_ownership("check_plugin", owned_entities);
+    std::vector<gw::MemberRef> owned;
+    for (const auto & id : owned_apps) {
+      owned.push_back({gw::SovdEntityType::APP, id});
+    }
+    plugins_->register_entity_ownership("check_plugin", owned);
     return ref;
   }
   void set_freeze_frames(gw::FreezeFrameSource * source) {
@@ -939,9 +943,9 @@ bool check_lock_reaping() {
     auto acquired = client.Post("/api/v1/apps/lock_app/locks", httplib::Headers{{"X-Client-Id", "check_client"}},
                                 lock_body.dump(), "application/json");
     ok &= check(acquired && acquired->status == 201, "a lock with a one second expiry is acquired over HTTP");
-    ok &= check(locks.get_lock("lock_app").has_value(), "the lock is held before it expires");
+    ok &= check(locks.get_lock(gw::SovdEntityType::APP, "lock_app").has_value(), "the lock is held before it expires");
     const bool lock_gone = wait_until([&] {
-      return !locks.get_lock("lock_app").has_value();
+      return !locks.get_lock(gw::SovdEntityType::APP, "lock_app").has_value();
     });
     ok &= check(lock_gone, "the expired lock is gone");
     const bool sub_gone = wait_until([&] {
@@ -1328,7 +1332,7 @@ bool check_plugin_context_and_fault_triggers() {
       {gw::PluginConfig{"check_context_plugin", CHECK_CONTEXT_PLUGIN_PATH, nlohmann::json::object()}});
   ok &= check(loaded == 1, "the core PluginManager loads a plugin built without ROS");
   plugins.configure_plugins();
-  plugins.register_entity_ownership("check_context_plugin", {"plugin_app"});
+  plugins.register_entity_ownership("check_context_plugin", {{gw::SovdEntityType::APP, "plugin_app"}});
   gw::ResourceChangeNotifier notifier;
   gw::ConditionRegistry conditions;
   std::atomic<int> notified{0};
@@ -2046,7 +2050,8 @@ static int run() {
 
     MinimalServices sampler_only;
     sampler_only.sampler_registry()->register_sampler(
-        "x-check", [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+        "x-check",
+        [](gw::SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
           return nlohmann::json::object();
         });
     const auto sampler_caps = root_capabilities(sampler_only);

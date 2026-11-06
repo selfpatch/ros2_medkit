@@ -95,41 +95,41 @@ TEST_F(LockManagerTest, extend_and_release_answer_only_400_403_404) {
   };
 
   LockManager mgr(cache_, make_config());
-  auto held = mgr.acquire("comp1", "client_a", {}, 300);
+  auto held = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(held.has_value()) << held.error().message;
 
   // No lock on this entity at all.
-  auto missing_extend = mgr.extend("comp2", "client_a", 60);
+  auto missing_extend = mgr.extend(SovdEntityType::COMPONENT, "comp2", "client_a", 60);
   ASSERT_FALSE(missing_extend.has_value());
   record(missing_extend.error().status_code);
-  auto missing_release = mgr.release("comp2", "client_a");
+  auto missing_release = mgr.release(SovdEntityType::COMPONENT, "comp2", "client_a");
   ASSERT_FALSE(missing_release.has_value());
   record(missing_release.error().status_code);
 
   // Lock exists but belongs to somebody else - the 403 the routes declare.
-  auto wrong_extend = mgr.extend("comp1", "client_b", 60);
+  auto wrong_extend = mgr.extend(SovdEntityType::COMPONENT, "comp1", "client_b", 60);
   ASSERT_FALSE(wrong_extend.has_value());
   record(wrong_extend.error().status_code);
   EXPECT_EQ(wrong_extend.error().code, "lock-not-owner");
-  auto wrong_release = mgr.release("comp1", "client_b");
+  auto wrong_release = mgr.release(SovdEntityType::COMPONENT, "comp1", "client_b");
   ASSERT_FALSE(wrong_release.has_value());
   record(wrong_release.error().status_code);
   EXPECT_EQ(wrong_release.error().code, "lock-not-owner");
 
   // Invalid extension durations.
-  auto zero = mgr.extend("comp1", "client_a", 0);
+  auto zero = mgr.extend(SovdEntityType::COMPONENT, "comp1", "client_a", 0);
   ASSERT_FALSE(zero.has_value());
   record(zero.error().status_code);
-  auto too_long = mgr.extend("comp1", "client_a", 99999999);
+  auto too_long = mgr.extend(SovdEntityType::COMPONENT, "comp1", "client_a", 99999999);
   ASSERT_FALSE(too_long.has_value());
   record(too_long.error().status_code);
 
   // Locking switched off.
   LockManager disabled(cache_, make_config(false));
-  auto off_extend = disabled.extend("comp1", "client_a", 60);
+  auto off_extend = disabled.extend(SovdEntityType::COMPONENT, "comp1", "client_a", 60);
   ASSERT_FALSE(off_extend.has_value());
   record(off_extend.error().status_code);
-  auto off_release = disabled.release("comp1", "client_a");
+  auto off_release = disabled.release(SovdEntityType::COMPONENT, "comp1", "client_a");
   ASSERT_FALSE(off_release.has_value());
   record(off_release.error().status_code);
 
@@ -144,7 +144,7 @@ TEST_F(LockManagerTest, extend_and_release_answer_only_400_403_404) {
 TEST_F(LockManagerTest, test_acquire_lock_basic) {
   LockManager mgr(cache_, make_config());
 
-  auto result = mgr.acquire("comp1", "client_a", {}, 300);
+  auto result = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(result.has_value()) << result.error().message;
 
   EXPECT_FALSE(result->lock_id.empty());
@@ -160,7 +160,7 @@ TEST_F(LockManagerTest, test_acquire_lock_basic) {
 TEST_F(LockManagerTest, test_acquire_lock_scoped) {
   LockManager mgr(cache_, make_config());
 
-  auto result = mgr.acquire("comp1", "client_a", {"data", "configurations"}, 600);
+  auto result = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {"data", "configurations"}, 600);
   ASSERT_TRUE(result.has_value()) << result.error().message;
 
   ASSERT_EQ(result->scopes.size(), 2u);
@@ -172,7 +172,7 @@ TEST_F(LockManagerTest, test_acquire_lock_scoped) {
 TEST_F(LockManagerTest, test_acquire_lock_full) {
   LockManager mgr(cache_, make_config());
 
-  auto result = mgr.acquire("comp1", "client_a", {}, 300);
+  auto result = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(result.has_value()) << result.error().message;
 
   // Empty scopes means all collections locked
@@ -183,10 +183,10 @@ TEST_F(LockManagerTest, test_acquire_lock_full) {
 TEST_F(LockManagerTest, test_acquire_already_locked) {
   LockManager mgr(cache_, make_config());
 
-  auto first = mgr.acquire("comp1", "client_a", {}, 300);
+  auto first = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(first.has_value());
 
-  auto second = mgr.acquire("comp1", "client_b", {}, 300);
+  auto second = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_b", {}, 300);
   ASSERT_FALSE(second.has_value());
   EXPECT_EQ(second.error().code, "lock-conflict");
   EXPECT_EQ(second.error().status_code, 409);
@@ -198,10 +198,10 @@ TEST_F(LockManagerTest, test_acquire_already_locked) {
 TEST_F(LockManagerTest, test_acquire_break_lock) {
   LockManager mgr(cache_, make_config());
 
-  auto first = mgr.acquire("comp1", "client_a", {}, 300);
+  auto first = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(first.has_value());
 
-  auto second = mgr.acquire("comp1", "client_b", {"data"}, 600, true);
+  auto second = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_b", {"data"}, 600, true);
   ASSERT_TRUE(second.has_value()) << second.error().message;
 
   // New lock should have replaced the old one
@@ -217,13 +217,13 @@ TEST_F(LockManagerTest, test_acquire_break_lock) {
 // @verifies REQ_INTEROP_100
 TEST_F(LockManagerTest, test_acquire_break_lock_not_breakable) {
   LockConfig cfg = make_config();
-  cfg.entity_overrides["comp1"] = EntityLockConfig{{}, false, 0};
+  cfg.entity_overrides[{SovdEntityType::COMPONENT, "comp1"}] = EntityLockConfig{{}, false, 0};
   LockManager mgr(cache_, cfg);
 
-  auto first = mgr.acquire("comp1", "client_a", {}, 300);
+  auto first = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(first.has_value());
 
-  auto second = mgr.acquire("comp1", "client_b", {}, 300, true);
+  auto second = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_b", {}, 300, true);
   ASSERT_FALSE(second.has_value());
   EXPECT_EQ(second.error().code, "lock-not-breakable");
   EXPECT_EQ(second.error().status_code, 409);
@@ -233,7 +233,7 @@ TEST_F(LockManagerTest, test_acquire_break_lock_not_breakable) {
 TEST_F(LockManagerTest, test_acquire_invalid_scope) {
   LockManager mgr(cache_, make_config());
 
-  auto result = mgr.acquire("comp1", "client_a", {"data", "nonexistent_scope"}, 300);
+  auto result = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {"data", "nonexistent_scope"}, 300);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, "invalid-scope");
   EXPECT_EQ(result.error().status_code, 400);
@@ -244,18 +244,18 @@ TEST_F(LockManagerTest, test_acquire_invalid_expiration) {
   LockManager mgr(cache_, make_config());
 
   // Zero expiration
-  auto result1 = mgr.acquire("comp1", "client_a", {}, 0);
+  auto result1 = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 0);
   ASSERT_FALSE(result1.has_value());
   EXPECT_EQ(result1.error().code, "invalid-expiration");
   EXPECT_EQ(result1.error().status_code, 400);
 
   // Negative expiration
-  auto result2 = mgr.acquire("comp1", "client_a", {}, -10);
+  auto result2 = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, -10);
   ASSERT_FALSE(result2.has_value());
   EXPECT_EQ(result2.error().code, "invalid-expiration");
 
   // Exceeds max expiration
-  auto result3 = mgr.acquire("comp1", "client_a", {}, 7200);
+  auto result3 = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 7200);
   ASSERT_FALSE(result3.has_value());
   EXPECT_EQ(result3.error().code, "invalid-expiration");
 }
@@ -268,14 +268,14 @@ TEST_F(LockManagerTest, test_acquire_invalid_expiration) {
 TEST_F(LockManagerTest, test_release_lock) {
   LockManager mgr(cache_, make_config());
 
-  auto acquired = mgr.acquire("comp1", "client_a", {}, 300);
+  auto acquired = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(acquired.has_value());
 
-  auto result = mgr.release("comp1", "client_a");
+  auto result = mgr.release(SovdEntityType::COMPONENT, "comp1", "client_a");
   ASSERT_TRUE(result.has_value());
 
   // Lock should be gone
-  EXPECT_FALSE(mgr.get_lock("comp1").has_value());
+  EXPECT_FALSE(mgr.get_lock(SovdEntityType::COMPONENT, "comp1").has_value());
   EXPECT_FALSE(mgr.get_lock_by_id(acquired->lock_id).has_value());
 }
 
@@ -283,22 +283,22 @@ TEST_F(LockManagerTest, test_release_lock) {
 TEST_F(LockManagerTest, test_release_not_owner) {
   LockManager mgr(cache_, make_config());
 
-  ASSERT_TRUE(mgr.acquire("comp1", "client_a", {}, 300).has_value());
+  ASSERT_TRUE(mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300).has_value());
 
-  auto result = mgr.release("comp1", "client_b");
+  auto result = mgr.release(SovdEntityType::COMPONENT, "comp1", "client_b");
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, "lock-not-owner");
   EXPECT_EQ(result.error().status_code, 403);
 
   // Lock should still exist
-  EXPECT_TRUE(mgr.get_lock("comp1").has_value());
+  EXPECT_TRUE(mgr.get_lock(SovdEntityType::COMPONENT, "comp1").has_value());
 }
 
 // @verifies REQ_INTEROP_100
 TEST_F(LockManagerTest, test_release_not_found) {
   LockManager mgr(cache_, make_config());
 
-  auto result = mgr.release("comp1", "client_a");
+  auto result = mgr.release(SovdEntityType::COMPONENT, "comp1", "client_a");
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, "lock-not-found");
   EXPECT_EQ(result.error().status_code, 404);
@@ -312,14 +312,14 @@ TEST_F(LockManagerTest, test_release_not_found) {
 TEST_F(LockManagerTest, test_extend_lock) {
   LockManager mgr(cache_, make_config());
 
-  auto acquired = mgr.acquire("comp1", "client_a", {}, 300);
+  auto acquired = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(acquired.has_value());
   auto original_expires = acquired->expires_at;
 
   // Small delay to ensure time progresses
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
-  auto result = mgr.extend("comp1", "client_a", 600);
+  auto result = mgr.extend(SovdEntityType::COMPONENT, "comp1", "client_a", 600);
   ASSERT_TRUE(result.has_value()) << result.error().message;
 
   EXPECT_GT(result->expires_at, original_expires);
@@ -331,9 +331,9 @@ TEST_F(LockManagerTest, test_extend_lock) {
 TEST_F(LockManagerTest, test_extend_not_owner) {
   LockManager mgr(cache_, make_config());
 
-  ASSERT_TRUE(mgr.acquire("comp1", "client_a", {}, 300).has_value());
+  ASSERT_TRUE(mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300).has_value());
 
-  auto result = mgr.extend("comp1", "client_b", 600);
+  auto result = mgr.extend(SovdEntityType::COMPONENT, "comp1", "client_b", 600);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, "lock-not-owner");
   EXPECT_EQ(result.error().status_code, 403);
@@ -343,7 +343,7 @@ TEST_F(LockManagerTest, test_extend_not_owner) {
 TEST_F(LockManagerTest, test_extend_not_found) {
   LockManager mgr(cache_, make_config());
 
-  auto result = mgr.extend("comp1", "client_a", 600);
+  auto result = mgr.extend(SovdEntityType::COMPONENT, "comp1", "client_a", 600);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, "lock-not-found");
   EXPECT_EQ(result.error().status_code, 404);
@@ -357,10 +357,10 @@ TEST_F(LockManagerTest, test_extend_not_found) {
 TEST_F(LockManagerTest, test_get_lock) {
   LockManager mgr(cache_, make_config());
 
-  auto acquired = mgr.acquire("comp1", "client_a", {"data"}, 300);
+  auto acquired = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {"data"}, 300);
   ASSERT_TRUE(acquired.has_value());
 
-  auto info = mgr.get_lock("comp1");
+  auto info = mgr.get_lock(SovdEntityType::COMPONENT, "comp1");
   ASSERT_TRUE(info.has_value());
   EXPECT_EQ(info->lock_id, acquired->lock_id);
   EXPECT_EQ(info->entity_id, "comp1");
@@ -373,7 +373,7 @@ TEST_F(LockManagerTest, test_get_lock) {
 TEST_F(LockManagerTest, test_get_lock_by_id) {
   LockManager mgr(cache_, make_config());
 
-  auto acquired = mgr.acquire("comp1", "client_a", {}, 300);
+  auto acquired = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(acquired.has_value());
 
   auto info = mgr.get_lock_by_id(acquired->lock_id);
@@ -393,7 +393,7 @@ TEST_F(LockManagerTest, test_get_lock_by_id) {
 TEST_F(LockManagerTest, test_check_access_unlocked) {
   LockManager mgr(cache_, make_config());
 
-  auto result = mgr.check_access("comp1", "client_a", "data");
+  auto result = mgr.check_access(SovdEntityType::COMPONENT, "comp1", "client_a", "data");
   EXPECT_TRUE(result.allowed);
   EXPECT_TRUE(result.denied_by_lock_id.empty());
 }
@@ -402,9 +402,9 @@ TEST_F(LockManagerTest, test_check_access_unlocked) {
 TEST_F(LockManagerTest, test_check_access_owner) {
   LockManager mgr(cache_, make_config());
 
-  ASSERT_TRUE(mgr.acquire("comp1", "client_a", {}, 300).has_value());
+  ASSERT_TRUE(mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300).has_value());
 
-  auto result = mgr.check_access("comp1", "client_a", "data");
+  auto result = mgr.check_access(SovdEntityType::COMPONENT, "comp1", "client_a", "data");
   EXPECT_TRUE(result.allowed);
 }
 
@@ -412,10 +412,10 @@ TEST_F(LockManagerTest, test_check_access_owner) {
 TEST_F(LockManagerTest, test_check_access_not_owner) {
   LockManager mgr(cache_, make_config());
 
-  auto acquired = mgr.acquire("comp1", "client_a", {}, 300);
+  auto acquired = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(acquired.has_value());
 
-  auto result = mgr.check_access("comp1", "client_b", "data");
+  auto result = mgr.check_access(SovdEntityType::COMPONENT, "comp1", "client_b", "data");
   EXPECT_FALSE(result.allowed);
   EXPECT_EQ(result.denied_by_lock_id, acquired->lock_id);
   EXPECT_EQ(result.denied_code, "lock-conflict");
@@ -426,14 +426,14 @@ TEST_F(LockManagerTest, test_check_access_scoped_match) {
   LockManager mgr(cache_, make_config());
 
   // Lock only "data" and "configurations"
-  ASSERT_TRUE(mgr.acquire("comp1", "client_a", {"data", "configurations"}, 300).has_value());
+  ASSERT_TRUE(mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {"data", "configurations"}, 300).has_value());
 
   // Access "data" - should be denied for non-owner
-  auto result = mgr.check_access("comp1", "client_b", "data");
+  auto result = mgr.check_access(SovdEntityType::COMPONENT, "comp1", "client_b", "data");
   EXPECT_FALSE(result.allowed);
 
   // Access "configurations" - should also be denied
-  auto result2 = mgr.check_access("comp1", "client_b", "configurations");
+  auto result2 = mgr.check_access(SovdEntityType::COMPONENT, "comp1", "client_b", "configurations");
   EXPECT_FALSE(result2.allowed);
 }
 
@@ -442,10 +442,10 @@ TEST_F(LockManagerTest, test_check_access_scoped_no_match) {
   LockManager mgr(cache_, make_config());
 
   // Lock only "data"
-  ASSERT_TRUE(mgr.acquire("comp1", "client_a", {"data"}, 300).has_value());
+  ASSERT_TRUE(mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {"data"}, 300).has_value());
 
   // Access "operations" - should be allowed (not in locked scopes)
-  auto result = mgr.check_access("comp1", "client_b", "operations");
+  auto result = mgr.check_access(SovdEntityType::COMPONENT, "comp1", "client_b", "operations");
   EXPECT_TRUE(result.allowed);
 }
 
@@ -454,20 +454,20 @@ TEST_F(LockManagerTest, test_check_access_parent_propagation) {
   LockManager mgr(cache_, make_config());
 
   // Lock the Component
-  auto acquired = mgr.acquire("comp1", "client_a", {}, 300);
+  auto acquired = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(acquired.has_value());
 
   // Access check on App child - should be denied for non-owner
-  auto result = mgr.check_access("app1", "client_b", "data");
+  auto result = mgr.check_access(SovdEntityType::APP, "app1", "client_b", "data");
   EXPECT_FALSE(result.allowed);
   EXPECT_EQ(result.denied_by_lock_id, acquired->lock_id);
 
   // Same for app2 (also on comp1)
-  auto result2 = mgr.check_access("app2", "client_b", "data");
+  auto result2 = mgr.check_access(SovdEntityType::APP, "app2", "client_b", "data");
   EXPECT_FALSE(result2.allowed);
 
   // app3 is on comp2, not affected
-  auto result3 = mgr.check_access("app3", "client_b", "data");
+  auto result3 = mgr.check_access(SovdEntityType::APP, "app3", "client_b", "data");
   EXPECT_TRUE(result3.allowed);
 }
 
@@ -476,21 +476,21 @@ TEST_F(LockManagerTest, test_check_access_area_propagation) {
   LockManager mgr(cache_, make_config());
 
   // Lock the Area
-  auto acquired = mgr.acquire("area1", "client_a", {}, 300);
+  auto acquired = mgr.acquire(SovdEntityType::AREA, "area1", "client_a", {}, 300);
   ASSERT_TRUE(acquired.has_value());
 
   // Access check on Component - should be denied
-  auto result_comp = mgr.check_access("comp1", "client_b", "data");
+  auto result_comp = mgr.check_access(SovdEntityType::COMPONENT, "comp1", "client_b", "data");
   EXPECT_FALSE(result_comp.allowed);
   EXPECT_EQ(result_comp.denied_by_lock_id, acquired->lock_id);
 
   // Access check on App (grandchild) - should be denied
-  auto result_app = mgr.check_access("app1", "client_b", "data");
+  auto result_app = mgr.check_access(SovdEntityType::APP, "app1", "client_b", "data");
   EXPECT_FALSE(result_app.allowed);
   EXPECT_EQ(result_app.denied_by_lock_id, acquired->lock_id);
 
   // comp2 has no area, not affected
-  auto result_comp2 = mgr.check_access("comp2", "client_b", "data");
+  auto result_comp2 = mgr.check_access(SovdEntityType::COMPONENT, "comp2", "client_b", "data");
   EXPECT_TRUE(result_comp2.allowed);
 }
 
@@ -499,14 +499,14 @@ TEST_F(LockManagerTest, test_check_access_partial_scope_propagation) {
   LockManager mgr(cache_, make_config());
 
   // Lock the Component with only "configurations" scope
-  ASSERT_TRUE(mgr.acquire("comp1", "client_a", {"configurations"}, 300).has_value());
+  ASSERT_TRUE(mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {"configurations"}, 300).has_value());
 
   // Check App child access for "operations" - should be allowed (scope doesn't match)
-  auto result = mgr.check_access("app1", "client_b", "operations");
+  auto result = mgr.check_access(SovdEntityType::APP, "app1", "client_b", "operations");
   EXPECT_TRUE(result.allowed);
 
   // Check App child access for "configurations" - should be denied
-  auto result2 = mgr.check_access("app1", "client_b", "configurations");
+  auto result2 = mgr.check_access(SovdEntityType::APP, "app1", "client_b", "configurations");
   EXPECT_FALSE(result2.allowed);
 }
 
@@ -519,7 +519,7 @@ TEST_F(LockManagerTest, test_cleanup_expired) {
   LockManager mgr(cache_, make_config());
 
   // Acquire a lock with very short expiration (we'll manipulate time by using a 1-second lock)
-  auto result = mgr.acquire("comp1", "client_a", {}, 1);
+  auto result = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 1);
   ASSERT_TRUE(result.has_value());
   std::string lock_id = result->lock_id;
 
@@ -533,7 +533,7 @@ TEST_F(LockManagerTest, test_cleanup_expired) {
   EXPECT_EQ(expired[0].client_id, "client_a");
 
   // Lock should be gone
-  EXPECT_FALSE(mgr.get_lock("comp1").has_value());
+  EXPECT_FALSE(mgr.get_lock(SovdEntityType::COMPONENT, "comp1").has_value());
   EXPECT_FALSE(mgr.get_lock_by_id(lock_id).has_value());
 }
 
@@ -541,13 +541,13 @@ TEST_F(LockManagerTest, test_cleanup_expired) {
 TEST_F(LockManagerTest, test_cleanup_not_expired) {
   LockManager mgr(cache_, make_config());
 
-  ASSERT_TRUE(mgr.acquire("comp1", "client_a", {}, 3600).has_value());
+  ASSERT_TRUE(mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 3600).has_value());
 
   auto expired = mgr.cleanup_expired();
   EXPECT_TRUE(expired.empty());
 
   // Lock should still exist
-  EXPECT_TRUE(mgr.get_lock("comp1").has_value());
+  EXPECT_TRUE(mgr.get_lock(SovdEntityType::COMPONENT, "comp1").has_value());
 }
 
 // =========================================================================
@@ -563,7 +563,7 @@ TEST_F(LockManagerTest, test_lock_required_no_lock_held) {
   LockManager mgr(cache_, cfg);
 
   // comp1 is a component, "data" is in required_scopes -> lock required
-  auto result = mgr.check_access("comp1", "client_a", "data");
+  auto result = mgr.check_access(SovdEntityType::COMPONENT, "comp1", "client_a", "data");
   EXPECT_FALSE(result.allowed);
   EXPECT_EQ(result.denied_code, "lock-required");
 }
@@ -576,10 +576,10 @@ TEST_F(LockManagerTest, test_lock_required_has_lock) {
   cfg.type_defaults["component"] = comp_cfg;
   LockManager mgr(cache_, cfg);
 
-  ASSERT_TRUE(mgr.acquire("comp1", "client_a", {}, 300).has_value());
+  ASSERT_TRUE(mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300).has_value());
 
   // Client holds a lock -> access allowed
-  auto result = mgr.check_access("comp1", "client_a", "data");
+  auto result = mgr.check_access(SovdEntityType::COMPONENT, "comp1", "client_a", "data");
   EXPECT_TRUE(result.allowed);
 }
 
@@ -592,7 +592,7 @@ TEST_F(LockManagerTest, test_lock_required_different_collection_not_blocked) {
   LockManager mgr(cache_, cfg);
 
   // "data" is NOT in required_scopes -> access allowed without lock
-  auto result = mgr.check_access("comp1", "client_a", "data");
+  auto result = mgr.check_access(SovdEntityType::COMPONENT, "comp1", "client_a", "data");
   EXPECT_TRUE(result.allowed);
 }
 
@@ -605,22 +605,22 @@ TEST_F(LockManagerTest, test_config_disabled) {
   LockManager mgr(cache_, make_config(false));
 
   // Acquire should fail with disabled error
-  auto acquire_result = mgr.acquire("comp1", "client_a", {}, 300);
+  auto acquire_result = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_FALSE(acquire_result.has_value());
   EXPECT_EQ(acquire_result.error().code, "lock-disabled");
 
   // Release should fail with disabled error
-  auto release_result = mgr.release("comp1", "client_a");
+  auto release_result = mgr.release(SovdEntityType::COMPONENT, "comp1", "client_a");
   ASSERT_FALSE(release_result.has_value());
   EXPECT_EQ(release_result.error().code, "lock-disabled");
 
   // Extend should fail with disabled error
-  auto extend_result = mgr.extend("comp1", "client_a", 300);
+  auto extend_result = mgr.extend(SovdEntityType::COMPONENT, "comp1", "client_a", 300);
   ASSERT_FALSE(extend_result.has_value());
   EXPECT_EQ(extend_result.error().code, "lock-disabled");
 
   // check_access should always allow when disabled
-  auto access_result = mgr.check_access("comp1", "client_a", "data");
+  auto access_result = mgr.check_access(SovdEntityType::COMPONENT, "comp1", "client_a", "data");
   EXPECT_TRUE(access_result.allowed);
 }
 
@@ -633,29 +633,29 @@ TEST_F(LockManagerTest, test_type_default_breakable) {
   cfg.type_defaults["component"] = EntityLockConfig{{}, false, 0};
   LockManager mgr(cache_, cfg);
 
-  auto acquired = mgr.acquire("comp1", "client_a", {}, 300);
+  auto acquired = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(acquired.has_value());
   EXPECT_FALSE(acquired->breakable);
 }
 
 TEST_F(LockManagerTest, test_entity_override_max_expiration) {
   LockConfig cfg = make_config();
-  cfg.entity_overrides["comp1"] = EntityLockConfig{{}, true, 60};
+  cfg.entity_overrides[{SovdEntityType::COMPONENT, "comp1"}] = EntityLockConfig{{}, true, 60};
   LockManager mgr(cache_, cfg);
 
   // Within entity max
-  auto result1 = mgr.acquire("comp1", "client_a", {}, 60);
+  auto result1 = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 60);
   ASSERT_TRUE(result1.has_value());
 
-  ASSERT_TRUE(mgr.release("comp1", "client_a").has_value());
+  ASSERT_TRUE(mgr.release(SovdEntityType::COMPONENT, "comp1", "client_a").has_value());
 
   // Exceeds entity max
-  auto result2 = mgr.acquire("comp1", "client_a", {}, 61);
+  auto result2 = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 61);
   ASSERT_FALSE(result2.has_value());
   EXPECT_EQ(result2.error().code, "invalid-expiration");
 
   // Different entity uses global max (3600)
-  auto result3 = mgr.acquire("comp2", "client_a", {}, 3600);
+  auto result3 = mgr.acquire(SovdEntityType::COMPONENT, "comp2", "client_a", {}, 3600);
   ASSERT_TRUE(result3.has_value());
 }
 
@@ -666,13 +666,13 @@ TEST_F(LockManagerTest, test_entity_override_max_expiration) {
 TEST_F(LockManagerTest, test_lock_ids_unique) {
   LockManager mgr(cache_, make_config());
 
-  auto lock1 = mgr.acquire("comp1", "client_a", {}, 300);
+  auto lock1 = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(lock1.has_value());
   std::string id1 = lock1->lock_id;
 
-  ASSERT_TRUE(mgr.release("comp1", "client_a").has_value());
+  ASSERT_TRUE(mgr.release(SovdEntityType::COMPONENT, "comp1", "client_a").has_value());
 
-  auto lock2 = mgr.acquire("comp1", "client_a", {}, 300);
+  auto lock2 = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_TRUE(lock2.has_value());
 
   EXPECT_NE(id1, lock2->lock_id);
@@ -687,9 +687,9 @@ TEST_F(LockManagerTest, test_lock_ids_unique) {
 TEST_F(LockManagerTest, test_multiple_entity_locks) {
   LockManager mgr(cache_, make_config());
 
-  auto lock1 = mgr.acquire("comp1", "client_a", {}, 300);
-  auto lock2 = mgr.acquire("comp2", "client_b", {"data"}, 300);
-  auto lock3 = mgr.acquire("app3", "client_a", {"operations"}, 300);
+  auto lock1 = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
+  auto lock2 = mgr.acquire(SovdEntityType::COMPONENT, "comp2", "client_b", {"data"}, 300);
+  auto lock3 = mgr.acquire(SovdEntityType::APP, "app3", "client_a", {"operations"}, 300);
 
   ASSERT_TRUE(lock1.has_value());
   ASSERT_TRUE(lock2.has_value());
@@ -699,10 +699,10 @@ TEST_F(LockManagerTest, test_multiple_entity_locks) {
   EXPECT_NE(lock2->lock_id, lock3->lock_id);
 
   // Verify each lock is accessible
-  EXPECT_TRUE(mgr.get_lock("comp1").has_value());
-  EXPECT_TRUE(mgr.get_lock("comp2").has_value());
-  EXPECT_TRUE(mgr.get_lock("app3").has_value());
-  EXPECT_FALSE(mgr.get_lock("app1").has_value());
+  EXPECT_TRUE(mgr.get_lock(SovdEntityType::COMPONENT, "comp1").has_value());
+  EXPECT_TRUE(mgr.get_lock(SovdEntityType::COMPONENT, "comp2").has_value());
+  EXPECT_TRUE(mgr.get_lock(SovdEntityType::APP, "app3").has_value());
+  EXPECT_FALSE(mgr.get_lock(SovdEntityType::APP, "app1").has_value());
 }
 
 // =========================================================================
@@ -712,10 +712,10 @@ TEST_F(LockManagerTest, test_multiple_entity_locks) {
 TEST_F(LockManagerTest, test_same_client_reacquire_without_break) {
   LockManager mgr(cache_, make_config());
 
-  ASSERT_TRUE(mgr.acquire("comp1", "client_a", {}, 300).has_value());
+  ASSERT_TRUE(mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300).has_value());
 
   // Same client trying to acquire again without break_lock
-  auto result = mgr.acquire("comp1", "client_a", {}, 300);
+  auto result = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, "lock-conflict");
 }
@@ -727,10 +727,10 @@ TEST_F(LockManagerTest, test_same_client_reacquire_without_break) {
 TEST_F(LockManagerTest, test_owner_access_through_parent) {
   LockManager mgr(cache_, make_config());
 
-  ASSERT_TRUE(mgr.acquire("comp1", "client_a", {}, 300).has_value());
+  ASSERT_TRUE(mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300).has_value());
 
   // Owner should have access to child app
-  auto result = mgr.check_access("app1", "client_a", "data");
+  auto result = mgr.check_access(SovdEntityType::APP, "app1", "client_a", "data");
   EXPECT_TRUE(result.allowed);
 }
 
@@ -741,13 +741,13 @@ TEST_F(LockManagerTest, test_owner_access_through_parent) {
 TEST_F(LockManagerTest, test_extend_invalid_duration) {
   LockManager mgr(cache_, make_config());
 
-  ASSERT_TRUE(mgr.acquire("comp1", "client_a", {}, 300).has_value());
+  ASSERT_TRUE(mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", {}, 300).has_value());
 
-  auto result = mgr.extend("comp1", "client_a", 0);
+  auto result = mgr.extend(SovdEntityType::COMPONENT, "comp1", "client_a", 0);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, "invalid-expiration");
 
-  auto result2 = mgr.extend("comp1", "client_a", -5);
+  auto result2 = mgr.extend(SovdEntityType::COMPONENT, "comp1", "client_a", -5);
   ASSERT_FALSE(result2.has_value());
   EXPECT_EQ(result2.error().code, "invalid-expiration");
 }
@@ -762,7 +762,7 @@ TEST_F(LockManagerTest, test_all_valid_scopes) {
   std::vector<std::string> all_scopes = {"data",  "operations", "configurations", "faults",
                                          "modes", "scripts",    "bulk-data"};
 
-  auto result = mgr.acquire("comp1", "client_a", all_scopes, 300);
+  auto result = mgr.acquire(SovdEntityType::COMPONENT, "comp1", "client_a", all_scopes, 300);
   ASSERT_TRUE(result.has_value()) << result.error().message;
   EXPECT_EQ(result->scopes.size(), all_scopes.size());
 }

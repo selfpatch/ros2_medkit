@@ -403,10 +403,13 @@ void PluginManager::register_routes(httplib::Server & server, const std::string 
   }
 }
 
-bool PluginManager::has_entity_data_route(const std::string & entity_id) {
+bool PluginManager::has_entity_data_route(SovdEntityType entity_type, const std::string & entity_id) {
+  if (entity_type != SovdEntityType::APP) {
+    return false;  // the route is an App's
+  }
   const std::string full_path = std::string(API_BASE_PATH) + "/apps/" + entity_id + "/x-plc-data";
   std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
-  auto own_it = entity_ownership_.find(entity_id);
+  auto own_it = entity_ownership_.find(MemberRef{entity_type, entity_id});
   if (own_it == entity_ownership_.end()) {
     return false;
   }
@@ -434,8 +437,12 @@ bool PluginManager::has_entity_data_route(const std::string & entity_id) {
   return false;
 }
 
-std::optional<nlohmann::json> PluginManager::fetch_entity_data_via_route(const std::string & entity_id,
+std::optional<nlohmann::json> PluginManager::fetch_entity_data_via_route(SovdEntityType entity_type,
+                                                                         const std::string & entity_id,
                                                                          const std::string & item) {
+  if (entity_type != SovdEntityType::APP) {
+    return std::nullopt;  // the route is an App's
+  }
   const std::string full_path =
       std::string(API_BASE_PATH) + "/apps/" + entity_id + "/x-plc-data" + (item.empty() ? "" : "/" + item);
 
@@ -447,7 +454,7 @@ std::optional<nlohmann::json> PluginManager::fetch_entity_data_via_route(const s
   {
     // Unique lock: first call may populate the route cache.
     std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
-    auto own_it = entity_ownership_.find(entity_id);
+    auto own_it = entity_ownership_.find(MemberRef{entity_type, entity_id});
     if (own_it == entity_ownership_.end()) {
       return std::nullopt;
     }
@@ -614,15 +621,15 @@ std::vector<std::string> PluginManager::plugin_names() const {
 }
 
 void PluginManager::register_entity_ownership(const std::string & plugin_name,
-                                              const std::vector<std::string> & entity_ids) {
+                                              const std::vector<MemberRef> & entities) {
   std::unique_lock<std::shared_mutex> lock(plugins_mutex_);
-  for (const auto & eid : entity_ids) {
-    auto it = entity_ownership_.find(eid);
+  for (const auto & entity : entities) {
+    auto it = entity_ownership_.find(entity);
     if (it != entity_ownership_.end() && it->second != plugin_name) {
-      MEDKIT_LOG_WARN(logger(), "Entity '%s' ownership transferred from plugin '%s' to '%s'", eid.c_str(),
-                      it->second.c_str(), plugin_name.c_str());
+      MEDKIT_LOG_WARN(logger(), "%s '%s' ownership transferred from plugin '%s' to '%s'",
+                      to_string(entity.type).c_str(), entity.id.c_str(), it->second.c_str(), plugin_name.c_str());
     }
-    entity_ownership_[eid] = plugin_name;
+    entity_ownership_[entity] = plugin_name;
   }
 }
 
@@ -637,9 +644,10 @@ void PluginManager::clear_entity_ownership(const std::string & plugin_name) {
   }
 }
 
-DataProvider * PluginManager::get_data_provider_for_entity(const std::string & entity_id) const {
+DataProvider * PluginManager::get_data_provider_for_entity(SovdEntityType entity_type,
+                                                           const std::string & entity_id) const {
   std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
-  auto own_it = entity_ownership_.find(entity_id);
+  auto own_it = entity_ownership_.find(MemberRef{entity_type, entity_id});
   if (own_it == entity_ownership_.end()) {
     return nullptr;
   }
@@ -653,9 +661,10 @@ DataProvider * PluginManager::get_data_provider_for_entity(const std::string & e
   return nullptr;
 }
 
-OperationProvider * PluginManager::get_operation_provider_for_entity(const std::string & entity_id) const {
+OperationProvider * PluginManager::get_operation_provider_for_entity(SovdEntityType entity_type,
+                                                                     const std::string & entity_id) const {
   std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
-  auto own_it = entity_ownership_.find(entity_id);
+  auto own_it = entity_ownership_.find(MemberRef{entity_type, entity_id});
   if (own_it == entity_ownership_.end()) {
     return nullptr;
   }
@@ -670,9 +679,10 @@ OperationProvider * PluginManager::get_operation_provider_for_entity(const std::
   return nullptr;
 }
 
-LifecycleProvider * PluginManager::get_lifecycle_provider_for_entity(const std::string & entity_id) const {
+LifecycleProvider * PluginManager::get_lifecycle_provider_for_entity(SovdEntityType entity_type,
+                                                                     const std::string & entity_id) const {
   std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
-  auto own_it = entity_ownership_.find(entity_id);
+  auto own_it = entity_ownership_.find(MemberRef{entity_type, entity_id});
   if (own_it == entity_ownership_.end()) {
     return nullptr;
   }
@@ -684,9 +694,10 @@ LifecycleProvider * PluginManager::get_lifecycle_provider_for_entity(const std::
   return nullptr;
 }
 
-FaultProvider * PluginManager::get_fault_provider_for_entity(const std::string & entity_id) const {
+FaultProvider * PluginManager::get_fault_provider_for_entity(SovdEntityType entity_type,
+                                                             const std::string & entity_id) const {
   std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
-  auto own_it = entity_ownership_.find(entity_id);
+  auto own_it = entity_ownership_.find(MemberRef{entity_type, entity_id});
   if (own_it == entity_ownership_.end()) {
     return nullptr;
   }
@@ -698,9 +709,10 @@ FaultProvider * PluginManager::get_fault_provider_for_entity(const std::string &
   return nullptr;
 }
 
-std::optional<std::string> PluginManager::get_entity_owner(const std::string & entity_id) const {
+std::optional<std::string> PluginManager::get_entity_owner(SovdEntityType entity_type,
+                                                           const std::string & entity_id) const {
   std::shared_lock<std::shared_mutex> lock(plugins_mutex_);
-  auto it = entity_ownership_.find(entity_id);
+  auto it = entity_ownership_.find(MemberRef{entity_type, entity_id});
   if (it != entity_ownership_.end()) {
     return it->second;
   }

@@ -46,8 +46,21 @@ namespace ros2_medkit_gateway {
 ///       change of an Area no longer fires the triggers of a Function that
 ///       shares its id. Source-incompatible for a plugin that calls notify():
 ///       pass the type of the entity the change is of (UNKNOWN for a change
-///       that names no entity type, which triggers match by id alone). As for
-///       every bump, a pre-compiled v7 `.so` is rejected.
+///       that names no entity type, which triggers match by id alone).
+///       PluginContext::register_sampler takes a sampler of (SovdEntityType,
+///       entity_id, resource_path): the entity the subscription was created
+///       on, by type and id (source-incompatible for a sampler). PluginContext
+///       gains typed calls - get_entity(type, id), list_entity_faults(type,
+///       id), register_entity_capability(type, id, name),
+///       get_entity_capabilities(type, id), check_lock / acquire_lock /
+///       release_lock(type, ...) - which plugins should use; they answer
+///       through protected *_typed hooks (vtable change) whose defaults call
+///       the id-only forms, so mocks that override only those still build.
+///       The id-only forms resolve a bare id only while exactly one entity
+///       holds it and refuse it otherwise (one WARN per ambiguity). The
+///       gateway owns a plugin's entities by type and id, and drops the later
+///       of two entities one plugin introspects under one id with different
+///       types. As for every bump, a pre-compiled v7 `.so` is rejected.
 ///
 /// The version is bumped when the PluginContext vtable changes, when a
 /// GatewayPlugin or provider interface changes incompatibly, and when a type

@@ -391,7 +391,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
   // Delegate to plugin DataProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
     auto * pmgr = ctx_.services().plugin_manager();
-    auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
+    auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_info.sovd_type(), entity_id) : nullptr;
     if (data_prov == nullptr) {
       // PLC bridges serve live values through their own x-plc-data route
       // instead of a DataProvider - dispatch it in-process (same path the
@@ -400,7 +400,8 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
       // category), and SOVD requires id on every item - normalize here so
       // /data items always carry id/name/category regardless of which plugin
       // path produced them; vendor extras pass through untouched.
-      if (auto via_route = pmgr ? pmgr->fetch_entity_data_via_route(entity_id) : std::nullopt) {
+      if (auto via_route =
+              pmgr ? pmgr->fetch_entity_data_via_route(entity_info.sovd_type(), entity_id) : std::nullopt) {
         if (via_route->contains("items") && (*via_route)["items"].is_array()) {
           for (auto & item : (*via_route)["items"]) {
             if (!item.is_object()) {
@@ -652,7 +653,7 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
 
   // Delegate to plugin DataProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
-    return read_plugin_data_item(ctx_.services().plugin_manager(), entity_id, topic_name);
+    return read_plugin_data_item(ctx_.services().plugin_manager(), entity_info.sovd_type(), entity_id, topic_name);
   }
 
   try {
@@ -753,7 +754,7 @@ http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedReques
   // Delegate to plugin DataProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
     auto * pmgr = ctx_.services().plugin_manager();
-    auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
+    auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_info.sovd_type(), entity_id) : nullptr;
     if (data_prov == nullptr) {
       return tl::make_unexpected(
           make_error(404, ERR_RESOURCE_NOT_FOUND, "No data provider for plugin entity '" + entity_id + "'"));

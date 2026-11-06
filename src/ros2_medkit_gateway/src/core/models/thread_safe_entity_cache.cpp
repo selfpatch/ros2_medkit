@@ -461,6 +461,23 @@ bool ThreadSafeEntityCache::has_function(const std::string & id) const {
   return slot && functions_.is_live(*slot);
 }
 
+bool ThreadSafeEntityCache::has_entity(SovdEntityType type, const std::string & id) const {
+  switch (type) {
+    case SovdEntityType::AREA:
+      return has_area(id);
+    case SovdEntityType::COMPONENT:
+      return has_component(id);
+    case SovdEntityType::APP:
+      return has_app(id);
+    case SovdEntityType::FUNCTION:
+      return has_function(id);
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+    default:
+      return false;
+  }
+}
+
 // ============================================================================
 // Reader methods - Find any entity
 // ============================================================================

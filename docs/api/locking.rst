@@ -63,7 +63,10 @@ Acquire Lock
 
 ``POST /api/v1/{components|apps}/{entity_id}/locks``
 
-Acquire a lock on an entity. Requires ``X-Client-Id`` header.
+Acquire a lock on an entity. Requires ``X-Client-Id`` header. The entity is the
+route's: a component and an app may share an id, and each has its own lock and
+its own lock configuration, so a lock on ``/components/x`` is not listed, held or
+released through ``/apps/x``.
 
 **Request Body:**
 

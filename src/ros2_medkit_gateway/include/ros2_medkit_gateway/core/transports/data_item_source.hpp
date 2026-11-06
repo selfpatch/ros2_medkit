@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/core/transports/topic_subscription_transport.hpp"
 
 namespace ros2_medkit_gateway {
@@ -36,10 +37,11 @@ class DataItemSource {
   DataItemSource & operator=(DataItemSource &&) = delete;
   virtual ~DataItemSource() = default;
 
-  /// Start delivering `item_name` of `entity_id` to `callback`. Returns nullptr when the source cannot watch it.
-  /// Destroying the handle stops the delivery; no callback runs once the destructor has returned.
-  virtual std::unique_ptr<TopicSubscriptionHandle> watch(const std::string & entity_id, const std::string & item_name,
-                                                         SampleCallback callback) = 0;
+  /// Start delivering `item_name` of the entity of `entity_type` named `entity_id` to `callback`. Returns nullptr
+  /// when the source cannot watch it. The entity is named by its type and id: an App and a Component may share an
+  /// id. Destroying the handle stops the delivery; no callback runs once the destructor has returned.
+  virtual std::unique_ptr<TopicSubscriptionHandle> watch(SovdEntityType entity_type, const std::string & entity_id,
+                                                         const std::string & item_name, SampleCallback callback) = 0;
 };
 
 }  // namespace ros2_medkit_gateway

@@ -13,6 +13,10 @@ Gateway plugin exposing medkit entity data via ROS 2 services. Enables ROS 2 nod
 
 Service prefix is configurable via `plugins.sovd_service_interface.service_prefix` parameter (default: `/medkit`).
 
+The entity-scoped requests name an entity by `entity_id` alone. An id is unique within its entity type only, so an
+id held by more than one entity (an app and a component sharing it, say) is refused: `success` is false and
+`error_message` names the types holding it. An id one entity holds is answered for that entity.
+
 ## Usage
 
 Load as a gateway plugin:

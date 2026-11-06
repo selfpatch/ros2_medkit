@@ -246,7 +246,7 @@ ManifestConfig ManifestManager::get_config() const {
   return cached_config_.load();
 }
 
-std::unordered_map<std::string, ManifestLockConfig> ManifestManager::get_lock_overrides() const {
+std::unordered_map<MemberRef, ManifestLockConfig, MemberRefHash> ManifestManager::get_lock_overrides() const {
   std::lock_guard<std::mutex> lock(mutex_);
   if (manifest_) {
     return manifest_->lock_overrides;

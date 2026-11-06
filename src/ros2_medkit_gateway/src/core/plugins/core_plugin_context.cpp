@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/core/plugins/core_plugin_context.hpp"
 
+#include <algorithm>
 #include <map>
 #include <optional>
 #include <string>
@@ -56,29 +57,48 @@ std::string entity_type_to_url_segment(SovdEntityType type) {
   return "";
 }
 
-/// The entity `id` names, found in the order get_entity looks, and the peers
-/// it names among its contributors. Both are read off the one copy of the
-/// entity found, so they come from the same cache generation, and a peer that
-/// contributed some other entity sharing the id is not among them.
-struct EntityPeers {
-  SovdEntityType type{SovdEntityType::UNKNOWN};
-  std::vector<PeerTarget> peers;
-};
-
-std::optional<EntityPeers> find_entity_peers(const ThreadSafeEntityCache & cache, const std::string & id) {
-  if (auto comp = cache.get_component(id)) {
-    return EntityPeers{SovdEntityType::COMPONENT, peer_targets_of(*comp)};
-  }
-  if (auto app = cache.get_app(id)) {
-    return EntityPeers{SovdEntityType::APP, peer_targets_of(*app)};
-  }
-  if (auto area = cache.get_area(id)) {
-    return EntityPeers{SovdEntityType::AREA, peer_targets_of(*area)};
-  }
-  if (auto func = cache.get_function(id)) {
-    return EntityPeers{SovdEntityType::FUNCTION, peer_targets_of(*func)};
+/// The peers the entity of `type` named `id` names among its contributors,
+/// read off the one copy of the entity found, so they come from the same cache
+/// generation, and a peer that contributed some other entity sharing the id is
+/// not among them. Nullopt when no entity of `type` holds the id.
+std::optional<std::vector<PeerTarget>> find_entity_peers(const ThreadSafeEntityCache & cache, SovdEntityType type,
+                                                         const std::string & id) {
+  switch (type) {
+    case SovdEntityType::COMPONENT:
+      if (auto comp = cache.get_component(id)) {
+        return peer_targets_of(*comp);
+      }
+      break;
+    case SovdEntityType::APP:
+      if (auto app = cache.get_app(id)) {
+        return peer_targets_of(*app);
+      }
+      break;
+    case SovdEntityType::AREA:
+      if (auto area = cache.get_area(id)) {
+        return peer_targets_of(*area);
+      }
+      break;
+    case SovdEntityType::FUNCTION:
+      if (auto func = cache.get_function(id)) {
+        return peer_targets_of(*func);
+      }
+      break;
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+    default:
+      break;
   }
   return std::nullopt;
+}
+
+/// "Component, App" for the types `holders` lists.
+std::string join_types(const std::vector<SovdEntityType> & holders) {
+  std::string out;
+  for (auto type : holders) {
+    out += out.empty() ? to_string(type) : ", " + to_string(type);
+  }
+  return out;
 }
 
 }  // namespace
@@ -91,23 +111,82 @@ rclcpp::Node * CorePluginContext::node() const {
   return nullptr;
 }
 
+std::vector<SovdEntityType> CorePluginContext::holders_of(const std::string & id) const {
+  std::vector<SovdEntityType> holders;
+  if (!services_) {
+    return holders;
+  }
+  const auto & cache = services_->entity_cache();
+  for (auto type : {SovdEntityType::COMPONENT, SovdEntityType::APP, SovdEntityType::AREA, SovdEntityType::FUNCTION}) {
+    if (cache.has_entity(type, id)) {
+      holders.push_back(type);
+    }
+  }
+  return holders;
+}
+
+std::optional<SovdEntityType> CorePluginContext::resolve_bare_id(const std::string & id, const char * call,
+                                                                 std::vector<SovdEntityType> & holders) const {
+  holders = holders_of(id);
+  bool newly_ambiguous = false;
+  {
+    std::lock_guard<std::mutex> lock(ambiguity_mutex_);
+    if (holders.size() > 1u) {
+      newly_ambiguous = ambiguous_ids_logged_.insert(id).second;
+    } else {
+      ambiguous_ids_logged_.erase(id);
+    }
+  }
+  if (newly_ambiguous && wiring_.warn) {
+    wiring_.warn(std::string(call) + "('" + id + "'): the id is held by " + join_types(holders) +
+                 "; an id-only plugin call resolves only an id one entity holds, so it is refused - use the typed " +
+                 "call, which names the entity type");
+  }
+  if (holders.size() == 1u) {
+    return holders.front();
+  }
+  return std::nullopt;
+}
+
 std::optional<PluginEntityInfo> CorePluginContext::get_entity(const std::string & id) const {
+  std::vector<SovdEntityType> holders;
+  auto type = resolve_bare_id(id, "get_entity", holders);
+  if (!type) {
+    return std::nullopt;
+  }
+  return get_entity(*type, id);
+}
+
+std::optional<PluginEntityInfo> CorePluginContext::get_entity_typed(SovdEntityType type, const std::string & id) const {
   if (!services_) {
     return std::nullopt;
   }
   const auto & cache = services_->entity_cache();
-
-  if (auto comp = cache.get_component(id)) {
-    return PluginEntityInfo{SovdEntityType::COMPONENT, id, comp->namespace_path, comp->fqn};
-  }
-  if (auto app = cache.get_app(id)) {
-    return PluginEntityInfo{SovdEntityType::APP, id, {}, app->effective_fqn()};
-  }
-  if (auto area = cache.get_area(id)) {
-    return PluginEntityInfo{SovdEntityType::AREA, id, area->namespace_path, {}};
-  }
-  if (cache.get_function(id)) {
-    return PluginEntityInfo{SovdEntityType::FUNCTION, id, {}, {}};
+  switch (type) {
+    case SovdEntityType::COMPONENT:
+      if (auto comp = cache.get_component(id)) {
+        return PluginEntityInfo{SovdEntityType::COMPONENT, id, comp->namespace_path, comp->fqn};
+      }
+      break;
+    case SovdEntityType::APP:
+      if (auto app = cache.get_app(id)) {
+        return PluginEntityInfo{SovdEntityType::APP, id, {}, app->effective_fqn()};
+      }
+      break;
+    case SovdEntityType::AREA:
+      if (auto area = cache.get_area(id)) {
+        return PluginEntityInfo{SovdEntityType::AREA, id, area->namespace_path, {}};
+      }
+      break;
+    case SovdEntityType::FUNCTION:
+      if (cache.get_function(id)) {
+        return PluginEntityInfo{SovdEntityType::FUNCTION, id, {}, {}};
+      }
+      break;
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+    default:
+      break;
   }
   return std::nullopt;
 }
@@ -130,12 +209,31 @@ std::vector<PluginEntityInfo> CorePluginContext::get_child_apps(const std::strin
 }
 
 nlohmann::json CorePluginContext::list_entity_faults(const std::string & entity_id) const {
-  // Determine entity type (needed for both local query and peer path construction).
+  std::vector<SovdEntityType> holders;
+  auto type = resolve_bare_id(entity_id, "list_entity_faults", holders);
+  if (type) {
+    return list_entity_faults(*type, entity_id);
+  }
+  if (holders.size() > 1u) {
+    nlohmann::json types = nlohmann::json::array();
+    for (auto holder : holders) {
+      types.push_back(to_string(holder));
+    }
+    return nlohmann::json{
+        {"error_code", ERR_INVALID_PARAMETER},
+        {"message", "Entity id '" + entity_id + "' is held by " + join_types(holders) + "; name the entity type"},
+        {"entity_types", std::move(types)}};
+  }
+  return nlohmann::json::array();
+}
+
+nlohmann::json CorePluginContext::list_entity_faults_typed(SovdEntityType entity_type,
+                                                           const std::string & entity_id) const {
   if (!services_) {
     return nlohmann::json::array();
   }
-  auto entity = find_entity_peers(services_->entity_cache(), entity_id);
-  if (!entity) {
+  auto entity_peers = find_entity_peers(services_->entity_cache(), entity_type, entity_id);
+  if (!entity_peers) {
     return nlohmann::json::array();
   }
 
@@ -151,7 +249,7 @@ nlohmann::json CorePluginContext::list_entity_faults(const std::string & entity_
     auto result = wiring_.fault_manager->list_faults("");
     if (result.success && result.data.contains("faults") && result.data["faults"].is_array()) {
       const auto & cache = services_->entity_cache();
-      const auto source_fqns = faults::resolve_entity_source_fqns(cache, entity->type, entity_id);
+      const auto source_fqns = faults::resolve_entity_source_fqns(cache, entity_type, entity_id);
       local_faults = faults::filter_faults_by_sources(result.data["faults"], source_fqns);
     }
   }
@@ -170,10 +268,10 @@ nlohmann::json CorePluginContext::list_entity_faults(const std::string & entity_
   // nothing.
   auto * agg = wiring_.aggregation ? wiring_.aggregation() : nullptr;
   if (agg) {
-    const std::string type_segment = entity_type_to_url_segment(entity->type);
+    const std::string type_segment = entity_type_to_url_segment(entity_type);
     std::map<std::string, std::vector<std::string>> peers_by_path;
     if (!type_segment.empty()) {
-      for (auto & target : entity->peers) {
+      for (auto & target : *entity_peers) {
         std::string peer_path = "/api/v1/";
         peer_path += type_segment;
         peer_path += '/';
@@ -210,24 +308,26 @@ std::optional<PluginEntityInfo> CorePluginContext::validate_entity_for_route(con
     return std::nullopt;
   }
 
-  // Determine expected type from route path (segment-boundary-aware matching)
+  // Determine expected type from route path (segment-boundary-aware matching).
+  // The entity is the route's type: an App and a Component may share an id.
   auto expected_type = extract_entity_type_from_path(req.path());
+  if (expected_type != SovdEntityType::UNKNOWN) {
+    if (auto entity = get_entity(expected_type, entity_id)) {
+      return entity;
+    }
+  }
 
-  auto entity = get_entity(entity_id);
-  if (!entity) {
+  const auto holders = holders_of(entity_id);
+  if (holders.empty()) {
     res.send_error(404, ERR_ENTITY_NOT_FOUND, to_string(expected_type) + " not found: " + entity_id);
     return std::nullopt;
   }
-
-  // Check type matches route
-  if (expected_type != SovdEntityType::UNKNOWN && entity->type != expected_type) {
-    res.send_error(400, ERR_INVALID_PARAMETER,
-                   "Entity '" + entity_id + "' is a " + to_string(entity->type) + ", not a " +
-                       to_string(expected_type));
-    return std::nullopt;
+  if (expected_type == SovdEntityType::UNKNOWN && holders.size() == 1u) {
+    return get_entity(holders.front(), entity_id);
   }
-
-  return entity;
+  res.send_error(400, ERR_INVALID_PARAMETER,
+                 "Entity '" + entity_id + "' is a " + join_types(holders) + ", not a " + to_string(expected_type));
+  return std::nullopt;
 }
 
 void CorePluginContext::register_capability(SovdEntityType entity_type, const std::string & capability_name) {
@@ -242,15 +342,27 @@ void CorePluginContext::register_capability(SovdEntityType entity_type, const st
   caps.push_back(capability_name);
 }
 
-void CorePluginContext::register_entity_capability(const std::string & entity_id, const std::string & capability_name) {
-  std::lock_guard<std::mutex> lock(capabilities_mutex_);
-  auto & caps = entity_capabilities_[entity_id];
-  for (const auto & c : caps) {
-    if (c == capability_name) {
-      return;
-    }
+namespace {
+
+void add_unique(std::vector<std::string> & caps, const std::string & capability_name) {
+  if (std::find(caps.begin(), caps.end(), capability_name) == caps.end()) {
+    caps.push_back(capability_name);
   }
-  caps.push_back(capability_name);
+}
+
+}  // namespace
+
+void CorePluginContext::register_entity_capability(const std::string & entity_id, const std::string & capability_name) {
+  // Resolved when looked up, not now: a plugin registers from introspect(),
+  // before the entity it introspects reaches the cache.
+  std::lock_guard<std::mutex> lock(capabilities_mutex_);
+  add_unique(untyped_entity_capabilities_[entity_id], capability_name);
+}
+
+void CorePluginContext::register_entity_capability_typed(SovdEntityType entity_type, const std::string & entity_id,
+                                                         const std::string & capability_name) {
+  std::lock_guard<std::mutex> lock(capabilities_mutex_);
+  add_unique(entity_capabilities_[MemberRef{entity_type, entity_id}], capability_name);
 }
 
 std::vector<std::string> CorePluginContext::get_type_capabilities(SovdEntityType entity_type) const {
@@ -263,41 +375,119 @@ std::vector<std::string> CorePluginContext::get_type_capabilities(SovdEntityType
 }
 
 std::vector<std::string> CorePluginContext::get_entity_capabilities(const std::string & entity_id) const {
-  std::lock_guard<std::mutex> lock(capabilities_mutex_);
-  auto it = entity_capabilities_.find(entity_id);
-  if (it != entity_capabilities_.end()) {
-    return it->second;
+  std::vector<SovdEntityType> holders;
+  auto type = resolve_bare_id(entity_id, "get_entity_capabilities", holders);
+  if (!type) {
+    return {};
   }
-  return {};
+  return get_entity_capabilities(*type, entity_id);
 }
+
+std::vector<std::string> CorePluginContext::get_entity_capabilities_typed(SovdEntityType entity_type,
+                                                                          const std::string & entity_id) const {
+  std::vector<std::string> caps;
+  bool has_untyped = false;
+  {
+    std::lock_guard<std::mutex> lock(capabilities_mutex_);
+    auto typed = entity_capabilities_.find(MemberRef{entity_type, entity_id});
+    if (typed != entity_capabilities_.end()) {
+      caps = typed->second;
+    }
+    has_untyped = untyped_entity_capabilities_.count(entity_id) > 0u;
+  }
+  if (!has_untyped) {
+    return caps;
+  }
+  // An id-only registration names the one entity holding the id; while more
+  // than one entity holds it, it applies to none.
+  std::vector<SovdEntityType> holders;
+  auto holder = resolve_bare_id(entity_id, "register_entity_capability", holders);
+  if (holder != entity_type) {
+    return caps;
+  }
+  std::lock_guard<std::mutex> lock(capabilities_mutex_);
+  auto untyped = untyped_entity_capabilities_.find(entity_id);
+  if (untyped != untyped_entity_capabilities_.end()) {
+    for (const auto & cap : untyped->second) {
+      add_unique(caps, cap);
+    }
+  }
+  return caps;
+}
+
+namespace {
+
+/// Why an id-only lock call was refused: `id` is held by more than one entity.
+std::string ambiguous_lock_message(const std::string & id, const std::vector<SovdEntityType> & holders) {
+  return "Entity id '" + id + "' is held by " + join_types(holders) + "; name the entity type";
+}
+
+}  // namespace
 
 LockAccessResult CorePluginContext::check_lock(const std::string & entity_id, const std::string & client_id,
                                                const std::string & collection) const {
-  auto * lock_mgr = services_ ? services_->lock_manager() : nullptr;
-  if (!lock_mgr) {
-    return LockAccessResult{true, "", "", ""};
+  std::vector<SovdEntityType> holders;
+  auto type = resolve_bare_id(entity_id, "check_lock", holders);
+  if (holders.size() > 1u) {
+    return LockAccessResult{false, "", ambiguous_lock_message(entity_id, holders), "invalid-parameter"};
   }
-  return lock_mgr->check_access(entity_id, client_id, collection);
+  return check_lock(type.value_or(SovdEntityType::UNKNOWN), entity_id, client_id, collection);
 }
 
 tl::expected<LockInfo, LockError> CorePluginContext::acquire_lock(const std::string & entity_id,
                                                                   const std::string & client_id,
                                                                   const std::vector<std::string> & scopes,
                                                                   int expiration_seconds) {
-  auto * lock_mgr = services_ ? services_->lock_manager() : nullptr;
-  if (!lock_mgr) {
-    return tl::make_unexpected(LockError{"lock-disabled", "Locking is not enabled", 503, std::nullopt});
+  std::vector<SovdEntityType> holders;
+  auto type = resolve_bare_id(entity_id, "acquire_lock", holders);
+  if (holders.size() > 1u) {
+    return tl::make_unexpected(
+        LockError{"invalid-parameter", ambiguous_lock_message(entity_id, holders), 400, std::nullopt});
   }
-  return lock_mgr->acquire(entity_id, client_id, scopes, expiration_seconds);
+  return acquire_lock(type.value_or(SovdEntityType::UNKNOWN), entity_id, client_id, scopes, expiration_seconds);
 }
 
 tl::expected<void, LockError> CorePluginContext::release_lock(const std::string & entity_id,
                                                               const std::string & client_id) {
+  std::vector<SovdEntityType> holders;
+  auto type = resolve_bare_id(entity_id, "release_lock", holders);
+  if (holders.size() > 1u) {
+    return tl::make_unexpected(
+        LockError{"invalid-parameter", ambiguous_lock_message(entity_id, holders), 400, std::nullopt});
+  }
+  return release_lock(type.value_or(SovdEntityType::UNKNOWN), entity_id, client_id);
+}
+
+LockAccessResult CorePluginContext::check_lock_typed(SovdEntityType entity_type, const std::string & entity_id,
+                                                     const std::string & client_id,
+                                                     const std::string & collection) const {
+  auto * lock_mgr = services_ ? services_->lock_manager() : nullptr;
+  if (!lock_mgr) {
+    return LockAccessResult{true, "", "", ""};
+  }
+  return lock_mgr->check_access(entity_type, entity_id, client_id, collection);
+}
+
+tl::expected<LockInfo, LockError> CorePluginContext::acquire_lock_typed(SovdEntityType entity_type,
+                                                                        const std::string & entity_id,
+                                                                        const std::string & client_id,
+                                                                        const std::vector<std::string> & scopes,
+                                                                        int expiration_seconds) {
   auto * lock_mgr = services_ ? services_->lock_manager() : nullptr;
   if (!lock_mgr) {
     return tl::make_unexpected(LockError{"lock-disabled", "Locking is not enabled", 503, std::nullopt});
   }
-  return lock_mgr->release(entity_id, client_id);
+  return lock_mgr->acquire(entity_type, entity_id, client_id, scopes, expiration_seconds);
+}
+
+tl::expected<void, LockError> CorePluginContext::release_lock_typed(SovdEntityType entity_type,
+                                                                    const std::string & entity_id,
+                                                                    const std::string & client_id) {
+  auto * lock_mgr = services_ ? services_->lock_manager() : nullptr;
+  if (!lock_mgr) {
+    return tl::make_unexpected(LockError{"lock-disabled", "Locking is not enabled", 503, std::nullopt});
+  }
+  return lock_mgr->release(entity_type, entity_id, client_id);
 }
 
 IntrospectionInput CorePluginContext::get_entity_snapshot() const {
@@ -361,9 +551,9 @@ nlohmann::json CorePluginContext::list_all_faults() const {
 /// payload to the resource named by its second argument, so it is registered
 /// as streaming its collection whole. A subscription URI naming a single item
 /// of that collection is then refused rather than answered with everything.
-void CorePluginContext::register_sampler(
-    const std::string & collection,
-    const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> & fn) {
+void CorePluginContext::register_sampler(const std::string & collection,
+                                         const std::function<tl::expected<nlohmann::json, std::string>(
+                                             SovdEntityType, const std::string &, const std::string &)> & fn) {
   if (wiring_.sampler_registry) {
     wiring_.sampler_registry->register_sampler(collection, fn, /*is_builtin=*/false, /*honours_resource_path=*/false);
   }

@@ -42,7 +42,7 @@ TEST_F(SseTransportProviderTest, StartReturnsEventsUrl) {
   info.entity_type = "apps";
   info.entity_id = "node1";
 
-  ResourceSamplerFn sampler = [](const std::string &, const std::string &) {
+  ResourceSamplerFn sampler = [](SovdEntityType, const std::string &, const std::string &) {
     return nlohmann::json{{"value", 42}};
   };
 
@@ -58,7 +58,7 @@ TEST_F(SseTransportProviderTest, StopRemovesStream) {
   info.entity_type = "components";
   info.entity_id = "ecu1";
 
-  ResourceSamplerFn sampler = [](const std::string &, const std::string &) {
+  ResourceSamplerFn sampler = [](SovdEntityType, const std::string &, const std::string &) {
     return nlohmann::json{};
   };
 
@@ -117,7 +117,7 @@ TEST_F(SseTransportProviderTest, SamplerFailureFrameNamesTheVendorCode) {
       mgr_.create("node1", "apps", "/api/v1/apps/node1/data", "data", "/temperature", "sse", CyclicInterval::FAST, 60);
   ASSERT_TRUE(created.has_value()) << created.error();
 
-  ResourceSamplerFn failing = [](const std::string &,
+  ResourceSamplerFn failing = [](SovdEntityType, const std::string &,
                                  const std::string &) -> tl::expected<nlohmann::json, std::string> {
     return tl::make_unexpected(std::string("topic has no publisher"));
   };
@@ -143,7 +143,7 @@ TEST_F(SseTransportProviderTest, SuccessfulSampleFrameCarriesPayloadAndNoError) 
       mgr_.create("node2", "apps", "/api/v1/apps/node2/data", "data", "/temperature", "sse", CyclicInterval::FAST, 60);
   ASSERT_TRUE(created.has_value()) << created.error();
 
-  ResourceSamplerFn ok = [](const std::string &, const std::string &) {
+  ResourceSamplerFn ok = [](SovdEntityType, const std::string &, const std::string &) {
     return nlohmann::json{{"value", 42}};
   };
   ASSERT_TRUE(provider_.start(*created, ok, nullptr).has_value());
