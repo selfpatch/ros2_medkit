@@ -75,8 +75,7 @@ class FaultReporter {
   /// @param source_id Identifier for this reporter (typically node's FQN)
   /// @param service_name Name of the ReportFault service (default: /fault_manager/report_fault)
   ///
-  /// This overload has no timers interface, so a request with no response is sent again only when
-  /// the next report is made. The overloads that take a node use a timer.
+  /// The retry timer goes to the node's default callback group, as with the overloads that take a node.
   FaultReporter(const rclcpp::node_interfaces::NodeBaseInterface::SharedPtr & node_base,
                 const rclcpp::node_interfaces::NodeGraphInterface::SharedPtr & node_graph,
                 const rclcpp::node_interfaces::NodeServicesInterface::SharedPtr & node_services,
@@ -84,9 +83,10 @@ class FaultReporter {
                 const rclcpp::Logger & logger, const std::string & source_id,
                 const std::string & service_name = "/fault_manager/report_fault");
 
-  /// Base Constructor with a timers interface, which retries a request that got no response.
+  /// Base Constructor with a timers interface for the timer that retries a request with no response.
   ///
-  /// @param node_timers ROS2 Node Timers Interface for the retry timer
+  /// @param node_timers ROS2 Node Timers Interface for the retry timer; null uses the node's default
+  /// callback group
   FaultReporter(const rclcpp::node_interfaces::NodeBaseInterface::SharedPtr & node_base,
                 const rclcpp::node_interfaces::NodeGraphInterface::SharedPtr & node_graph,
                 const rclcpp::node_interfaces::NodeServicesInterface::SharedPtr & node_services,
@@ -95,6 +95,8 @@ class FaultReporter {
                 const rclcpp::Logger & logger, const std::string & source_id,
                 const std::string & service_name = "/fault_manager/report_fault");
 
+  /// Reports still waiting for a response are kept and sent until confirmed or dropped. At context
+  /// shutdown each one left is dropped with a warning.
   ~FaultReporter();
   FaultReporter(const FaultReporter &) = delete;
   FaultReporter & operator=(const FaultReporter &) = delete;

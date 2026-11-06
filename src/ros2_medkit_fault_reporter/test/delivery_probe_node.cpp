@@ -41,10 +41,19 @@ void poll_until(const rclcpp::Node::SharedPtr & node, std::chrono::seconds limit
   }
 }
 
-std::vector<std::unique_ptr<FaultReporter>> fresh_reporters(const rclcpp::Node::SharedPtr & node, size_t count) {
+// `ctor` "raw" builds the reporters from node interfaces without a timers interface.
+std::vector<std::unique_ptr<FaultReporter>>
+fresh_reporters(const rclcpp::Node::SharedPtr & node, size_t count, const std::string & ctor = "node",
+                const std::string & service = "/fault_manager/report_fault") {
   std::vector<std::unique_ptr<FaultReporter>> reporters;
   for (size_t i = 0; i < count; ++i) {
-    reporters.push_back(std::make_unique<FaultReporter>(node, "/delivery_probe"));
+    if (ctor == "raw") {
+      reporters.push_back(std::make_unique<FaultReporter>(
+          node->get_node_base_interface(), node->get_node_graph_interface(), node->get_node_services_interface(),
+          node->get_node_parameters_interface(), node->get_logger(), "/delivery_probe", service));
+    } else {
+      reporters.push_back(std::make_unique<FaultReporter>(node, "/delivery_probe", service));
+    }
   }
   return reporters;
 }
@@ -121,10 +130,13 @@ int run(int argc, char * argv[]) {
     std::printf("DONE pending=%zu\n", total_pending(reporters));
   } else if (mode == "stalled") {
     // The manager is stopped by the test: report and then log the pending count as it changes.
-    // Code i goes to reporter i % reporters.
+    // Code i goes to reporter i % reporters. With `destroy` the reporters are destroyed after reporting.
     const auto reporter_count =
         static_cast<size_t>(node->declare_parameter<int64_t>("reporters", static_cast<int64_t>(count)));
-    auto reporters = fresh_reporters(node, reporter_count);
+    const auto ctor = node->declare_parameter<std::string>("ctor", "node");
+    const auto service = node->declare_parameter<std::string>("service", "/fault_manager/report_fault");
+    const bool destroy = node->declare_parameter<bool>("destroy", false);
+    auto reporters = fresh_reporters(node, reporter_count, ctor, service);
     const auto go_file = node->declare_parameter<std::string>("go_file", "");
     poll_until(node, kLimit, [&]() {
       return all_ready(reporters);
@@ -141,6 +153,12 @@ int run(int argc, char * argv[]) {
     std::printf("REPORTED pending=%zu\n", total_pending(reporters));
     std::fflush(stdout);
     size_t last = total_pending(reporters);
+    if (destroy) {
+      reporters.clear();
+      last = 0;
+      std::printf("DESTROYED\n");
+      std::fflush(stdout);
+    }
     while (rclcpp::ok()) {
       rclcpp::spin_some(node);
       const size_t now = total_pending(reporters);

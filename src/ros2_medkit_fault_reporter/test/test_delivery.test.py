@@ -34,6 +34,12 @@ from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import ListFaults
 
 ALL_STATUSES = [Fault.STATUS_CONFIRMED, Fault.STATUS_HEALED]
+MANAGER_PARAMS = {
+    'storage_type': 'memory',
+    'confirmation_threshold': -1,
+    'healing_enabled': True,
+    'healing_threshold': 0,
+}
 
 
 def generate_test_description():
@@ -42,12 +48,7 @@ def generate_test_description():
         executable='fault_manager_node',
         name='fault_manager',
         output='screen',
-        parameters=[{
-            'storage_type': 'memory',
-            'confirmation_threshold': -1,
-            'healing_enabled': True,
-            'healing_threshold': 0,
-        }],
+        parameters=[MANAGER_PARAMS],
     )
     return LaunchDescription([fault_manager, launch_testing.actions.ReadyToTest()])
 
@@ -55,6 +56,32 @@ def generate_test_description():
 def probe_path():
     return os.path.join(get_package_prefix('ros2_medkit_fault_reporter'),
                         'lib', 'ros2_medkit_fault_reporter', 'delivery_probe_node')
+
+
+class Manager:
+    """A fault_manager_node process named name, so its services are /<name>/..."""
+
+    def __init__(self, name):
+        args = [os.path.join(get_package_prefix('ros2_medkit_fault_manager'),
+                             'lib', 'ros2_medkit_fault_manager', 'fault_manager_node'),
+                '--ros-args', '-r', f'__node:={name}']
+        for key, value in MANAGER_PARAMS.items():
+            args += ['-p', f'{key}:={value}']
+        self.proc = subprocess.Popen(args)
+
+    def kill(self):
+        """SIGKILL, which also ends a stopped process: requests it has not read are lost."""
+        if self.proc.poll() is None:
+            self.proc.kill()
+        self.proc.wait()
+
+    def stop(self):
+        if self.proc.poll() is None:
+            self.proc.send_signal(signal.SIGINT)
+        try:
+            self.proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.kill()
 
 
 def find_pid(name):
@@ -157,25 +184,116 @@ class TestDelivery(unittest.TestCase):
         cls.node.destroy_node()
         rclpy.shutdown()
 
-    def faults(self, prefix):
+    def faults(self, prefix, lister=None):
+        lister = lister or self.lister
         req = ListFaults.Request()
         req.filter_by_severity = False
         req.statuses = ALL_STATUSES
-        fut = self.lister.call_async(req)
+        fut = lister.call_async(req)
         rclpy.spin_until_future_complete(self.node, fut, timeout_sec=5.0)
         result = fut.result()
         found = result.faults if result is not None else []
         return {f.fault_code: f for f in found if f.fault_code.startswith(prefix)}
 
-    def wait_faults(self, prefix, predicate, timeout=30.0):
+    def wait_faults(self, prefix, predicate, timeout=30.0, lister=None):
         deadline = time.time() + timeout
         found = {}
         while time.time() < deadline:
-            found = self.faults(prefix)
+            found = self.faults(prefix, lister)
             if predicate(found):
                 break
             time.sleep(0.2)
         return found
+
+    def wait_clients_gone(self, service, timeout=30.0):
+        """Poll the graph until the probe node has no client of service; return what is left."""
+        deadline = time.time() + timeout
+        left = []
+        while time.time() < deadline:
+            clients = self.node.get_client_names_and_types_by_node('delivery_probe', '/')
+            left = [n for n, _ in clients if n == service]
+            if not left:
+                break
+            time.sleep(0.2)
+        return left
+
+    def restart_case(self, prefix, name, count, **params):
+        """
+        Report to a stopped manager, kill it, start a new one: every report must reach the new one.
+
+        The killed manager never read the requests, so each one arrives only if it is sent again.
+        """
+        lister = self.node.create_client(ListFaults, f'/{name}/list_faults')
+        first = Manager(name)
+        second = None
+        probe = None
+        try:
+            self.assertTrue(lister.wait_for_service(timeout_sec=20.0))
+            # A budget of 30 s, well past the start of a new manager.
+            probe = stalled_probe(
+                first.proc.pid, f'/tmp/delivery_go_{name}', count=count, prefix=prefix,
+                service=f'/{name}/report_fault',
+                fault_reporter__delivery__ack_timeout_sec=0.3,
+                fault_reporter__delivery__max_attempts=100, **params)
+            probe.wait_for(lambda line: line == f'REPORTED pending={count}')
+            if params.get('destroy') == 'true':
+                probe.wait_for(lambda line: line == 'DESTROYED')
+            first.kill()
+            second = Manager(name)
+            found = self.wait_faults(prefix + '_', lambda f: len(f) == count,
+                                     timeout=60.0, lister=lister)
+            self.assertEqual(sorted(found), sorted(f'{prefix}_{i}' for i in range(count)))
+            if params.get('destroy') == 'true':
+                # Once confirmed, the reports of destroyed reporters free their clients.
+                self.assertEqual(self.wait_clients_gone(f'/{name}/report_fault'), [])
+            else:
+                probe.wait_for(lambda line: line == 'PENDING 0')
+            self.assertEqual(probe.count('dropping the report'), 0,
+                             [line for line in probe.seen if 'dropping' in line])
+        finally:
+            if probe is not None:
+                probe.stop()
+            first.kill()
+            if second is not None:
+                second.stop()
+            self.node.destroy_client(lister)
+
+    def test_reports_reach_a_restarted_manager(self):
+        """Reports pending when the manager dies reach the manager started after it."""
+        self.restart_case('RESTART', 'fm_restart', count=6)
+
+    def test_raw_interfaces_reporter_sends_a_lone_report_again(self):
+        """A reporter built from node interfaces without timers sends its one report again."""
+        self.restart_case('RAW', 'fm_raw', count=1, reporters=1, ctor='raw')
+
+    def test_destroyed_reporters_deliver_their_pending_reports(self):
+        """The pending reports of destroyed reporters are sent until the manager confirms them."""
+        self.restart_case('GONE', 'fm_gone', count=6, destroy='true')
+
+    def test_reports_pending_at_shutdown_are_dropped_with_a_warning(self):
+        """At shutdown each report still waiting for the manager is dropped with a warning."""
+        count = 3
+        for destroy in ('false', 'true'):
+            prefix = 'DOWN_GONE' if destroy == 'true' else 'DOWN_LIVE'
+            with self.subTest(destroy=destroy):
+                probe = None
+                try:
+                    probe = stalled_probe(
+                        self.manager_pid, f'/tmp/delivery_go_down_{destroy}', count=count,
+                        prefix=prefix, destroy=destroy,
+                        fault_reporter__delivery__ack_timeout_sec=60.0)
+                    probe.wait_for(lambda line: line == f'REPORTED pending={count}')
+                    if destroy == 'true':
+                        probe.wait_for(lambda line: line == 'DESTROYED')
+                    probe.proc.send_signal(signal.SIGINT)
+                    for i in range(count):
+                        probe.wait_for(
+                            lambda line, i=i: f"dropping the report for '{prefix}_{i}'" in line)
+                    self.assertEqual(probe.stop(exits_alone=True), 0)
+                finally:
+                    os.kill(self.manager_pid, signal.SIGCONT)
+                    if probe is not None:
+                        probe.stop()
 
     def test_burst_of_fresh_reporters_loses_nothing(self):
         """Fresh reporters that report the moment their client is ready lose no report."""
