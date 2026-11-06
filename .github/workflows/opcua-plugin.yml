@@ -86,6 +86,13 @@ jobs:
           rosdep install --from-paths src --ignore-src -y \
             --skip-keys='nav2_msgs ament_cmake_clang_format ament_cmake_clang_tidy'
 
+      - name: Install asyncua (client of test_alarm_server_smoke)
+        run: |
+          apt-get install -y python3-venv
+          # In a venv on top of the system packages, so nothing is installed outside it.
+          python3 -m venv --system-site-packages /opt/smoke-venv
+          /opt/smoke-venv/bin/pip install asyncua
+
       - name: Build ros2_medkit_opcua (and upstream deps)
         env:
           CCACHE_DIR: /root/.cache/ccache
@@ -106,10 +113,24 @@ jobs:
         timeout-minutes: 15
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          # test_alarm_server_smoke runs in the next step, with asyncua.
           colcon test --return-code-on-test-failure \
             --packages-select ros2_medkit_opcua \
-            --ctest-args -LE linter \
+            --ctest-args -LE linter -E '^test_alarm_server_smoke$' \
             --event-handlers console_direct+
+
+      - name: Run test_alarm_server_smoke with asyncua
+        timeout-minutes: 5
+        env:
+          # A missing asyncua fails the test instead of skipping it.
+          ROS2_MEDKIT_OPCUA_SMOKE_REQUIRE: '1'
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          source install/setup.bash
+          # The test's interpreter is the system one; the venv's packages come first on its path.
+          PURELIB=$(/opt/smoke-venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')
+          export PYTHONPATH="${PURELIB}${PYTHONPATH:+:${PYTHONPATH}}"
+          ctest --test-dir build/ros2_medkit_opcua -R '^test_alarm_server_smoke$' --output-on-failure
 
       - name: Show test results
         if: always()
@@ -273,11 +294,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install jq + asyncua (smoke test prerequisite)
+      - name: Install jq
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq python3-pip
-          pip3 install --break-system-packages asyncua
+          sudo apt-get install -y jq
 
       - name: Run alarm integration suite
         env:
