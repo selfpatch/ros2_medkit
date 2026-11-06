@@ -698,7 +698,8 @@ TEST_F(OpcuaPluginTest, GetFaultFound) {
   ctx_.all_faults = {{"faults", {{{"fault_code", "PLC_LOW_LEVEL"}, {"source_id", "tank"}, {"severity", 2}}}}};
   auto result = plugin_.get_fault("tank", "PLC_LOW_LEVEL");
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(result->content.value("fault_code", ""), "PLC_LOW_LEVEL");
+  ASSERT_TRUE(result->content.contains("fault_code"));
+  EXPECT_EQ(result->content["fault_code"], "PLC_LOW_LEVEL");
 }
 
 // -- configure() validation (issue #481) --
