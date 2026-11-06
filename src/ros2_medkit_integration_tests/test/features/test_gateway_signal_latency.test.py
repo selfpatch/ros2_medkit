@@ -88,6 +88,7 @@ class _Gateway:
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env,
             preexec_fn=_die_with_parent)
         self.lines = []
+        self._eof = False
         self._seen = threading.Condition()
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._reader.start()
@@ -98,6 +99,9 @@ class _Gateway:
             with self._seen:
                 self.lines.append((read_at, line))
                 self._seen.notify_all()
+        with self._seen:
+            self._eof = True
+            self._seen.notify_all()
 
     def wait_line(self, regex, timeout):
         """Return (monotonic read time, match) of the first matching line, or None."""
@@ -108,10 +112,11 @@ class _Gateway:
                     match = regex.search(line)
                     if match:
                         return read_at, match
+                # EOF comes after the last line, so an exited process's output is all searched.
                 remaining = deadline - time.monotonic()
-                if remaining <= 0 or self.proc.poll() is not None:
+                if remaining <= 0 or self._eof:
                     return None
-                self._seen.wait(min(remaining, 0.05))
+                self._seen.wait(remaining)
 
     def output(self):
         with self._seen:
