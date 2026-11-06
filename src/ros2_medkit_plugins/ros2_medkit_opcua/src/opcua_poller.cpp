@@ -1509,7 +1509,9 @@ void OpcuaPoller::evaluate_alarms(DetectionPipeline::Pass pass) {
     std::this_thread::sleep_for(std::chrono::microseconds(delay));
   }
 
-  // Fire callbacks outside of locks
+  // The callbacks run outside snapshot_mutex_ but under detection_mutex_, and
+  // on a data change also under the OPC UA client's lock, so they must not call
+  // the OPC UA client.
   if (!changes.empty()) {
     std::lock_guard<std::mutex> alarm_lock(alarm_mutex_);
     if (alarm_callback_) {
