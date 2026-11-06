@@ -479,35 +479,6 @@ bool ThreadSafeEntityCache::has_entity(SovdEntityType type, const std::string & 
 }
 
 // ============================================================================
-// Reader methods - Find any entity
-// ============================================================================
-
-std::optional<EntityRef> ThreadSafeEntityCache::find_entity(const std::string & id) const {
-  std::shared_lock lock(mutex_);
-
-  // Search order: Component, App, Area, Function
-  if (const uint32_t * slot = component_index_.find(id); slot && components_.is_live(*slot)) {
-    return EntityRef{SovdEntityType::COMPONENT, *slot};
-  }
-  if (const uint32_t * slot = app_index_.find(id); slot && apps_.is_live(*slot)) {
-    return EntityRef{SovdEntityType::APP, *slot};
-  }
-  if (const uint32_t * slot = area_index_.find(id); slot && areas_.is_live(*slot)) {
-    return EntityRef{SovdEntityType::AREA, *slot};
-  }
-  if (const uint32_t * slot = function_index_.find(id); slot && functions_.is_live(*slot)) {
-    return EntityRef{SovdEntityType::FUNCTION, *slot};
-  }
-
-  return std::nullopt;
-}
-
-SovdEntityType ThreadSafeEntityCache::get_entity_type(const std::string & id) const {
-  auto ref = find_entity(id);
-  return ref ? ref->type : SovdEntityType::UNKNOWN;
-}
-
-// ============================================================================
 // Relationship queries
 // ============================================================================
 
@@ -689,15 +660,6 @@ AggregatedOperations ThreadSafeEntityCache::get_function_operations(const std::s
 // ============================================================================
 // Configuration aggregation methods
 // ============================================================================
-
-AggregatedConfigurations ThreadSafeEntityCache::get_entity_configurations(const std::string & entity_id) const {
-  // Find entity by ID - O(1) lookups in each index
-  auto entity = find_entity(entity_id);
-  if (!entity) {
-    return {};
-  }
-  return get_entity_configurations(entity->type, entity_id);
-}
 
 AggregatedConfigurations ThreadSafeEntityCache::get_entity_configurations(SovdEntityType type,
                                                                           const std::string & entity_id) const {
@@ -1258,15 +1220,6 @@ void ThreadSafeEntityCache::collect_operations_from_component(uint32_t comp_slot
 // ============================================================================
 // Data aggregation methods
 // ============================================================================
-
-AggregatedData ThreadSafeEntityCache::get_entity_data(const std::string & entity_id) const {
-  // find_entity takes its own lock, so we don't need one here
-  auto entity_ref = find_entity(entity_id);
-  if (!entity_ref) {
-    return {};
-  }
-  return get_entity_data(entity_ref->type, entity_id);
-}
 
 AggregatedData ThreadSafeEntityCache::get_entity_data(SovdEntityType type, const std::string & entity_id) const {
   // Each get_*_data method takes its own lock

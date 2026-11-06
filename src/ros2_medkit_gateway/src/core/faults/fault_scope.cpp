@@ -148,8 +148,7 @@ std::set<std::string> resolve_entity_source_fqns(const ThreadSafeEntityCache & c
 }
 
 std::vector<std::string> hosted_entities_of(const ThreadSafeEntityCache & cache, const std::string & source_id) {
-  auto entity = cache.find_entity(source_id);
-  if (!entity || entity->type != SovdEntityType::COMPONENT) {
+  if (!cache.has_entity(SovdEntityType::COMPONENT, source_id)) {
     return {};
   }
   return cache.get_apps_for_component(source_id);

@@ -134,7 +134,6 @@ std::optional<AggregationHost::MergedPeers> AggregationHost::merge_peers(std::ve
   apps = std::move(merged.apps);
   functions = std::move(merged.functions);
   MergedPeers result{std::move(merged.routing_table), std::move(merged.drops)};
-  manager_->update_routing_table(result.routing_table);
   manager_->set_leaf_warnings(std::move(merged.leaf_warnings));
   return result;
 }

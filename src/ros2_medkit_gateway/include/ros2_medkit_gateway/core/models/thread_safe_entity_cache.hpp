@@ -339,10 +339,6 @@ class ThreadSafeEntityCache {
   /// Look up a single node FQN to app entity ID mapping (shared lock, no map copy)
   std::string resolve_node_to_app(const std::string & node_fqn) const;
 
-  // --- Resolve any entity by ID ---
-  std::optional<EntityRef> find_entity(const std::string & id) const;
-  SovdEntityType get_entity_type(const std::string & id) const;
-
   // =========================================================================
   // Relationship queries (O(1) via indexes)
   // =========================================================================
@@ -433,21 +429,13 @@ class ThreadSafeEntityCache {
   // =========================================================================
 
   /**
-   * @brief Aggregate data (topics) for any entity by ID
-   *
-   * Unified method that works for all entity types.
-   * Aggregates topics from the entity and its children.
-   *
-   * @param entity_id Entity ID to get data for
-   * @return AggregatedData with topics, or empty if entity not found
-   */
-  AggregatedData get_entity_data(const std::string & entity_id) const;
-
-  /**
    * @brief Aggregate data (topics) for the entity of `type` named `entity_id`
    *
-   * The entity a route names: an Area and a Function may share an id, and the
-   * id-only overload above returns the data of whichever type it finds first.
+   * Works for all entity types: topics of the entity and its children. The
+   * entity is named by its type and id, as a route names it: an Area and a
+   * Function may share an id, so there is no lookup by id alone.
+   *
+   * @return AggregatedData with topics, or empty if the entity is not found
    */
   AggregatedData get_entity_data(SovdEntityType type, const std::string & entity_id) const;
 
@@ -482,21 +470,13 @@ class ThreadSafeEntityCache {
   // =========================================================================
 
   /**
-   * @brief Aggregate configurations (node FQNs) for any entity by ID
+   * @brief Aggregate configurations (node FQNs) for the entity of `type` named `entity_id`
    *
-   * Unified method that works for all entity types.
-   * For Apps, returns the single bound node.
-   * For Components/Areas/Functions, aggregates all child app nodes.
+   * Works for all entity types. For Apps, returns the single bound node. For
+   * Components/Areas/Functions, aggregates all child app nodes. Named by type
+   * and id; see get_entity_data.
    *
-   * @param entity_id Entity ID to get configurations for
-   * @return AggregatedConfigurations with node FQNs, or empty if entity not found
-   */
-  AggregatedConfigurations get_entity_configurations(const std::string & entity_id) const;
-
-  /**
-   * @brief Aggregate configurations for the entity of `type` named `entity_id`
-   *
-   * The entity a route names; see get_entity_data(SovdEntityType, ...).
+   * @return AggregatedConfigurations with node FQNs, or empty if the entity is not found
    */
   AggregatedConfigurations get_entity_configurations(SovdEntityType type, const std::string & entity_id) const;
 
