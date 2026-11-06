@@ -676,11 +676,13 @@ if(BUILD_TESTING)
       TIMEOUT 300)
     # raise_after_samples / raise_after_ms through a real gateway and fault
     # manager: a poll leg, a subscription leg and a subscription leg with a
-    # 60 s poll. Worst case of each of the first two: fault manager 30 s, ready
-    # 90 s, checks and sleeps 43 s, 38 fixture writes at 2 s each 76 s, process
-    # stops 32 s, so about 271 s. The third: 30 + 90 + 8 s of waits, 2 writes
+    # 60 s poll. Worst case of the subscription leg: fault manager 30 s, ready
+    # 90 s, checks and sleeps 40 s, 38 fixture writes at 2 s each 76 s, process
+    # stops 32 s, so about 268 s. The poll leg adds the frozen server: the 1
+    # seen 5 s, 1.5 s, link down 15 s, reconnect 30 s, the raise 8 s and 2
+    # writes 4 s, so about 332 s. The third: 30 + 90 + 8 s of waits, 2 writes
     # 4 s, stops 32 s, so about 164 s. With the server (25 s start, 8 s stop)
-    # that is about 739 s.
+    # that is about 797 s.
     medkit_add_wrapped_test(test_opcua_raise_qualifier
       COMMAND "${Python3_EXECUTABLE}"
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_raise_qualifier.test.py"

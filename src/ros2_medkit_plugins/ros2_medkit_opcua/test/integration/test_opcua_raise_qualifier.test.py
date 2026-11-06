@@ -22,20 +22,26 @@ Tank.Level of 42.0. The node map gives each a detection rule:
   * Tank.Level > 40, no qualifier: active from the first read. The control
     that shows the detection path is live in each leg.
   * StatusWord bit 0 with raise_after_ms: 3000.
-  * FaultCode > 0 with raise_after_samples: 2.
+  * FaultCode > 0 with raise_after_samples: 3.
 
 The test writes the registers through the fixture's stdin and reads which
 faults are CONFIRMED from the fault manager over the gateway's /faults, so a
 fault only counts once its report has left the plugin. It runs once with
 polling and once with subscriptions, the transport where a steady value sends
-no further updates. Each leg has its own fault manager. Per leg:
+no further updates. Each leg has its own fault manager, and the plugin clears a
+fault through it, so a fault that was raised and cleared comes back with
+occurrence_count 2. Per leg:
 
-  * a StatusWord blip shorter than the window never shows up,
-  * a held StatusWord shows up no sooner than 3 s after the write,
+  * a StatusWord blip shorter than the window, then a held StatusWord: the
+    fault shows up no sooner than 3 s after the write, with occurrence_count
+    1, so the blip never raised it,
   * the clear is immediate,
-  * ten FaultCode blips shorter than one poll never show up, each with two
-    changes (5, 6, then 0), so two quick changes are one sample,
-  * a held FaultCode shows up after two samples, not on the first.
+  * ten FaultCode blips shorter than one poll, each with two changes (5, 6,
+    then 0), then a held FaultCode: the fault shows up after three samples' time,
+    not on the first, with occurrence_count 1, so no blip raised it.
+
+The poll leg then freezes the server with SIGSTOP part way through a 3 s wait,
+and checks that after SIGCONT and the reconnect the wait starts over.
 
 The subscription leg uses a subscription interval well below the poll
 interval, so data changes arrive between polls, as they do in the field. A
@@ -64,7 +70,10 @@ CONTROL = 'TANK_ABOVE_40'
 HELD = 'STATUS_BIT0_HELD'
 REPEATED = 'FAULT_CODE_REPEATED'
 HOLD_MS = 3000
-SAMPLES = 2
+# Under a subscription this is a wait of (SAMPLES - 1) polls, 1 s. A blip
+# reaches the plugin up to about one publish and one pump step late, so the
+# wait has to be well above the longest blip (about 0.4 s with the writes).
+SAMPLES = 3
 POLL_MS = 500
 # Subscription leg: changes arrive between polls, every SUB_MS.
 SUB_MS = 50
@@ -292,12 +301,37 @@ def active(faults_url):
             if item.get('status') == 'CONFIRMED'}
 
 
-def ever_reported(faults_url, code):
-    """Return whether the fault manager holds <code> in any status, or None if unreadable."""
+def occurrences(faults_url, code):
+    """Return the occurrence_count of <code>: 0 when there is no such fault, None if unreadable."""
     listing = http_json(faults_url)
     if not isinstance(listing, dict):
         return None
-    return any(item.get('fault_code') == code for item in listing.get('items', []))
+    for item in listing.get('items', []):
+        if item.get('fault_code') == code:
+            return item.get('occurrence_count')
+    return 0
+
+
+def plugin_sees(data_url, want, deadline, period=0.05):
+    """Return True once x-plc-data shows <want>, the value the plugin last got for the point."""
+    start = time.monotonic()
+    while time.monotonic() - start < deadline:
+        point = http_json(data_url, timeout=2)
+        if isinstance(point, dict) and point.get('value') == want:
+            return True
+        time.sleep(period)
+    return False
+
+
+def plc_connected(status_url, want, deadline, period=0.1):
+    """Seconds until x-plc-status reports connected == <want>, or None if not within <deadline>."""
+    start = time.monotonic()
+    while time.monotonic() - start < deadline:
+        status = http_json(status_url, timeout=2)
+        if isinstance(status, dict) and status.get('connected') is want:
+            return time.monotonic() - start
+        time.sleep(period)
+    return None
 
 
 def first_active(faults_url, code, deadline, period=0.1):
@@ -309,17 +343,6 @@ def first_active(faults_url, code, deadline, period=0.1):
             return time.monotonic() - start
         time.sleep(period)
     return None
-
-
-def stays_inactive(faults_url, code, seconds, period=0.1):
-    """Return True when <code> is never active during <seconds>."""
-    start = time.monotonic()
-    while time.monotonic() - start < seconds:
-        now = active(faults_url)
-        if now is not None and code in now:
-            return False
-        time.sleep(period)
-    return True
 
 
 def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, subscriptions):
@@ -341,6 +364,7 @@ def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, sub
     gw = start_gateway(params, log, env)
     status_url = f'http://127.0.0.1:{port}/api/v1/components/{COMPONENT}/x-plc-status'
     faults_url = f'http://127.0.0.1:{port}/api/v1/faults?status=all'
+    status_word_url = f'http://127.0.0.1:{port}/api/v1/apps/{ENTITY}/x-plc-data/status_word'
     try:
         # Connected, on the transport this leg is about, and the control rule
         # without a qualifier already CONFIRMED in the fault manager.
@@ -369,19 +393,27 @@ def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, sub
         check(set_register(server, server_log, 'StatusWord', 0),
               f'{mode}: StatusWord back to 0 after the blip')
         blip = time.monotonic() - blip_start
+        # Step 2 sets 1 again, so the 0 has to reach the plugin first, or the
+        # plugin sees one long 1 and step 2 measures from the wrong start.
+        check(plugin_sees(status_word_url, 0, 5 * SCALE),
+              f'{mode}: the plugin got the 0 that ends the blip')
         check(blip < HOLD_MS / 1000.0,
               f'{mode}: the blip lasted {blip:.2f} s, less than {HOLD_MS} ms')
-        check(stays_inactive(faults_url, HELD, (HOLD_MS / 1000.0 + 2.0) * SCALE),
-              f'{mode}: a 1 s StatusWord blip never raises {HELD}')
 
         # 2. A held condition. The wait starts at the first sample, which is no
-        #    earlier than the write, so the fault cannot show up sooner.
+        #    earlier than the write, so the fault cannot show up sooner. A blip
+        #    that raised the fault would have been cleared again, so this raise
+        #    would be its second occurrence.
         check(set_register(server, server_log, 'StatusWord', 1), f'{mode}: StatusWord set to 1')
         elapsed = first_active(faults_url, HELD, (HOLD_MS / 1000.0 + 5.0) * SCALE)
         check(elapsed is not None, f'{mode}: a held StatusWord raises {HELD}')
         if elapsed is not None:
             check(elapsed >= HOLD_MS / 1000.0 - 0.1,
                   f'{mode}: {HELD} shows up no sooner than {HOLD_MS} ms (after {elapsed:.2f} s)')
+            count = occurrences(faults_url, HELD)
+            check(count == 1,
+                  f'{mode}: {HELD} is on its first occurrence, so the 1 s blip never raised it '
+                  f'(occurrence_count {count})')
 
         # 3. The clear does not wait.
         set_register(server, server_log, 'StatusWord', 0)
@@ -396,11 +428,11 @@ def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, sub
         check(cleared is not None, f'{mode}: {HELD} clears once StatusWord is 0')
 
         # 4. Short blips. Each one is shorter than a poll, so polling never
-        #    reads it twice, and under a subscription the tick that follows a
-        #    change must not count as a second sample. The gap between two blips
-        #    is longer than a poll, so a healthy read always lands in between:
-        #    with a shorter gap, two reads in a row can each catch a different
-        #    blip, and polling rightly raises.
+        #    reads it twice, and under a subscription it is shorter than the
+        #    wait the samples rule becomes. The gap between two blips is longer
+        #    than a poll, so a healthy read always lands in between: with a
+        #    shorter gap, two reads in a row can each catch a different blip,
+        #    and polling rightly raises.
         longest = 0.0
         for _ in range(BLIPS):
             blip_start = time.monotonic()
@@ -411,18 +443,17 @@ def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, sub
             set_register(server, server_log, 'FaultCode', 0)
             longest = max(longest, time.monotonic() - blip_start)
             time.sleep(BLIP_GAP_S)
-        check(longest < POLL_MS / 1000.0,
-              f'{mode}: the longest FaultCode blip lasted {longest:.2f} s, less than one poll')
-        # A blip that got through is raised and cleared again at once, so look
-        # for the fault in any status: this leg's fault manager has never been
-        # told about it before.
-        time.sleep(1.5 * SCALE)
-        check(ever_reported(faults_url, REPEATED) is False,
-              f'{mode}: {BLIPS} short FaultCode blips never raise {REPEATED}, '
-              'not even for a moment')
+        # Polling needs a blip shorter than a poll. A subscription needs it shorter
+        # than the wait, less one publish and one pump step it can arrive late.
+        limit = POLL_MS / 1000.0
+        if subscriptions:
+            limit = ((SAMPLES - 1) * POLL_MS - 2 * SUB_MS) / 1000.0
+        check(longest < limit,
+              f'{mode}: the longest FaultCode blip lasted {longest:.2f} s, under {limit:.1f} s')
 
-        # 5. Samples. Under a subscription the register sends one change and
-        #    the poll loop counts one more sample per cycle while it holds.
+        # 5. Samples. Under a subscription the register sends one change, and
+        #    the rule waits (SAMPLES - 1) polls from it. A blip that got through
+        #    was raised and cleared at once, so this raise would not be the first.
         check(set_register(server, server_log, 'FaultCode', 5), f'{mode}: FaultCode set to 5')
         elapsed = first_active(faults_url, REPEATED, (SAMPLES * POLL_MS / 1000.0 + 6.0) * SCALE)
         check(elapsed is not None, f'{mode}: a held FaultCode raises {REPEATED}')
@@ -430,7 +461,15 @@ def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, sub
             least = (SAMPLES - 1) * POLL_MS / 1000.0 - 0.3
             check(elapsed >= least,
                   f'{mode}: {REPEATED} needs {SAMPLES} samples, not one (after {elapsed:.2f} s)')
+            count = occurrences(faults_url, REPEATED)
+            check(count == 1,
+                  f'{mode}: {REPEATED} is on its first occurrence, so no short blip raised it '
+                  f'(occurrence_count {count})')
         set_register(server, server_log, 'FaultCode', 0)
+        if not subscriptions:
+            # 6. A frozen server. Only polling sees the link go down; under a
+            #    subscription a frozen server is not noticed yet.
+            frozen_wait(server, server_log, status_url, faults_url, status_word_url)
         check(first_active(faults_url, CONTROL, 5 * SCALE) is not None,
               f'{mode}: {CONTROL} still active at the end of the leg')
     finally:
@@ -443,6 +482,38 @@ def run_leg(workdir, env, plugin, server, server_log, server_port, manifest, sub
             set_register(server, server_log, 'FaultCode', 0)
         except (BrokenPipeError, ValueError, OSError):
             pass
+
+
+def frozen_wait(server, server_log, status_url, faults_url, status_word_url):
+    """Freeze the server part way through a wait: after the reconnect the wait starts over."""
+    if not check(set_register(server, server_log, 'StatusWord', 1),
+                 'poll: StatusWord set to 1 before the freeze'):
+        return
+    # The wait has to be running before the freeze, or the test proves nothing.
+    if not check(plugin_sees(status_word_url, 1, 5 * SCALE),
+                 'poll: the plugin got the 1 before the freeze'):
+        return
+    time.sleep(HOLD_MS / 2000.0)
+    os.kill(server.pid, signal.SIGSTOP)
+    try:
+        down = plc_connected(status_url, False, 15 * SCALE)
+        check(down is not None, 'poll: the link is seen down while the server is frozen')
+    finally:
+        os.kill(server.pid, signal.SIGCONT)
+    if down is None:
+        return
+    up = plc_connected(status_url, True, 30 * SCALE)
+    if not check(up is not None, 'poll: the plugin reconnects once the server runs again'):
+        return
+    # The wait started before the freeze. If it carried over, the fault would
+    # show up at the first read after the reconnect.
+    elapsed = first_active(faults_url, HELD, (HOLD_MS / 1000.0 + 5.0) * SCALE)
+    check(elapsed is not None, f'poll: a StatusWord held over the freeze raises {HELD}')
+    if elapsed is not None:
+        check(elapsed >= HOLD_MS / 1000.0 - 0.5,
+              f'poll: the wait starts over after the reconnect, {HELD} shows up no sooner '
+              f'than {HOLD_MS} ms after it (after {elapsed:.2f} s)')
+    set_register(server, server_log, 'StatusWord', 0)
 
 
 def run_duration_leg(workdir, env, plugin, server, server_log, server_port, manifest):
