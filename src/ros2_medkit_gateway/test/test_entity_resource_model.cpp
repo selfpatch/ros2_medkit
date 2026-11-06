@@ -383,31 +383,14 @@ TEST_F(EntityCacheTest, HasEntityReturnsCorrectValue) {
   EXPECT_FALSE(cache_.has_app("unknown"));
 }
 
-TEST_F(EntityCacheTest, FindEntityReturnsCorrectType) {
+TEST_F(EntityCacheTest, HasEntityChecksTheNamedType) {
   cache_.update_all(areas_, components_, apps_, {});
 
-  auto comp_ref = cache_.find_entity("nav2");
-  ASSERT_TRUE(comp_ref.has_value());
-  EXPECT_EQ(comp_ref->type, SovdEntityType::COMPONENT);
-
-  auto app_ref = cache_.find_entity("controller");
-  ASSERT_TRUE(app_ref.has_value());
-  EXPECT_EQ(app_ref->type, SovdEntityType::APP);
-
-  auto area_ref = cache_.find_entity("perception");
-  ASSERT_TRUE(area_ref.has_value());
-  EXPECT_EQ(area_ref->type, SovdEntityType::AREA);
-
-  EXPECT_FALSE(cache_.find_entity("unknown").has_value());
-}
-
-TEST_F(EntityCacheTest, GetEntityTypeReturnsCorrectType) {
-  cache_.update_all(areas_, components_, apps_, {});
-
-  EXPECT_EQ(cache_.get_entity_type("nav2"), SovdEntityType::COMPONENT);
-  EXPECT_EQ(cache_.get_entity_type("controller"), SovdEntityType::APP);
-  EXPECT_EQ(cache_.get_entity_type("perception"), SovdEntityType::AREA);
-  EXPECT_EQ(cache_.get_entity_type("unknown"), SovdEntityType::UNKNOWN);
+  EXPECT_TRUE(cache_.has_entity(SovdEntityType::COMPONENT, "nav2"));
+  EXPECT_TRUE(cache_.has_entity(SovdEntityType::APP, "controller"));
+  EXPECT_TRUE(cache_.has_entity(SovdEntityType::AREA, "perception"));
+  EXPECT_FALSE(cache_.has_entity(SovdEntityType::APP, "nav2"));
+  EXPECT_FALSE(cache_.has_entity(SovdEntityType::COMPONENT, "unknown"));
 }
 
 // ============================================================================
@@ -711,14 +694,6 @@ TEST_F(AggregationServiceTest, ShouldAggregateCheckCorrect) {
   EXPECT_FALSE(AggregationService::should_aggregate(SovdEntityType::APP));
 }
 
-TEST_F(AggregationServiceTest, GetOperationsByIdAutoDetectsType) {
-  auto result = service_->get_operations_by_id("nav_stack");
-  EXPECT_EQ(result.aggregation_level, "component");
-
-  result = service_->get_operations_by_id("controller");
-  EXPECT_EQ(result.aggregation_level, "app");
-}
-
 // ============================================================================
 // Data Aggregation Tests
 // ============================================================================
@@ -822,19 +797,19 @@ TEST_F(DataAggregationTest, AreaDataAggregatesFromAllComponents) {
   EXPECT_GE(result.topics.size(), 5);
 }
 
-TEST_F(DataAggregationTest, GetEntityDataAutoDetectsType) {
-  auto app_result = cache_.get_entity_data("camera_driver");
+TEST_F(DataAggregationTest, GetEntityDataReadsTheNamedType) {
+  auto app_result = cache_.get_entity_data(SovdEntityType::APP, "camera_driver");
   EXPECT_EQ(app_result.aggregation_level, "app");
 
-  auto comp_result = cache_.get_entity_data("sensor_stack");
+  auto comp_result = cache_.get_entity_data(SovdEntityType::COMPONENT, "sensor_stack");
   EXPECT_EQ(comp_result.aggregation_level, "component");
 
-  auto area_result = cache_.get_entity_data("perception");
+  auto area_result = cache_.get_entity_data(SovdEntityType::AREA, "perception");
   EXPECT_EQ(area_result.aggregation_level, "area");
 }
 
 TEST_F(DataAggregationTest, UnknownEntityReturnsEmptyData) {
-  auto result = cache_.get_entity_data("nonexistent");
+  auto result = cache_.get_entity_data(SovdEntityType::APP, "nonexistent");
 
   EXPECT_TRUE(result.topics.empty());
   EXPECT_TRUE(result.source_ids.empty());

@@ -821,7 +821,10 @@ The order inside ``dispatch_to_member`` is load-bearing:
    and a parameter belong to an App. The entity a resource route names is
    looked up the same way, as the route's type: an Area and a Function may share
    an id, and ``get_entity_data`` / ``get_entity_configurations`` by id alone
-   served the Function's data and configurations route the Area's members.
+   served the Function's data and configurations route the Area's members. The
+   cache has no lookup by id alone any more: every one names the type. The same
+   holds for locks, cyclic subscriptions and their samplers, and a plugin's
+   ownership of an entity, which are all keyed by type and id.
 4. **Forward.** ``AggregationManager::forward_request`` is called with the
    built path. The overload taking an explicit target applies the same
    ``/api/v1/`` SSRF guard and the same ``<peer>__`` prefix rewrite to that path

@@ -369,23 +369,23 @@ TEST_F(FunctionResourceCollections, AreaDataIncludesAllAppTopics) {
 }
 
 // ============================================================================
-// get_entity_data auto-detects type and uses aggregation
+// get_entity_data reads the entity of the named type and uses aggregation
 // ============================================================================
 
-TEST_F(FunctionResourceCollections, EntityDataAutoDetectsFunction) {
-  auto result = cache_.get_entity_data("sensing");
+TEST_F(FunctionResourceCollections, EntityDataOfFunction) {
+  auto result = cache_.get_entity_data(SovdEntityType::FUNCTION, "sensing");
   EXPECT_EQ(result.aggregation_level, "function");
   EXPECT_TRUE(result.is_aggregated);
 }
 
-TEST_F(FunctionResourceCollections, EntityDataAutoDetectsArea) {
-  auto result = cache_.get_entity_data("perception");
+TEST_F(FunctionResourceCollections, EntityDataOfArea) {
+  auto result = cache_.get_entity_data(SovdEntityType::AREA, "perception");
   EXPECT_EQ(result.aggregation_level, "area");
   EXPECT_TRUE(result.is_aggregated);
 }
 
-TEST_F(FunctionResourceCollections, EntityDataAutoDetectsApp) {
-  auto result = cache_.get_entity_data("camera_driver");
+TEST_F(FunctionResourceCollections, EntityDataOfApp) {
+  auto result = cache_.get_entity_data(SovdEntityType::APP, "camera_driver");
   EXPECT_EQ(result.aggregation_level, "app");
   EXPECT_FALSE(result.is_aggregated);
 }

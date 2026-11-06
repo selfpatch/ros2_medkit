@@ -63,14 +63,6 @@ class AggregationService {
   AggregatedOperations get_operations(SovdEntityType type, const std::string & entity_id) const;
 
   /**
-   * @brief Get operations for entity by ID (auto-detects type)
-   *
-   * @param entity_id Entity identifier
-   * @return Aggregated operations with source tracking
-   */
-  AggregatedOperations get_operations_by_id(const std::string & entity_id) const;
-
-  /**
    * @brief Build x-medkit extension JSON for aggregated response
    *
    * Creates the x-medkit metadata object:

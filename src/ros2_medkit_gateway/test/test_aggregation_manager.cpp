@@ -361,32 +361,6 @@ TEST(AggregationManager, get_peer_status_empty_when_no_peers) {
 // Routing table tests
 // =============================================================================
 
-// @verifies REQ_INTEROP_003
-TEST(AggregationManager, routing_table_update_and_find) {
-  auto config = make_config(0);
-  AggregationManager manager(config);
-
-  // Initially empty - looking up any entity returns nullopt
-  EXPECT_FALSE(manager.find_peer_for_entity("anything").has_value());
-
-  // Update with entries
-  std::unordered_map<std::string, std::string> table;
-  table["remote_component_a"] = "peer_x";
-  table["remote_app_b"] = "peer_y";
-  manager.update_routing_table(table);
-
-  auto result_a = manager.find_peer_for_entity("remote_component_a");
-  ASSERT_TRUE(result_a.has_value());
-  EXPECT_EQ(*result_a, "peer_x");
-
-  auto result_b = manager.find_peer_for_entity("remote_app_b");
-  ASSERT_TRUE(result_b.has_value());
-  EXPECT_EQ(*result_b, "peer_y");
-
-  // Unknown entity returns nullopt
-  EXPECT_FALSE(manager.find_peer_for_entity("unknown_entity").has_value());
-}
-
 TEST(AggregationManager, peer_targets_cover_routed_and_merged_entities) {
   // Nothing contributed by a peer - the entity is "local-only".
   Component local;
@@ -414,12 +388,11 @@ TEST(AggregationManager, peer_targets_cover_routed_and_merged_entities) {
             (std::vector<PeerTarget>{{"peer_a", "merged_area"}, {"peer_b", "merged_area"}}));
   EXPECT_EQ(peer_targets_of(parent), (std::vector<PeerTarget>{{"peer_b", "hierarchical_parent"}}));
 
-  // A routing entry alone names no target and routes nothing: the table is
-  // keyed by id and cannot tell which entity the id belongs to, nor which
-  // merge it came from. Only what the entity carries counts.
+  // Only what the entity carries counts: the routing table is keyed by id
+  // and cannot tell which entity the id belongs to, nor which merge it came
+  // from.
   auto config = make_config(0);
   AggregationManager manager(config);
-  manager.update_routing_table({{"anything", "peer_x"}});
   EXPECT_TRUE(peer_targets_of(local).empty());
   EXPECT_FALSE(manager.find_owning_peer(local).has_value());
   EXPECT_EQ(manager.find_owning_peer(leaf), std::optional<std::string>("peer_x"));
@@ -517,32 +490,6 @@ TEST(AggregationManager, peer_targets_skip_contributors_that_name_no_peer) {
   // names no peer to ask. A peer listed twice is asked once.
   area.contributors = {"local", "peer:", "peer:peer_a", "peer:peer_a"};
   EXPECT_EQ(peer_targets_of(area), (std::vector<PeerTarget>{{"peer_a", "with_peers"}}));
-}
-
-TEST(AggregationManager, routing_table_replaces_on_update) {
-  auto config = make_config(0);
-  AggregationManager manager(config);
-
-  std::unordered_map<std::string, std::string> table1;
-  table1["entity_a"] = "peer_1";
-  manager.update_routing_table(table1);
-  EXPECT_TRUE(manager.find_peer_for_entity("entity_a").has_value());
-
-  // Replace with different table
-  std::unordered_map<std::string, std::string> table2;
-  table2["entity_b"] = "peer_2";
-  table2["entity_c"] = "peer_3";
-  manager.update_routing_table(table2);
-
-  EXPECT_FALSE(manager.find_peer_for_entity("entity_a").has_value());  // Old entry gone
-
-  auto result_b = manager.find_peer_for_entity("entity_b");
-  ASSERT_TRUE(result_b.has_value());
-  EXPECT_EQ(*result_b, "peer_2");
-
-  auto result_c = manager.find_peer_for_entity("entity_c");
-  ASSERT_TRUE(result_c.has_value());
-  EXPECT_EQ(*result_c, "peer_3");
 }
 
 // =============================================================================
@@ -2099,13 +2046,14 @@ TEST(AggregationManager, concurrent_add_remove_and_health_check_no_crash) {
     }
   });
 
-  // Thread 4: routing table mutations (exclusive lock contention)
+  // Thread 4: leaf warning publication (exclusive lock contention)
   auto routing = std::async(std::launch::async, [&]() {
     for (int i = 0; i < NUM_ITERATIONS; ++i) {
-      std::unordered_map<std::string, std::string> table;
-      table["entity_" + std::to_string(i)] = "peer_" + std::to_string(i % 10);
-      manager.update_routing_table(table);
-      (void)manager.find_peer_for_entity("entity_" + std::to_string(i));
+      LeafCollisionWarning warning;
+      warning.entity_id = "entity_" + std::to_string(i);
+      warning.peer_names = {"peer_" + std::to_string(i % 10)};
+      manager.set_leaf_warnings({warning});
+      (void)manager.get_leaf_warnings();
     }
   });
 
@@ -2121,7 +2069,7 @@ TEST(AggregationManager, concurrent_add_remove_and_health_check_no_crash) {
 }
 
 TEST(AggregationManager, concurrent_fan_out_with_peer_mutations) {
-  // Similar stress test but includes fan_out_get and routing table operations
+  // Similar stress test but includes fan_out_get and leaf warning publication
   MockPeerServer mock;
   mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
     res.set_content(R"({"status":"healthy"})", "application/json");
@@ -2155,13 +2103,14 @@ TEST(AggregationManager, concurrent_fan_out_with_peer_mutations) {
     }
   });
 
-  // Thread 2: routing table mutations
+  // Thread 2: leaf warning publication
   auto routing_writer = std::async(std::launch::async, [&]() {
     for (int i = 0; i < ITERATIONS; ++i) {
-      std::unordered_map<std::string, std::string> table;
-      table["entity_" + std::to_string(i)] = "stable_peer";
-      manager.update_routing_table(table);
-      (void)manager.find_peer_for_entity("entity_" + std::to_string(i));
+      LeafCollisionWarning warning;
+      warning.entity_id = "entity_" + std::to_string(i);
+      warning.peer_names = {"stable_peer"};
+      manager.set_leaf_warnings({warning});
+      (void)manager.get_leaf_warnings();
     }
   });
 

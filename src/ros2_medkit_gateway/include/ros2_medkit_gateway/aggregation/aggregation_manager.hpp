@@ -149,9 +149,9 @@ struct AggregationConfig {
 /**
  * @brief Coordinator for peer aggregation
  *
- * Manages PeerClients, health monitoring, routing table, entity merging,
- * and fan-out logic. Thread-safe: shared_mutex protects peers_ and
- * routing_table_. Readers use shared lock, writers use exclusive lock.
+ * Manages PeerClients, health monitoring, entity merging and fan-out
+ * logic. Thread-safe: shared_mutex protects peers_ and the retained
+ * declarations. Readers use shared lock, writers use exclusive lock.
  */
 class AggregationManager {
  public:
@@ -305,12 +305,6 @@ class AggregationManager {
                                 size_t max_entities_per_peer = 10000, const log::Logger * logger = nullptr);
 
   /**
-   * @brief Update the routing table (entity_id -> peer_name)
-   * @param table New routing table to replace the current one
-   */
-  void update_routing_table(const std::unordered_map<std::string, std::string> & table);
-
-  /**
    * @brief Publish the latest leaf-collision warnings (replaces previous list).
    *
    * Warnings describe deployment-level anomalies where more than one peer
@@ -326,13 +320,6 @@ class AggregationManager {
   std::vector<LeafCollisionWarning> get_leaf_warnings() const;
 
   /**
-   * @brief Look up which peer owns a given entity
-   * @param entity_id Entity ID to look up
-   * @return Peer name if entity is remote, std::nullopt if local or unknown
-   */
-  std::optional<std::string> find_peer_for_entity(const std::string & entity_id) const;
-
-  /**
    * @brief The peer a request for an entity this gateway holds is forwarded to.
    *
    * Read off the entity (`routed_to`, which the merge sets from the routing
@@ -340,8 +327,8 @@ class AggregationManager {
    * entity it looked up, so the decision comes from the same cache generation
    * as that entity, and an entity of another type, or a local one, that shares
    * a routed id is served here. Every caller that is about to forward a
-   * request for an entity it looked up goes through this rather than
-   * find_peer_for_entity.
+   * request for an entity it looked up goes through this; the routing table
+   * itself is keyed by id alone and is not published for lookups.
    *
    * @return Peer name, or std::nullopt when the entity is served locally
    */
@@ -461,7 +448,6 @@ class AggregationManager {
 
   mutable std::shared_mutex mutex_;  // Declared before data it protects (destruction order)
   std::vector<std::shared_ptr<PeerClient>> peers_;
-  std::unordered_map<std::string, std::string> routing_table_;
   /// Last known manifest-declared entities per peer name, replayed while that
   /// peer is not answering.
   ///

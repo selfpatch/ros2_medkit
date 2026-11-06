@@ -50,11 +50,6 @@ AggregatedOperations AggregationService::get_operations(SovdEntityType type, con
   }
 }
 
-AggregatedOperations AggregationService::get_operations_by_id(const std::string & entity_id) const {
-  auto type = cache_->get_entity_type(entity_id);
-  return get_operations(type, entity_id);
-}
-
 nlohmann::json AggregationService::build_x_medkit(const AggregatedOperations & result) {
   nlohmann::json x_medkit;
 
