@@ -182,6 +182,7 @@ TEST_F(SubscriptionManagerTest, UpdateNonexistentFails) {
 TEST(SubscriptionManagerConcurrencyTest, ConcurrentCreateIsThreadSafe) {
   SubscriptionManager mgr(100);
   std::vector<std::thread> threads;
+  threads.reserve(20);
   std::atomic<int> success_count{0};
 
   for (int i = 0; i < 20; ++i) {
@@ -202,6 +203,7 @@ TEST(SubscriptionManagerConcurrencyTest, ConcurrentCreateIsThreadSafe) {
 TEST(SubscriptionManagerConcurrencyTest, ConcurrentCreateRespectsCapacity) {
   SubscriptionManager mgr(5);
   std::vector<std::thread> threads;
+  threads.reserve(20);
   std::atomic<int> success_count{0};
 
   for (int i = 0; i < 20; ++i) {
