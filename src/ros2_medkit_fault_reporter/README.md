@@ -76,6 +76,7 @@ class MyLifecycleNode : public rclcpp_lifecycle::LifecycleNode {
 - **Simple API**: Just call `report()` to report a fault
 - **Lifecycle node support**: Construct from a regular `Node` or an `rclcpp_lifecycle::LifecycleNode`
 - **Local Filtering** (optional): Suppress repeated faults until threshold is met
+- **Confirmed delivery**: each report is kept until the FaultManager answers, and sent again if it does not
 - **Per-fault tracking**: Each fault_code has independent filtering
 - **Severity bypass**: High-severity faults bypass local filtering
 - **ROS-free core**: `ReporterCore` (filtering and report building) builds without ROS, see below
@@ -130,6 +131,33 @@ my_node:
 A `default_threshold` above `INT_MAX` or a `bypass_severity` outside `[0, 255]` is replaced by its
 default and logged as a warning. A `default_threshold` below 1 becomes 1. A `default_window_sec` that
 is NaN, infinite or not positive becomes 1.0. These last two are not logged.
+
+## Delivery
+
+`report()` and `report_passed()` return at once. The reporter keeps each request until the
+FaultManager answers it, and sends it again when no response comes within `ack_timeout_sec`. After
+`max_attempts` requests it logs a warning that names the fault code and drops the report. A client
+can see the service as ready before the server has matched it, and a request sent then is lost. This
+retry covers that gap.
+
+- **Order:** per fault code only one request is in flight, and later ones wait behind it. The manager
+  receives the events of one code in the order they were reported.
+- **Cap:** at most `max_pending` reports wait for a response, all codes of one reporter together. A
+  report past the cap is dropped with a warning and the older ones are kept.
+- **Not ready:** a report made while the service is not ready is dropped at once, as before.
+- **Duplicates:** if a request arrived and only its response was lost, the manager gets the event
+  twice. A repeated FAILED counts toward the manager's debounce.
+- **Spinning:** responses and retries need the node to be spun. A reporter built from the raw
+  interfaces constructor without timers retries only when the next report is made.
+
+| Parameter | Type | Default | Range | Why |
+|-----------|------|---------|-------|-----|
+| `fault_reporter.delivery.ack_timeout_sec` | double | 0.5 | 0.05 - 60 | Well above a local round trip, short enough to recover within a second |
+| `fault_reporter.delivery.max_attempts` | int | 10 | 1 - 100 | With the default timeout a report is kept for 5 s |
+| `fault_reporter.delivery.max_pending` | int | 1024 | 1 - 100000 | Bounds memory when the manager does not answer |
+
+A value outside its range (a NaN timeout, an integer beyond the range) is replaced by its default and
+logged as a warning.
 
 ## ROS-free core
 

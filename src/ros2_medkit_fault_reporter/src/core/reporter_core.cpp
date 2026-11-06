@@ -94,4 +94,36 @@ FilterConfig validate_filter_params(bool enabled, int64_t threshold, double wind
   return config;
 }
 
+DeliveryConfig validate_delivery_params(double ack_timeout_sec, int64_t max_attempts, int64_t max_pending,
+                                        std::vector<std::string> * warnings) {
+  const DeliveryConfig defaults;
+  DeliveryConfig config;
+  auto refuse = [warnings](const std::string & name, const std::string & value, const std::string & fallback) {
+    if (warnings != nullptr) {
+      warnings->push_back("fault_reporter.delivery." + name + " " + value + " is out of range, using " + fallback);
+    }
+  };
+
+  // Positive form: NaN fails every comparison, so a below-or-above test would let it through.
+  if (std::isfinite(ack_timeout_sec) && ack_timeout_sec >= kMinAckTimeoutSec && ack_timeout_sec <= kMaxAckTimeoutSec) {
+    config.ack_timeout_sec = ack_timeout_sec;
+  } else {
+    config.ack_timeout_sec = defaults.ack_timeout_sec;
+    refuse("ack_timeout_sec", std::to_string(ack_timeout_sec), std::to_string(defaults.ack_timeout_sec));
+  }
+  if (max_attempts >= kMinMaxAttempts && max_attempts <= kMaxMaxAttempts) {
+    config.max_attempts = static_cast<int>(max_attempts);
+  } else {
+    config.max_attempts = defaults.max_attempts;
+    refuse("max_attempts", std::to_string(max_attempts), std::to_string(defaults.max_attempts));
+  }
+  if (max_pending >= kMinMaxPending && max_pending <= kMaxMaxPending) {
+    config.max_pending = static_cast<int>(max_pending);
+  } else {
+    config.max_pending = defaults.max_pending;
+    refuse("max_pending", std::to_string(max_pending), std::to_string(defaults.max_pending));
+  }
+  return config;
+}
+
 }  // namespace ros2_medkit_fault_reporter::core
