@@ -1430,6 +1430,12 @@ void OpcuaPoller::poll_loop() {
         break;
       }
       client_.run_iterate(50);
+      // The iterate can find the link closed. The cached values are then no
+      // longer observed, and a wait that ended on them would raise a fault the
+      // reconnect keeps, so go back to the reconnect arm first.
+      if (!client_.is_connected()) {
+        break;
+      }
       // While a fault waits, check it on every step, so the wait ends on time
       // and not at the next poll.
       bool waiting = false;
@@ -1469,6 +1475,13 @@ void OpcuaPoller::do_poll() {
     }
   }
 
+  // A read that ended with the link closed can have waited the whole timeout,
+  // so a value read before that would end a wait at a time nobody saw it.
+  // Restart the waits first; points without a qualifier still raise and clear.
+  if (!client_.is_connected()) {
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    detection_.link_lost();
+  }
   evaluate_alarms(DetectionPipeline::Pass::kValues);
 }
 
