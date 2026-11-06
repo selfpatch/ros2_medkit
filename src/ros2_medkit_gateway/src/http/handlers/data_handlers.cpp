@@ -84,7 +84,11 @@ tl::expected<std::string, ErrorInfo> read_topic_id(const http::TypedRequest & re
 struct AddressedDataItem {
   std::string full_topic_path;
   std::string item_id;
-  std::string member_id;                 ///< Empty when the id carried no member half.
+  std::string member_id;  ///< Empty when the id carried no member half.
+  /// The type of the member the id named. A member half names an entity the
+  /// aggregation lists among its contributors; an App wins over a Component
+  /// sharing its id, because a topic is an App's.
+  SovdEntityType member_type{SovdEntityType::APP};
   bool provided_by_named_member{false};  ///< Meaningful only when member_id is set.
   std::string owner_member_id;           ///< The member a bare id is dispatched through; empty means serve here.
 };
@@ -123,7 +127,7 @@ std::string serving_member_for_topic(const ThreadSafeEntityCache & cache, const 
   }
   std::string peer;
   for (const auto & owner : owners->second) {
-    const std::string owner_peer = peer_source_of_member(cache, owner);
+    const std::string owner_peer = peer_source_of_member(cache, MemberRef{SovdEntityType::APP, owner});
     if (owner_peer.empty() || (!peer.empty() && owner_peer != peer)) {
       return {};
     }
@@ -175,8 +179,14 @@ tl::expected<AddressedDataItem, ErrorInfo> address_data_item(const ThreadSafeEnt
     return addressed;
   }
 
-  if (std::find(aggregated.source_ids.begin(), aggregated.source_ids.end(), parsed.member_id) ==
-      aggregated.source_ids.end()) {
+  std::optional<SovdEntityType> named_type;
+  for (size_t i = 0; i < aggregated.source_ids.size() && i < aggregated.source_types.size(); ++i) {
+    if (aggregated.source_ids[i] == parsed.member_id &&
+        (!named_type || aggregated.source_types[i] == SovdEntityType::APP)) {
+      named_type = aggregated.source_types[i];
+    }
+  }
+  if (!named_type) {
     return tl::make_unexpected(
         make_error(404, ERR_RESOURCE_NOT_FOUND, "Member not found in entity",
                    json{{"entity_id", entity_id}, {"id", topic_name}, {"member_id", parsed.member_id}}));
@@ -193,6 +203,7 @@ tl::expected<AddressedDataItem, ErrorInfo> address_data_item(const ThreadSafeEnt
   }
 
   addressed.member_id = parsed.member_id;
+  addressed.member_type = *named_type;
   addressed.full_topic_path = to_full_topic_path(parsed.item_id);
   auto owners = aggregated.owners_by_topic.find(addressed.full_topic_path);
   addressed.provided_by_named_member =
@@ -229,7 +240,12 @@ std::string member_data_resource_path(const std::string & full_topic_path) {
 std::optional<ErrorInfo> dispatch_data_item(const HandlerContext & ctx, const http::TypedRequest & req,
                                             const std::string & entity_id, const std::string & topic_name,
                                             const AddressedDataItem & addressed) {
-  const std::string & serving_member = addressed.member_id.empty() ? addressed.owner_member_id : addressed.member_id;
+  // The member the id named, by the type it was resolved to, or else the owner
+  // the tree records for the topic, which is an App: topics are collected from
+  // Apps.
+  const MemberRef serving_member = addressed.member_id.empty()
+                                       ? MemberRef{SovdEntityType::APP, addressed.owner_member_id}
+                                       : MemberRef{addressed.member_type, addressed.member_id};
   auto dispatch = ctx.dispatch_to_member(req, serving_member, member_data_resource_path(addressed.full_topic_path),
                                          json{{"entity_id", entity_id}, {"id", topic_name}});
   if (!dispatch) {
@@ -444,7 +460,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
         return false;
       }
       return std::all_of(owners->second.begin(), owners->second.end(), [&cache](const std::string & member_id) {
-        return member_is_peer_contributed(cache, member_id);
+        return member_is_peer_contributed(cache, MemberRef{SovdEntityType::APP, member_id});
       });
     };
 
@@ -570,7 +586,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
         if (auto owners = aggregated.owners_by_topic.find(topic); owners != aggregated.owners_by_topic.end()) {
           const bool any_unreachable =
               std::any_of(owners->second.begin(), owners->second.end(), [this](const std::string & member_id) {
-                return !ctx_.is_entity_available(member_id);
+                return !ctx_.is_member_available(MemberRef{SovdEntityType::APP, member_id});
               });
           if (any_unreachable) {
             item.x_medkit->available = false;

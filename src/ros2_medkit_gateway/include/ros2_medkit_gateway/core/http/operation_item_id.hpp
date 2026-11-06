@@ -56,7 +56,7 @@ inline std::unordered_set<std::string> operation_paths_addressed_by_path(const A
   std::map<std::pair<std::string, std::string>, std::vector<std::string>> paths_by_provider;
   const auto record = [&ops, &paths_by_provider](const std::string & name, const std::string & full_path) {
     auto owner = ops.owner_by_path.find(full_path);
-    const std::string member = owner != ops.owner_by_path.end() ? owner->second : std::string{};
+    const std::string member = owner != ops.owner_by_path.end() ? owner->second.id : std::string{};
     paths_by_provider[std::make_pair(member, name)].push_back(full_path);
   };
   for (const auto & svc : ops.services) {
@@ -121,7 +121,7 @@ inline OperationItemIds operation_item_ids(const AggregatedOperations & ops) {
   const auto id_of = [&](const std::string & name, const std::string & full_path) {
     std::string half = operation_item_half(name, full_path, addressed_by_path);
     auto owner = ops.owner_by_path.find(full_path);
-    const std::string member = owner != ops.owner_by_path.end() ? owner->second : std::string{};
+    const std::string member = owner != ops.owner_by_path.end() ? owner->second.id : std::string{};
     if (short_name_counts[name] < 2u || member.empty()) {
       return half;
     }

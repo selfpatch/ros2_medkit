@@ -802,9 +802,17 @@ The order inside ``dispatch_to_member`` is load-bearing:
    broken rather than the link as down.
 2. **Ownership.** No routing entry means this gateway owns the member and the
    handler carries on.
-3. **Addressing.** The member is looked up in the cache to decide whether it is
-   an App or a Component, because that decides which collection its route lives
-   under.
+3. **Addressing.** The member arrives as a type and an id (``MemberRef``) and
+   is looked up in the cache as that type, which decides the collection its
+   route lives under. An App and a Component may share an id, so the id alone
+   names no member: each owner record carries the type
+   (``AggregatedOperations::owner_by_path``, ``source_types`` beside
+   ``source_ids``, ``ThreadSafeEntityCache::get_members``), and so does every
+   reachability check (``HandlerContext::is_member_available``, and the
+   ``available`` an ``EntityInfo`` reads off the entity it found). A member half
+   on the wire carries only an id; it is resolved against the entity's typed
+   members, an App winning over a Component that shares its id, because a topic
+   and a parameter belong to an App.
 4. **Forward.** ``AggregationManager::forward_request`` is called with the
    built path. The overload taking an explicit target applies the same
    ``/api/v1/`` SSRF guard and the same ``<peer>__`` prefix rewrite to that path

@@ -36,6 +36,26 @@ using json = nlohmann::json;
 namespace ros2_medkit_gateway {
 namespace handlers {
 
+namespace {
+
+/// Whether a request addressed to `entity` can arrive. An App or Component
+/// retained from a silent peer carries `available == false`; an Area or a
+/// Function is a view over its members and is always addressable.
+bool entity_available(const App & app) {
+  return app.available;
+}
+bool entity_available(const Component & component) {
+  return component.available;
+}
+bool entity_available(const Area & /*area*/) {
+  return true;
+}
+bool entity_available(const Function & /*function*/) {
+  return true;
+}
+
+}  // namespace
+
 tl::expected<void, std::string> HandlerContext::validate_entity_id(const std::string & entity_id) const {
   return ::ros2_medkit_gateway::validate_entity_id(entity_id);
 }
@@ -60,6 +80,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
   // cache generation as the entity itself, and a local entity sharing a routed
   // id stays local.
   auto apply_routing = [this](EntityInfo & ei, const auto & entity) {
+    ei.available = entity_available(entity);
     if (aggregation_mgr_) {
       auto peer = aggregation_mgr_->find_owning_peer(entity);
       if (peer) {
@@ -498,8 +519,9 @@ http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(cons
     // for. Forwarding to that peer produces a connection failure dressed as a
     // 502, which says the gateway had a problem rather than that the thing
     // asked for is not reachable. The retained declaration is exactly the
-    // information needed to answer properly, so answer here.
-    if (!is_entity_available(entity_id)) {
+    // information needed to answer properly, so answer here. The reachability
+    // is the found entity's own, so an App sharing the id cannot stand in for it.
+    if (!entity_info.available) {
       ErrorInfo err;
       err.code = ERR_NOT_RESPONDING;
       err.message = "Member '" + entity_id + "' is not available";
@@ -525,16 +547,17 @@ http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(cons
 }
 
 http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::TypedRequest & req,
-                                                                const std::string & member_id,
+                                                                const MemberRef & member,
                                                                 const std::string & member_resource_path,
                                                                 json error_params) const {
+  const std::string & member_id = member.id;
   if (member_id.empty()) {
     return MemberDispatch::kServeLocally;
   }
 
   // Reachability first, and unconditionally: a retained member is answered from
   // what it declared, never by asking the gateway that stopped answering.
-  if (!is_entity_available(member_id)) {
+  if (!is_member_available(member)) {
     ErrorInfo err;
     err.code = ERR_NOT_RESPONDING;
     err.message = "Member '" + member_id + "' is not available";
@@ -571,14 +594,20 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
     collection.clear();
     peer.reset();
     member_on_peer.clear();
-    if (auto app = cache.get_app(member_id)) {
-      collection = "apps";
-      peer = aggregation_mgr_->find_owning_peer(*app);
-      member_on_peer = peer ? peer_entity_id(*app, *peer) : member_id;
-    } else if (auto component = cache.get_component(member_id)) {
-      collection = "components";
-      peer = aggregation_mgr_->find_owning_peer(*component);
-      member_on_peer = peer ? peer_entity_id(*component, *peer) : member_id;
+    // By the member's type: an App and a Component sharing an id are two
+    // members, possibly owned by two gateways.
+    if (member.type == SovdEntityType::APP) {
+      if (auto app = cache.get_app(member_id)) {
+        collection = "apps";
+        peer = aggregation_mgr_->find_owning_peer(*app);
+        member_on_peer = peer ? peer_entity_id(*app, *peer) : member_id;
+      }
+    } else if (member.type == SovdEntityType::COMPONENT) {
+      if (auto component = cache.get_component(member_id)) {
+        collection = "components";
+        peer = aggregation_mgr_->find_owning_peer(*component);
+        member_on_peer = peer ? peer_entity_id(*component, *peer) : member_id;
+      }
     }
   };
   auto peer_ids = cache.get_peer_id_index();
@@ -606,16 +635,35 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
   return MemberDispatch::kForwarded;
 }
 
-/// False when the entity is present only because its peer's declaration is
-/// being retained. An entity this gateway has never heard of is not "not
+/// False when the member is present only because its peer's declaration is
+/// being retained. A member this gateway has never heard of is not "not
 /// available" - it is absent, and the caller already got a 404 for it.
-bool HandlerContext::is_entity_available(const std::string & entity_id) const {
+bool HandlerContext::is_member_available(const MemberRef & member) const {
   const auto & cache = services_.entity_cache();
-  if (auto app = cache.get_app(entity_id)) {
-    return app->available;
-  }
-  if (auto component = cache.get_component(entity_id)) {
-    return component->available;
+  switch (member.type) {
+    case SovdEntityType::APP:
+      if (auto app = cache.get_app(member.id)) {
+        return entity_available(*app);
+      }
+      return true;
+    case SovdEntityType::COMPONENT:
+      if (auto component = cache.get_component(member.id)) {
+        return entity_available(*component);
+      }
+      return true;
+    case SovdEntityType::AREA:
+      if (auto area = cache.get_area(member.id)) {
+        return entity_available(*area);
+      }
+      return true;
+    case SovdEntityType::FUNCTION:
+      if (auto function = cache.get_function(member.id)) {
+        return entity_available(*function);
+      }
+      return true;
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+      return true;
   }
   return true;
 }

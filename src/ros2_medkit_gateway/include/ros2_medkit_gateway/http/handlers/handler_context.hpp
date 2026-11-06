@@ -80,6 +80,11 @@ struct EntityInfo {
 
   // Peer aggregation fields
   bool is_remote{false};  ///< True if entity was discovered from a peer gateway
+  /// False when a request addressed to the entity cannot arrive: its gateway is
+  /// silent and the entity is in the tree only from that gateway's declaration.
+  /// Read off the entity found, so it is the reachability of the entity of the
+  /// route's type, from the same cache generation as the rest of this info.
+  bool available{true};
   std::string peer_url;   ///< Base URL of the peer (e.g., "http://localhost:8081")
   std::string peer_name;  ///< Peer name for metadata (e.g., "subsystem_b")
   /// The peers that contribute the entity and the ID each knows it by, read
@@ -311,7 +316,8 @@ class HandlerContext {
    * dress that up as a 502, which blames this gateway for a link that is down.
    *
    * @param req Typed request supplying method, headers, body and query.
-   * @param member_id Member the id named. Empty means the id named none.
+   * @param member Member the id named, by type and id: an App and a Component
+   *        may share an id. An empty id means the id named none.
    * @param member_resource_path Path below the member entity, without a leading
    *        slash (e.g. `data/chassis/brakes/pressure`,
    *        `operations/calibrate/executions`).
@@ -321,7 +327,7 @@ class HandlerContext {
    *         peer's response is already on the wire, or a 504 ErrorInfo when the
    *         member's gateway is silent.
    */
-  http::Result<MemberDispatch> dispatch_to_member(const http::TypedRequest & req, const std::string & member_id,
+  http::Result<MemberDispatch> dispatch_to_member(const http::TypedRequest & req, const MemberRef & member,
                                                   const std::string & member_resource_path,
                                                   nlohmann::json error_params) const;
 
@@ -350,9 +356,11 @@ class HandlerContext {
    * @param res HTTP response
    * @param origin Origin header value
    */
-  /// False when the entity is only present because a peer's declaration is
-  /// being retained while that peer is silent.
-  bool is_entity_available(const std::string & entity_id) const;
+  /// False when the member is only present because a peer's declaration is
+  /// being retained while that peer is silent. The member is looked up by its
+  /// type: by id alone a Component retained from a silent peer would read the
+  /// reachability of an App sharing its id.
+  bool is_member_available(const MemberRef & member) const;
 
   void set_cors_headers(httplib::Response & res, const std::string & origin) const;
 

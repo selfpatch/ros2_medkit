@@ -855,6 +855,15 @@ class MemberResolutionTest : public ::testing::Test {
     std::sort(v.begin(), v.end());
     return v;
   }
+  /// The member ids, compared as a set.
+  static std::vector<std::string> sorted_ids(const std::vector<MemberRef> & members) {
+    std::vector<std::string> ids;
+    ids.reserve(members.size());
+    for (const auto & member : members) {
+      ids.push_back(member.id);
+    }
+    return sorted(std::move(ids));
+  }
 
   ThreadSafeEntityCache cache_;
 };
@@ -871,7 +880,7 @@ TEST_F(MemberResolutionTest, AreaMembersAreItsComponentsAndTheirApps) {
   };
   cache_.update_all(areas, components, apps, {});
 
-  EXPECT_EQ(sorted(cache_.get_members(SovdEntityType::AREA, "vehicle")),
+  EXPECT_EQ(sorted_ids(cache_.get_members(SovdEntityType::AREA, "vehicle")),
             sorted({"primary-ecu", "secondary-ecu", "temp_sensor", "pressure_sensor"}));
 }
 
@@ -887,7 +896,7 @@ TEST_F(MemberResolutionTest, AreaMembersDescendIntoSubareas) {
   std::vector<App> apps{make_app("rpm_sensor", "RPM", "engine-ecu")};
   cache_.update_all({parent, child}, components, apps, {});
 
-  EXPECT_EQ(sorted(cache_.get_members(SovdEntityType::AREA, "vehicle")), sorted({"engine-ecu", "rpm_sensor"}));
+  EXPECT_EQ(sorted_ids(cache_.get_members(SovdEntityType::AREA, "vehicle")), sorted({"engine-ecu", "rpm_sensor"}));
 }
 
 TEST_F(MemberResolutionTest, FunctionMembersIncludeHostsThatAreComponents) {
@@ -906,7 +915,7 @@ TEST_F(MemberResolutionTest, FunctionMembersIncludeHostsThatAreComponents) {
   func.hosts = {"temp_sensor", "brake-ecu"};
   cache_.update_all(areas, components, apps, {func});
 
-  const auto members = sorted(cache_.get_members(SovdEntityType::FUNCTION, "vehicle_health"));
+  const auto members = sorted_ids(cache_.get_members(SovdEntityType::FUNCTION, "vehicle_health"));
   for (const char * expected : {"actuator", "brake-ecu", "temp_sensor"}) {
     EXPECT_NE(std::find(members.begin(), members.end(), expected), members.end())
         << "function member missing: " << expected;
@@ -928,7 +937,7 @@ TEST_F(MemberResolutionTest, ComponentIsAMemberOfItselfAndCarriesItsChildren) {
   std::vector<App> apps{make_app("actuator", "Actuator", "brake-ecu")};
   cache_.update_all(areas, {parent, child}, apps, {});
 
-  EXPECT_EQ(sorted(cache_.get_members(SovdEntityType::COMPONENT, "vehicle-ecu")),
+  EXPECT_EQ(sorted_ids(cache_.get_members(SovdEntityType::COMPONENT, "vehicle-ecu")),
             sorted({"vehicle-ecu", "brake-ecu", "actuator"}));
 }
 
@@ -944,7 +953,7 @@ TEST_F(MemberResolutionTest, ComponentParentCycleTerminates) {
   second.parent_component_id = "ecu-a";
   cache_.update_all(areas, {first, second}, {}, {});
 
-  EXPECT_EQ(sorted(cache_.get_members(SovdEntityType::COMPONENT, "ecu-a")), sorted({"ecu-a", "ecu-b"}));
+  EXPECT_EQ(sorted_ids(cache_.get_members(SovdEntityType::COMPONENT, "ecu-a")), sorted({"ecu-a", "ecu-b"}));
 }
 
 TEST_F(MemberResolutionTest, LeafReturnsOnlyItself) {
@@ -953,7 +962,8 @@ TEST_F(MemberResolutionTest, LeafReturnsOnlyItself) {
   std::vector<App> apps{make_app("temp_sensor", "Temp", "primary-ecu")};
   cache_.update_all(areas, components, apps, {});
 
-  EXPECT_EQ(cache_.get_members(SovdEntityType::APP, "temp_sensor"), std::vector<std::string>{"temp_sensor"});
+  EXPECT_EQ(cache_.get_members(SovdEntityType::APP, "temp_sensor"),
+            (std::vector<MemberRef>{{SovdEntityType::APP, "temp_sensor"}}));
 }
 
 TEST_F(MemberResolutionTest, UnknownGroupingHasNoMembers) {

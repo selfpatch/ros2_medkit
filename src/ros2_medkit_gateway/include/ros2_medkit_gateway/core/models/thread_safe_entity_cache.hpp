@@ -47,6 +47,25 @@ struct EntityRef {
 };
 
 /**
+ * @brief A member of a grouping entity, named by its type and its id
+ *
+ * An App and a Component may share an id, so the id alone does not name a
+ * member: everything that resolves, dispatches to or asks the reachability of a
+ * member takes the pair.
+ */
+struct MemberRef {
+  SovdEntityType type{SovdEntityType::UNKNOWN};
+  std::string id;
+
+  bool operator==(const MemberRef & other) const {
+    return type == other.type && id == other.id;
+  }
+  bool operator!=(const MemberRef & other) const {
+    return !(*this == other);
+  }
+};
+
+/**
  * @brief Topic information with direction
  */
 struct TopicData {
@@ -61,6 +80,9 @@ struct TopicData {
 struct AggregatedData {
   std::vector<TopicData> topics;
   std::vector<std::string> source_ids;  ///< Entity IDs that contributed
+  /// The type of each `source_ids` entry, at the same index: a Component and
+  /// an App may share an id, and only the pair names one member.
+  std::vector<SovdEntityType> source_types;
   /// Contributing members per topic name, for the items in `topics`.
   ///
   /// `source_ids` says which members contributed something; it does not say
@@ -72,6 +94,8 @@ struct AggregatedData {
   /// contributor: a topic published by one member and subscribed by another is
   /// merged into a single item with direction "both", so recording only the
   /// first would name a publisher for an item a subscriber also owns.
+  ///
+  /// The ids are App ids: topics are collected from Apps only.
   std::unordered_map<std::string, std::vector<std::string>> owners_by_topic;
   std::string aggregation_level;  ///< "app" | "component" | "area" | "function"
   bool is_aggregated{false};      ///< true if collected from sub-entities
@@ -102,7 +126,7 @@ struct AggregatedOperations {
   /// one owner, while two members exposing the same SHORT name at different
   /// paths stay two items with an owner each - which is what lets a caller see
   /// that the short name, the id the HTTP API uses, is ambiguous.
-  std::unordered_map<std::string, std::string> owner_by_path;
+  std::unordered_map<std::string, MemberRef> owner_by_path;
   std::string aggregation_level;  ///< "app" | "component" | "area" | "function"
   bool is_aggregated{false};      ///< true if collected from sub-entities
 
@@ -381,7 +405,10 @@ class ThreadSafeEntityCache {
   ///
   /// Cycles in the parent graph terminate: parents are only checked for
   /// existence when a manifest is validated, not for acyclicity.
-  std::vector<std::string> get_members(SovdEntityType type, const std::string & entity_id) const;
+  ///
+  /// Each member is named by its type and id: an App and a Component sharing
+  /// an id are two members.
+  std::vector<MemberRef> get_members(SovdEntityType type, const std::string & entity_id) const;
 
   // =========================================================================
   // Aggregation methods (uses relationship indexes)

@@ -839,7 +839,7 @@ void CapabilityGenerator::add_cache_derived_items(nlohmann::json & paths, const 
       return true;
     }
     auto owner = ops.owner_by_path.find(full_path);
-    return owner != ops.owner_by_path.end() && owner->second == requested.member_id;
+    return owner != ops.owner_by_path.end() && owner->second.id == requested.member_id;
   };
 
   // Consumed in the order `operation_item_ids` filled it: services, then

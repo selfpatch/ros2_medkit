@@ -44,24 +44,37 @@ namespace handlers {
 /// gone quiet is retained under the same source, and a request for its items has
 /// to keep resolving to it in order to be answered "not responding" rather than
 /// sampled here and reported absent.
-inline std::string peer_source_of_member(const ThreadSafeEntityCache & cache, const std::string & member_id) {
+///
+/// The member is looked up by its type: an App and a Component may share an id.
+inline std::string peer_source_of_member(const ThreadSafeEntityCache & cache, const MemberRef & member) {
   static constexpr std::string_view kPeerPrefix = "peer:";
   const auto peer_source = [](const std::string & source) {
     return source.rfind(kPeerPrefix, 0) == 0 ? source : std::string{};
   };
-  if (auto app = cache.get_app(member_id)) {
-    return peer_source(app->source);
-  }
-  if (auto component = cache.get_component(member_id)) {
-    return peer_source(component->source);
+  switch (member.type) {
+    case SovdEntityType::APP:
+      if (auto app = cache.get_app(member.id)) {
+        return peer_source(app->source);
+      }
+      return {};
+    case SovdEntityType::COMPONENT:
+      if (auto component = cache.get_component(member.id)) {
+        return peer_source(component->source);
+      }
+      return {};
+    case SovdEntityType::SERVER:
+    case SovdEntityType::AREA:
+    case SovdEntityType::FUNCTION:
+    case SovdEntityType::UNKNOWN:
+      return {};
   }
   return {};
 }
 
 /// True for a member whose declaration reached this gateway from a peer, and so
 /// whose items another gateway serves.
-inline bool member_is_peer_contributed(const ThreadSafeEntityCache & cache, const std::string & member_id) {
-  return !peer_source_of_member(cache, member_id).empty();
+inline bool member_is_peer_contributed(const ThreadSafeEntityCache & cache, const MemberRef & member) {
+  return !peer_source_of_member(cache, member).empty();
 }
 
 /// Build a SOVD-shaped ErrorInfo. Empty `params` are dropped so the wire body
