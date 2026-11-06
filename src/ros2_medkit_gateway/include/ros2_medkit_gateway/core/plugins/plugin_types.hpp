@@ -60,7 +60,9 @@ namespace ros2_medkit_gateway {
 ///       through protected *_typed hooks (vtable change) whose defaults call
 ///       the id-only forms, so mocks that override only those still build.
 ///       The id-only forms resolve a bare id only while exactly one entity
-///       holds it and refuse it otherwise (one WARN per ambiguity). The
+///       holds it and refuse it otherwise (one WARN per ambiguity); a lock
+///       call on an id no entity holds, or typed with no entity type, takes
+///       no lock (entity-not-found; check_lock: allowed). The
 ///       gateway owns a plugin's entities by type and id, and drops the later
 ///       of two entities one plugin introspects under one id with different
 ///       types. As for every bump, a pre-compiled v7 `.so` is rejected.

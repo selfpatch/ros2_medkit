@@ -301,6 +301,14 @@ array, the lock calls answer ``invalid-parameter``, and a capability registered 
 on no entity. A capability registered by id is resolved when it is looked up, so it may be
 registered from ``introspect()``, before the entity is in the cache.
 
+A lock is kept by the entity's type and id. For an id no entity holds, the id-only
+``acquire_lock`` and ``release_lock`` answer what the lock routes answer for an unknown entity,
+``entity-not-found`` with status 404, and take or release no lock; ``check_lock`` answers
+allowed, since nobody can have locked it. The typed calls answer the same when the type is
+``SovdEntityType::UNKNOWN`` or ``SERVER``. A typed call on an entity of a lockable type that is
+not in the cache yet takes the lock under that type and id, so it protects the entity once it
+appears.
+
 .. note::
 
    SOVD-compliant HTTP response helpers (``send_json()``, ``send_error()``) are instance

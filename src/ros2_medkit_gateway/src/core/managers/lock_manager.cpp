@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
 
+#include "ros2_medkit_gateway/core/http/error_codes.hpp"
+
 #include <algorithm>
 #include <mutex>
 
@@ -76,6 +78,13 @@ tl::expected<LockInfo, LockError> LockManager::acquire(SovdEntityType entity_typ
                                                        bool break_lock) {
   if (!config_.enabled) {
     return tl::make_unexpected(LockError{"lock-disabled", "Locking is not enabled on this gateway", 403, std::nullopt});
+  }
+
+  // A lock is kept by the entity's type and id. Without a type it would sit
+  // under a key no route checks, and protect nothing.
+  if (entity_type != SovdEntityType::AREA && entity_type != SovdEntityType::COMPONENT &&
+      entity_type != SovdEntityType::APP && entity_type != SovdEntityType::FUNCTION) {
+    return tl::make_unexpected(LockError{ERR_ENTITY_NOT_FOUND, "Entity not found", 404, std::nullopt});
   }
 
   // Validate scopes

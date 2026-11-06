@@ -422,6 +422,18 @@ std::string ambiguous_lock_message(const std::string & id, const std::vector<Sov
   return "Entity id '" + id + "' is held by " + join_types(holders) + "; name the entity type";
 }
 
+/// The types a lock can be kept by: the entity types the lock routes serve.
+bool is_lockable_type(SovdEntityType type) {
+  return type == SovdEntityType::AREA || type == SovdEntityType::COMPONENT || type == SovdEntityType::APP ||
+         type == SovdEntityType::FUNCTION;
+}
+
+/// What the lock routes answer for an entity that does not exist. A lock is kept by the
+/// entity's type and id, so none is taken or released for an entity no type names.
+LockError entity_not_found() {
+  return LockError{ERR_ENTITY_NOT_FOUND, "Entity not found", 404, std::nullopt};
+}
+
 }  // namespace
 
 LockAccessResult CorePluginContext::check_lock(const std::string & entity_id, const std::string & client_id,
@@ -431,7 +443,10 @@ LockAccessResult CorePluginContext::check_lock(const std::string & entity_id, co
   if (holders.size() > 1u) {
     return LockAccessResult{false, "", ambiguous_lock_message(entity_id, holders), "invalid-parameter"};
   }
-  return check_lock(type.value_or(SovdEntityType::UNKNOWN), entity_id, client_id, collection);
+  if (!type) {
+    return LockAccessResult{true, "", "", ""};  // No entity holds the id, so nobody has locked it.
+  }
+  return check_lock(*type, entity_id, client_id, collection);
 }
 
 tl::expected<LockInfo, LockError> CorePluginContext::acquire_lock(const std::string & entity_id,
@@ -444,7 +459,10 @@ tl::expected<LockInfo, LockError> CorePluginContext::acquire_lock(const std::str
     return tl::make_unexpected(
         LockError{"invalid-parameter", ambiguous_lock_message(entity_id, holders), 400, std::nullopt});
   }
-  return acquire_lock(type.value_or(SovdEntityType::UNKNOWN), entity_id, client_id, scopes, expiration_seconds);
+  if (!type) {
+    return tl::make_unexpected(entity_not_found());
+  }
+  return acquire_lock(*type, entity_id, client_id, scopes, expiration_seconds);
 }
 
 tl::expected<void, LockError> CorePluginContext::release_lock(const std::string & entity_id,
@@ -455,14 +473,17 @@ tl::expected<void, LockError> CorePluginContext::release_lock(const std::string 
     return tl::make_unexpected(
         LockError{"invalid-parameter", ambiguous_lock_message(entity_id, holders), 400, std::nullopt});
   }
-  return release_lock(type.value_or(SovdEntityType::UNKNOWN), entity_id, client_id);
+  if (!type) {
+    return tl::make_unexpected(entity_not_found());
+  }
+  return release_lock(*type, entity_id, client_id);
 }
 
 LockAccessResult CorePluginContext::check_lock_typed(SovdEntityType entity_type, const std::string & entity_id,
                                                      const std::string & client_id,
                                                      const std::string & collection) const {
   auto * lock_mgr = services_ ? services_->lock_manager() : nullptr;
-  if (!lock_mgr) {
+  if (!lock_mgr || !is_lockable_type(entity_type)) {
     return LockAccessResult{true, "", "", ""};
   }
   return lock_mgr->check_access(entity_type, entity_id, client_id, collection);
@@ -477,6 +498,9 @@ tl::expected<LockInfo, LockError> CorePluginContext::acquire_lock_typed(SovdEnti
   if (!lock_mgr) {
     return tl::make_unexpected(LockError{"lock-disabled", "Locking is not enabled", 503, std::nullopt});
   }
+  if (!is_lockable_type(entity_type)) {
+    return tl::make_unexpected(entity_not_found());
+  }
   return lock_mgr->acquire(entity_type, entity_id, client_id, scopes, expiration_seconds);
 }
 
@@ -486,6 +510,9 @@ tl::expected<void, LockError> CorePluginContext::release_lock_typed(SovdEntityTy
   auto * lock_mgr = services_ ? services_->lock_manager() : nullptr;
   if (!lock_mgr) {
     return tl::make_unexpected(LockError{"lock-disabled", "Locking is not enabled", 503, std::nullopt});
+  }
+  if (!is_lockable_type(entity_type)) {
+    return tl::make_unexpected(entity_not_found());
   }
   return lock_mgr->release(entity_type, entity_id, client_id);
 }
