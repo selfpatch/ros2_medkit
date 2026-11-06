@@ -89,7 +89,11 @@ qualify again.
 
 The caller says whether each call carries a new sample (``fresh``). Only fresh samples
 count toward ``min_samples``. A call that is not fresh can still end ``min_duration``, so a
-consumer that is told about changes only can call again on a timer. A value that could not
+consumer that is told about changes only can call again on a timer. Such a consumer has no
+samples to count, so it applies ``RaiseQualifier::for_change_notifications(period)``, which
+turns ``min_samples`` samples ``period`` apart into a wait of ``(min_samples - 1) x period``,
+or ``min_duration`` when that is longer. The conversion is in the library so every bridge
+with change notifications uses the same rule. A value that could not
 be read is unknown, not unchanged, and is not passed at all. An undecidable value, for which
 the evaluator returns nothing, keeps the wait as it is, the same way it keeps a raised
 fault.

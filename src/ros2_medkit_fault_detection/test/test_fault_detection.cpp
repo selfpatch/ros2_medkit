@@ -646,3 +646,40 @@ TEST(RaiseQualifierFilter, LargeValuesDoNotOverflow) {
   }
   EXPECT_TRUE(p.filter.pending("HIGH_TEMP"));
 }
+
+TEST(RaiseQualifier, ForChangeNotificationsTurnsSamplesIntoTheirSpan) {
+  // N samples a period apart span N-1 periods.
+  const auto q = samples(3).for_change_notifications(milliseconds(500));
+  EXPECT_EQ(q.min_samples, 1u);
+  EXPECT_EQ(q.min_duration, milliseconds(1000));
+  EXPECT_FALSE(q.immediate());
+}
+
+TEST(RaiseQualifier, ForChangeNotificationsKeepsTheLongerWait) {
+  fd::RaiseQualifier both;
+  both.min_samples = 3;
+  both.min_duration = milliseconds(2500);
+  EXPECT_EQ(both.for_change_notifications(milliseconds(500)).min_duration, milliseconds(2500));
+  EXPECT_EQ(both.for_change_notifications(milliseconds(2000)).min_duration, milliseconds(4000));
+}
+
+TEST(RaiseQualifier, ForChangeNotificationsLeavesOtherRulesAlone) {
+  // The default stays immediate, one sample adds no wait, and a duration rule
+  // is kept as it is.
+  EXPECT_TRUE(fd::RaiseQualifier{}.for_change_notifications(milliseconds(500)).immediate());
+  EXPECT_TRUE(samples(1).for_change_notifications(milliseconds(500)).immediate());
+  const auto ms = duration(milliseconds(700)).for_change_notifications(milliseconds(500));
+  EXPECT_EQ(ms.min_samples, 1u);
+  EXPECT_EQ(ms.min_duration, milliseconds(700));
+}
+
+TEST(RaiseQualifier, ForChangeNotificationsWithoutAPeriodHasNoSampleWait) {
+  EXPECT_TRUE(samples(5).for_change_notifications(milliseconds(0)).immediate());
+  EXPECT_TRUE(samples(5).for_change_notifications(milliseconds(-10)).immediate());
+}
+
+TEST(RaiseQualifier, ForChangeNotificationsSaturates) {
+  const auto period = milliseconds(milliseconds::max().count() / 2);
+  const auto q = samples(std::numeric_limits<std::uint32_t>::max()).for_change_notifications(period);
+  EXPECT_EQ(q.min_duration, milliseconds::max());
+}

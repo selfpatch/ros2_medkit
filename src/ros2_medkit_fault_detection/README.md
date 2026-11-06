@@ -66,6 +66,11 @@ auto edges = tracker.apply(filter.apply(fd::evaluate(value, rule), q, now, fresh
 - `reset_pending()` drops faults that are still waiting, for example when the
   connection is lost. Faults already raised stay raised. `has_pending()` tells a
   change-driven caller whether it needs to call again on a timer.
+- A source that reports changes only has no samples to count. Use
+  `q.for_change_notifications(period)` there: `min_samples` samples `period`
+  apart become a wait of `(min_samples - 1) x period`, or `min_duration` when
+  that is longer. Then pass `fresh = true` for a change of the point and
+  `fresh = false` for a timer call.
 
 ## Shared fault types
 
