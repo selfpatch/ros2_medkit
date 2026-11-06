@@ -233,7 +233,7 @@ if(BUILD_TESTING)
   # avoids hard-failing when the package is not installed.
   find_package(ament_cmake_clang_format QUIET)
   if(ament_cmake_clang_format_FOUND)
-    file(GLOB_RECURSE _format_files
+    file(GLOB_RECURSE _format_files RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
       "include/*.hpp" "src/*.cpp" "test/*.cpp"
     )
     medkit_lint_config(.clang-format _clang_format_config)
