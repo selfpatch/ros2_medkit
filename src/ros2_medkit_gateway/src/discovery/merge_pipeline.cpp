@@ -708,8 +708,11 @@ MergeResult MergePipeline::execute() {
       }
     }
 
-    // Build set of orphan FQNs for policy-based filtering
+    // Build set of orphan FQNs for policy-based filtering. The gateway's own
+    // unlinked node is not reported as an orphan, but under the ignore policy
+    // its namespace is hidden like any other unlinked node's.
     std::set<std::string> orphan_fqns(linking.orphan_nodes.begin(), linking.orphan_nodes.end());
+    orphan_fqns.insert(linking.own_unlinked_nodes.begin(), linking.own_unlinked_nodes.end());
 
     // Remove heuristic apps based on unmanifested_nodes policy and linking results.
     std::set<std::string> manifest_app_ids;

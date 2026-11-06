@@ -186,23 +186,35 @@ LinkingResult RuntimeLinker::link(const std::vector<App> & manifest_apps, const 
 
   // Find orphan nodes (runtime apps not matching any manifest app).
   //
-  // The gateway's own in-process helper nodes are skipped WHILE the app filter
-  // removes them - the two are one setting, discovery.runtime.filter_internal_nodes.
-  // With it on they are not entities, so reporting them here would tell the
-  // operator to declare, in the manifest, nodes that can never become apps, and
-  // the 'error' policy words that report as an instruction ("Declare them in
-  // the manifest"). With it off they ARE served as apps, and an unmanifested
-  // served app is precisely what orphan_nodes and /health's orphan_count are
-  // for. An empty self FQN, which is what a linker constructed without a node
-  // has, matches nothing either way.
+  // The gateway's own in-process helper nodes and its parameter client node are
+  // skipped WHILE the app filter removes them - the two are one setting,
+  // discovery.runtime.filter_internal_nodes. With it on they are not entities,
+  // so reporting them here would tell the operator to declare, in the manifest,
+  // nodes that can never become apps, and the 'error' policy words that report
+  // as an instruction ("Declare them in the manifest"). With it off they ARE
+  // served as apps, and an unmanifested served app is precisely what
+  // orphan_nodes and /health's orphan_count are for.
+  //
+  // The gateway's own node is never an orphan: the manifest describes the stack
+  // the gateway diagnoses, so asking for the gateway to be declared there would
+  // raise the report on every deployment. It is kept apart as an unlinked own
+  // node. An empty self FQN, which is what a linker constructed without a node
+  // has, matches nothing.
   const std::string self_fqn = node_ != nullptr ? node_->get_fully_qualified_name() : std::string();
+  const std::string param_client_fqn = std::string("/") + ros2_common::kParamClientNodeName;
   for (const auto & rt_app : runtime_apps) {
-    if (rt_app.bound_fqn.has_value() && matched_nodes.find(rt_app.bound_fqn.value()) == matched_nodes.end()) {
-      if (filter_internal_nodes_ && is_own_gateway_helper_node(rt_app.bound_fqn.value(), self_fqn)) {
-        continue;
-      }
-      result.orphan_nodes.push_back(rt_app.bound_fqn.value());
+    if (!rt_app.bound_fqn.has_value() || matched_nodes.find(rt_app.bound_fqn.value()) != matched_nodes.end()) {
+      continue;
     }
+    const auto & fqn = rt_app.bound_fqn.value();
+    if (filter_internal_nodes_ && (is_own_gateway_helper_node(fqn, self_fqn) || fqn == param_client_fqn)) {
+      continue;
+    }
+    if (!self_fqn.empty() && fqn == self_fqn) {
+      result.own_unlinked_nodes.push_back(fqn);
+      continue;
+    }
+    result.orphan_nodes.push_back(fqn);
   }
 
   // Suppress runtime-origin apps that duplicate linked manifest apps (#307).
