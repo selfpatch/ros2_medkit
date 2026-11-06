@@ -122,7 +122,9 @@ which evaluations are new samples:
   shorter than the poll, after every ``subscription_interval_ms`` step, so the wait ends on
   time. A recheck, like a pass caused by another point's change, is not fresh: it ends a
   wait but starts none. A point that has not reported since the link came back is skipped,
-  so a value from before an outage never counts.
+  so a value from before an outage never counts. A recheck after an iterate that found the
+  link closed is skipped, and a poll whose read closed the link restarts every wait before
+  it is evaluated, so no wait ends on time that was not seen.
 - ``evaluate_alarms`` runs on the poll thread, on the event pump thread with native alarms
   on, and on any thread that makes a synchronous client call (open62541 delivers subscription
   callbacks during those as well). It works out the raise and clear edges and hands them to the plugin under
