@@ -387,6 +387,9 @@ Area parse_area(const nlohmann::json & j) {
     const auto & xm = j["x-medkit"];
     area.namespace_path = ros2_field(xm, "namespace", "namespace");
     area.source = xm.value("source", "");
+    // Emitted only when false; a middle gateway in a chain reports this way a
+    // grouping its silent leaf declared. Read back like a Component's.
+    area.available = xm.value("available", true);
     // Served on the detail only. A subarea read off its parent's subareas
     // route takes its parent from the route instead (see fetch_entities).
     area.parent_area_id = string_at(xm, "parent_area_id");
@@ -709,6 +712,7 @@ Function parse_function(const nlohmann::json & j) {
   if (j.contains("x-medkit") && j["x-medkit"].is_object()) {
     const auto & xm = j["x-medkit"];
     func.source = xm.value("source", "");
+    func.available = xm.value("available", true);
     if (xm.contains("hosts") && xm["hosts"].is_array()) {
       func.hosts = xm["hosts"].get<std::vector<std::string>>();
       keep_first_of_each(func.hosts);

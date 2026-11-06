@@ -77,11 +77,20 @@ http::Result<dto::LifecycleStatusResponse> LifecycleHandlers::handle_get_status(
   }
   const std::string entity_id = *id_raw;
 
-  auto entity_result = ctx_.validate_entity_for_route(req, entity_id);
+  // An entity whose gateway is silent is answered here from what it declared:
+  // it is in the tree, and it is not running anywhere this gateway can reach.
+  auto entity_result = ctx_.validate_entity_for_route(req, entity_id, RetainedAccess::kServeDeclaration);
   if (!entity_result) {
     return tl::make_unexpected(flatten_validator_error(entity_result.error()));
   }
   const auto & entity = *entity_result;
+  if (!entity.available) {
+    // No transition URIs: a transition has nowhere to go while the gateway that
+    // would carry it out is silent (PUT answers 504 not-responding).
+    dto::LifecycleStatusResponse retained;
+    retained.status = "notReady";
+    return retained;
+  }
 
   const std::string base = api_path((entity.type == EntityType::APP ? "/apps/" : "/components/") + entity.id);
 

@@ -1040,6 +1040,10 @@ What version 8 changes for a plugin author:
   alone. A call written for version 7 does not compile against version 8 headers.
 - A ``NotifierFilter`` left at ``SovdEntityType::UNKNOWN`` matches every type, as a filter
   written for version 7 did; set it to receive the changes of one type only.
+- The ``Area`` and ``Function`` models gain ``bool available`` (default ``true``), as ``App`` and
+  ``Component`` carry it: ``false`` while every gateway contributing the entity is silent. It
+  changes their layout in ``IntrospectionInput`` / ``NewEntities``; a plugin that creates them
+  needs no source change.
 - Every plugin has to be rebuilt against the version 8 headers: the loader refuses a ``.so`` that
   reports version 7. A plugin that does not use the notifier needs no source change.
 

@@ -1059,7 +1059,8 @@ gateway that predates the route and is reported in
 ``not-responding`` on any route hanging off an entity - its detail, or one of
 its nested collections - is the peer reporting that the gateway contributing
 that entity has gone quiet, which is what a middle gateway in a chain answers
-for a declaration it is retaining. The entity is kept as the list named it and
+for an App or Component it is retaining (an Area or Function it retains it
+serves itself, with ``available: false``). The entity is kept as the list named it and
 marked unavailable, and a nested collection answering that way costs the members
 that route carries and nothing else. Read as a failed request instead, one
 unreachable member anywhere behind a peer would discard that peer's whole
@@ -1107,8 +1108,9 @@ the ``_links["depends-on"]`` references its detail serves, each reduced to the
 Function id it names and kept once (see Refresh Size Limits).
 
 Availability travels the same way in the other direction. ``x-medkit.available``
-is emitted only when false, so absence means reachable, and both
-``parse_component`` and ``parse_app`` read it back with a default of ``true``.
+is emitted only when false, so absence means reachable, and ``parse_component``,
+``parse_app``, ``parse_area`` and ``parse_function`` read it back with a default
+of ``true``.
 Without that, a chain of three gateways loses the fact at the second hop: an App
 still carries ``is_online``, but a Component has no other signal, and the head of
 the chain would report an unreachable leaf as reachable. Local retention only
@@ -1125,9 +1127,27 @@ alone: the entities the peer served with ``x-medkit.source: manifest``, which
 ``PeerClient`` keeps as ``declared_source`` before it stamps ``peer:<name>``
 over ``source``. Every type carries that field on the routes the fetch reads,
 an Area on the list, the ``subareas`` items and the detail, so a peer's declared
-Areas are retained as its Components, Apps and Functions are. The marking has
-nothing to set on an Area or a Function: a grouping entity is a view over its
-members, and the members carry the availability.
+Areas are retained as its Components, Apps and Functions are.
+
+The marking (``mark_unreachable``) covers all four types, so the tree shows the
+current runtime: a retained entity stays and says it cannot be reached. It is
+applied twice per refresh, from one source of truth - the reachability the
+refresh decided for the peer from its health check (``Reachability``): to the
+declaration replayed for an unreachable peer, and, after the merge, to every
+entity routed to such a peer. ``EntityMerger`` keeps a merged Area or Function
+available when any contributor is, because it is then served from the merged
+view, and gives a merged Component the peer's reachability, because its requests
+go to that peer; a merged Component the classification makes a parent is served
+here and is available again (``serve_here``). ``HandlerContext::validate_entity_for_route`` reads the flag off the
+entity it found and never forwards an unavailable one: an Area or a Function is
+served here from the declaration on its discovery routes (``is_discovery_route``:
+detail and structure) and from its members on the others while one of them can
+be reached (``has_available_member``) - otherwise ``504 not-responding``, the
+members' own answer; an App or a Component answers ``504 not-responding``; and the
+lifecycle status read takes the entity back (``RetainedAccess::kServeDeclaration``)
+to answer ``notReady``. A middle gateway therefore answers the head's read of a
+grouping its silent leaf declared with 200 and ``available: false``, and the
+head's refresh of the middle completes.
 
 The same field on a listed ITEM answers for that item's member and for nothing
 else. ``/operations`` and ``/data`` hold back the copies their declared tree

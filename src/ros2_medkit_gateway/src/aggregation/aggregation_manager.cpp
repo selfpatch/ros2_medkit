@@ -379,12 +379,15 @@ bool is_declared(const Entity & entity) {
   return entity.declared_source == "manifest";
 }
 
-/// Availability belongs to an entity a request can be addressed to. A grouping
-/// entity has none of its own: it is a view over its members, and the members
-/// carry the flag, so retaining one says nothing about what can be reached.
-void mark_unreachable(Area & /*area*/) {
+/// A replayed declaration describes what sits behind a link that is down, so
+/// every entity of it is marked: the tree shows it and says it cannot be
+/// reached. A grouping entity a live gateway also contributes is available
+/// again once merged (EntityMerger keeps any contributor's availability).
+void mark_unreachable(Area & area) {
+  area.available = false;
 }
-void mark_unreachable(Function & /*function*/) {
+void mark_unreachable(Function & function) {
+  function.available = false;
 }
 void mark_unreachable(App & app) {
   app.available = false;
@@ -765,7 +768,18 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
   // declared it alone (its `source`), a Component also when the peer is merged
   // into it - the classification above leaves Component entries only for
   // Components. Set on every entity, so nothing from a previous merge survives.
-  auto stamp_routes = [&merged](auto & entities, bool merged_contributor_routes) {
+  //
+  // An entity routed to a peer this refresh found unreachable cannot be served:
+  // its requests go to that peer. It is marked so, whatever else contributes it
+  // - a Component merged from this gateway and a silent peer is that peer's to
+  // serve, and forwarding there would only fail.
+  std::unordered_set<std::string> unreachable_peers;
+  for (const auto & peer : unread_peers) {
+    if (peer.reachability == Reachability::kUnreachable) {
+      unreachable_peers.insert(peer.name);
+    }
+  }
+  auto stamp_routes = [&merged, &unreachable_peers](auto & entities, bool merged_contributor_routes) {
     for (auto & entity : entities) {
       entity.routed_to.clear();
       auto it = merged.routing_table.find(entity.id);
@@ -778,6 +792,20 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
                                                                tag) != entity.contributors.end());
       if (own) {
         entity.routed_to = it->second;
+        if (unreachable_peers.count(it->second) > 0u) {
+          mark_unreachable(entity);
+        }
+      }
+    }
+  };
+  // An entity this gateway contributes and serves itself is reachable here,
+  // whatever a peer merged into it reported: a Component the classification
+  // made a parent is served from the merged view, not by the peer.
+  auto serve_here = [](auto & entities) {
+    for (auto & entity : entities) {
+      if (entity.routed_to.empty() &&
+          std::find(entity.contributors.begin(), entity.contributors.end(), "local") != entity.contributors.end()) {
+        entity.available = true;
       }
     }
   };
@@ -785,6 +813,7 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
   stamp_routes(merged.components, true);
   stamp_routes(merged.apps, false);
   stamp_routes(merged.functions, false);
+  serve_here(merged.components);
 
   return merged;
 }

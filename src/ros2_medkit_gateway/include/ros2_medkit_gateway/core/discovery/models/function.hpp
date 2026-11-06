@@ -62,6 +62,11 @@ struct Function {
   /// the entity is retained when its peer stops answering. Empty for entities
   /// this gateway discovered itself.
   std::string declared_source;
+  /// False while every gateway that could serve this entity is silent and it
+  /// is in the tree only from a declaration retained for one of them. A
+  /// grouping that a live gateway also contributes - this one, or another peer
+  /// - stays available.
+  bool available{true};
 
   // === Serialization methods ===
 
@@ -87,7 +92,7 @@ inline bool operator==(const Function & a, const Function & b) {
   return a.id == b.id && a.name == b.name && a.translation_id == b.translation_id && a.description == b.description &&
          a.tags == b.tags && a.hosts == b.hosts && a.depends_on == b.depends_on && a.source == b.source &&
          a.original_id == b.original_id && a.routed_to == b.routed_to && a.contributors == b.contributors &&
-         a.declared_source == b.declared_source;
+         a.declared_source == b.declared_source && a.available == b.available;
 }
 inline bool operator!=(const Function & a, const Function & b) {
   return !(a == b);

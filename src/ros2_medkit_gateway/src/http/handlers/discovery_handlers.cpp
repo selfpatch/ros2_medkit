@@ -66,9 +66,9 @@ void set_x_medkit_available(dto::XMedkitComponent & x_medkit, bool available) {
   }
 }
 
-/// The x-medkit an Area item carries on every route that lists one: its source
-/// and its ROS 2 namespace, each omitted when empty, and no object at all when
-/// both are. The source is what a gateway aggregating this one reads the Area's
+/// The x-medkit an Area item carries on every route that lists one: its source,
+/// its availability (false only) and its ROS 2 namespace, each omitted when it
+/// has no value, and no object at all when none has. The source is what a gateway aggregating this one reads the Area's
 /// origin from, and so decides whether it keeps the Area while this gateway is
 /// not answering; on an aggregating gateway it is the source the merge
 /// assigned, as for every other entity type.
@@ -77,12 +77,15 @@ std::optional<dto::XMedkitArea> area_item_x_medkit(const Area & area) {
   if (!area.source.empty()) {
     x_medkit.source = area.source;
   }
+  if (!area.available) {
+    x_medkit.available = false;
+  }
   if (!area.namespace_path.empty()) {
     dto::XMedkitRos2 ros2;
     ros2.ns = area.namespace_path;
     x_medkit.ros2 = ros2;
   }
-  if (!x_medkit.source && !x_medkit.ros2) {
+  if (!x_medkit.source && !x_medkit.available && !x_medkit.ros2) {
     return std::nullopt;
   }
   return x_medkit;
@@ -1556,6 +1559,9 @@ http::Result<dto::Collection<dto::FunctionListItem>> DiscoveryHandlers::get_func
       if (!func.source.empty()) {
         x_medkit_func.source = func.source;
       }
+      if (!func.available) {
+        x_medkit_func.available = false;
+      }
       item.x_medkit = x_medkit_func;
 
       response.items.push_back(std::move(item));
@@ -1667,6 +1673,9 @@ http::Result<dto::FunctionDetail> DiscoveryHandlers::get_function(const http::Ty
     }
     if (!func.contributors.empty()) {
       x_medkit_func.contributors = sorted_contributors(func.contributors);
+    }
+    if (!func.available) {
+      x_medkit_func.available = false;
     }
     detail.x_medkit = x_medkit_func;
 
