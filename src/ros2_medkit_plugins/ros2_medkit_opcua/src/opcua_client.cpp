@@ -174,7 +174,9 @@ opcua::ByteString read_file_bytes(const std::string & path) {
   if (!f) {
     return opcua::ByteString{};
   }
-  std::string data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+  std::ostringstream contents;
+  contents << f.rdbuf();
+  const std::string data = contents.str();
   return opcua::ByteString(std::string_view(data));
 }
 
