@@ -565,7 +565,7 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
     // scoped listing below like any other entity.
     if (entity_info.is_plugin) {
       auto * pmgr = ctx_.services().plugin_manager();
-      auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
+      auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_info.sovd_type(), entity_id) : nullptr;
       if (fault_prov != nullptr) {
         try {
           auto result = fault_prov->list_faults(entity_id);
@@ -791,7 +791,7 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
     // Delegate to plugin FaultProvider if entity is plugin-owned
     if (entity_info.is_plugin) {
       auto * pmgr = ctx_.services().plugin_manager();
-      auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
+      auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_info.sovd_type(), entity_id) : nullptr;
       // Plugins without a FaultProvider report via ReportFault only (the
       // native path): skip the plugin delegation entirely and serve the
       // fault_manager's enriched record through the shared path below.
@@ -924,7 +924,7 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
     // `FaultClearResult` -> 200 via the default `dto_alternate_status<T>`.
     if (entity_info.is_plugin) {
       auto * pmgr = ctx_.services().plugin_manager();
-      auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
+      auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_info.sovd_type(), entity_id) : nullptr;
       // Plugins without a FaultProvider report via ReportFault only (the
       // native path): fall through to the scope-checked fault_manager clear
       // below like any other entity.
@@ -1043,7 +1043,7 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
     // fall through to the scope-checked fault_manager clear below.
     if (entity_info.is_plugin) {
       auto * pmgr = ctx_.services().plugin_manager();
-      auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_id) : nullptr;
+      auto * fault_prov = pmgr ? pmgr->get_fault_provider_for_entity(entity_info.sovd_type(), entity_id) : nullptr;
       if (fault_prov != nullptr) {
         try {
           auto list_result = fault_prov->list_faults(entity_id);
@@ -1149,7 +1149,8 @@ FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
                                             json{{"details", faults_result.error_message}}));
     }
 
-    // Build FQN-to-entity-ID map for lock checking
+    // Build FQN-to-entity-ID map for lock checking. A reporting source is a
+    // node, so the entity it names is the App bound to it.
     auto * lock_mgr = ctx_.services().lock_manager();
     std::unordered_map<std::string, std::string> fqn_to_entity;
     if (lock_mgr) {
@@ -1178,7 +1179,7 @@ FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
             auto src_str = src.get<std::string>();
             auto it = fqn_to_entity.find(src_str);
             if (it != fqn_to_entity.end()) {
-              auto access = lock_mgr->check_access(it->second, client_id, "faults");
+              auto access = lock_mgr->check_access(SovdEntityType::APP, it->second, client_id, "faults");
               if (!access.allowed) {
                 blocked = true;
                 break;

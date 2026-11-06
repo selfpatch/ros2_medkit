@@ -1056,7 +1056,7 @@ IntrospectionResult OpcuaPlugin::introspect(const IntrospectionInput & /*input*/
   // components in the shared SOVD entity tree do not advertise a
   // capability they cannot serve.
   if (ctx_) {
-    ctx_->register_entity_capability(node_map_.component_id(), "x-plc-status");
+    ctx_->register_entity_capability(SovdEntityType::COMPONENT, node_map_.component_id(), "x-plc-status");
   }
 
   for (const auto & def : node_map_.entity_defs()) {
@@ -1090,11 +1090,11 @@ IntrospectionResult OpcuaPlugin::introspect(const IntrospectionInput & /*input*/
     // writable nodes also get x-plc-operations.
     if (ctx_) {
       if (!def.data_names.empty()) {
-        ctx_->register_entity_capability(def.id, "x-plc-data");
+        ctx_->register_entity_capability(SovdEntityType::APP, def.id, "x-plc-data");
       }
 #if !MEDKIT_OPCUA_READ_ONLY
       if (!def.writable_names.empty()) {
-        ctx_->register_entity_capability(def.id, "x-plc-operations");
+        ctx_->register_entity_capability(SovdEntityType::APP, def.id, "x-plc-operations");
       }
 #endif
     }
@@ -3200,6 +3200,17 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
 #endif  // MEDKIT_OPCUA_READ_ONLY
 }
 
+SovdEntityType OpcuaPlugin::own_entity_type(const std::string & entity_id) const {
+  std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
+  if (entity_id == node_map_.area_id()) {
+    return SovdEntityType::AREA;
+  }
+  if (entity_id == node_map_.component_id()) {
+    return SovdEntityType::COMPONENT;
+  }
+  return SovdEntityType::APP;
+}
+
 bool OpcuaPlugin::has_operations(const std::string & entity_id) const {
   // Mirrors list_operations' own lookup: true for any entity_defs() entry
   // (writable data points, or acknowledge_fault/confirm_fault on an
@@ -3220,8 +3231,9 @@ tl::expected<dto::FaultListResult, FaultProviderErrorInfo> OpcuaPlugin::list_fau
 
   // PluginContext::list_entity_faults returns a bare JSON array of fault
   // objects already scoped to this entity (see its contract). Project each into
-  // the plugin fault-list item shape.
-  auto faults = ctx_->list_entity_faults(entity_id);
+  // the plugin fault-list item shape. The entity is this plugin's, named by its
+  // type: a local entity of another type may share the id.
+  auto faults = ctx_->list_entity_faults(own_entity_type(entity_id), entity_id);
   nlohmann::json items = nlohmann::json::array();
   if (faults.is_array()) {
     for (const auto & f : faults) {
@@ -3273,7 +3285,7 @@ tl::expected<dto::FaultDetailResult, FaultProviderErrorInfo> OpcuaPlugin::get_fa
 
   // list_entity_faults returns a bare JSON array of fault objects scoped to
   // this entity (see PluginContext contract).
-  auto faults = ctx_->list_entity_faults(entity_id);
+  auto faults = ctx_->list_entity_faults(own_entity_type(entity_id), entity_id);
   if (faults.is_array()) {
     for (const auto & f : faults) {
       if (f.value("fault_code", "") == fault_code) {

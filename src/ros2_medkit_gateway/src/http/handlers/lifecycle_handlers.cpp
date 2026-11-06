@@ -96,7 +96,7 @@ http::Result<dto::LifecycleStatusResponse> LifecycleHandlers::handle_get_status(
 
   // Delegate to LifecycleProvider when one is registered for this entity.
   if (plugin_mgr_) {
-    auto * provider = plugin_mgr_->get_lifecycle_provider_for_entity(entity_id);
+    auto * provider = plugin_mgr_->get_lifecycle_provider_for_entity(entity.sovd_type(), entity_id);
     if (provider) {
       try {
         auto result = provider->get_status(entity_id);
@@ -221,7 +221,7 @@ LifecycleHandlers::handle_transition(const http::TypedRequest & req, std::string
   const std::string base = api_path((entity.type == EntityType::APP ? "/apps/" : "/components/") + entity.id);
 
   if (plugin_mgr_) {
-    auto * provider = plugin_mgr_->get_lifecycle_provider_for_entity(entity_id);
+    auto * provider = plugin_mgr_->get_lifecycle_provider_for_entity(entity.sovd_type(), entity_id);
     if (provider) {
       try {
         auto result = provider->request_transition(entity_id, transition);

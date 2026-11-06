@@ -280,11 +280,26 @@ providing access to gateway data and utilities:
      :doc:`/design/ros2_medkit_gateway/ros2_subscription_architecture`
      for the allowed pattern and the rationale.
 
-- ``get_entity(id)`` - look up any entity (area, component, app, function) from the discovery cache
-- ``list_entity_faults(entity_id)`` - query faults for an entity: the local ones, plus those of the peers the
+- ``get_entity(type, id)`` - look up the entity of a type (area, component, app, function) from the discovery cache
+- ``list_entity_faults(type, entity_id)`` - query faults for an entity: the local ones, plus those of the peers the
   entity names among its ``contributors`` (none for an entity only this gateway holds)
-- ``validate_entity_for_route(req, res, entity_id)`` - validate entity exists and matches the route type, auto-sending SOVD errors on failure
-- ``register_capability()`` / ``register_entity_capability()`` - register custom capabilities on entities
+- ``validate_entity_for_route(req, res, entity_id)`` - validate that the entity of the route's type exists, auto-sending SOVD errors on failure
+- ``register_capability()`` / ``register_entity_capability(type, id, name)`` - register custom capabilities on entities
+
+An entity is named by its type and its id: an id is unique within its type only, so an App and
+a Component, or an Area and a Function, may share one. Every call that names an entity takes
+the type; use those. Each call also has an id-only form (``get_entity(id)``,
+``list_entity_faults(id)``, ``register_entity_capability(id, name)``,
+``get_entity_capabilities(id)``, ``check_lock(id, ...)``, ``acquire_lock(id, ...)``,
+``release_lock(id, ...)``), kept so that plugins written against it still build. The id-only
+form resolves a bare id only while exactly one entity holds it. An id more than one entity holds
+is refused, and the gateway logs one WARN naming the id and the types, again only after the
+ambiguity has gone away and come back: ``get_entity`` returns ``std::nullopt``,
+``list_entity_faults`` returns an error object
+(``{"error_code": "invalid-parameter", "message": ..., "entity_types": [...]}``) instead of the
+array, the lock calls answer ``invalid-parameter``, and a capability registered by id is shown
+on no entity. A capability registered by id is resolved when it is looked up, so it may be
+registered from ``introspect()``, before the entity is in the cache.
 
 .. note::
 
@@ -292,8 +307,8 @@ providing access to gateway data and utilities:
    methods on ``PluginResponse``, not static methods on ``PluginContext``. Use
    ``res.send_json(data)`` and ``res.send_error(status, code, msg)`` inside route handlers.
 
-- ``check_lock(entity_id, client_id, collection)`` - verify lock access before mutating operations; returns ``LockAccessResult`` with ``allowed`` flag and denial details
-- ``acquire_lock()`` / ``release_lock()`` - acquire and release entity locks with optional scope and TTL
+- ``check_lock(type, entity_id, client_id, collection)`` - verify lock access before mutating operations; returns ``LockAccessResult`` with ``allowed`` flag and denial details
+- ``acquire_lock(type, ...)`` / ``release_lock(type, ...)`` - acquire and release entity locks with optional scope and TTL
 - ``get_entity_snapshot()`` - returns an ``IntrospectionInput`` populated from the current entity cache
 - ``list_all_faults()`` - returns JSON object with a ``"faults"`` array containing all active faults across all entities
 - ``register_sampler(collection, fn)`` - registers a cyclic subscription sampler for a custom collection name
@@ -306,8 +321,8 @@ providing access to gateway data and utilities:
      // Register a custom capability for all apps
      ctx.register_capability(SovdEntityType::APP, "x-medkit-traces");
 
-     // Register a capability for a specific entity
-     ctx.register_entity_capability("sensor1", "x-medkit-calibration");
+     // Register a capability for a specific entity, named by its type and id
+     ctx.register_entity_capability(SovdEntityType::APP, "sensor1", "x-medkit-calibration");
 
      // Get a snapshot of all currently discovered entities
      IntrospectionInput snapshot = ctx.get_entity_snapshot();
@@ -317,9 +332,9 @@ providing access to gateway data and utilities:
 
      // Register a sampler so clients can subscribe to "x-medkit-metrics" cyclically
      ctx.register_sampler("x-medkit-metrics",
-       [this](const std::string& entity_id, const std::string& /*resource_path*/)
-           -> tl::expected<nlohmann::json, std::string> {
-         auto data = collect_metrics(entity_id);
+       [this](SovdEntityType entity_type, const std::string& entity_id,
+              const std::string& /*resource_path*/) -> tl::expected<nlohmann::json, std::string> {
+         auto data = collect_metrics(entity_type, entity_id);
          if (!data) return tl::make_unexpected("no data for: " + entity_id);
          return *data;
        });
@@ -336,7 +351,8 @@ mapping fault codes to topics). Returns ``{}`` if the fault manager is unavailab
 
 ``register_sampler(collection, fn)`` wires a sampler into the ``ResourceSamplerRegistry``
 so that cyclic subscriptions created for ``collection`` (e.g. ``"x-medkit-metrics"``)
-call ``fn(entity_id, resource_path)`` on each tick. The function must return
+call ``fn(entity_type, entity_id, resource_path)`` on each tick, with the type and id of the
+entity the subscription was created on: read the entity of that type. The function must return
 ``tl::expected<nlohmann::json, std::string>``. See `Cyclic Subscription Extensions`_
 for the lower-level registry API.
 
@@ -365,15 +381,15 @@ and moved ``send_json``/``send_error`` from ``PluginContext`` static methods to
 require source changes to adapt to the new API. Plugins that do not implement
 routes only need a rebuild to match the new ``PLUGIN_API_VERSION``.
 
-**check_lock(entity_id, client_id, collection)**
+**check_lock(entity_type, entity_id, client_id, collection)**
 
 Verify whether a lock blocks access to a resource collection on an entity. Plugins
 that perform mutating operations (writing configurations, executing scripts, etc.)
-should call this before proceeding:
+should call this before proceeding, naming the entity by the route's type:
 
 .. code-block:: cpp
 
-   auto result = ctx_->check_lock(entity_id, client_id, "configurations");
+   auto result = ctx_->check_lock(SovdEntityType::APP, entity_id, client_id, "configurations");
    if (!result.allowed) {
      res.send_error(409, result.denied_code, result.denied_reason);
      return;
@@ -455,7 +471,7 @@ relative to the API prefix (no leading slash), and a handler. Use ``PluginReques
             auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
             if (!entity) return;  // Error already sent
 
-            auto faults = ctx_->list_entity_faults(entity->id);
+            auto faults = ctx_->list_entity_faults(entity->type, entity->id);
             res.send_json({{"entity", entity->id}, {"faults", faults}});
           }},
      };
@@ -465,8 +481,8 @@ Use the ``x-`` prefix for vendor-specific endpoints per SOVD convention. Pattern
 relative to the API prefix and must not include a leading slash.
 
 For entity-scoped endpoints, register a matching capability via ``register_capability()``
-or ``register_entity_capability()`` in ``set_context()`` so the endpoint appears in the
-entity's capabilities array in discovery responses.
+or ``register_entity_capability(type, id, name)`` in ``set_context()`` so the endpoint appears
+in the entity's capabilities array in discovery responses.
 
 Documenting a Plugin Route
 --------------------------
@@ -1044,8 +1060,25 @@ What version 8 changes for a plugin author:
   ``Component`` carry it: ``false`` while every gateway contributing the entity is silent. It
   changes their layout in ``IntrospectionInput`` / ``NewEntities``; a plugin that creates them
   needs no source change.
+- ``register_sampler()`` takes a sampler of ``(SovdEntityType entity_type, entity_id,
+  resource_path)``: the type and id of the entity the subscription was created on. A sampler
+  written for version 7 does not compile against version 8 headers.
+- ``PluginContext`` gains typed entity calls: ``get_entity(type, id)``,
+  ``list_entity_faults(type, id)``, ``register_entity_capability(type, id, name)``,
+  ``get_entity_capabilities(type, id)``, ``check_lock(type, ...)``, ``acquire_lock(type, ...)``
+  and ``release_lock(type, ...)``. Use them. The id-only forms stay and resolve a bare id only
+  while exactly one entity holds it (see `PluginContext`_ above for what a refused id
+  answers). The typed calls have defaults that answer through the id-only ones, so a test mock
+  that overrides only the id-only forms keeps building.
+- The gateway owns, locks and routes a plugin's entity by its type and id: a plugin entity that
+  shares an id with a manifest or runtime entity of another type is a different entity, and the
+  plugin's providers are asked only for its own. One plugin may not introspect two entities of
+  different types under one id, because its providers are called with the id alone: the first in
+  the order Areas, Components, Apps, Functions keeps the id, the later one is not served, and the
+  gateway logs one WARN naming the plugin, both types and the id. The plugin itself still loads.
 - Every plugin has to be rebuilt against the version 8 headers: the loader refuses a ``.so`` that
-  reports version 7. A plugin that does not use the notifier needs no source change.
+  reports version 7. A plugin that does not use the notifier or register a sampler needs no
+  source change.
 
 Build Requirements
 ------------------

@@ -49,6 +49,7 @@ using ros2_medkit_gateway::LifecycleProviderError;
 using ros2_medkit_gateway::LifecycleProviderErrorInfo;
 using ros2_medkit_gateway::PluginManager;
 using ros2_medkit_gateway::ServiceInfo;
+using ros2_medkit_gateway::SovdEntityType;
 using ros2_medkit_gateway::ThreadSafeEntityCache;
 using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::dto::JsonWriter;
@@ -520,7 +521,7 @@ class LifecycleHandlersWithProviderTest : public ::testing::Test {
     auto mock = std::make_unique<MockLifecyclePlugin>();
     mock_ = mock.get();
     plugin_mgr_->add_plugin(std::move(mock));
-    plugin_mgr_->register_entity_ownership("mock_lifecycle", {"plugin_app"});
+    plugin_mgr_->register_entity_ownership("mock_lifecycle", {{SovdEntityType::APP, "plugin_app"}});
 
     ctx_ = std::make_unique<HandlerContext>(*gateway_node_, cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<LifecycleHandlers>(*ctx_, plugin_mgr_.get());

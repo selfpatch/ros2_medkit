@@ -215,7 +215,7 @@ Manifest ManifestParser::parse_string(const std::string & yaml_content) const {
     for (const auto & node : root["components"]) {
       auto comp = parse_component(node);
       if (node["lock"] && node["lock"].IsMap()) {
-        manifest.lock_overrides[comp.id] = parse_lock_config(node["lock"]);
+        manifest.lock_overrides[{SovdEntityType::COMPONENT, comp.id}] = parse_lock_config(node["lock"]);
       }
       manifest.components.push_back(std::move(comp));
     }
@@ -235,7 +235,7 @@ Manifest ManifestParser::parse_string(const std::string & yaml_content) const {
     for (const auto & node : root["apps"]) {
       auto app = parse_app(node);
       if (node["lock"] && node["lock"].IsMap()) {
-        manifest.lock_overrides[app.id] = parse_lock_config(node["lock"]);
+        manifest.lock_overrides[{SovdEntityType::APP, app.id}] = parse_lock_config(node["lock"]);
       }
       manifest.apps.push_back(std::move(app));
     }

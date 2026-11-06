@@ -47,25 +47,6 @@ struct EntityRef {
 };
 
 /**
- * @brief A member of a grouping entity, named by its type and its id
- *
- * An App and a Component may share an id, so the id alone does not name a
- * member: everything that resolves, dispatches to or asks the reachability of a
- * member takes the pair.
- */
-struct MemberRef {
-  SovdEntityType type{SovdEntityType::UNKNOWN};
-  std::string id;
-
-  bool operator==(const MemberRef & other) const {
-    return type == other.type && id == other.id;
-  }
-  bool operator!=(const MemberRef & other) const {
-    return !(*this == other);
-  }
-};
-
-/**
  * @brief Topic information with direction
  */
 struct TopicData {
@@ -332,6 +313,8 @@ class ThreadSafeEntityCache {
   bool has_component(const std::string & id) const;
   bool has_app(const std::string & id) const;
   bool has_function(const std::string & id) const;
+  /// The entity of `type` with this id exists. False for SERVER and UNKNOWN.
+  bool has_entity(SovdEntityType type, const std::string & id) const;
 
   // --- Topic type lookup (O(1)) ---
   /**

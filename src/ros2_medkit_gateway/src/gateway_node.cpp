@@ -34,6 +34,7 @@
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/core/discovery/refresh_debounce.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_entities.hpp"
 #include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
@@ -893,12 +894,12 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     auto * manifest_mgr = discovery_mgr_->get_manifest_manager();
     if (manifest_mgr) {
       auto overrides = manifest_mgr->get_lock_overrides();
-      for (auto & [entity_id, manifest_lock] : overrides) {
+      for (auto & [entity, manifest_lock] : overrides) {
         EntityLockConfig entity_config;
         entity_config.required_scopes = manifest_lock.required_scopes;
         entity_config.breakable = manifest_lock.breakable;
         entity_config.max_expiration = manifest_lock.max_expiration;
-        lock_config.entity_overrides[entity_id] = entity_config;
+        lock_config.entity_overrides[entity] = entity_config;
       }
       if (!overrides.empty()) {
         RCLCPP_INFO(get_logger(), "Lock manager: %zu entity overrides from manifest", overrides.size());
@@ -1549,14 +1550,22 @@ void GatewayNode::init_entity_freeze_frame_capture(ros2_common::Ros2Subscription
   }
   entity_freeze_frame_capture_ = std::make_unique<EntityFreezeFrameCapture>(
       this, exec,
-      [this](const std::string & entity_id) {
-        return plugin_mgr_ ? plugin_mgr_->get_data_provider_for_entity(entity_id) : nullptr;
+      // The entity is a fault's reporting source, a bare id: a plugin entity
+      // reports under its own id, and one id names one of a plugin's entities,
+      // so it is the plugin's App with that id, else its Component.
+      [this](const std::string & source) -> DataProvider * {
+        if (!plugin_mgr_) {
+          return nullptr;
+        }
+        auto * provider = plugin_mgr_->get_data_provider_for_entity(SovdEntityType::APP, source);
+        return provider != nullptr ? provider
+                                   : plugin_mgr_->get_data_provider_for_entity(SovdEntityType::COMPONENT, source);
       },
       // Plugins without a DataProvider (the commercial PLC bridges) serve live
-      // values only through their own x-plc-data route - dispatch it in-process
-      // as the capture fallback.
-      [this](const std::string & entity_id) -> std::optional<nlohmann::json> {
-        return plugin_mgr_ ? plugin_mgr_->fetch_entity_data_via_route(entity_id) : std::nullopt;
+      // values only through their own x-plc-data route - an App's - dispatch it
+      // in-process as the capture fallback.
+      [this](const std::string & source) -> std::optional<nlohmann::json> {
+        return plugin_mgr_ ? plugin_mgr_->fetch_entity_data_via_route(SovdEntityType::APP, source) : std::nullopt;
       },
       256,  // retained-frame bound (constructor default)
       // Plugins start polling - and reporting - while this object is still
@@ -1893,6 +1902,7 @@ void GatewayNode::refresh_cache() {
     if (plugin_mgr_ && plugin_mgr_->has_plugins()) {
       bool inject_entities = (discovery_mgr_->get_mode() != DiscoveryMode::HYBRID);
       auto providers = plugin_mgr_->get_named_introspection_providers();
+      std::unordered_set<std::string> plugin_duplicates;
       for (auto & [name, provider] : providers) {
         IntrospectionInput input;
         IntrospectionResult result;
@@ -1904,9 +1914,20 @@ void GatewayNode::refresh_cache() {
           continue;
         }
 
+        // One id names one of a plugin's entities: a later entity of another
+        // type under it is left out, here and in the hybrid PluginLayer alike.
+        // Logged when it first appears, and again only after it has gone away.
+        for (const auto & duplicate : drop_cross_type_duplicates(result.new_entities)) {
+          auto line = describe_cross_type_duplicate(name, duplicate);
+          if (logged_plugin_duplicates_.count(line) == 0u) {
+            RCLCPP_WARN(get_logger(), "%s", line.c_str());
+          }
+          plugin_duplicates.insert(std::move(line));
+        }
+
         // In non-hybrid modes, inject plugin entities directly (with validation).
-        // Collect validated entity IDs for ownership registration.
-        std::vector<std::string> entity_ids;
+        // Collect validated entities for ownership registration, by type and id.
+        std::vector<MemberRef> entity_ids;
         if (inject_entities) {
           for (auto & area : result.new_entities.areas) {
             if (!validate_entity_id(area.id)) {
@@ -1914,7 +1935,7 @@ void GatewayNode::refresh_cache() {
                           area.id.c_str());
               continue;
             }
-            entity_ids.push_back(area.id);
+            entity_ids.push_back({SovdEntityType::AREA, area.id});
             if (area.source.empty()) {
               area.source = "plugin";
             }
@@ -1926,7 +1947,7 @@ void GatewayNode::refresh_cache() {
                           comp.id.c_str());
               continue;
             }
-            entity_ids.push_back(comp.id);
+            entity_ids.push_back({SovdEntityType::COMPONENT, comp.id});
             if (comp.source.empty()) {
               comp.source = "plugin";
             }
@@ -1937,7 +1958,7 @@ void GatewayNode::refresh_cache() {
               RCLCPP_WARN(get_logger(), "Plugin '%s': dropping app with invalid ID '%s'", name.c_str(), app.id.c_str());
               continue;
             }
-            entity_ids.push_back(app.id);
+            entity_ids.push_back({SovdEntityType::APP, app.id});
             if (app.source.empty()) {
               app.source = "plugin";
             }
@@ -1949,7 +1970,7 @@ void GatewayNode::refresh_cache() {
                           func.id.c_str());
               continue;
             }
-            entity_ids.push_back(func.id);
+            entity_ids.push_back({SovdEntityType::FUNCTION, func.id});
             introspection_only_ids.erase(func.id);
             if (func.source.empty()) {
               func.source = "plugin";
@@ -1961,22 +1982,22 @@ void GatewayNode::refresh_cache() {
           // with validation for ownership (entities are not injected here).
           for (const auto & area : result.new_entities.areas) {
             if (validate_entity_id(area.id)) {
-              entity_ids.push_back(area.id);
+              entity_ids.push_back({SovdEntityType::AREA, area.id});
             }
           }
           for (const auto & comp : result.new_entities.components) {
             if (validate_entity_id(comp.id)) {
-              entity_ids.push_back(comp.id);
+              entity_ids.push_back({SovdEntityType::COMPONENT, comp.id});
             }
           }
           for (const auto & app : result.new_entities.apps) {
             if (validate_entity_id(app.id)) {
-              entity_ids.push_back(app.id);
+              entity_ids.push_back({SovdEntityType::APP, app.id});
             }
           }
           for (const auto & func : result.new_entities.functions) {
             if (validate_entity_id(func.id)) {
-              entity_ids.push_back(func.id);
+              entity_ids.push_back({SovdEntityType::FUNCTION, func.id});
             }
           }
         }
@@ -1985,6 +2006,7 @@ void GatewayNode::refresh_cache() {
         plugin_mgr_->clear_entity_ownership(name);
         plugin_mgr_->register_entity_ownership(name, entity_ids);
       }
+      logged_plugin_duplicates_ = std::move(plugin_duplicates);
     }
 
     // Merge remote peer entities if aggregation is active, once the

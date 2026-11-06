@@ -59,6 +59,7 @@ using ros2_medkit_gateway::Component;
 using ros2_medkit_gateway::CorsConfig;
 using ros2_medkit_gateway::GatewayNode;
 using ros2_medkit_gateway::ServiceInfo;
+using ros2_medkit_gateway::SovdEntityType;
 using ros2_medkit_gateway::ThreadSafeEntityCache;
 using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::handlers::HandlerContext;
@@ -498,7 +499,8 @@ class OperationHandlersFixtureTest : public ::testing::Test {
     auto * pmgr = gateway_node_->get_plugin_manager();
     ASSERT_NE(pmgr, nullptr);
     pmgr->add_plugin(std::make_unique<MockOperationPlugin>());
-    pmgr->register_entity_ownership(MockOperationPlugin::kName, {MockOperationPlugin::kEntityId});
+    pmgr->register_entity_ownership(MockOperationPlugin::kName,
+                                    {{SovdEntityType::COMPONENT, MockOperationPlugin::kEntityId}});
   }
 
   /// Drive `create_execution` and assert the typed response carries the async

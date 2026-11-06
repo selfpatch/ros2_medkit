@@ -27,6 +27,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <regex>
 #include <string>
+#include <utility>
 
 #include "null_gateway_services.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -45,6 +46,7 @@ using ros2_medkit_gateway::ERR_INVALID_REQUEST;
 using ros2_medkit_gateway::GatewayNode;
 using ros2_medkit_gateway::LockConfig;
 using ros2_medkit_gateway::LockManager;
+using ros2_medkit_gateway::SovdEntityType;
 using ros2_medkit_gateway::ThreadSafeEntityCache;
 using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::handlers::HandlerContext;
@@ -233,12 +235,14 @@ class LockHandlersTest : public ::testing::Test {
     // Clean up any locks from previous test
     if (lock_manager_) {
       // Release locks by acquiring and releasing for known entities
-      for (const auto & eid : {"ecu1", "planner"}) {
-        auto lock = lock_manager_->get_lock(eid);
+      const std::pair<SovdEntityType, const char *> known[] = {{SovdEntityType::COMPONENT, "ecu1"},
+                                                               {SovdEntityType::APP, "planner"}};
+      for (const auto & [type, eid] : known) {
+        auto lock = lock_manager_->get_lock(type, eid);
         if (lock) {
           // Force-acquire to take ownership, then release
-          (void)lock_manager_->acquire(eid, "__cleanup__", {}, 1, true);
-          (void)lock_manager_->release(eid, "__cleanup__");
+          (void)lock_manager_->acquire(type, eid, "__cleanup__", {}, 1, true);
+          (void)lock_manager_->release(type, eid, "__cleanup__");
         }
       }
     }
@@ -695,7 +699,7 @@ TEST_F(LockHandlersTest, ReleaseLockReturns204) {
   EXPECT_TRUE(result.has_value());
 
   // Verify lock is gone
-  auto check = lock_manager_->get_lock("ecu1");
+  auto check = lock_manager_->get_lock(SovdEntityType::COMPONENT, "ecu1");
   EXPECT_FALSE(check.has_value());
 }
 

@@ -135,4 +135,20 @@ SovdEntityType parse_entity_type(const std::string & str) {
   return SovdEntityType::UNKNOWN;
 }
 
+SovdEntityType entity_type_from_collection(const std::string & segment) {
+  if (segment == "areas") {
+    return SovdEntityType::AREA;
+  }
+  if (segment == "components") {
+    return SovdEntityType::COMPONENT;
+  }
+  if (segment == "apps") {
+    return SovdEntityType::APP;
+  }
+  if (segment == "functions") {
+    return SovdEntityType::FUNCTION;
+  }
+  return SovdEntityType::UNKNOWN;
+}
+
 }  // namespace ros2_medkit_gateway

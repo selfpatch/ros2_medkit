@@ -739,7 +739,7 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
   // Delegate to plugin OperationProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
     auto * pmgr = ctx_.services().plugin_manager();
-    auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
+    auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_info.sovd_type(), entity_id) : nullptr;
     if (op_prov == nullptr) {
       return tl::make_unexpected(
           make_error(404, ERR_RESOURCE_NOT_FOUND, "No operation provider for plugin entity '" + entity_id + "'"));
@@ -1014,7 +1014,7 @@ http::Result<dto::OperationDetail> OperationHandlers::get_operation(const http::
 
   if (entity_info.is_plugin) {
     auto * pmgr = ctx_.services().plugin_manager();
-    auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
+    auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_info.sovd_type(), entity_id) : nullptr;
     if (op_prov == nullptr) {
       return tl::make_unexpected(
           make_error(404, ERR_OPERATION_NOT_FOUND, "No operation provider for plugin entity '" + entity_id + "'"));
@@ -1140,7 +1140,7 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
   // body shape, so the wire format is unchanged.
   if (entity_info.is_plugin) {
     auto * pmgr = ctx_.services().plugin_manager();
-    auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
+    auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_info.sovd_type(), entity_id) : nullptr;
     if (op_prov == nullptr) {
       return tl::make_unexpected(
           make_error(404, ERR_OPERATION_NOT_FOUND, "No operation provider for plugin entity '" + entity_id + "'"));
@@ -1363,7 +1363,7 @@ http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executio
   // miss here and not an empty success.
   if (entity_info.is_plugin) {
     auto * pmgr = ctx_.services().plugin_manager();
-    auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
+    auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_info.sovd_type(), entity_id) : nullptr;
     if (op_prov == nullptr) {
       return tl::make_unexpected(
           make_error(404, ERR_OPERATION_NOT_FOUND, "No operation provider for plugin entity '" + entity_id + "'"));

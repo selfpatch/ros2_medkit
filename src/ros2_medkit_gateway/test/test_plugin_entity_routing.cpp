@@ -135,33 +135,34 @@ class MockMixedFitnessPlugin : public GatewayPlugin, public DataProvider, public
 
 TEST(PluginEntityRouting, UnknownEntityReturnsNullopt) {
   PluginManager mgr;
-  EXPECT_FALSE(mgr.get_entity_owner("nonexistent").has_value());
-  EXPECT_EQ(mgr.get_data_provider_for_entity("nonexistent"), nullptr);
-  EXPECT_EQ(mgr.get_operation_provider_for_entity("nonexistent"), nullptr);
+  EXPECT_FALSE(mgr.get_entity_owner(SovdEntityType::COMPONENT, "nonexistent").has_value());
+  EXPECT_EQ(mgr.get_data_provider_for_entity(SovdEntityType::COMPONENT, "nonexistent"), nullptr);
+  EXPECT_EQ(mgr.get_operation_provider_for_entity(SovdEntityType::COMPONENT, "nonexistent"), nullptr);
 }
 
 TEST(PluginEntityRouting, RegisteredEntityReturnsOwner) {
   PluginManager mgr;
-  mgr.register_entity_ownership("uds_gateway", {"ecu1", "ecu2"});
+  mgr.register_entity_ownership("uds_gateway",
+                                {{SovdEntityType::COMPONENT, "ecu1"}, {SovdEntityType::COMPONENT, "ecu2"}});
 
-  auto owner1 = mgr.get_entity_owner("ecu1");
+  auto owner1 = mgr.get_entity_owner(SovdEntityType::COMPONENT, "ecu1");
   ASSERT_TRUE(owner1.has_value());
   EXPECT_EQ(*owner1, "uds_gateway");
 
-  auto owner2 = mgr.get_entity_owner("ecu2");
+  auto owner2 = mgr.get_entity_owner(SovdEntityType::COMPONENT, "ecu2");
   ASSERT_TRUE(owner2.has_value());
   EXPECT_EQ(*owner2, "uds_gateway");
 
-  EXPECT_FALSE(mgr.get_entity_owner("ecu3").has_value());
+  EXPECT_FALSE(mgr.get_entity_owner(SovdEntityType::COMPONENT, "ecu3").has_value());
 }
 
 TEST(PluginEntityRouting, MultiplePluginsOwnDifferentEntities) {
   PluginManager mgr;
-  mgr.register_entity_ownership("uds_gateway", {"ecu1"});
-  mgr.register_entity_ownership("opcua_gateway", {"plc1"});
+  mgr.register_entity_ownership("uds_gateway", {{SovdEntityType::COMPONENT, "ecu1"}});
+  mgr.register_entity_ownership("opcua_gateway", {{SovdEntityType::COMPONENT, "plc1"}});
 
-  EXPECT_EQ(*mgr.get_entity_owner("ecu1"), "uds_gateway");
-  EXPECT_EQ(*mgr.get_entity_owner("plc1"), "opcua_gateway");
+  EXPECT_EQ(*mgr.get_entity_owner(SovdEntityType::COMPONENT, "ecu1"), "uds_gateway");
+  EXPECT_EQ(*mgr.get_entity_owner(SovdEntityType::COMPONENT, "plc1"), "opcua_gateway");
 }
 
 // =============================================================================
@@ -176,10 +177,10 @@ TEST(PluginEntityRouting, DataProviderResolvedForOwnedEntity) {
   mgr.add_plugin(std::move(plugin));
 
   // Register ownership
-  mgr.register_entity_ownership("test_plugin", {"my_ecu"});
+  mgr.register_entity_ownership("test_plugin", {{SovdEntityType::COMPONENT, "my_ecu"}});
 
   // Should resolve to the plugin's DataProvider
-  auto * dp = mgr.get_data_provider_for_entity("my_ecu");
+  auto * dp = mgr.get_data_provider_for_entity(SovdEntityType::COMPONENT, "my_ecu");
   ASSERT_NE(dp, nullptr);
   EXPECT_EQ(dp, static_cast<DataProvider *>(raw));
 
@@ -196,9 +197,9 @@ TEST(PluginEntityRouting, OperationProviderResolvedForOwnedEntity) {
   auto * raw = plugin.get();
   mgr.add_plugin(std::move(plugin));
 
-  mgr.register_entity_ownership("test_plugin", {"my_ecu"});
+  mgr.register_entity_ownership("test_plugin", {{SovdEntityType::COMPONENT, "my_ecu"}});
 
-  auto * op = mgr.get_operation_provider_for_entity("my_ecu");
+  auto * op = mgr.get_operation_provider_for_entity(SovdEntityType::COMPONENT, "my_ecu");
   ASSERT_NE(op, nullptr);
   EXPECT_EQ(op, static_cast<OperationProvider *>(raw));
 
@@ -213,15 +214,15 @@ TEST(PluginEntityRouting, BarePluginReturnsNullProviders) {
   auto plugin = std::make_unique<MockBarePlugin>();
   mgr.add_plugin(std::move(plugin));
 
-  mgr.register_entity_ownership("bare_plugin", {"entity1"});
+  mgr.register_entity_ownership("bare_plugin", {{SovdEntityType::COMPONENT, "entity1"}});
 
   // Entity is owned, but plugin doesn't implement providers
-  auto owner = mgr.get_entity_owner("entity1");
+  auto owner = mgr.get_entity_owner(SovdEntityType::COMPONENT, "entity1");
   ASSERT_TRUE(owner.has_value());
   EXPECT_EQ(*owner, "bare_plugin");
 
-  EXPECT_EQ(mgr.get_data_provider_for_entity("entity1"), nullptr);
-  EXPECT_EQ(mgr.get_operation_provider_for_entity("entity1"), nullptr);
+  EXPECT_EQ(mgr.get_data_provider_for_entity(SovdEntityType::COMPONENT, "entity1"), nullptr);
+  EXPECT_EQ(mgr.get_operation_provider_for_entity(SovdEntityType::COMPONENT, "entity1"), nullptr);
 }
 
 TEST(PluginEntityRouting, UnownedEntityReturnsNullProviders) {
@@ -231,8 +232,8 @@ TEST(PluginEntityRouting, UnownedEntityReturnsNullProviders) {
   mgr.add_plugin(std::move(plugin));
 
   // Don't register ownership - entity is not owned by any plugin
-  EXPECT_EQ(mgr.get_data_provider_for_entity("unowned"), nullptr);
-  EXPECT_EQ(mgr.get_operation_provider_for_entity("unowned"), nullptr);
+  EXPECT_EQ(mgr.get_data_provider_for_entity(SovdEntityType::COMPONENT, "unowned"), nullptr);
+  EXPECT_EQ(mgr.get_operation_provider_for_entity(SovdEntityType::COMPONENT, "unowned"), nullptr);
 }
 
 // =============================================================================
@@ -252,10 +253,11 @@ TEST(PluginEntityRouting, DataProviderWithheldForEntityWithoutData) {
   auto plugin = std::make_unique<MockMixedFitnessPlugin>();
   auto * raw = plugin.get();
   mgr.add_plugin(std::move(plugin));
-  mgr.register_entity_ownership("mixed_plugin", {"data_entity", "group_entity"});
+  mgr.register_entity_ownership(
+      "mixed_plugin", {{SovdEntityType::COMPONENT, "data_entity"}, {SovdEntityType::COMPONENT, "group_entity"}});
 
   // Owned and data-bearing: provider resolves.
-  auto * dp = mgr.get_data_provider_for_entity("data_entity");
+  auto * dp = mgr.get_data_provider_for_entity(SovdEntityType::COMPONENT, "data_entity");
   ASSERT_NE(dp, nullptr);
   EXPECT_EQ(dp, static_cast<DataProvider *>(raw));
 
@@ -263,7 +265,7 @@ TEST(PluginEntityRouting, DataProviderWithheldForEntityWithoutData) {
   // though the plugin owns the entity, so the /data route (and capability
   // advertisement built on this same lookup) both see "no provider" instead
   // of delegating into a plugin call that would 404 anyway.
-  EXPECT_EQ(mgr.get_data_provider_for_entity("group_entity"), nullptr);
+  EXPECT_EQ(mgr.get_data_provider_for_entity(SovdEntityType::COMPONENT, "group_entity"), nullptr);
 }
 
 TEST(PluginEntityRouting, OperationProviderWithheldForEntityWithoutOperations) {
@@ -271,13 +273,14 @@ TEST(PluginEntityRouting, OperationProviderWithheldForEntityWithoutOperations) {
   auto plugin = std::make_unique<MockMixedFitnessPlugin>();
   auto * raw = plugin.get();
   mgr.add_plugin(std::move(plugin));
-  mgr.register_entity_ownership("mixed_plugin", {"data_entity", "group_entity"});
+  mgr.register_entity_ownership(
+      "mixed_plugin", {{SovdEntityType::COMPONENT, "data_entity"}, {SovdEntityType::COMPONENT, "group_entity"}});
 
-  auto * op = mgr.get_operation_provider_for_entity("data_entity");
+  auto * op = mgr.get_operation_provider_for_entity(SovdEntityType::COMPONENT, "data_entity");
   ASSERT_NE(op, nullptr);
   EXPECT_EQ(op, static_cast<OperationProvider *>(raw));
 
-  EXPECT_EQ(mgr.get_operation_provider_for_entity("group_entity"), nullptr);
+  EXPECT_EQ(mgr.get_operation_provider_for_entity(SovdEntityType::COMPONENT, "group_entity"), nullptr);
 }
 
 TEST(PluginEntityRouting, EntityOwnershipUnaffectedByFitnessGating) {
@@ -289,9 +292,9 @@ TEST(PluginEntityRouting, EntityOwnershipUnaffectedByFitnessGating) {
   PluginManager mgr;
   auto plugin = std::make_unique<MockMixedFitnessPlugin>();
   mgr.add_plugin(std::move(plugin));
-  mgr.register_entity_ownership("mixed_plugin", {"group_entity"});
+  mgr.register_entity_ownership("mixed_plugin", {{SovdEntityType::COMPONENT, "group_entity"}});
 
-  auto owner = mgr.get_entity_owner("group_entity");
+  auto owner = mgr.get_entity_owner(SovdEntityType::COMPONENT, "group_entity");
   ASSERT_TRUE(owner.has_value());
   EXPECT_EQ(*owner, "mixed_plugin");
 }
@@ -330,9 +333,9 @@ TEST(PluginEntityRouting, FaultProviderResolvedForOwnedEntity) {
   auto * raw = plugin.get();
   mgr.add_plugin(std::move(plugin));
 
-  mgr.register_entity_ownership("fault_plugin", {"my_ecu"});
+  mgr.register_entity_ownership("fault_plugin", {{SovdEntityType::COMPONENT, "my_ecu"}});
 
-  auto * fp = mgr.get_fault_provider_for_entity("my_ecu");
+  auto * fp = mgr.get_fault_provider_for_entity(SovdEntityType::COMPONENT, "my_ecu");
   ASSERT_NE(fp, nullptr);
   EXPECT_EQ(fp, static_cast<FaultProvider *>(raw));
 
@@ -350,9 +353,9 @@ TEST(PluginEntityRouting, FaultProviderFallbackServesPluginOwnedPayload) {
   PluginManager mgr;
   auto plugin = std::make_unique<MockFaultPlugin>();
   mgr.add_plugin(std::move(plugin));
-  mgr.register_entity_ownership("fault_plugin", {"my_ecu"});
+  mgr.register_entity_ownership("fault_plugin", {{SovdEntityType::COMPONENT, "my_ecu"}});
 
-  auto * fp = mgr.get_fault_provider_for_entity("my_ecu");
+  auto * fp = mgr.get_fault_provider_for_entity(SovdEntityType::COMPONENT, "my_ecu");
   ASSERT_NE(fp, nullptr);
 
   auto result = fp->get_fault("my_ecu", "DTC_042");
@@ -367,8 +370,8 @@ TEST(PluginEntityRouting, BarePluginReturnsNullFaultProvider) {
   auto plugin = std::make_unique<MockBarePlugin>();
   mgr.add_plugin(std::move(plugin));
 
-  mgr.register_entity_ownership("bare_plugin", {"entity1"});
-  EXPECT_EQ(mgr.get_fault_provider_for_entity("entity1"), nullptr);
+  mgr.register_entity_ownership("bare_plugin", {{SovdEntityType::COMPONENT, "entity1"}});
+  EXPECT_EQ(mgr.get_fault_provider_for_entity(SovdEntityType::COMPONENT, "entity1"), nullptr);
 }
 
 TEST(PluginEntityRouting, UnownedEntityReturnsNullFaultProvider) {
@@ -377,7 +380,7 @@ TEST(PluginEntityRouting, UnownedEntityReturnsNullFaultProvider) {
   auto plugin = std::make_unique<MockFaultPlugin>();
   mgr.add_plugin(std::move(plugin));
 
-  EXPECT_EQ(mgr.get_fault_provider_for_entity("unowned"), nullptr);
+  EXPECT_EQ(mgr.get_fault_provider_for_entity(SovdEntityType::COMPONENT, "unowned"), nullptr);
 }
 
 // =============================================================================
@@ -424,9 +427,9 @@ TEST(PluginEntityRouting, DataProviderErrorPropagation) {
 
   auto plugin = std::make_unique<MockErrorPlugin>();
   mgr.add_plugin(std::move(plugin));
-  mgr.register_entity_ownership("error_plugin", {"bad_ecu"});
+  mgr.register_entity_ownership("error_plugin", {{SovdEntityType::COMPONENT, "bad_ecu"}});
 
-  auto * dp = mgr.get_data_provider_for_entity("bad_ecu");
+  auto * dp = mgr.get_data_provider_for_entity(SovdEntityType::COMPONENT, "bad_ecu");
   ASSERT_NE(dp, nullptr);
 
   auto result = dp->list_data("bad_ecu");
@@ -441,9 +444,9 @@ TEST(PluginEntityRouting, FaultProviderErrorPropagation) {
 
   auto plugin = std::make_unique<MockErrorPlugin>();
   mgr.add_plugin(std::move(plugin));
-  mgr.register_entity_ownership("error_plugin", {"bad_ecu"});
+  mgr.register_entity_ownership("error_plugin", {{SovdEntityType::COMPONENT, "bad_ecu"}});
 
-  auto * fp = mgr.get_fault_provider_for_entity("bad_ecu");
+  auto * fp = mgr.get_fault_provider_for_entity(SovdEntityType::COMPONENT, "bad_ecu");
   ASSERT_NE(fp, nullptr);
 
   auto result = fp->get_fault("bad_ecu", "DTC_999");
@@ -458,25 +461,25 @@ TEST(PluginEntityRouting, FaultProviderErrorPropagation) {
 
 TEST(PluginEntityRouting, OwnershipConflictLastWins) {
   PluginManager mgr;
-  mgr.register_entity_ownership("plugin_a", {"shared_entity"});
-  mgr.register_entity_ownership("plugin_b", {"shared_entity"});
+  mgr.register_entity_ownership("plugin_a", {{SovdEntityType::COMPONENT, "shared_entity"}});
+  mgr.register_entity_ownership("plugin_b", {{SovdEntityType::COMPONENT, "shared_entity"}});
 
-  auto owner = mgr.get_entity_owner("shared_entity");
+  auto owner = mgr.get_entity_owner(SovdEntityType::COMPONENT, "shared_entity");
   ASSERT_TRUE(owner.has_value());
   EXPECT_EQ(*owner, "plugin_b");
 }
 
 TEST(PluginEntityRouting, ClearEntityOwnership) {
   PluginManager mgr;
-  mgr.register_entity_ownership("plugin_a", {"ent1", "ent2"});
-  mgr.register_entity_ownership("plugin_b", {"ent3"});
+  mgr.register_entity_ownership("plugin_a", {{SovdEntityType::COMPONENT, "ent1"}, {SovdEntityType::COMPONENT, "ent2"}});
+  mgr.register_entity_ownership("plugin_b", {{SovdEntityType::COMPONENT, "ent3"}});
 
   mgr.clear_entity_ownership("plugin_a");
 
-  EXPECT_FALSE(mgr.get_entity_owner("ent1").has_value());
-  EXPECT_FALSE(mgr.get_entity_owner("ent2").has_value());
+  EXPECT_FALSE(mgr.get_entity_owner(SovdEntityType::COMPONENT, "ent1").has_value());
+  EXPECT_FALSE(mgr.get_entity_owner(SovdEntityType::COMPONENT, "ent2").has_value());
   // plugin_b's entity should be unaffected
-  EXPECT_EQ(*mgr.get_entity_owner("ent3"), "plugin_b");
+  EXPECT_EQ(*mgr.get_entity_owner(SovdEntityType::COMPONENT, "ent3"), "plugin_b");
 }
 
 // =============================================================================
@@ -511,9 +514,9 @@ TEST(PluginEntityRouting, OperationProviderErrorPropagation) {
   PluginManager mgr;
   auto plugin = std::make_unique<MockErrorOpPlugin>();
   mgr.add_plugin(std::move(plugin));
-  mgr.register_entity_ownership("error_op_plugin", {"bad_ecu"});
+  mgr.register_entity_ownership("error_op_plugin", {{SovdEntityType::COMPONENT, "bad_ecu"}});
 
-  auto * op = mgr.get_operation_provider_for_entity("bad_ecu");
+  auto * op = mgr.get_operation_provider_for_entity(SovdEntityType::COMPONENT, "bad_ecu");
   ASSERT_NE(op, nullptr);
 
   auto list_result = op->list_operations("bad_ecu");
@@ -535,9 +538,9 @@ TEST(PluginEntityRouting, GetOperationDefaultFindsMatch) {
   PluginManager mgr;
   auto plugin = std::make_unique<MockDataOpPlugin>();
   mgr.add_plugin(std::move(plugin));
-  mgr.register_entity_ownership("test_plugin", {"my_ecu"});
+  mgr.register_entity_ownership("test_plugin", {{SovdEntityType::COMPONENT, "my_ecu"}});
 
-  auto * op = mgr.get_operation_provider_for_entity("my_ecu");
+  auto * op = mgr.get_operation_provider_for_entity(SovdEntityType::COMPONENT, "my_ecu");
   ASSERT_NE(op, nullptr);
 
   auto result = op->get_operation("my_ecu", "test_op");
@@ -552,9 +555,9 @@ TEST(PluginEntityRouting, GetOperationDefaultReturnsNotFound) {
   PluginManager mgr;
   auto plugin = std::make_unique<MockDataOpPlugin>();
   mgr.add_plugin(std::move(plugin));
-  mgr.register_entity_ownership("test_plugin", {"my_ecu"});
+  mgr.register_entity_ownership("test_plugin", {{SovdEntityType::COMPONENT, "my_ecu"}});
 
-  auto * op = mgr.get_operation_provider_for_entity("my_ecu");
+  auto * op = mgr.get_operation_provider_for_entity(SovdEntityType::COMPONENT, "my_ecu");
   ASSERT_NE(op, nullptr);
 
   auto result = op->get_operation("my_ecu", "nonexistent_op");
@@ -567,9 +570,9 @@ TEST(PluginEntityRouting, GetOperationPropagatesListError) {
   PluginManager mgr;
   auto plugin = std::make_unique<MockErrorOpPlugin>();
   mgr.add_plugin(std::move(plugin));
-  mgr.register_entity_ownership("error_op_plugin", {"bad_ecu"});
+  mgr.register_entity_ownership("error_op_plugin", {{SovdEntityType::COMPONENT, "bad_ecu"}});
 
-  auto * op = mgr.get_operation_provider_for_entity("bad_ecu");
+  auto * op = mgr.get_operation_provider_for_entity(SovdEntityType::COMPONENT, "bad_ecu");
   ASSERT_NE(op, nullptr);
 
   auto result = op->get_operation("bad_ecu", "any_op");
@@ -579,26 +582,26 @@ TEST(PluginEntityRouting, GetOperationPropagatesListError) {
 
 TEST(PluginEntityRouting, OwnershipForNonLoadedPluginReturnsNullProviders) {
   PluginManager mgr;
-  mgr.register_entity_ownership("ghost_plugin", {"entity1"});
+  mgr.register_entity_ownership("ghost_plugin", {{SovdEntityType::COMPONENT, "entity1"}});
 
-  auto owner = mgr.get_entity_owner("entity1");
+  auto owner = mgr.get_entity_owner(SovdEntityType::COMPONENT, "entity1");
   ASSERT_TRUE(owner.has_value());
   EXPECT_EQ(*owner, "ghost_plugin");
 
-  EXPECT_EQ(mgr.get_data_provider_for_entity("entity1"), nullptr);
-  EXPECT_EQ(mgr.get_operation_provider_for_entity("entity1"), nullptr);
-  EXPECT_EQ(mgr.get_fault_provider_for_entity("entity1"), nullptr);
+  EXPECT_EQ(mgr.get_data_provider_for_entity(SovdEntityType::COMPONENT, "entity1"), nullptr);
+  EXPECT_EQ(mgr.get_operation_provider_for_entity(SovdEntityType::COMPONENT, "entity1"), nullptr);
+  EXPECT_EQ(mgr.get_fault_provider_for_entity(SovdEntityType::COMPONENT, "entity1"), nullptr);
 }
 
 TEST(PluginEntityRouting, ClearAndReregisterOwnership) {
   PluginManager mgr;
-  mgr.register_entity_ownership("plugin_a", {"ent1", "ent2"});
+  mgr.register_entity_ownership("plugin_a", {{SovdEntityType::COMPONENT, "ent1"}, {SovdEntityType::COMPONENT, "ent2"}});
 
   // Simulate refresh: entity2 disappeared, entity3 appeared
   mgr.clear_entity_ownership("plugin_a");
-  mgr.register_entity_ownership("plugin_a", {"ent1", "ent3"});
+  mgr.register_entity_ownership("plugin_a", {{SovdEntityType::COMPONENT, "ent1"}, {SovdEntityType::COMPONENT, "ent3"}});
 
-  EXPECT_TRUE(mgr.get_entity_owner("ent1").has_value());
-  EXPECT_FALSE(mgr.get_entity_owner("ent2").has_value());  // removed
-  EXPECT_TRUE(mgr.get_entity_owner("ent3").has_value());   // added
+  EXPECT_TRUE(mgr.get_entity_owner(SovdEntityType::COMPONENT, "ent1").has_value());
+  EXPECT_FALSE(mgr.get_entity_owner(SovdEntityType::COMPONENT, "ent2").has_value());  // removed
+  EXPECT_TRUE(mgr.get_entity_owner(SovdEntityType::COMPONENT, "ent3").has_value());   // added
 }

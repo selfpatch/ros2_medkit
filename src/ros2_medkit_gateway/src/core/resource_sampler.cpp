@@ -34,7 +34,7 @@ void ResourceSamplerRegistry::register_sampler(const std::string & collection, R
 
   auto control = std::make_shared<ControlBlock>();
   ResourceSamplerFn wrapped = [control, fn = std::move(fn), collection](
-                                  const std::string & entity_id,
+                                  SovdEntityType entity_type, const std::string & entity_id,
                                   const std::string & resource_path) -> tl::expected<nlohmann::json, std::string> {
     // Hold the shared lock for the entire check-then-call sequence, not just
     // the flag read: remove_sampler() takes a unique_lock on this same mutex
@@ -46,7 +46,7 @@ void ResourceSamplerRegistry::register_sampler(const std::string & collection, R
       return tl::make_unexpected("Sampler for collection '" + collection +
                                  "' is no longer available: its plugin has been removed");
     }
-    return fn(entity_id, resource_path);
+    return fn(entity_type, entity_id, resource_path);
   };
 
   samplers_[collection] = Entry{std::move(wrapped), is_builtin, honours_resource_path, std::move(control)};

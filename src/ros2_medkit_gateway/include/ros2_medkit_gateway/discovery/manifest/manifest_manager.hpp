@@ -185,7 +185,7 @@ class ManifestManager {
   /**
    * @brief Get per-entity lock configuration overrides from manifest
    */
-  std::unordered_map<std::string, ManifestLockConfig> get_lock_overrides() const;
+  std::unordered_map<MemberRef, ManifestLockConfig, MemberRefHash> get_lock_overrides() const;
 
   /**
    * @brief Get script entries defined in manifest

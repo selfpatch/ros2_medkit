@@ -164,10 +164,9 @@ class FakePluginContext : public RosPluginContext {
   nlohmann::json list_all_faults() const override {
     return all_faults;
   }
-  void register_sampler(
-      const std::string & /*topic*/,
-      const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> &
-      /*sampler*/) override {
+  void register_sampler(const std::string & /*topic*/, const std::function<tl::expected<nlohmann::json, std::string>(
+                                                           SovdEntityType, const std::string &, const std::string &)> &
+                        /*sampler*/) override {
   }
   ResourceChangeNotifier * get_resource_change_notifier() override {
     return nullptr;

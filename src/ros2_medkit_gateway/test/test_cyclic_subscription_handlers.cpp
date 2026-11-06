@@ -184,7 +184,8 @@ namespace {
 /// collection. ResourceSamplerRegistry holds a shared_mutex and so is neither
 /// copyable nor movable - the caller owns the instance and passes it in.
 void register_builtin_like_samplers(ResourceSamplerRegistry & registry) {
-  auto stub = [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+  auto stub = [](SovdEntityType, const std::string &,
+                 const std::string &) -> tl::expected<nlohmann::json, std::string> {
     return nlohmann::json::object();
   };
   registry.register_sampler("data", stub, /*is_builtin=*/true, /*honours_resource_path=*/true);
@@ -284,10 +285,11 @@ TEST(ValidateResourcePathSupportTest, UpdateStatusPackageIdAccepted) {
 
 TEST(ValidateResourcePathSupportTest, UndeclaredPluginSamplerRefusesResourcePath) {
   ResourceSamplerRegistry registry;
-  registry.register_sampler("x-medkit-metrics",
-                            [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
-                              return nlohmann::json::object();
-                            });
+  registry.register_sampler(
+      "x-medkit-metrics",
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+        return nlohmann::json::object();
+      });
   const std::string resource = "/api/v1/apps/node1/x-medkit-metrics/cpu_usage";
 
   auto result = CyclicSubscriptionHandlers::validate_resource_path_support(registry, parsed_uri(resource), resource);
@@ -301,7 +303,7 @@ TEST(ValidateResourcePathSupportTest, DeclaredPluginSamplerAcceptsResourcePath) 
   ResourceSamplerRegistry registry;
   registry.register_sampler(
       "x-medkit-metrics",
-      [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
         return nlohmann::json::object();
       },
       /*is_builtin=*/false, /*honours_resource_path=*/true);
@@ -314,10 +316,11 @@ TEST(ValidateResourcePathSupportTest, DeclaredPluginSamplerAcceptsResourcePath) 
 
 TEST(ValidateResourcePathSupportTest, UndeclaredPluginSamplerAcceptsCollectionUri) {
   ResourceSamplerRegistry registry;
-  registry.register_sampler("x-medkit-graph",
-                            [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
-                              return nlohmann::json::object();
-                            });
+  registry.register_sampler(
+      "x-medkit-graph",
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+        return nlohmann::json::object();
+      });
   const std::string resource = "/api/v1/functions/func1/x-medkit-graph";
 
   auto result = CyclicSubscriptionHandlers::validate_resource_path_support(registry, parsed_uri(resource), resource);

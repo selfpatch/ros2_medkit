@@ -118,13 +118,13 @@ void append_plugin_capabilities(std::vector<dto::EntityCapability> & capabilitie
   };
 
   // Auto-add standard capabilities based on registered providers
-  if (pmgr->get_data_provider_for_entity(entity_id)) {
+  if (pmgr->get_data_provider_for_entity(entity_type, entity_id)) {
     add("data");
   }
-  if (pmgr->get_operation_provider_for_entity(entity_id)) {
+  if (pmgr->get_operation_provider_for_entity(entity_type, entity_id)) {
     add("operations");
   }
-  if (pmgr->get_fault_provider_for_entity(entity_id)) {
+  if (pmgr->get_fault_provider_for_entity(entity_type, entity_id)) {
     add("faults");
   }
 
@@ -140,7 +140,7 @@ void append_plugin_capabilities(std::vector<dto::EntityCapability> & capabilitie
   }
 
   // Entity-specific capabilities
-  for (const auto & cap_name : ctx->get_entity_capabilities(entity_id)) {
+  for (const auto & cap_name : ctx->get_entity_capabilities(entity_type, entity_id)) {
     add(cap_name);
   }
 }
@@ -150,22 +150,23 @@ void append_plugin_capabilities(std::vector<dto::EntityCapability> & capabilitie
 /// plugin's Data/OperationProvider and 404 by contract when none is
 /// registered, so advertising those capabilities is a dead link every SOVD
 /// client (and the UI) follows into a guaranteed 404.
-void prune_plugin_unserved_capabilities(std::vector<CapabilityBuilder::Capability> & caps,
+void prune_plugin_unserved_capabilities(std::vector<CapabilityBuilder::Capability> & caps, SovdEntityType entity_type,
                                         const std::string & entity_id, GatewayServices & services) {
   auto * pmgr = services.plugin_manager();
-  if (!pmgr || !pmgr->get_entity_owner(entity_id)) {
+  if (!pmgr || !pmgr->get_entity_owner(entity_type, entity_id)) {
     return;  // native entity: the core managers serve these collections
   }
   auto drop = [&caps](CapabilityBuilder::Capability cap) {
     caps.erase(std::remove(caps.begin(), caps.end(), cap), caps.end());
   };
-  if (!pmgr->get_data_provider_for_entity(entity_id) && !pmgr->has_entity_data_route(entity_id)) {
+  if (!pmgr->get_data_provider_for_entity(entity_type, entity_id) &&
+      !pmgr->has_entity_data_route(entity_type, entity_id)) {
     // Only prune when NEITHER serving path exists: data_handlers now falls
     // back to the plugin's own x-plc-data route, so an entity with that route
     // serves /data even without a DataProvider.
     drop(CapabilityBuilder::Capability::DATA);
   }
-  if (!pmgr->get_operation_provider_for_entity(entity_id)) {
+  if (!pmgr->get_operation_provider_for_entity(entity_type, entity_id)) {
     drop(CapabilityBuilder::Capability::OPERATIONS);
   }
 }
@@ -344,7 +345,7 @@ http::Result<dto::AreaDetail> DiscoveryHandlers::get_area(const http::TypedReque
     std::vector<Cap> caps = {Cap::SUBAREAS,        Cap::CONTAINS,    Cap::COMPONENTS, Cap::DATA,
                              Cap::DATA_CATEGORIES, Cap::DATA_GROUPS, Cap::OPERATIONS, Cap::CONFIGURATIONS,
                              Cap::FAULTS,          Cap::LOGS,        Cap::BULK_DATA,  Cap::TRIGGERS};
-    prune_plugin_unserved_capabilities(caps, area.id, ctx_.services());
+    prune_plugin_unserved_capabilities(caps, SovdEntityType::AREA, area.id, ctx_.services());
     auto area_caps = CapabilityBuilder::build_capabilities("areas", area.id, caps);
     append_plugin_capabilities(area_caps, "areas", area.id, SovdEntityType::AREA, ctx_.services());
     detail.capabilities = area_caps;
@@ -815,7 +816,7 @@ http::Result<dto::ComponentDetail> DiscoveryHandlers::get_component(const http::
     if (!comp.depends_on.empty()) {
       caps.push_back(Cap::DEPENDS_ON);
     }
-    prune_plugin_unserved_capabilities(caps, comp.id, ctx_.services());
+    prune_plugin_unserved_capabilities(caps, SovdEntityType::COMPONENT, comp.id, ctx_.services());
     auto comp_caps = CapabilityBuilder::build_capabilities("components", comp.id, caps);
     append_plugin_capabilities(comp_caps, "components", comp.id, SovdEntityType::COMPONENT, ctx_.services());
     // Capabilities at root level (SOVD standard) and in x-medkit (vendor extension for tools
@@ -1223,7 +1224,7 @@ http::Result<dto::AppDetail> DiscoveryHandlers::get_app(const http::TypedRequest
     if (ctx_.services().lock_manager()) {
       caps.push_back(Cap::LOCKS);
     }
-    prune_plugin_unserved_capabilities(caps, app.id, ctx_.services());
+    prune_plugin_unserved_capabilities(caps, SovdEntityType::APP, app.id, ctx_.services());
     auto app_caps = CapabilityBuilder::build_capabilities("apps", app.id, caps);
     append_plugin_capabilities(app_caps, "apps", app.id, SovdEntityType::APP, ctx_.services());
     detail.capabilities = app_caps;
@@ -1633,7 +1634,7 @@ http::Result<dto::FunctionDetail> DiscoveryHandlers::get_function(const http::Ty
     std::vector<Cap> caps = {
         Cap::HOSTS,  Cap::DATA, Cap::DATA_CATEGORIES, Cap::DATA_GROUPS,          Cap::OPERATIONS, Cap::CONFIGURATIONS,
         Cap::FAULTS, Cap::LOGS, Cap::BULK_DATA,       Cap::CYCLIC_SUBSCRIPTIONS, Cap::TRIGGERS};
-    prune_plugin_unserved_capabilities(caps, func.id, ctx_.services());
+    prune_plugin_unserved_capabilities(caps, SovdEntityType::FUNCTION, func.id, ctx_.services());
     auto func_caps = CapabilityBuilder::build_capabilities("functions", func.id, caps);
     append_plugin_capabilities(func_caps, "functions", func.id, SovdEntityType::FUNCTION, ctx_.services());
     detail.capabilities = func_caps;

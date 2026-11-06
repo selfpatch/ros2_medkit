@@ -18,6 +18,7 @@
 #include "ros2_medkit_gateway/core/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/core/script_types.hpp"
 
 #include <nlohmann/json.hpp>
@@ -114,8 +115,9 @@ struct Manifest {
   /// Custom capabilities overrides per entity
   std::unordered_map<std::string, json> capabilities;
 
-  /// Per-entity lock configuration overrides (entity_id -> lock config)
-  std::unordered_map<std::string, ManifestLockConfig> lock_overrides;
+  /// Per-entity lock configuration overrides, by the type and id of the
+  /// entity whose `lock:` section declares them
+  std::unordered_map<MemberRef, ManifestLockConfig, MemberRefHash> lock_overrides;
 
   /// Informational parse notices (deprecated key, key collision, unknown
   /// top-level key). Logged by ManifestManager; deliberately NEVER copied into

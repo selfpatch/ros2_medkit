@@ -264,7 +264,7 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
       auto * pmgr = ctx_.services().plugin_manager();
       std::optional<nlohmann::json> content;
       if (pmgr != nullptr) {
-        if (auto * data_prov = pmgr->get_data_provider_for_entity(entity_id)) {
+        if (auto * data_prov = pmgr->get_data_provider_for_entity(entity_result->sovd_type(), entity_id)) {
           try {
             if (auto result = data_prov->list_data(entity_id)) {
               content = result->content;
@@ -275,7 +275,7 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
           }
         }
         if (!content) {
-          content = pmgr->fetch_entity_data_via_route(entity_id);
+          content = pmgr->fetch_entity_data_via_route(entity_result->sovd_type(), entity_id);
         }
       }
       // Same liveness guard as the fault-trigger enumeration in gateway_node:

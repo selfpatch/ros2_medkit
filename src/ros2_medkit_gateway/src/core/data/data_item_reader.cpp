@@ -50,13 +50,15 @@ std::string to_full_topic_path(const std::string & topic_name) {
   return "/" + topic_name;
 }
 
-tl::expected<dto::DataValue, ErrorInfo> read_plugin_data_item(PluginManager * plugins, const std::string & entity_id,
+tl::expected<dto::DataValue, ErrorInfo> read_plugin_data_item(PluginManager * plugins, SovdEntityType entity_type,
+                                                              const std::string & entity_id,
                                                               const std::string & topic_name) {
   const log::Logger logger("rest_server");
-  auto * data_prov = plugins ? plugins->get_data_provider_for_entity(entity_id) : nullptr;
+  auto * data_prov = plugins ? plugins->get_data_provider_for_entity(entity_type, entity_id) : nullptr;
   if (data_prov == nullptr) {
     // Same x-plc-data route fallback as the data list, single-item form.
-    if (auto via_route = plugins ? plugins->fetch_entity_data_via_route(entity_id, topic_name) : std::nullopt) {
+    if (auto via_route =
+            plugins ? plugins->fetch_entity_data_via_route(entity_type, entity_id, topic_name) : std::nullopt) {
       return dto::DataValue{std::move(*via_route)};
     }
     return tl::make_unexpected(
@@ -80,11 +82,16 @@ tl::expected<dto::DataValue, ErrorInfo> read_plugin_data_item(PluginManager * pl
 
 PluginDataReaders plugin_data_readers(PluginManager * plugins) {
   PluginDataReaders readers;
-  readers.provider = [plugins](const std::string & entity_id) -> DataProvider * {
-    return plugins ? plugins->get_data_provider_for_entity(entity_id) : nullptr;
+  readers.provider = [plugins](const std::string & source) -> DataProvider * {
+    if (plugins == nullptr) {
+      return nullptr;
+    }
+    auto * provider = plugins->get_data_provider_for_entity(SovdEntityType::APP, source);
+    return provider != nullptr ? provider : plugins->get_data_provider_for_entity(SovdEntityType::COMPONENT, source);
   };
-  readers.route = [plugins](const std::string & entity_id) -> std::optional<json> {
-    return plugins ? plugins->fetch_entity_data_via_route(entity_id) : std::nullopt;
+  // The x-plc-data route is an App's.
+  readers.route = [plugins](const std::string & source) -> std::optional<json> {
+    return plugins ? plugins->fetch_entity_data_via_route(SovdEntityType::APP, source) : std::nullopt;
   };
   return readers;
 }

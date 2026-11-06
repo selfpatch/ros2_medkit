@@ -561,8 +561,9 @@ from the entity cache, so a request that consulted it could pair an entity
 from one refresh with a routing entry from the next, or with an entry that
 belongs to another entity sharing the ID. Read off the entity, the decision is
 always that entity's, from the same cache generation. Member dispatch and the
-configuration reset read the owner the same way. The table itself is still
-published (``find_peer_for_entity``) for code that runs inside the refresh.
+configuration reset read the owner the same way. The table itself is not
+published for lookups: keyed by ID alone, it cannot say which entity an entry
+belongs to.
 
 .. plantuml::
    :caption: Request Routing - Local vs Remote

@@ -29,6 +29,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 struct Watch {
+  SovdEntityType entity_type{SovdEntityType::UNKNOWN};
   std::string entity_id;
   std::string item_name;
   std::mutex mutex;  ///< held while the item is read and the callback runs
@@ -98,7 +99,7 @@ struct PollingDataItemSource::Shared {
       return;
     }
     try {
-      auto value = read(watch.entity_id, watch.item_name);
+      auto value = read(watch.entity_type, watch.entity_id, watch.item_name);
       if (value) {
         watch.callback(*value);
       }
@@ -148,12 +149,15 @@ PollingDataItemSource::PollingDataItemSource(ReadFn read, std::chrono::milliseco
 
 PollingDataItemSource::~PollingDataItemSource() = default;
 
-std::unique_ptr<TopicSubscriptionHandle>
-PollingDataItemSource::watch(const std::string & entity_id, const std::string & item_name, SampleCallback callback) {
+std::unique_ptr<TopicSubscriptionHandle> PollingDataItemSource::watch(SovdEntityType entity_type,
+                                                                      const std::string & entity_id,
+                                                                      const std::string & item_name,
+                                                                      SampleCallback callback) {
   if (!callback) {
     return nullptr;
   }
   auto watch = std::make_shared<Watch>();
+  watch->entity_type = entity_type;
   watch->entity_id = entity_id;
   watch->item_name = item_name;
   watch->callback = std::move(callback);
@@ -169,9 +173,9 @@ PollingDataItemSource::watch(const std::string & entity_id, const std::string & 
 std::unique_ptr<DataItemSource> make_plugin_data_item_source(PluginManager * plugins,
                                                              std::chrono::milliseconds interval) {
   return std::make_unique<PollingDataItemSource>(
-      [plugins](const std::string & entity_id,
+      [plugins](SovdEntityType entity_type, const std::string & entity_id,
                 const std::string & item_name) -> tl::expected<nlohmann::json, std::string> {
-        auto item = read_plugin_data_item(plugins, entity_id, item_name);
+        auto item = read_plugin_data_item(plugins, entity_type, entity_id, item_name);
         if (!item) {
           return tl::make_unexpected(item.error().message);
         }

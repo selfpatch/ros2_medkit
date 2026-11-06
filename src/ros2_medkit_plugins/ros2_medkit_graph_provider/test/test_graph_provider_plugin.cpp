@@ -343,10 +343,10 @@ class FakePluginContext : public RosPluginContext {
     return all_faults_;
   }
 
-  void register_sampler(
-      const std::string & collection,
-      const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> & fn)
-      override {
+  void
+  register_sampler(const std::string & collection,
+                   const std::function<tl::expected<nlohmann::json, std::string>(SovdEntityType, const std::string &,
+                                                                                 const std::string &)> & fn) override {
     registered_samplers_[collection] = fn;
   }
 
@@ -367,8 +367,8 @@ class FakePluginContext : public RosPluginContext {
  public:
   IntrospectionInput entity_snapshot_;
   nlohmann::json all_faults_ = nlohmann::json::object();
-  std::unordered_map<std::string,
-                     std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)>>
+  std::unordered_map<std::string, std::function<tl::expected<nlohmann::json, std::string>(
+                                      SovdEntityType, const std::string &, const std::string &)>>
       registered_samplers_;
 };
 
@@ -1647,7 +1647,7 @@ TEST(GraphProviderPluginRouteTest, RegistersSamplerForCyclicSubscriptions) {
   plugin.introspect(input);
 
   // Invoke the sampler and verify it returns valid graph data
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("f1", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "f1", "");
   ASSERT_TRUE(result.has_value());
   ASSERT_TRUE(result->contains("x-medkit-graph"));
 }
@@ -1667,7 +1667,7 @@ TEST(GraphProviderPluginRouteTest, AppliesConfigFromConfigure) {
   // Verify the config was applied: the plugin accepted non-default config,
   // initialized correctly, and produced a valid graph
   ASSERT_EQ(ctx.registered_samplers_.count("x-medkit-graph"), 1u);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("f1", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "f1", "");
   ASSERT_TRUE(result.has_value());
   ASSERT_TRUE(result->contains("x-medkit-graph"));
 }
@@ -1815,7 +1815,7 @@ TEST(GraphProviderPluginRouteTest, ServesGraphForFunctionNeverPassedToIntrospect
       make_input({make_app("a", {"/topic"}, {}), make_app("b", {}, {"/topic"})}, {make_function("fn", {"a", "b"})});
   ctx.entity_snapshot_ = input;
 
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "fn", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
   EXPECT_EQ(graph["edges"].size(), 1u);
@@ -1866,7 +1866,7 @@ TEST_F(GraphProviderPluginRosTest, DiagnosticsForUnrelatedTopicDoesNotPoisonPend
   rclcpp::spin_some(node);
 
   plugin.introspect(input);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "fn", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
   const auto * edge = find_edge(graph, "a", "b", "/topic_c");
@@ -1925,7 +1925,7 @@ TEST_F(GraphProviderPluginRosTest, DiagnosticsSourceIsRealPublisherNodeNameNotAH
   rclcpp::spin_some(node);
 
   plugin.introspect(input);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("f1", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "f1", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
   const auto * edge = find_edge(graph, "a1", "a2", "/topic1");
@@ -1998,7 +1998,7 @@ TEST_F(GraphProviderPluginRosTest, DiagnosticsSourceResolvesPerMessageNotFirstPu
   rclcpp::spin_some(node);
 
   plugin.introspect(input);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("f1", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "f1", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
   const auto * edge_one = find_edge(graph, "a1", "a2", "/topic_one");
@@ -2211,7 +2211,7 @@ TEST_F(GraphProviderPluginRosTest, PublisherCountReflectsRealRosGraphIncludingAn
   rclcpp::spin_some(node);
 
   plugin.introspect(input);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "fn", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
   const auto * edge = find_edge(graph, "a", "b", "/topic1");
@@ -2246,7 +2246,7 @@ TEST_F(GraphProviderPluginRosTest, PublisherCountIsOneAndUnambiguousForARealSing
   rclcpp::spin_some(node);
 
   plugin.introspect(input);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "fn", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
   const auto * edge = find_edge(graph, "a", "b", "/topic1");
@@ -2288,7 +2288,7 @@ TEST_F(GraphProviderPluginRosTest, DiagnosticsMessageMakesMatchingEdgeActive) {
   rclcpp::spin_some(node);
 
   plugin.introspect(input);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("f1", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "f1", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
   const auto * edge = find_edge(graph, "a1", "a2", "/topic1");
@@ -2334,7 +2334,7 @@ TEST_F(GraphProviderPluginRosTest, ResolvesFrequencyFromNodeRateWhenMessageRateI
   rclcpp::spin_some(node);
 
   plugin.introspect(input);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("f1", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "f1", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
   const auto * edge = find_edge(graph, "a1", "a2", "/headerless");
@@ -2387,7 +2387,7 @@ TEST_F(GraphProviderPluginRosTest, RejectsNegativeFrameRateAndExcludesItFromBott
   rclcpp::spin_some(node);
 
   plugin.introspect(input);
-  auto graph_result = ctx.registered_samplers_["x-medkit-graph"]("f1", "");
+  auto graph_result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "f1", "");
   ASSERT_TRUE(graph_result.has_value());
   const auto & graph = (*graph_result)["x-medkit-graph"];
 
@@ -2457,7 +2457,7 @@ TEST_F(GraphProviderPluginRosTest, MergesUnparseableSampleWithPreviousGoodMetric
   }
 
   plugin.introspect(input);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("f1", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "f1", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
   const auto * edge = find_edge(graph, "a1", "a2", "/flaky");
@@ -2558,7 +2558,7 @@ TEST_F(GraphProviderPluginRosTest, PerFunctionOverrideFromNestedConfigChangesPip
   rclcpp::spin_some(node);
 
   plugin.introspect(input);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "fn", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
   const auto * edge = find_edge(graph, "a", "b", "/topic");
@@ -2605,7 +2605,7 @@ TEST_F(GraphProviderPluginRosTest, RejectsNonPositiveExpectedFrequencyDefaultAnd
   rclcpp::spin_some(node);
 
   plugin.introspect(input);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "fn", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
   const auto * edge = find_edge(graph, "a", "b", "/topic");
@@ -2653,7 +2653,7 @@ TEST_F(GraphProviderPluginRosTest, RejectsNegativeDegradedFrequencyRatioAndKeeps
   rclcpp::spin_some(node);
 
   plugin.introspect(input);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "fn", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
 
@@ -2708,7 +2708,7 @@ TEST_F(GraphProviderPluginRosTest, AcceptsZeroDropRateThresholdAndTripsOnAnyPosi
   rclcpp::spin_some(node);
 
   plugin.introspect(input);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("fn", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "fn", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
   const auto * edge = find_edge(graph, "a", "b", "/topic");
@@ -2752,7 +2752,7 @@ TEST_F(GraphProviderPluginRosTest, DiagnosticsForTopicWithNitrosSubstringInSegme
   rclcpp::spin_some(node);
 
   plugin.introspect(input);
-  auto result = ctx.registered_samplers_["x-medkit-graph"]("f1", "");
+  auto result = ctx.registered_samplers_["x-medkit-graph"](SovdEntityType::FUNCTION, "f1", "");
   ASSERT_TRUE(result.has_value());
   const auto & graph = (*result)["x-medkit-graph"];
   const auto * edge = find_edge(graph, "a1", "a2", "/nitros_bridge/data");

@@ -573,6 +573,11 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   // subsequently invokes `refresh_cache()`.
   std::recursive_mutex refresh_mutex_;
 
+  // The cross-type duplicates of plugin introspections the last refresh left
+  // out, as their log lines: one is logged when it first appears and again only
+  // after it has gone away. Guarded by `refresh_mutex_`.
+  std::unordered_set<std::string> logged_plugin_duplicates_;
+
   // Timer for periodic cleanup of old action goals
   rclcpp::TimerBase::SharedPtr cleanup_timer_;
 

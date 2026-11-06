@@ -68,6 +68,15 @@ dto::CyclicSubscription subscription_to_dto(const CyclicSubscriptionInfo & info,
   return sub;
 }
 
+/// True when `sub` was created on the entity the route names, by its id and
+/// its type: a subscription of an App is not reachable through a Component
+/// that shares the App's id.
+bool is_on_route_entity(const CyclicSubscriptionInfo & sub, const std::string & entity_id,
+                        const http::TypedRequest & req) {
+  return sub.entity_id == entity_id &&
+         entity_type_from_collection(sub.entity_type) == extract_entity_type_from_path(req.path());
+}
+
 }  // namespace
 
 CyclicSubscriptionHandlers::CyclicSubscriptionHandlers(HandlerContext & ctx, SubscriptionManager & sub_mgr,
@@ -227,7 +236,7 @@ CyclicSubscriptionHandlers::get_subscriptions(const http::TypedRequest & req) {
     return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
-  auto subs = sub_mgr_.list(entity_id);
+  auto subs = sub_mgr_.list(entity_result->sovd_type(), entity_id);
   dto::Collection<dto::CyclicSubscription> response;
   for (const auto & sub : subs) {
     response.items.push_back(subscription_to_dto(sub, build_event_source(sub)));
@@ -258,7 +267,7 @@ http::Result<dto::CyclicSubscription> CyclicSubscriptionHandlers::get_subscripti
   const std::string sub_id = *sub_id_result;
 
   auto sub = sub_mgr_.get(sub_id);
-  if (!sub || sub->entity_id != entity_id) {
+  if (!sub || !is_on_route_entity(*sub, entity_id, req)) {
     return tl::unexpected(
         make_error(404, ERR_RESOURCE_NOT_FOUND, "Subscription not found", json{{"subscription_id", sub_id}}));
   }
@@ -318,7 +327,7 @@ CyclicSubscriptionHandlers::put_subscription(const http::TypedRequest & req,
 
   // Verify subscription exists and belongs to this entity before updating
   auto existing = sub_mgr_.get(sub_id);
-  if (!existing || existing->entity_id != entity_id) {
+  if (!existing || !is_on_route_entity(*existing, entity_id, req)) {
     return tl::unexpected(
         make_error(404, ERR_RESOURCE_NOT_FOUND, "Subscription not found", json{{"subscription_id", sub_id}}));
   }
@@ -355,7 +364,7 @@ http::Result<http::NoContent> CyclicSubscriptionHandlers::del_subscription(const
 
   // Verify subscription exists and belongs to this entity before deleting
   auto existing = sub_mgr_.get(sub_id);
-  if (!existing || existing->entity_id != entity_id) {
+  if (!existing || !is_on_route_entity(*existing, entity_id, req)) {
     return tl::unexpected(
         make_error(404, ERR_RESOURCE_NOT_FOUND, "Subscription not found", json{{"subscription_id", sub_id}}));
   }
@@ -395,7 +404,7 @@ http::Result<http::SseStream> CyclicSubscriptionHandlers::sse_subscription_event
         make_error(404, ERR_RESOURCE_NOT_FOUND, "Subscription not found", json{{"subscription_id", sub_id}}));
   }
 
-  if (sub->entity_id != entity_id) {
+  if (!is_on_route_entity(*sub, entity_id, req)) {
     return tl::unexpected(
         make_error(404, ERR_RESOURCE_NOT_FOUND, "Subscription not found", json{{"subscription_id", sub_id}}));
   }

@@ -135,6 +135,10 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // false for the Component itself, which has no entity_defs entry.
   bool has_operations(const std::string & entity_id) const override;
 
+  /// The type of this plugin's entity `entity_id`: the Area, the PLC Component, or else one of its Apps. One id
+  /// names one of a plugin's entities (the gateway drops a cross-type duplicate in the same order).
+  SovdEntityType own_entity_type(const std::string & entity_id) const;
+
   /// How many times the fault store has ANSWERED the link-state clear gate.
   /// Read by tests that have to tell "the store said this fault belongs to
   /// another bridge" apart from "the store was never asked" - an absent clear

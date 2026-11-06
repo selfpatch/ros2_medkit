@@ -32,6 +32,14 @@ using namespace ros2_medkit_gateway;
  * OPC-UA plugin. Used by test_entity_freeze_frame.test.py to prove a fault
  * reported under the app's bare id carries a zero-config freeze-frame of the
  * entity's own values.
+ *
+ * With `cross_type_duplicate: true` in its config it also introspects a
+ * Function under the Component's id, an entity the gateway refuses: the id a
+ * provider is called with has to name one of the plugin's entities.
+ *
+ * It registers two capabilities on its App: x-test-plc-typed through the typed
+ * call, and x-test-plc-by-id through the id-only one, which the gateway applies
+ * only while one entity holds the id.
  */
 class TestDataProviderPlugin : public GatewayPlugin,
                                public IntrospectionProvider,
@@ -44,7 +52,8 @@ class TestDataProviderPlugin : public GatewayPlugin,
     return "test_data_provider";
   }
 
-  void configure(const nlohmann::json & /*config*/) override {
+  void configure(const nlohmann::json & config) override {
+    cross_type_duplicate_ = config.value("cross_type_duplicate", false);
   }
 
   void set_context(PluginContext & context) override {
@@ -79,6 +88,20 @@ class TestDataProviderPlugin : public GatewayPlugin,
     app.is_online = true;
     app.source = "plugin";
     result.new_entities.apps.push_back(std::move(app));
+
+    if (ctx_ != nullptr) {
+      ctx_->register_entity_capability(SovdEntityType::APP, kAppId, "x-test-plc-typed");
+      ctx_->register_entity_capability(kAppId, "x-test-plc-by-id");
+    }
+
+    if (cross_type_duplicate_) {
+      Function func;
+      func.id = "test_plc";
+      func.name = "Test PLC Function";
+      func.hosts = {kAppId};
+      func.source = "plugin";
+      result.new_entities.functions.push_back(std::move(func));
+    }
 
     return result;
   }
@@ -129,7 +152,7 @@ class TestDataProviderPlugin : public GatewayPlugin,
   tl::expected<dto::FaultListResult, FaultProviderErrorInfo> list_faults(const std::string & entity_id) override {
     nlohmann::json items = nlohmann::json::array();
     if (ctx_ != nullptr) {
-      auto faults = ctx_->list_entity_faults(entity_id);
+      auto faults = ctx_->list_entity_faults(own_entity_type(entity_id), entity_id);
       if (faults.is_array()) {
         for (const auto & f : faults) {
           items.push_back({{"code", f.value("fault_code", "")},
@@ -153,7 +176,19 @@ class TestDataProviderPlugin : public GatewayPlugin,
   }
 
  private:
+  /// The type of this plugin's entity `entity_id`: one id names one of them.
+  static SovdEntityType own_entity_type(const std::string & entity_id) {
+    if (entity_id == "test_plc_area") {
+      return SovdEntityType::AREA;
+    }
+    if (entity_id == "test_plc") {
+      return SovdEntityType::COMPONENT;
+    }
+    return SovdEntityType::APP;
+  }
+
   PluginContext * ctx_{nullptr};
+  bool cross_type_duplicate_{false};
 };
 
 // --- Plugin exports ---

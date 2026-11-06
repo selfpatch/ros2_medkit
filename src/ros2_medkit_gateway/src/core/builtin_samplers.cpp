@@ -40,13 +40,14 @@ namespace {
 
 using Sampled = tl::expected<nlohmann::json, std::string>;
 
-Sampled sample_data(GatewayServices & services, const std::string & entity_id, const std::string & resource_path) {
+Sampled sample_data(GatewayServices & services, SovdEntityType entity_type, const std::string & entity_id,
+                    const std::string & resource_path) {
   // A plugin-owned entity is read through its provider, as GET /{entity}/data/{item} does.
   auto * plugins = services.plugin_manager();
-  if (plugins != nullptr && plugins->get_entity_owner(entity_id)) {
+  if (plugins != nullptr && plugins->get_entity_owner(entity_type, entity_id)) {
     const std::string item_name =
         (!resource_path.empty() && resource_path.front() == '/') ? resource_path.substr(1) : resource_path;
-    auto item = read_plugin_data_item(plugins, entity_id, item_name);
+    auto item = read_plugin_data_item(plugins, entity_type, entity_id, item_name);
     if (!item) {
       return tl::make_unexpected(item.error().message);
     }
@@ -65,19 +66,18 @@ Sampled sample_data(GatewayServices & services, const std::string & entity_id, c
   return tl::make_unexpected("Topic data not available: " + resource_path);
 }
 
-Sampled sample_faults(GatewayServices & services, const std::string & entity_id) {
+Sampled sample_faults(GatewayServices & services, SovdEntityType entity_type, const std::string & entity_id) {
   auto * fault_mgr = services.fault_manager();
   if (!fault_mgr) {
     return tl::make_unexpected(std::string("FaultManager not available"));
   }
   const auto & cache = services.entity_cache();
-  auto entity_ref = cache.find_entity(entity_id);
-  if (!entity_ref) {
+  if (!cache.has_entity(entity_type, entity_id)) {
     return tl::make_unexpected("Entity not found: " + entity_id);
   }
   // Same scoping as GET /{entity}/faults: shared source resolution (external app -> bare id,
   // external component owns its own id) and the shared boundary-aware filter.
-  auto source_fqns = faults::resolve_entity_source_fqns(cache, entity_ref->type, entity_id);
+  auto source_fqns = faults::resolve_entity_source_fqns(cache, entity_type, entity_id);
   auto result = fault_mgr->list_faults("");
   if (!result.success) {
     return tl::make_unexpected(result.error_message);
@@ -88,12 +88,12 @@ Sampled sample_faults(GatewayServices & services, const std::string & entity_id)
   return result.data;
 }
 
-Sampled sample_configurations(GatewayServices & services, const std::string & entity_id) {
+Sampled sample_configurations(GatewayServices & services, SovdEntityType entity_type, const std::string & entity_id) {
   auto * config_mgr = services.configuration_manager();
   if (!config_mgr) {
     return tl::make_unexpected(std::string("ConfigurationManager not available"));
   }
-  auto entity_configs = services.entity_cache().get_entity_configurations(entity_id);
+  auto entity_configs = services.entity_cache().get_entity_configurations(entity_type, entity_id);
   nlohmann::json items = nlohmann::json::array();
   for (const auto & node : entity_configs.nodes) {
     auto result = config_mgr->list_parameters(node.node_fqn);
@@ -108,33 +108,32 @@ Sampled sample_configurations(GatewayServices & services, const std::string & en
   return payload;
 }
 
-Sampled sample_logs(GatewayServices & services, const std::string & entity_id) {
+Sampled sample_logs(GatewayServices & services, SovdEntityType entity_type, const std::string & entity_id) {
   auto * log_mgr = services.log_manager();
   if (!log_mgr) {
     return tl::make_unexpected(std::string("LogManager not available"));
   }
   const auto & cache = services.entity_cache();
-  auto entity_ref = cache.find_entity(entity_id);
-  if (!entity_ref) {
+  if (!cache.has_entity(entity_type, entity_id)) {
     return tl::make_unexpected("Entity not found: " + entity_id);
   }
   // Same scoping as GET /{entity}/logs via the shared helper (external app -> bare id, external
   // component owns its own id, plus the namespace-prefix merge for COMPONENT / AREA).
   std::string entity_fqn;
-  if (entity_ref->type == SovdEntityType::COMPONENT) {
+  if (entity_type == SovdEntityType::COMPONENT) {
     if (auto comp = cache.get_component(entity_id)) {
       entity_fqn = comp->fqn;
     }
-  } else if (entity_ref->type == SovdEntityType::AREA) {
+  } else if (entity_type == SovdEntityType::AREA) {
     if (auto area = cache.get_area(entity_id)) {
       entity_fqn = area->namespace_path;
     }
-  } else if (entity_ref->type == SovdEntityType::APP) {
+  } else if (entity_type == SovdEntityType::APP) {
     if (auto app = cache.get_app(entity_id)) {
       entity_fqn = app->effective_fqn();
     }
   }
-  auto result = logs::query_entity_logs(*log_mgr, cache, entity_ref->type, entity_id, entity_fqn, "", "");
+  auto result = logs::query_entity_logs(*log_mgr, cache, entity_type, entity_id, entity_fqn, "", "");
   if (!result.has_value()) {
     return tl::make_unexpected(result.error());
   }
@@ -161,32 +160,33 @@ void register_builtin_samplers(GatewayServices & services) {
   auto & registry = *services.sampler_registry();
   registry.register_sampler(
       "data",
-      [&services](const std::string & entity_id, const std::string & resource_path) {
-        return sample_data(services, entity_id, resource_path);
+      [&services](SovdEntityType entity_type, const std::string & entity_id, const std::string & resource_path) {
+        return sample_data(services, entity_type, entity_id, resource_path);
       },
       /*is_builtin=*/true, /*honours_resource_path=*/true);
   registry.register_sampler(
       "faults",
-      [&services](const std::string & entity_id, const std::string & /*resource_path*/) {
-        return sample_faults(services, entity_id);
+      [&services](SovdEntityType entity_type, const std::string & entity_id, const std::string & /*resource_path*/) {
+        return sample_faults(services, entity_type, entity_id);
       },
       /*is_builtin=*/true);
   registry.register_sampler(
       "configurations",
-      [&services](const std::string & entity_id, const std::string & /*resource_path*/) {
-        return sample_configurations(services, entity_id);
+      [&services](SovdEntityType entity_type, const std::string & entity_id, const std::string & /*resource_path*/) {
+        return sample_configurations(services, entity_type, entity_id);
       },
       /*is_builtin=*/true);
   registry.register_sampler(
       "logs",
-      [&services](const std::string & entity_id, const std::string & /*resource_path*/) {
-        return sample_logs(services, entity_id);
+      [&services](SovdEntityType entity_type, const std::string & entity_id, const std::string & /*resource_path*/) {
+        return sample_logs(services, entity_type, entity_id);
       },
       /*is_builtin=*/true);
   if (services.update_manager() != nullptr) {
     registry.register_sampler(
         "updates",
-        [&services](const std::string & /*entity_id*/, const std::string & resource_path) {
+        [&services](SovdEntityType /*entity_type*/, const std::string & /*entity_id*/,
+                    const std::string & resource_path) {
           return sample_updates(services, resource_path);
         },
         /*is_builtin=*/true, /*honours_resource_path=*/true);

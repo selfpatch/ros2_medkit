@@ -26,11 +26,17 @@
 #include <nlohmann/json.hpp>
 #include <tl/expected.hpp>
 
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
+
 namespace ros2_medkit_gateway {
 
-/// Callback: (entity_id, resource_path) -> JSON payload or error string.
-using ResourceSamplerFn = std::function<tl::expected<nlohmann::json, std::string>(const std::string & entity_id,
-                                                                                  const std::string & resource_path)>;
+/// Callback: (entity_type, entity_id, resource_path) -> JSON payload or error string.
+///
+/// The entity is the one the subscription was created on, named by its type and
+/// its id: an App and a Component may share an id, and a sampler reads the
+/// entity of the subscription's type.
+using ResourceSamplerFn = std::function<tl::expected<nlohmann::json, std::string>(
+    SovdEntityType entity_type, const std::string & entity_id, const std::string & resource_path)>;
 
 /// Thread-safe registry mapping collection names to sampling functions.
 ///

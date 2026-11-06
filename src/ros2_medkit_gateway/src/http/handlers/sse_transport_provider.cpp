@@ -22,6 +22,7 @@
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 using json = nlohmann::json;
@@ -154,7 +155,8 @@ tl::expected<http::SseStream, ErrorInfo> SseTransportProvider::make_sse_stream(c
     envelope["timestamp"] = ts.str();
 
     try {
-      auto sample_result = sampler(current_sub->entity_id, current_sub->resource_path);
+      auto sample_result = sampler(entity_type_from_collection(current_sub->entity_type), current_sub->entity_id,
+                                   current_sub->resource_path);
       if (sample_result.has_value()) {
         envelope["payload"] = *sample_result;
       } else {

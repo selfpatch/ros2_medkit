@@ -73,7 +73,7 @@ void LockReaper::reap_once() {
     if (!covers_subscriptions || subscriptions_ == nullptr) {
       continue;
     }
-    for (const auto & sub : subscriptions_->list(info.entity_id)) {
+    for (const auto & sub : subscriptions_->list(info.entity_type, info.entity_id)) {
       if (subscriptions_->remove(sub.id)) {
         MEDKIT_LOG_INFO(logger_, "Removed subscription %s on lock expiry", sub.id.c_str());
       }

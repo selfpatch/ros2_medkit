@@ -29,7 +29,7 @@ TEST(ResourceSamplerRegistryTest, RegisterAndLookupBuiltinSampler) {
   ResourceSamplerRegistry registry;
   registry.register_sampler(
       "data",
-      [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
         return nlohmann::json{{"test", true}};
       },
       true);
@@ -37,17 +37,18 @@ TEST(ResourceSamplerRegistryTest, RegisterAndLookupBuiltinSampler) {
   EXPECT_TRUE(registry.has_sampler("data"));
   auto sampler = registry.get_sampler("data");
   ASSERT_TRUE(sampler.has_value());
-  auto result = (*sampler)("entity1", "/topic");
+  auto result = (*sampler)(SovdEntityType::APP, "entity1", "/topic");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ((*result)["test"], true);
 }
 
 TEST(ResourceSamplerRegistryTest, RegisterAndLookupVendorExtensionSampler) {
   ResourceSamplerRegistry registry;
-  registry.register_sampler("x-medkit-metrics",
-                            [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
-                              return nlohmann::json{{"cpu", 42}};
-                            });
+  registry.register_sampler(
+      "x-medkit-metrics",
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+        return nlohmann::json{{"cpu", 42}};
+      });
 
   EXPECT_TRUE(registry.has_sampler("x-medkit-metrics"));
 }
@@ -62,46 +63,47 @@ TEST(ResourceSamplerRegistryTest, BuiltinOverwritesExisting) {
   ResourceSamplerRegistry registry;
   registry.register_sampler(
       "data",
-      [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
         return nlohmann::json{{"version", 1}};
       },
       true);
   registry.register_sampler(
       "data",
-      [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
         return nlohmann::json{{"version", 2}};
       },
       true);
 
   auto sampler = registry.get_sampler("data");
   ASSERT_TRUE(sampler.has_value());
-  auto result = (*sampler)("e", "");
+  auto result = (*sampler)(SovdEntityType::APP, "e", "");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ((*result)["version"], 2);
 }
 
 TEST(ResourceSamplerRegistryTest, RejectDuplicatePluginRegistration) {
   ResourceSamplerRegistry registry;
-  registry.register_sampler("x-medkit-metrics",
-                            [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
-                              return nlohmann::json{};
-                            });
+  registry.register_sampler(
+      "x-medkit-metrics",
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+        return nlohmann::json{};
+      });
 
-  EXPECT_THROW(registry.register_sampler(
-                   "x-medkit-metrics",
-                   [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
-                     return nlohmann::json{};
-                   }),
+  EXPECT_THROW(registry.register_sampler("x-medkit-metrics",
+                                         [](SovdEntityType, const std::string &,
+                                            const std::string &) -> tl::expected<nlohmann::json, std::string> {
+                                           return nlohmann::json{};
+                                         }),
                std::runtime_error);
 }
 
 TEST(ResourceSamplerRegistryTest, RejectPluginRegistrationWithoutXPrefix) {
   ResourceSamplerRegistry registry;
-  EXPECT_THROW(registry.register_sampler(
-                   "data",
-                   [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
-                     return nlohmann::json{};
-                   }),
+  EXPECT_THROW(registry.register_sampler("data",
+                                         [](SovdEntityType, const std::string &,
+                                            const std::string &) -> tl::expected<nlohmann::json, std::string> {
+                                           return nlohmann::json{};
+                                         }),
                std::runtime_error);
 }
 
@@ -114,7 +116,7 @@ TEST(ResourceSamplerRegistryTest, ConcurrentRegisterAndLookup) {
     threads.emplace_back([&registry, i]() {
       registry.register_sampler(
           "collection_" + std::to_string(i),
-          [i](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+          [i](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
             return nlohmann::json{{"i", i}};
           },
           true);
@@ -131,10 +133,11 @@ TEST(ResourceSamplerRegistryTest, ConcurrentRegisterAndLookup) {
 
 TEST(ResourceSamplerRegistryTest, RemoveSamplerMakesItUnavailable) {
   ResourceSamplerRegistry registry;
-  registry.register_sampler("x-medkit-metrics",
-                            [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
-                              return nlohmann::json{{"cpu", 42}};
-                            });
+  registry.register_sampler(
+      "x-medkit-metrics",
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+        return nlohmann::json{{"cpu", 42}};
+      });
   ASSERT_TRUE(registry.has_sampler("x-medkit-metrics"));
 
   registry.remove_sampler("x-medkit-metrics");
@@ -147,7 +150,7 @@ TEST(ResourceSamplerRegistryTest, RemoveSamplerLeavesBuiltinInPlace) {
   ResourceSamplerRegistry registry;
   registry.register_sampler(
       "data",
-      [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
         return nlohmann::json{{"builtin", true}};
       },
       true);
@@ -160,7 +163,7 @@ TEST(ResourceSamplerRegistryTest, RemoveSamplerLeavesBuiltinInPlace) {
   EXPECT_TRUE(registry.has_sampler("data"));
   auto sampler = registry.get_sampler("data");
   ASSERT_TRUE(sampler.has_value());
-  auto result = (*sampler)("e", "");
+  auto result = (*sampler)(SovdEntityType::APP, "e", "");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ((*result)["builtin"], true);
 }
@@ -174,10 +177,11 @@ TEST(ResourceSamplerRegistryTest, RemoveSamplerLeavesBuiltinInPlace) {
 // actual behavior.
 TEST(ResourceSamplerRegistryTest, RemoveSamplerOnUnregisteredCollectionLeavesUnrelatedSamplerIntact) {
   ResourceSamplerRegistry registry;
-  registry.register_sampler("x-medkit-metrics",
-                            [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
-                              return nlohmann::json{{"cpu", 42}};
-                            });
+  registry.register_sampler(
+      "x-medkit-metrics",
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+        return nlohmann::json{{"cpu", 42}};
+      });
   ASSERT_TRUE(registry.has_sampler("x-medkit-metrics"));
 
   EXPECT_NO_THROW(registry.remove_sampler("x-never-registered"));
@@ -186,7 +190,7 @@ TEST(ResourceSamplerRegistryTest, RemoveSamplerOnUnregisteredCollectionLeavesUnr
   ASSERT_TRUE(registry.has_sampler("x-medkit-metrics"));
   auto sampler = registry.get_sampler("x-medkit-metrics");
   ASSERT_TRUE(sampler.has_value());
-  auto result = (*sampler)("e", "");
+  auto result = (*sampler)(SovdEntityType::APP, "e", "");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ((*result)["cpu"], 42);
 }
@@ -200,12 +204,12 @@ TEST(ResourceSamplerRegistryTest, RemoveSamplerOnUnregisteredCollectionLeavesUnr
 TEST(ResourceSamplerRegistryTest, CopyObtainedBeforeRemovalRefusesToCallAfterRemoval) {
   ResourceSamplerRegistry registry;
   bool underlying_called = false;
-  registry.register_sampler(
-      "x-medkit-metrics",
-      [&underlying_called](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
-        underlying_called = true;
-        return nlohmann::json{{"cpu", 42}};
-      });
+  registry.register_sampler("x-medkit-metrics",
+                            [&underlying_called](SovdEntityType, const std::string &,
+                                                 const std::string &) -> tl::expected<nlohmann::json, std::string> {
+                              underlying_called = true;
+                              return nlohmann::json{{"cpu", 42}};
+                            });
 
   // Simulate a cyclic subscription created before teardown: it obtains its
   // own copy of the sampler and holds onto it independently of the registry.
@@ -218,7 +222,7 @@ TEST(ResourceSamplerRegistryTest, CopyObtainedBeforeRemovalRefusesToCallAfterRem
 
   // The copy the "subscription" already holds must NOT call into the
   // (now-torn-down) plugin's callable - it must fail safely instead.
-  auto result = (*copy)("entity1", "/topic");
+  auto result = (*copy)(SovdEntityType::APP, "entity1", "/topic");
   EXPECT_FALSE(result.has_value());
   EXPECT_FALSE(underlying_called) << "removed sampler copy must not invoke the underlying plugin callable";
   if (!result.has_value()) {
@@ -233,14 +237,15 @@ TEST(ResourceSamplerRegistryTest, CopyOfBuiltinSamplerKeepsWorkingAfterUnrelated
   ResourceSamplerRegistry registry;
   registry.register_sampler(
       "data",
-      [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
         return nlohmann::json{{"builtin", true}};
       },
       true);
-  registry.register_sampler("x-medkit-metrics",
-                            [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
-                              return nlohmann::json{{"cpu", 42}};
-                            });
+  registry.register_sampler(
+      "x-medkit-metrics",
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+        return nlohmann::json{{"cpu", 42}};
+      });
 
   auto builtin_copy = registry.get_sampler("data");
   ASSERT_TRUE(builtin_copy.has_value());
@@ -250,7 +255,7 @@ TEST(ResourceSamplerRegistryTest, CopyOfBuiltinSamplerKeepsWorkingAfterUnrelated
   // behavior), so a copy taken beforehand keeps working regardless.
   registry.remove_sampler("data");
 
-  auto result = (*builtin_copy)("e", "");
+  auto result = (*builtin_copy)(SovdEntityType::APP, "e", "");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ((*result)["builtin"], true);
 }
@@ -259,7 +264,7 @@ TEST(ResourceSamplerRegistryTest, UpdatesSamplerRegisteredAsBuiltin) {
   ResourceSamplerRegistry registry;
   registry.register_sampler(
       "updates",
-      [](const std::string & /*entity_id*/,
+      [](SovdEntityType /*entity_type*/, const std::string & /*entity_id*/,
          const std::string & resource_path) -> tl::expected<nlohmann::json, std::string> {
         if (resource_path == "known-pkg") {
           return nlohmann::json{{"status", "inProgress"}, {"progress", 42}};
@@ -272,12 +277,12 @@ TEST(ResourceSamplerRegistryTest, UpdatesSamplerRegisteredAsBuiltin) {
   auto sampler = registry.get_sampler("updates");
   ASSERT_TRUE(sampler.has_value());
 
-  auto result = (*sampler)("any-entity", "known-pkg");
+  auto result = (*sampler)(SovdEntityType::APP, "any-entity", "known-pkg");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ((*result)["status"], "inProgress");
   EXPECT_EQ((*result)["progress"], 42);
 
-  auto err = (*sampler)("any-entity", "unknown-pkg");
+  auto err = (*sampler)(SovdEntityType::APP, "any-entity", "unknown-pkg");
   ASSERT_FALSE(err.has_value());
 }
 
@@ -295,19 +300,20 @@ TEST(ResourceSamplerRegistryTest, RemoveSamplerBlocksUntilInFlightCallCompletes)
   bool call_started = false;
   std::atomic<bool> call_finished{false};
 
-  registry.register_sampler("x-medkit-metrics",
-                            [&](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
-                              {
-                                std::lock_guard<std::mutex> lock(state_mutex);
-                                call_started = true;
-                              }
-                              call_started_cv.notify_one();
-                              // Hold the call open long enough that the test thread's
-                              // remove_sampler() call below is guaranteed to observe it in flight.
-                              std::this_thread::sleep_for(std::chrono::milliseconds(200));
-                              call_finished.store(true, std::memory_order_release);
-                              return nlohmann::json{{"cpu", 42}};
-                            });
+  registry.register_sampler(
+      "x-medkit-metrics",
+      [&](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+        {
+          std::lock_guard<std::mutex> lock(state_mutex);
+          call_started = true;
+        }
+        call_started_cv.notify_one();
+        // Hold the call open long enough that the test thread's
+        // remove_sampler() call below is guaranteed to observe it in flight.
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        call_finished.store(true, std::memory_order_release);
+        return nlohmann::json{{"cpu", 42}};
+      });
 
   // Simulate a cyclic subscription's transport holding its own copy of the
   // callable, obtained before teardown starts.
@@ -316,7 +322,7 @@ TEST(ResourceSamplerRegistryTest, RemoveSamplerBlocksUntilInFlightCallCompletes)
 
   bool invocation_succeeded = false;
   std::thread invoker([&]() {
-    auto invocation_result = (*copy)("entity1", "/topic");
+    auto invocation_result = (*copy)(SovdEntityType::APP, "entity1", "/topic");
     invocation_succeeded = invocation_result.has_value();
   });
 
@@ -343,10 +349,11 @@ TEST(ResourceSamplerRegistryTest, RemoveSamplerBlocksUntilInFlightCallCompletes)
 
 TEST(ResourceSamplerRegistryTest, UndeclaredSamplerDoesNotHonourResourcePath) {
   ResourceSamplerRegistry registry;
-  registry.register_sampler("x-medkit-metrics",
-                            [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
-                              return nlohmann::json{{"cpu", 42}};
-                            });
+  registry.register_sampler(
+      "x-medkit-metrics",
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+        return nlohmann::json{{"cpu", 42}};
+      });
 
   EXPECT_FALSE(registry.honours_resource_path("x-medkit-metrics"));
 }
@@ -355,7 +362,7 @@ TEST(ResourceSamplerRegistryTest, DeclaredSamplerHonoursResourcePath) {
   ResourceSamplerRegistry registry;
   registry.register_sampler(
       "x-medkit-metrics",
-      [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
         return nlohmann::json{{"cpu", 42}};
       },
       /*is_builtin=*/false, /*honours_resource_path=*/true);
@@ -367,13 +374,13 @@ TEST(ResourceSamplerRegistryTest, BuiltinSamplerCanHonourResourcePath) {
   ResourceSamplerRegistry registry;
   registry.register_sampler(
       "data",
-      [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
         return nlohmann::json{{"value", 1}};
       },
       /*is_builtin=*/true, /*honours_resource_path=*/true);
   registry.register_sampler(
       "configurations",
-      [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
         return nlohmann::json{{"items", nlohmann::json::array()}};
       },
       /*is_builtin=*/true);
@@ -391,7 +398,7 @@ TEST(ResourceSamplerRegistryTest, ReregisteringBuiltinReplacesResourcePathDeclar
   ResourceSamplerRegistry registry;
   registry.register_sampler(
       "data",
-      [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
         return nlohmann::json{{"version", 1}};
       },
       /*is_builtin=*/true, /*honours_resource_path=*/true);
@@ -399,7 +406,7 @@ TEST(ResourceSamplerRegistryTest, ReregisteringBuiltinReplacesResourcePathDeclar
 
   registry.register_sampler(
       "data",
-      [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
         return nlohmann::json{{"version", 2}};
       },
       /*is_builtin=*/true);
@@ -411,7 +418,7 @@ TEST(ResourceSamplerRegistryTest, RemovedSamplerNoLongerHonoursResourcePath) {
   ResourceSamplerRegistry registry;
   registry.register_sampler(
       "x-medkit-metrics",
-      [](const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<nlohmann::json, std::string> {
         return nlohmann::json{{"cpu", 42}};
       },
       /*is_builtin=*/false, /*honours_resource_path=*/true);

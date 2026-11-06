@@ -14,6 +14,10 @@
 
 #include "sovd_service_interface.hpp"
 
+#include <optional>
+#include <string>
+#include <vector>
+
 #include <nlohmann/json.hpp>
 
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
@@ -39,6 +43,50 @@ SovdEntityType entity_type_from_string(const std::string & type) {
     return SovdEntityType::FUNCTION;
   }
   return SovdEntityType::UNKNOWN;
+}
+
+/// The name entity_type_from_string reads back ("app", "component", "area", "function").
+std::string entity_type_name(SovdEntityType type) {
+  switch (type) {
+    case SovdEntityType::APP:
+      return "app";
+    case SovdEntityType::COMPONENT:
+      return "component";
+    case SovdEntityType::AREA:
+      return "area";
+    case SovdEntityType::FUNCTION:
+      return "function";
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+    default:
+      return "unknown";
+  }
+}
+
+/// The entity a service request names. The request carries an id and no type, so the id names the one entity that
+/// holds it; an id more than one entity holds is refused with an error naming the types, as an id-only plugin call
+/// is. On refusal `error` says why.
+std::optional<PluginEntityInfo> resolve_request_entity(const PluginContext & context, const std::string & id,
+                                                       std::string & error) {
+  std::vector<PluginEntityInfo> holders;
+  for (auto type : {SovdEntityType::COMPONENT, SovdEntityType::APP, SovdEntityType::AREA, SovdEntityType::FUNCTION}) {
+    if (auto entity = context.get_entity(type, id)) {
+      holders.push_back(std::move(*entity));
+    }
+  }
+  if (holders.size() == 1u) {
+    return std::move(holders.front());
+  }
+  if (holders.empty()) {
+    error = "Entity not found: " + id;
+    return std::nullopt;
+  }
+  std::string types;
+  for (const auto & holder : holders) {
+    types += types.empty() ? entity_type_name(holder.type) : ", " + entity_type_name(holder.type);
+  }
+  error = "Entity id '" + id + "' is held by " + types + "; the request names no entity type";
+  return std::nullopt;
 }
 
 }  // namespace
@@ -137,7 +185,7 @@ void SovdServiceInterface::handle_list_entities(
       info.entity_type = entity_type;
       info.parent_id = parent_id;
       info.fqn = fqn;
-      info.capabilities = context_->get_entity_capabilities(id);
+      info.capabilities = context_->get_entity_capabilities(entity_type_from_string(entity_type), id);
       if (info.capabilities.empty()) {
         info.capabilities = context_->get_type_capabilities(entity_type_from_string(entity_type));
       }
@@ -175,14 +223,15 @@ void SovdServiceInterface::handle_list_entity_faults(
     return;
   }
   try {
-    auto entity = context_->get_entity(request->entity_id);
+    std::string error;
+    auto entity = resolve_request_entity(*context_, request->entity_id, error);
     if (!entity) {
       response->success = false;
-      response->error_message = "Entity not found: " + request->entity_id;
+      response->error_message = error;
       return;
     }
 
-    auto faults_json = context_->list_entity_faults(request->entity_id);
+    auto faults_json = context_->list_entity_faults(entity->type, request->entity_id);
 
     // Convert JSON faults to Fault messages using value() for type safety
     if (faults_json.is_array()) {
@@ -239,10 +288,11 @@ void SovdServiceInterface::handle_get_entity_data(
     return;
   }
   try {
-    auto entity = context_->get_entity(request->entity_id);
+    std::string error;
+    auto entity = resolve_request_entity(*context_, request->entity_id, error);
     if (!entity) {
       response->success = false;
-      response->error_message = "Entity not found: " + request->entity_id;
+      response->error_message = error;
       return;
     }
 
@@ -275,15 +325,16 @@ void SovdServiceInterface::handle_get_capabilities(
       return;
     }
 
-    auto entity = context_->get_entity(request->entity_id);
+    std::string error;
+    auto entity = resolve_request_entity(*context_, request->entity_id, error);
     if (!entity) {
       response->success = false;
-      response->error_message = "Entity not found: " + request->entity_id;
+      response->error_message = error;
       return;
     }
 
     // Get entity-specific capabilities first, fall back to type-level
-    auto caps = context_->get_entity_capabilities(request->entity_id);
+    auto caps = context_->get_entity_capabilities(entity->type, request->entity_id);
     if (caps.empty()) {
       caps = context_->get_type_capabilities(entity->type);
     }

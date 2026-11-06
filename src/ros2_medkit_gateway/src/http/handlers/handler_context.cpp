@@ -93,7 +93,7 @@ EntityInfo HandlerContext::get_entity_info(const std::string & entity_id, SovdEn
     if (!ei.is_remote) {
       auto * pmgr = services_.plugin_manager();
       if (pmgr) {
-        auto owner = pmgr->get_entity_owner(ei.id);
+        auto owner = pmgr->get_entity_owner(ei.sovd_type(), ei.id);
         if (owner) {
           ei.is_plugin = true;
           ei.plugin_name = *owner;
@@ -248,7 +248,7 @@ tl::expected<void, ErrorInfo> HandlerContext::validate_lock_access(const http::T
   std::string client_id = client_id_opt.value_or(std::string{});
 
   // Phase 3: Check lock access.
-  auto result = lock_mgr->check_access(entity.id, client_id, collection);
+  auto result = lock_mgr->check_access(entity.sovd_type(), entity.id, client_id, collection);
   if (result.allowed) {
     return {};
   }
