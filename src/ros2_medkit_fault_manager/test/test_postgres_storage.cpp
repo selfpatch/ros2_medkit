@@ -1442,6 +1442,34 @@ TEST_F(PgFaultStorageTest, HealedLatchSurvivesPassedAtNegativeCounter) {
   EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_HEALED);
 }
 
+TEST_F(PgFaultStorageTest, CriticalConfirmFromHealedDoesNotHealOnSinglePassed) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  config.healing_enabled = true;
+  config.healing_threshold = 3;
+  config.critical_immediate_confirm = true;
+
+  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "crit", "/n",
+                               clock.now().nanoseconds(), config);
+  for (int i = 0; i < 4; ++i) {  // -1 -> +3 -> HEALED
+    storage_->report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
+  }
+  ASSERT_EQ(storage_->get_fault("F")->status, Fault::STATUS_HEALED);
+
+  // CRITICAL confirms immediately from HEALED; counter must not stay at +2 where one PASSED heals it.
+  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "crit", "/n",
+                               clock.now().nanoseconds(), config);
+  ASSERT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+
+  for (int i = 0; i < 3; ++i) {  // -1 -> +2, still CONFIRMED
+    storage_->report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
+    EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_CONFIRMED);
+  }
+  storage_->report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
+  EXPECT_EQ(storage_->get_fault("F")->status, Fault::STATUS_HEALED);
+}
+
 // A database written by an older build can hold a runaway counter. It must be clamped back on first
 // touch so re-confirmation is bounded, not ~INT32 events away.
 TEST_F(PgFaultStorageTest, RunawayCounterFromOldRowRecovers) {

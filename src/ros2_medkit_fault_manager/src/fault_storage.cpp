@@ -229,6 +229,7 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, fd
 
     // Check for immediate confirmation of CRITICAL
     if (config.critical_immediate_confirm && severity == fd::severity::kCritical) {
+      state.debounce_counter = std::min(state.debounce_counter, -1);
       state.status = fd::fault_status::kConfirmed;
       return false;
     }

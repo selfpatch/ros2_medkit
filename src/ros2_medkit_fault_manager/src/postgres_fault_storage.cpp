@@ -621,6 +621,7 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, f
       // CRITICAL bypasses debounce; otherwise the shared state machine decides (with hysteresis).
       std::string new_status;
       if (config.critical_immediate_confirm && severity == fd::severity::kCritical) {
+        debounce_counter = std::min(debounce_counter, -1);
         new_status = fd::fault_status::kConfirmed;
       } else {
         new_status = compute_debounce_status(debounce_counter, current_status, config);
