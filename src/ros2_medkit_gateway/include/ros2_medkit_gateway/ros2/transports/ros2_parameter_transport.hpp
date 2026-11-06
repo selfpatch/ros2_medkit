@@ -30,6 +30,7 @@
 #include "ros2_medkit_gateway/core/configuration/parameter_types.hpp"
 #include "ros2_medkit_gateway/core/transports/parameter_transport.hpp"
 #include "ros2_medkit_gateway/core/util/bounded_lru_cache.hpp"
+#include "ros2_medkit_gateway/ros2_common/graph_node_list.hpp"
 
 namespace ros2_medkit_gateway::ros2 {
 
@@ -103,7 +104,7 @@ class Ros2ParameterTransport : public ParameterTransport {
   Ros2ParameterTransport(rclcpp::Node * node, double service_timeout_sec, double negative_cache_ttl_sec,
                          std::size_t client_cache_size = kMaxParamClientCacheSize,
                          std::size_t defaults_cache_size = kMaxDefaultsCacheSize,
-                         const std::string & client_node_name = "_param_client_node");
+                         const std::string & client_node_name = ros2_common::kParamClientNodeName);
 
   ~Ros2ParameterTransport() override;
 

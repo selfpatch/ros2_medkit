@@ -41,6 +41,12 @@ struct LinkingResult {
   /// ROS node FQNs that have no matching manifest App (orphans)
   std::vector<std::string> orphan_nodes;
 
+  /// The gateway's own node when no manifest App links it. Not an orphan: the
+  /// manifest describes the stack the gateway diagnoses, not the gateway. It is
+  /// still unlinked, so `unmanifested_nodes: ignore` hides its namespace with
+  /// the orphans' namespaces.
+  std::vector<std::string> own_unlinked_nodes;
+
   /// Mapping from App ID to bound node FQN
   std::unordered_map<std::string, std::string> app_to_node;
 

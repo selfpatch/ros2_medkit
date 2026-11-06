@@ -125,7 +125,8 @@ the node you meant, or drop the declaration.
 While this setting is ``true`` they are also left out of the linking report on
 ``GET /health`` - ``discovery.linking.orphan_count``, and the
 ``ros_node_fqns`` of the ``unmanifested_nodes`` warning raised under
-``unmanifested_nodes: error``: a node that can never be an App is not a node to
+``unmanifested_nodes: error`` - and so is the gateway's parameter client node,
+``/_param_client_node``: a node that can never be an App is not a node to
 declare in a manifest. That report exists only in ``hybrid`` mode, where
 manifest apps are linked to runtime nodes; ``runtime_only`` has no linking block
 at all.
@@ -141,6 +142,12 @@ hides that node like any other such node, so no runtime App carries those
 parameters. A declared App bound to it is judged by its id: one whose id does
 not start with ``_`` is served and carries the parameters.
 
+The gateway's own node is never in the linking report, whatever this setting:
+the manifest describes the stack the gateway diagnoses, not the gateway, so it
+is not a node to declare. A manifest App bound to it links it like any other
+node. Under ``unmanifested_nodes: ignore`` its namespace is hidden with the
+undeclared nodes' namespaces.
+
 Names and namespaces: each helper node is created in the gateway's namespace,
 and a node-local remap fixes its name. A process-wide namespace remap
 (``-r __ns:=/line_a``) and a remap naming the gateway alone
@@ -155,9 +162,10 @@ the gateways share a node name and differ only in namespace. With runtime
 discovery and the same configuration, the gateways list the same Apps. A
 declared App bound to another gateway's helper node is judged by its id like
 any other declared App, so it is served, and no warning is logged. In
-``hybrid`` mode the linking report leaves out only the reporting gateway's own
-helper nodes. Another gateway's helper nodes count as undeclared, like any
-other hidden node such as ``_param_client_node``.
+``hybrid`` mode the linking report leaves out the reporting gateway's own node,
+its own helper nodes and ``/_param_client_node``, which every gateway creates
+under that one name. Another gateway's node and helper nodes count as
+undeclared, like any other hidden node.
 
 Give each gateway its own node name when several run on one ROS graph. With a
 shared name, the App id of a gateway outside the root namespace depends on the
