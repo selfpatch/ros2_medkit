@@ -24,6 +24,7 @@
 #include <rclcpp/logging.hpp>
 
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -146,6 +147,10 @@ class MergePipeline {
   std::unordered_set<std::string> protected_entity_ids_;
   ManifestConfig manifest_config_;
   LinkingResult linking_result_;
+
+  /// "<id> <type> <type>" of every id held by entities of two types at the
+  /// last execute(), so each pair is logged when it appears, not on every run.
+  std::set<std::string> logged_cross_type_ids_;
 };
 
 }  // namespace discovery
