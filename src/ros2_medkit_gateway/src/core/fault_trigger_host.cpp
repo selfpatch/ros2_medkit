@@ -133,8 +133,11 @@ FaultTriggerHost::FaultTriggerHost(const FaultTriggerHostConfig & config, int po
   };
 
   // Distinct from the data route, which returns nullopt for both an unknown app and a transient outage.
+  // A fault trigger belongs to an App (the route is /apps/{id}/fault-triggers),
+  // so the App is looked up: by id alone a Component sharing the id would stand
+  // in for an App that is gone.
   auto entity_exists = [cache](const std::string & app_id) -> bool {
-    return cache->find_entity(app_id).has_value();
+    return cache->get_app(app_id).has_value();
   };
 
   engine_ =

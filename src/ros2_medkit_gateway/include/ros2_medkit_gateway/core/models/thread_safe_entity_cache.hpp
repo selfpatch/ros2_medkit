@@ -461,6 +461,14 @@ class ThreadSafeEntityCache {
   AggregatedData get_entity_data(const std::string & entity_id) const;
 
   /**
+   * @brief Aggregate data (topics) for the entity of `type` named `entity_id`
+   *
+   * The entity a route names: an Area and a Function may share an id, and the
+   * id-only overload above returns the data of whichever type it finds first.
+   */
+  AggregatedData get_entity_data(SovdEntityType type, const std::string & entity_id) const;
+
+  /**
    * @brief Aggregate data (topics) for an App
    */
   AggregatedData get_app_data(const std::string & app_id) const;
@@ -501,6 +509,13 @@ class ThreadSafeEntityCache {
    * @return AggregatedConfigurations with node FQNs, or empty if entity not found
    */
   AggregatedConfigurations get_entity_configurations(const std::string & entity_id) const;
+
+  /**
+   * @brief Aggregate configurations for the entity of `type` named `entity_id`
+   *
+   * The entity a route names; see get_entity_data(SovdEntityType, ...).
+   */
+  AggregatedConfigurations get_entity_configurations(SovdEntityType type, const std::string & entity_id) const;
 
   /**
    * @brief Get configurations for an App (returns its single bound node)

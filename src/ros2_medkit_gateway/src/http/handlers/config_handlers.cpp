@@ -384,7 +384,7 @@ ConfigHandlers::list_configurations(const http::TypedRequest & req) {
   }
 
   const auto & cache = ctx_.services().entity_cache();
-  auto agg_configs = cache.get_entity_configurations(entity_id);
+  auto agg_configs = cache.get_entity_configurations(entity_result->sovd_type(), entity_id);
 
   dto::Collection<dto::ConfigurationMetaData, dto::ConfigListXMedkit> response;
   dto::ConfigListXMedkit xm;
@@ -563,7 +563,7 @@ http::Result<dto::ConfigurationReadValue> ConfigHandlers::get_configuration(cons
   }
 
   const auto & cache = ctx_.services().entity_cache();
-  auto agg_configs = cache.get_entity_configurations(entity_id);
+  auto agg_configs = cache.get_entity_configurations(entity.sovd_type(), entity_id);
   auto parsed = address_parameter(cache, entity, param_id);
 
   // Ownership is settled before the local node set is consulted, because the
@@ -684,7 +684,7 @@ http::Result<dto::ConfigurationReadValue> ConfigHandlers::set_configuration(cons
   }
 
   const auto & cache = ctx_.services().entity_cache();
-  auto agg_configs = cache.get_entity_configurations(entity_id);
+  auto agg_configs = cache.get_entity_configurations(entity.sovd_type(), entity_id);
   auto parsed = address_parameter(cache, entity, param_id);
 
   // Helper: turn a successful set into the typed response. The wire shape
@@ -784,7 +784,7 @@ http::Result<http::NoContent> ConfigHandlers::delete_configuration(const http::T
   }
 
   const auto & cache = ctx_.services().entity_cache();
-  auto agg_configs = cache.get_entity_configurations(entity_id);
+  auto agg_configs = cache.get_entity_configurations(entity.sovd_type(), entity_id);
   auto parsed = address_parameter(cache, entity, param_id);
 
   // Ownership is settled before the local node set is consulted, for the same
@@ -857,7 +857,7 @@ ConfigHandlers::delete_all_configurations(const http::TypedRequest & req) {
   }
 
   const auto & cache = ctx_.services().entity_cache();
-  auto agg_configs = cache.get_entity_configurations(entity_id);
+  auto agg_configs = cache.get_entity_configurations(entity.sovd_type(), entity_id);
 
   auto * config_mgr = ctx_.services().configuration_manager();
   bool all_reset = true;
