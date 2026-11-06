@@ -679,8 +679,12 @@ AggregatedConfigurations ThreadSafeEntityCache::get_entity_configurations(const 
   if (!entity) {
     return {};
   }
+  return get_entity_configurations(entity->type, entity_id);
+}
 
-  switch (entity->type) {
+AggregatedConfigurations ThreadSafeEntityCache::get_entity_configurations(SovdEntityType type,
+                                                                          const std::string & entity_id) const {
+  switch (type) {
     case SovdEntityType::APP:
       return get_app_configurations(entity_id);
     case SovdEntityType::COMPONENT:
@@ -1244,9 +1248,12 @@ AggregatedData ThreadSafeEntityCache::get_entity_data(const std::string & entity
   if (!entity_ref) {
     return {};
   }
+  return get_entity_data(entity_ref->type, entity_id);
+}
 
+AggregatedData ThreadSafeEntityCache::get_entity_data(SovdEntityType type, const std::string & entity_id) const {
   // Each get_*_data method takes its own lock
-  switch (entity_ref->type) {
+  switch (type) {
     case SovdEntityType::APP:
       return get_app_data(entity_id);
     case SovdEntityType::COMPONENT:

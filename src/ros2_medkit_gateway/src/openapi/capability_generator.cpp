@@ -785,7 +785,7 @@ void CapabilityGenerator::add_cache_derived_items(nlohmann::json & paths, const 
   // Only a resource the cache *does* know gains anything, and what it gains is
   // the ROS type.
   if (resolved.resource_collection == "data") {
-    auto data = cache.get_entity_data(resolved.entity_id);
+    auto data = cache.get_entity_data(entity_type_from_keyword(resolved.entity_type), resolved.entity_id);
     for (const auto & topic : data.topics) {
       if (one_item && !names_match(topic.name, resolved.resource_id)) {
         continue;
@@ -801,25 +801,27 @@ void CapabilityGenerator::add_cache_derived_items(nlohmann::json & paths, const 
   }
 
   // Operations aggregate upward: an app owns its services directly, while a
-  // component, area or function collects the ones its apps expose.
-  auto ops = cache.get_app_operations(resolved.entity_id);
-  if (ops.empty()) {
-    switch (entity_type_from_keyword(resolved.entity_type)) {
-      case SovdEntityType::COMPONENT:
-        ops = cache.get_component_operations(resolved.entity_id);
-        break;
-      case SovdEntityType::AREA:
-        ops = cache.get_area_operations(resolved.entity_id);
-        break;
-      case SovdEntityType::FUNCTION:
-        ops = cache.get_function_operations(resolved.entity_id);
-        break;
-      case SovdEntityType::APP:
-      case SovdEntityType::SERVER:
-      case SovdEntityType::UNKNOWN:
-      default:
-        break;
-    }
+  // component, area or function collects the ones its apps expose. Looked up by
+  // the route's type: an App sharing the id of the documented entity is
+  // another entity.
+  AggregatedOperations ops;
+  switch (entity_type_from_keyword(resolved.entity_type)) {
+    case SovdEntityType::APP:
+      ops = cache.get_app_operations(resolved.entity_id);
+      break;
+    case SovdEntityType::COMPONENT:
+      ops = cache.get_component_operations(resolved.entity_id);
+      break;
+    case SovdEntityType::AREA:
+      ops = cache.get_area_operations(resolved.entity_id);
+      break;
+    case SovdEntityType::FUNCTION:
+      ops = cache.get_function_operations(resolved.entity_id);
+      break;
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+    default:
+      break;
   }
 
   // The id documented for an item has to be the id the collection emits, or the

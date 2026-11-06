@@ -156,7 +156,7 @@ std::string serving_member_for_topic(const ThreadSafeEntityCache & cache, const 
 /// can change where the request is served. Walking the entity is not free, so a
 /// gateway with no peers - where every member is served here anyway - skips it.
 tl::expected<AddressedDataItem, ErrorInfo> address_data_item(const ThreadSafeEntityCache & cache,
-                                                             const std::string & entity_id,
+                                                             SovdEntityType entity_type, const std::string & entity_id,
                                                              const std::string & topic_name, bool resolve_owner) {
   AddressedDataItem addressed;
   addressed.full_topic_path = to_full_topic_path(topic_name);
@@ -165,12 +165,12 @@ tl::expected<AddressedDataItem, ErrorInfo> address_data_item(const ThreadSafeEnt
   if (topic_name.find(':') == std::string::npos) {
     if (resolve_owner) {
       addressed.owner_member_id =
-          serving_member_for_topic(cache, cache.get_entity_data(entity_id), addressed.full_topic_path);
+          serving_member_for_topic(cache, cache.get_entity_data(entity_type, entity_id), addressed.full_topic_path);
     }
     return addressed;
   }
 
-  auto aggregated = cache.get_entity_data(entity_id);
+  auto aggregated = cache.get_entity_data(entity_type, entity_id);
   auto parsed = http::parse_member_qualified_id(topic_name, aggregated.is_aggregated);
   if (!parsed.has_member) {
     if (resolve_owner) {
@@ -446,7 +446,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
   try {
     // Use unified cache method to get aggregated data.
     const auto & cache = ctx_.services().entity_cache();
-    auto aggregated = cache.get_entity_data(entity_id);
+    auto aggregated = cache.get_entity_data(entity_info.sovd_type(), entity_id);
 
     auto & type_schemas = *ctx_.services().type_schemas();
 
@@ -656,8 +656,8 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
   }
 
   try {
-    auto addressed =
-        address_data_item(ctx_.services().entity_cache(), entity_id, topic_name, ctx_.aggregation_manager() != nullptr);
+    auto addressed = address_data_item(ctx_.services().entity_cache(), entity_info.sovd_type(), entity_id, topic_name,
+                                       ctx_.aggregation_manager() != nullptr);
     if (!addressed) {
       return tl::make_unexpected(addressed.error());
     }
@@ -829,8 +829,8 @@ http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedReques
     // A write addresses the same item a read does, so it resolves the same way -
     // including which gateway publishes it. Publishing here for a member another
     // gateway runs would create a publisher on a graph that member is not on.
-    auto addressed =
-        address_data_item(ctx_.services().entity_cache(), entity_id, topic_name, ctx_.aggregation_manager() != nullptr);
+    auto addressed = address_data_item(ctx_.services().entity_cache(), entity_info.sovd_type(), entity_id, topic_name,
+                                       ctx_.aggregation_manager() != nullptr);
     if (!addressed) {
       return tl::make_unexpected(addressed.error());
     }

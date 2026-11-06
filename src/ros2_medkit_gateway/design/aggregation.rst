@@ -812,7 +812,10 @@ The order inside ``dispatch_to_member`` is load-bearing:
    ``available`` an ``EntityInfo`` reads off the entity it found). A member half
    on the wire carries only an id; it is resolved against the entity's typed
    members, an App winning over a Component that shares its id, because a topic
-   and a parameter belong to an App.
+   and a parameter belong to an App. The entity a resource route names is
+   looked up the same way, as the route's type: an Area and a Function may share
+   an id, and ``get_entity_data`` / ``get_entity_configurations`` by id alone
+   served the Function's data and configurations route the Area's members.
 4. **Forward.** ``AggregationManager::forward_request`` is called with the
    built path. The overload taking an explicit target applies the same
    ``/api/v1/`` SSRF guard and the same ``<peer>__`` prefix rewrite to that path
