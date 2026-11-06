@@ -98,6 +98,15 @@ class EntityMerger {
   /// uses this one.
   EntityMerger(const std::string & peer_name, LocalIds local_ids, std::optional<LocalIds> peer_ids = std::nullopt);
 
+  /// Make this merge the replay of a declaration retained for a peer that did
+  /// not answer this refresh. `live_sources` are the `peer:<name>` tags of the
+  /// peers that did. A Component one of them already contributes stays that
+  /// peer's: the replay is added as a contributor, but neither claims the
+  /// Component's route nor sets its reachability, so its requests keep going to
+  /// a gateway that answers. Without a live contributor the replay claims it as
+  /// any merge does.
+  void set_replay(std::unordered_set<std::string> live_sources);
+
   /// The IDs of the given entities, ready to pass to the constructor.
   static LocalIds collect_ids(const std::vector<Area> & areas, const std::vector<Component> & components,
                               const std::vector<App> & apps, const std::vector<Function> & functions);
@@ -188,6 +197,8 @@ class EntityMerger {
   LocalIds drops_;
   /// The IDs of the remote entities this merger added, as served, per type.
   LocalIds added_;
+  /// Set by set_replay: the peers a replayed declaration yields a Component to.
+  std::optional<std::unordered_set<std::string>> replay_yields_to_;
 
   /// The remote entity an ID was generated for: its type and its own ID.
   struct GeneratedFor {
