@@ -226,12 +226,17 @@ written by ``medkit_test_needs_no_domain()``. It also prints the ephemeral range
 fails when the band does not hold against it: the allocator refuses per test and mid-run,
 whereas the gate says it once, before the run, in the words of the sysctl that has to change.
 
-One limit is worth writing down, because it is inherited rather than chosen. The lock is a
-TCP bind, so its reach is one network namespace, not one machine. Two containers on the same
-host each have their own namespace and can both hold ``32768 + 47``, yet DDS multicast
-crosses Docker's default bridge, so nodes in those two containers do see each other. Isolating
-containers on a shared bridge is not something this scheme provides, and the same is true of
-upstream's ``ament_add_ros_isolated_gtest``, which uses the same lock.
+The lock is a TCP bind, so its reach is one network namespace, not one machine. Two
+containers on the same host each have their own namespace and can both hold ``32768 + 47``,
+yet DDS multicast crosses Docker's default bridge, so nodes in those two containers would see
+each other, and so would any ROS process on the same LAN that uses the domain. The same is
+true of upstream's ``ament_add_ros_isolated_gtest``, which uses the same lock. A held domain
+therefore keeps the tests apart from each other only, and the wrappers also keep each test's
+DDS discovery on its own host: ``apply_to_environ`` sets
+``ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST``, or ``ROS_LOCALHOST_ONLY=1`` on Humble, which
+reads only the older variable. Nothing a test starts needs discovery beyond its host. Without
+this, a demo stack in another container on the same bridge and domain answered a test's
+``/fault_manager/report_fault`` calls in place of the test's own fault manager.
 
 The wait budget is derived rather than fixed. ``ament_add_test`` defaults to ``TIMEOUT 60``,
 so an allocator waiting a fixed 180 seconds was killed by CTest mid-wait on nearly every test

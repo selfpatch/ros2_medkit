@@ -30,12 +30,11 @@ The reach of that lock is one NETWORK NAMESPACE, not one machine, and the
 difference matters. Two containers on the same host each get their own
 namespace, so each can bind ``32768 + 47`` and believe it holds domain 47 - yet
 DDS multicast crosses Docker's default bridge, so nodes in those two containers
-do see each other. Domain isolation between containers on a shared bridge is
-therefore not something this scheme provides. Inherited from
-``domain_coordinator`` and true of upstream's ``ament_add_ros_isolated_gtest``
-in the same way, so it is a limit to know about rather than a bug to fix here:
-isolate containers at the network, or give them separate ``ROS_DOMAIN_ID``
-ranges, if they must not meet.
+would see each other, and so would a robot stack on the same LAN that uses the
+domain. The lock cannot reach them, so every test's discovery is kept on its own
+host instead, see ``apply_to_environ``: ``ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST``,
+or ``ROS_LOCALHOST_ONLY=1`` on Humble. Nothing a test starts needs discovery
+beyond the host it runs on.
 
 Three things here are ours rather than upstream's:
 
@@ -660,10 +659,22 @@ def report_reclaimed_shared_memory(reclaimed):
 
 
 def apply_to_environ(domains, env=None):
-    """Publish the held domains the way every test reads them."""
+    """Publish the held domains the way every test reads them.
+
+    Also keeps the test's DDS discovery on this host. The held domain keeps the
+    tests apart from each other, not from other ROS processes on the network: a
+    robot stack in another container on the same bridge, or on the same LAN,
+    that uses the domain would otherwise answer the test's services and see its
+    nodes. Humble reads ROS_LOCALHOST_ONLY; later distros read
+    ROS_AUTOMATIC_DISCOVERY_RANGE and warn about the older variable.
+    """
     if env is None:
         env = os.environ
     env['ROS_DOMAIN_ID'] = str(domains[0])
+    if env.get('ROS_DISTRO') == 'humble':
+        env['ROS_LOCALHOST_ONLY'] = '1'
+    else:
+        env['ROS_AUTOMATIC_DISCOVERY_RANGE'] = 'LOCALHOST'
     if len(domains) > 1:
         env[SECONDARY_ENV] = ','.join(str(domain) for domain in domains[1:])
     else:
