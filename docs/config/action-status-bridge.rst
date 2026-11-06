@@ -88,6 +88,8 @@ Parameters
 The bridge also declares ``fault_reporter.local_filtering.enabled`` (default
 ``false``) on its own node. See :doc:`fault-manager` for what the reporter-side
 filter does.
+Its reports are also confirmed and sent again when the manager does not answer; see the
+``fault_reporter.delivery.*`` parameters in the ``ros2_medkit_fault_reporter`` README.
 
 See Also
 --------

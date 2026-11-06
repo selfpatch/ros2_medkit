@@ -174,7 +174,6 @@ class TestSourceResolution(unittest.TestCase):
                         pub.publish(_aborted(s + 1))
                         held.append(pub)
                 servers.append((node, held))
-            time.sleep(0.5)
         finally:
             os.kill(pid, signal.SIGCONT)
 

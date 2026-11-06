@@ -123,7 +123,7 @@ Main Components
    - Loads filter configuration from ROS parameters
    - Provides simple ``report(fault_code, severity, description)`` method
    - Integrates ``LocalFilter`` to reduce noise from repeated faults, through ``ReporterCore``
-   - Fire-and-forget service calls (non-blocking)
+   - Non-blocking service calls that are confirmed by the response and sent again when it does not come
 
 2. **LocalFilter** - Per-fault-code filtering with threshold and time window
 
@@ -200,6 +200,10 @@ Parameters are loaded from the node's parameter server:
            default_threshold: 3
            default_window_sec: 10.0
            bypass_severity: 2
+         delivery:
+           ack_timeout_sec: 0.5
+           max_attempts: 10
+           max_pending: 1024
 
 Plain-CMake Build
 ~~~~~~~~~~~~~~~~~
@@ -228,13 +232,22 @@ The default threshold of 3 reports within 10 seconds balances:
 - **Responsiveness**: Persistent issues are reported within seconds
 - **Safety**: High-severity faults (ERROR, CRITICAL) bypass filtering entirely
 
-Fire-and-Forget Service Calls
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Confirmed Delivery
+~~~~~~~~~~~~~~~~~~
 
-The ``report()`` method uses asynchronous service calls without waiting for
-responses. This ensures fault reporting never blocks the calling node, which
-is important for real-time systems. If the FaultManager service is unavailable,
-reports are silently dropped (logged at DEBUG level).
+``report()`` never blocks the calling node. It queues the request and returns. A client can see the
+service as ready before the server has matched it, and a request sent in that gap is lost, so the
+reporter keeps each request until its response arrives. With no response within
+``ack_timeout_sec`` it sends the request again, up to ``max_attempts`` requests. It then logs a
+warning that names the fault code and drops the report.
+
+Per fault code the requests form a queue and only the front is in flight, so the manager receives the
+events of one code in the order they were reported. At most ``max_pending`` reports wait for a
+response, all codes together. A report past that is dropped with a warning. A report made while the
+service is not ready is dropped at once (DEBUG log, WARN for a high-severity FAILED).
+
+Responses are processed when the node is spun. If a request arrived and only its response was lost,
+the manager gets the event twice. A repeated FAILED counts toward the manager's debounce.
 
 Thread Safety
 ~~~~~~~~~~~~~

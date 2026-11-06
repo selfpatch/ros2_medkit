@@ -24,6 +24,23 @@
 
 namespace ros2_medkit_fault_reporter::core {
 
+/// How the reporter confirms delivery of each report.
+struct DeliveryConfig {
+  /// Wait for a response this long before sending a request again.
+  double ack_timeout_sec{0.5};
+  /// Requests sent per report before it is dropped.
+  int max_attempts{10};
+  /// Reports waiting for a response, all fault codes together. A newer report past this is dropped.
+  int max_pending{1024};
+};
+
+inline constexpr double kMinAckTimeoutSec = 0.05;
+inline constexpr double kMaxAckTimeoutSec = 60.0;
+inline constexpr int kMinMaxAttempts = 1;
+inline constexpr int kMaxMaxAttempts = 100;
+inline constexpr int kMinMaxPending = 1;
+inline constexpr int kMaxMaxPending = 100000;
+
 /// Receives each report that passed the filter.
 using ReportSink = std::function<void(const ros2_medkit::fault_detection::FaultReport &)>;
 
@@ -54,5 +71,11 @@ class ReporterCore {
 /// null). A threshold below 1 becomes 1. A window that is not finite and positive becomes 1.0.
 FilterConfig validate_filter_params(bool enabled, int64_t threshold, double window_sec, int64_t bypass_severity,
                                     std::vector<std::string> * warnings);
+
+/// Builds a valid delivery config from raw parameter values. A value outside its range (a NaN
+/// timeout, an int64 beyond the range) is replaced by its default and a message is appended to warnings
+/// (when not null).
+DeliveryConfig validate_delivery_params(double ack_timeout_sec, int64_t max_attempts, int64_t max_pending,
+                                        std::vector<std::string> * warnings);
 
 }  // namespace ros2_medkit_fault_reporter::core

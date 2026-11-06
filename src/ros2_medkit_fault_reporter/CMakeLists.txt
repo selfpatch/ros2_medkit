@@ -103,12 +103,20 @@ if(BUILD_TESTING)
   target_link_libraries(test_validate_filter_params fault_reporter_core)
   medkit_test_needs_no_domain(test_validate_filter_params)
 
+  # Test node of the delivery tests.
+  add_executable(delivery_probe_node test/delivery_probe_node.cpp)
+  target_link_libraries(delivery_probe_node fault_reporter_lib)
+  medkit_target_dependencies(delivery_probe_node rclcpp ros2_medkit_msgs)
+  install(TARGETS delivery_probe_node DESTINATION lib/${PROJECT_NAME})
+
   # Integration tests
   install(DIRECTORY test
     DESTINATION share/${PROJECT_NAME}
   )
 
   medkit_add_launch_test(test_integration test/test_integration.test.py TIMEOUT 60)
+
+  medkit_add_launch_test(test_delivery test/test_delivery.test.py TIMEOUT 300)
 
   # A launch test and its children on one domain. It lives here rather than in
   # ros2_medkit_cmake because that package is declared NONE, and on Humble

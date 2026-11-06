@@ -14,10 +14,158 @@
 
 #include "ros2_medkit_fault_reporter/fault_reporter.hpp"
 
+#include <deque>
+#include <functional>
+#include <map>
+#include <mutex>
+#include <utility>
+#include <vector>
+
 #include "rclcpp/version.h"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 
 namespace ros2_medkit_fault_reporter {
+
+namespace {
+using Clock = std::chrono::steady_clock;
+using ReportFault = ros2_medkit_msgs::srv::ReportFault;
+}  // namespace
+
+// Confirms delivery. Per fault code the reports form a queue and only the front is in flight, so the
+// manager receives the events of one code in the order they were reported. The front is sent again
+// when no response arrives within the ack timeout, up to max_attempts requests.
+struct FaultReporter::Delivery : std::enable_shared_from_this<FaultReporter::Delivery> {
+  struct Entry {
+    std::shared_ptr<ReportFault::Request> request;
+    int attempts{0};
+    Clock::time_point sent_at;
+    int64_t request_id{-1};
+  };
+
+  Delivery(rclcpp::Client<ReportFault>::SharedPtr c, const rclcpp::Logger & l, const core::DeliveryConfig & cfg)
+    : client(std::move(c)), logger(l), config(cfg) {
+  }
+
+  void enqueue(const std::shared_ptr<ReportFault::Request> & request) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!timer) {
+      retry_due_locked();  // no timer: a new report is the chance to retry the older ones
+    }
+    if (pending >= static_cast<size_t>(config.max_pending)) {
+      RCLCPP_WARN(logger, "%zu reports wait for the FaultManager, dropping the report for '%s'", pending,
+                  request->fault_code.c_str());
+      return;
+    }
+    auto & queue = queues[request->fault_code];
+    Entry entry;
+    entry.request = request;
+    queue.push_back(std::move(entry));
+    ++pending;
+    if (queue.size() == 1) {
+      send_front_locked(request->fault_code);
+    }
+    arm_timer_locked();
+  }
+
+  size_t pending_count() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return pending;
+  }
+
+  void shutdown() {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (timer) {
+      timer->cancel();
+      timer.reset();
+    }
+  }
+
+  void on_response(const std::string & code, const std::shared_ptr<ReportFault::Request> & request) {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = queues.find(code);
+    if (it == queues.end() || it->second.empty() || it->second.front().request != request) {
+      return;  // the answer to an attempt that was already replaced
+    }
+    pop_front_locked(code);
+  }
+
+  void on_timer() {
+    std::lock_guard<std::mutex> lock(mutex);
+    retry_due_locked();
+    if (pending == 0 && timer) {
+      timer->cancel();
+    }
+  }
+
+  std::mutex mutex;
+  std::map<std::string, std::deque<Entry>> queues;
+  size_t pending{0};
+  rclcpp::TimerBase::SharedPtr timer;
+
+ private:
+  void arm_timer_locked() {
+    if (timer && timer->is_canceled()) {
+      timer->reset();
+    }
+  }
+
+  void send_front_locked(const std::string & code) {
+    Entry & entry = queues[code].front();
+    ++entry.attempts;
+    entry.sent_at = Clock::now();
+    std::weak_ptr<Delivery> weak = weak_from_this();
+    auto request = entry.request;
+    entry.request_id =
+        client
+            ->async_send_request(
+                request,
+                [weak, code,
+                 request](rclcpp::Client<ReportFault>::SharedFuture) {  // NOLINT(performance-unnecessary-value-param)
+                  if (auto self = weak.lock()) {
+                    self->on_response(code, request);
+                  }
+                })
+            .request_id;
+  }
+
+  void pop_front_locked(const std::string & code) {
+    auto & queue = queues[code];
+    queue.pop_front();
+    --pending;
+    if (queue.empty()) {
+      queues.erase(code);
+    } else {
+      send_front_locked(code);
+    }
+  }
+
+  void retry_due_locked() {
+    const auto now = Clock::now();
+    const auto timeout =
+        std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(config.ack_timeout_sec));
+    std::vector<std::string> codes;
+    for (const auto & [code, queue] : queues) {
+      if (!queue.empty() && now - queue.front().sent_at >= timeout) {
+        codes.push_back(code);
+      }
+    }
+    for (const auto & code : codes) {
+      Entry & entry = queues[code].front();
+      client->remove_pending_request(entry.request_id);
+      if (entry.attempts >= config.max_attempts) {
+        RCLCPP_WARN(logger, "No response from the FaultManager after %d attempts, dropping the report for '%s'",
+                    entry.attempts, code.c_str());
+        pop_front_locked(code);
+      } else {
+        send_front_locked(code);
+      }
+    }
+  }
+
+  rclcpp::Client<ReportFault>::SharedPtr client;
+  rclcpp::Logger logger;
+  core::DeliveryConfig config;
+};
 
 FaultReporter::FaultReporter(const rclcpp::node_interfaces::NodeBaseInterface::SharedPtr & node_base,
                              const rclcpp::node_interfaces::NodeGraphInterface::SharedPtr & node_graph,
@@ -25,8 +173,19 @@ FaultReporter::FaultReporter(const rclcpp::node_interfaces::NodeBaseInterface::S
                              const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & node_params,
                              const rclcpp::Logger & logger, const std::string & source_id,
                              const std::string & service_name)
+  : FaultReporter(node_base, node_graph, node_services, node_params, nullptr, logger, source_id, service_name) {
+}
+
+FaultReporter::FaultReporter(const rclcpp::node_interfaces::NodeBaseInterface::SharedPtr & node_base,
+                             const rclcpp::node_interfaces::NodeGraphInterface::SharedPtr & node_graph,
+                             const rclcpp::node_interfaces::NodeServicesInterface::SharedPtr & node_services,
+                             const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & node_params,
+                             const rclcpp::node_interfaces::NodeTimersInterface::SharedPtr & node_timers,
+                             const rclcpp::Logger & logger, const std::string & source_id,
+                             const std::string & service_name)
   : source_id_(source_id)
   , logger_(logger)
+  , delivery_config_(load_delivery_config(node_params, logger))
   , core_(source_id, load_parameters(node_params, logger),
           [this](const ros2_medkit::fault_detection::FaultReport & report) {
             send_report(report);
@@ -47,32 +206,59 @@ FaultReporter::FaultReporter(const rclcpp::node_interfaces::NodeBaseInterface::S
       node_base, node_graph, node_services, service_name, rmw_qos_profile_services_default, nullptr);
 #endif
 
+  delivery_ = std::make_shared<Delivery>(client_, logger_, delivery_config_);
+  if (node_timers) {
+    std::weak_ptr<Delivery> weak = delivery_;
+    const auto period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(delivery_config_.ack_timeout_sec / 2.0));
+    delivery_->timer = std::make_shared<rclcpp::WallTimer<std::function<void()>>>(
+        period,
+        [weak]() {
+          if (auto self = weak.lock()) {
+            self->on_timer();
+          }
+        },
+        node_base->get_context());
+    node_timers->add_timer(delivery_->timer, nullptr);
+    delivery_->timer->cancel();
+  }
+
   RCLCPP_DEBUG(logger_, "FaultReporter initialized for source: %s", source_id_.c_str());
+}
+
+FaultReporter::~FaultReporter() {
+  delivery_->shutdown();
+}
+
+size_t FaultReporter::pending_reports() const {
+  return delivery_->pending_count();
 }
 
 FaultReporter::FaultReporter(const rclcpp::Node::SharedPtr & node, const std::string & source_id,
                              const std::string & service_name)
   : FaultReporter(node->get_node_base_interface(), node->get_node_graph_interface(),
-                  node->get_node_services_interface(), node->get_node_parameters_interface(), node->get_logger(),
-                  source_id, service_name) {
+                  node->get_node_services_interface(), node->get_node_parameters_interface(),
+                  node->get_node_timers_interface(), node->get_logger(), source_id, service_name) {
 }
 
 FaultReporter::FaultReporter(rclcpp::Node & node, const std::string & source_id, const std::string & service_name)
   : FaultReporter(node.get_node_base_interface(), node.get_node_graph_interface(), node.get_node_services_interface(),
-                  node.get_node_parameters_interface(), node.get_logger(), source_id, service_name) {
+                  node.get_node_parameters_interface(), node.get_node_timers_interface(), node.get_logger(), source_id,
+                  service_name) {
 }
 
 FaultReporter::FaultReporter(rclcpp_lifecycle::LifecycleNode & node, const std::string & source_id,
                              const std::string & service_name)
   : FaultReporter(node.get_node_base_interface(), node.get_node_graph_interface(), node.get_node_services_interface(),
-                  node.get_node_parameters_interface(), node.get_logger(), source_id, service_name) {
+                  node.get_node_parameters_interface(), node.get_node_timers_interface(), node.get_logger(), source_id,
+                  service_name) {
 }
 
 FaultReporter::FaultReporter(const rclcpp_lifecycle::LifecycleNode::SharedPtr & node, const std::string & source_id,
                              const std::string & service_name)
   : FaultReporter(node->get_node_base_interface(), node->get_node_graph_interface(),
-                  node->get_node_services_interface(), node->get_node_parameters_interface(), node->get_logger(),
-                  source_id, service_name) {
+                  node->get_node_services_interface(), node->get_node_parameters_interface(),
+                  node->get_node_timers_interface(), node->get_logger(), source_id, service_name) {
 }
 
 FilterConfig
@@ -110,6 +296,35 @@ FaultReporter::load_parameters(const rclcpp::node_interfaces::NodeParametersInte
 
   RCLCPP_DEBUG(logger, "Filter config: enabled=%d, threshold=%d, window=%.1fs, bypass_severity=%d", config.enabled,
                config.default_threshold, config.default_window_sec, config.bypass_severity);
+  return config;
+}
+
+core::DeliveryConfig
+FaultReporter::load_delivery_config(const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & node_params,
+                                    const rclcpp::Logger & logger) {
+  const core::DeliveryConfig defaults;
+  if (!node_params->has_parameter("fault_reporter.delivery.ack_timeout_sec")) {
+    node_params->declare_parameter("fault_reporter.delivery.ack_timeout_sec",
+                                   rclcpp::ParameterValue(defaults.ack_timeout_sec));
+  }
+  if (!node_params->has_parameter("fault_reporter.delivery.max_attempts")) {
+    node_params->declare_parameter("fault_reporter.delivery.max_attempts",
+                                   rclcpp::ParameterValue(static_cast<int64_t>(defaults.max_attempts)));
+  }
+  if (!node_params->has_parameter("fault_reporter.delivery.max_pending")) {
+    node_params->declare_parameter("fault_reporter.delivery.max_pending",
+                                   rclcpp::ParameterValue(static_cast<int64_t>(defaults.max_pending)));
+  }
+
+  // Parameters are int64: the range is checked before narrowing.
+  std::vector<std::string> warnings;
+  const auto config = core::validate_delivery_params(
+      node_params->get_parameter("fault_reporter.delivery.ack_timeout_sec").as_double(),
+      node_params->get_parameter("fault_reporter.delivery.max_attempts").as_int(),
+      node_params->get_parameter("fault_reporter.delivery.max_pending").as_int(), &warnings);
+  for (const auto & warning : warnings) {
+    RCLCPP_WARN(logger, "%s", warning.c_str());
+  }
   return config;
 }
 
@@ -166,8 +381,7 @@ void FaultReporter::send_report(const ros2_medkit::fault_detection::FaultReport 
   request->description = report.description;
   request->source_id = source_id_;
 
-  // Fire and forget - don't block on response
-  client_->async_send_request(request);
+  delivery_->enqueue(request);
 
   if (failed) {
     RCLCPP_DEBUG(logger_, "Reported FAILED: %s (severity=%d)", report.fault_code.c_str(), report.severity);

@@ -14,9 +14,11 @@
 
 #pragma once
 
+#include <chrono>
 #include <memory>
 #include <string>
 
+#include "rclcpp/node_interfaces/node_timers_interface.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "ros2_medkit_fault_reporter/core/reporter_core.hpp"
@@ -72,12 +74,32 @@ class FaultReporter {
   /// @param logger ROS2 Node Logger for reporting logs
   /// @param source_id Identifier for this reporter (typically node's FQN)
   /// @param service_name Name of the ReportFault service (default: /fault_manager/report_fault)
+  ///
+  /// This overload has no timers interface, so a request with no response is sent again only when
+  /// the next report is made. The overloads that take a node use a timer.
   FaultReporter(const rclcpp::node_interfaces::NodeBaseInterface::SharedPtr & node_base,
                 const rclcpp::node_interfaces::NodeGraphInterface::SharedPtr & node_graph,
                 const rclcpp::node_interfaces::NodeServicesInterface::SharedPtr & node_services,
                 const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & node_params,
                 const rclcpp::Logger & logger, const std::string & source_id,
                 const std::string & service_name = "/fault_manager/report_fault");
+
+  /// Base Constructor with a timers interface, which retries a request that got no response.
+  ///
+  /// @param node_timers ROS2 Node Timers Interface for the retry timer
+  FaultReporter(const rclcpp::node_interfaces::NodeBaseInterface::SharedPtr & node_base,
+                const rclcpp::node_interfaces::NodeGraphInterface::SharedPtr & node_graph,
+                const rclcpp::node_interfaces::NodeServicesInterface::SharedPtr & node_services,
+                const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & node_params,
+                const rclcpp::node_interfaces::NodeTimersInterface::SharedPtr & node_timers,
+                const rclcpp::Logger & logger, const std::string & source_id,
+                const std::string & service_name = "/fault_manager/report_fault");
+
+  ~FaultReporter();
+  FaultReporter(const FaultReporter &) = delete;
+  FaultReporter & operator=(const FaultReporter &) = delete;
+  FaultReporter(FaultReporter &&) = delete;
+  FaultReporter & operator=(FaultReporter &&) = delete;
 
   /// Construct a FaultReporter via Node Shared Ptr (maintain backwards compatibility)
   ///
@@ -135,6 +157,14 @@ class FaultReporter {
   /// Check if the FaultManager service is available
   bool is_service_ready() const;
 
+  /// Reports sent and still waiting for a response, all fault codes together.
+  size_t pending_reports() const;
+
+  /// Delivery settings in effect, after validation.
+  const core::DeliveryConfig & delivery_config() const {
+    return delivery_config_;
+  }
+
   /// Get read-only access to the local filter (for testing)
   const LocalFilter & filter() const {
     return core_.filter();
@@ -145,12 +175,20 @@ class FaultReporter {
   static FilterConfig load_parameters(const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & node_params,
                                       const rclcpp::Logger & logger);
 
-  /// Send the fault report to FaultManager (async, fire-and-forget)
+  static core::DeliveryConfig
+  load_delivery_config(const rclcpp::node_interfaces::NodeParametersInterface::SharedPtr & node_params,
+                       const rclcpp::Logger & logger);
+
+  /// Hand the report to the delivery queue: it is sent, and sent again until a response arrives.
   void send_report(const ros2_medkit::fault_detection::FaultReport & report);
+
+  struct Delivery;
 
   std::string source_id_;
   rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedPtr client_;
   rclcpp::Logger logger_;
+  core::DeliveryConfig delivery_config_;
+  std::shared_ptr<Delivery> delivery_;
   core::ReporterCore core_;
 };
 
