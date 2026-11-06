@@ -64,10 +64,10 @@ class TestSigintExit(unittest.TestCase):
                 proc.kill()
                 out, _ = proc.communicate()
             if proc.returncode != 0:
-                failures.append((run, proc.returncode, out[-300:]))
+                failures.append((run, proc.returncode))
+                print(f'--- run {run} exited {proc.returncode} ---\n{out}')
         self.assertEqual(
-            failures, [],
-            f'{len(failures)} of {RUNS} runs did not exit 0: {failures[:3]}')
+            failures, [], f'{len(failures)} of {RUNS} runs did not exit 0 (run, code): {failures}')
 
     def test_sigint_during_startup_exits_cleanly(self):
         """SIGINT within the first milliseconds, while the constructor scans."""
@@ -79,8 +79,8 @@ class TestSigintExit(unittest.TestCase):
         for run in range(STARTUP_RUNS):
             proc = subprocess.Popen(
                 [exe], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            # Spread the signal over the whole startup, from before rclcpp::init()
-            # installs its handler to well after the first scan.
+            # Spread the signal over the whole startup, from before main() blocks
+            # it to well after the first scan.
             delay = rng.random() * 0.25
             try:
                 proc.wait(timeout=delay)
@@ -93,10 +93,11 @@ class TestSigintExit(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 proc.kill()
                 out, _ = proc.communicate()
-            # -2: SIGINT before rclcpp::init() installed its handler; the default
-            # action ends the process and no bridge code runs.
+            # -2: SIGINT before main() blocked it; the default action ends the
+            # process and no bridge code runs.
             if proc.returncode not in (0, -signal.SIGINT):
-                failures.append((run, round(delay, 3), proc.returncode, out[-300:]))
+                failures.append((run, round(delay, 3), proc.returncode))
+                print(f'--- run {run}, signal at {delay:.3f} s, exit {proc.returncode} ---\n{out}')
         self.assertEqual(
             failures, [],
-            f'{len(failures)} of {STARTUP_RUNS} runs aborted: {failures[:3]}')
+            f'{len(failures)} of {STARTUP_RUNS} runs aborted (run, delay, code): {failures}')
