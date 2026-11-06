@@ -114,16 +114,15 @@ which evaluations are new samples:
 
 - Polling reads every point each cycle, so a value that did not arrive in this cycle is
   left over from a failed read. It is skipped, and every point keeps its state.
-- A subscription reports changes only. The data change that starts a wait is its first
-  sample. While a fault waits, the poll loop runs an extra pass each ``poll_interval_ms``
-  for the value the point holds. A data change or such a pass counts one more sample only
-  when a full poll interval passed since that fault's last counted sample, so samples stay
-  one poll apart, as under polling, whether the value holds or keeps moving. A point that
-  has not reported since the link came back is skipped, so a value from before an outage
-  never counts. While a
-  ``raise_after_ms`` wait is open and ``subscription_interval_ms`` is shorter than the poll,
-  the poll thread also rechecks every ``subscription_interval_ms`` between polls, so the wait
-  ends on time; a recheck, like a pass caused by another point's change, counts no sample.
+- A subscription reports changes only, so there are no samples to count. The pipeline
+  applies ``RaiseQualifier::for_change_notifications(poll_interval_ms)``: a samples rule
+  becomes a wait of ``(N - 1)`` poll intervals, or ``raise_after_ms`` when that is longer.
+  The point's own data change is fresh and starts the wait. While a fault waits, the poll
+  loop rechecks once per ``poll_interval_ms`` and, when ``subscription_interval_ms`` is
+  shorter than the poll, after every ``subscription_interval_ms`` step, so the wait ends on
+  time. A recheck, like a pass caused by another point's change, is not fresh: it ends a
+  wait but starts none. A point that has not reported since the link came back is skipped,
+  so a value from before an outage never counts.
 - ``evaluate_alarms`` runs on the poll thread, on the event pump thread with native alarms
   on, and on any thread that makes a synchronous client call (open62541 delivers subscription
   callbacks during those as well). It works out the raise and clear edges and hands them to the plugin under

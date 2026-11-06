@@ -66,8 +66,8 @@ class Harness {
     loaded_ = map_.load(path.string());
     std::remove(path.string().c_str());
     entries_ = map_.detection_entries();
-    // The poller sets the spacing to its poll interval; these tests poll at 500 ms.
-    pipeline_.set_min_sample_spacing(milliseconds(500));
+    // The poller sets its poll interval; these tests poll at 500 ms.
+    pipeline_.set_poll_interval(milliseconds(500));
   }
 
   bool loaded() const {
@@ -124,7 +124,6 @@ TEST(DetectionPipeline, PointWithoutQualifierRaisesOnTheFirstValue) {
   h.arrive(kTemp, 90.0);
   EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(0)), 1);
   EXPECT_TRUE(h.shown_active());
-  EXPECT_FALSE(h.pipeline().has_pending());
 }
 
 TEST(DetectionPipeline, PointWithoutQualifierKeepsItsStateOverAFailedRead) {
@@ -149,13 +148,11 @@ TEST(DetectionPipeline, PolledSamplesRaiseOnTheNthRead) {
   h.arrive(kTemp, 90.0);
   EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(0)), 0);
   EXPECT_FALSE(h.shown_active());
-  EXPECT_TRUE(h.pipeline().has_pending());
   h.arrive(kTemp, 90.0);
   EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(500)), 0);
   h.arrive(kTemp, 90.0);
   EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(1000)), 1);
   EXPECT_TRUE(h.shown_active());
-  EXPECT_FALSE(h.pipeline().has_pending());
 }
 
 TEST(DetectionPipeline, PolledFailedReadNeitherCountsNorResets) {
@@ -169,7 +166,6 @@ TEST(DetectionPipeline, PolledFailedReadNeitherCountsNorResets) {
   EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(1000)), 0);
   EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(1500)), 0);
   EXPECT_FALSE(h.shown_active());
-  EXPECT_TRUE(h.pipeline().has_pending());
   // The third real reading completes the run that was already going.
   h.arrive(kTemp, 90.0);
   EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(2000)), 1);
@@ -196,7 +192,6 @@ TEST(DetectionPipeline, PolledHealthyReadingRestartsTheWait) {
   h.pass(kPolled, Pass::kValues, milliseconds(0));
   h.arrive(kTemp, 70.0);
   EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(500)), 0);
-  EXPECT_FALSE(h.pipeline().has_pending());
   h.arrive(kTemp, 90.0);
   EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(1000)), 0);
   h.arrive(kTemp, 90.0);
@@ -217,9 +212,70 @@ TEST(DetectionPipeline, ClearIsImmediate) {
 
 // -- Subscriptions --------------------------------------------------------------
 
+TEST(DetectionPipeline, SubscribedSamplesWaitNMinusOnePollIntervals) {
+  // A held value sends one data change, so there is nothing to count. Three
+  // samples at a 500 ms poll span 1000 ms, and a recheck ends the wait then.
+  Harness h("sub_samples", "    raise_after_samples: 3\n");
+  ASSERT_TRUE(h.loaded());
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(0)), 0);
+  EXPECT_TRUE(h.pipeline().has_pending());
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(999)), 0);
+  EXPECT_FALSE(h.shown_active());
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(1000)), 1);
+  EXPECT_TRUE(h.shown_active());
+}
+
+TEST(DetectionPipeline, SubscribedSamplesWaitFollowsThePollInterval) {
+  Harness h("sub_samples_interval", "    raise_after_samples: 3\n");
+  ASSERT_TRUE(h.loaded());
+  h.pipeline().set_poll_interval(milliseconds(2000));
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(0)), 0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(3999)), 0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(4000)), 1);
+}
+
+TEST(DetectionPipeline, SubscribedSamplesAndDurationWaitForTheLonger) {
+  Harness longer_ms("sub_both_ms", "    raise_after_samples: 3\n    raise_after_ms: 2500\n");
+  ASSERT_TRUE(longer_ms.loaded());
+  longer_ms.arrive(kTemp, 90.0);
+  EXPECT_EQ(longer_ms.pass(kSubscribed, Pass::kValues, milliseconds(0)), 0);
+  EXPECT_EQ(longer_ms.pass(kSubscribed, Pass::kRecheck, milliseconds(2499)), 0);
+  EXPECT_EQ(longer_ms.pass(kSubscribed, Pass::kRecheck, milliseconds(2500)), 1);
+
+  Harness longer_samples("sub_both_samples", "    raise_after_samples: 3\n    raise_after_ms: 300\n");
+  ASSERT_TRUE(longer_samples.loaded());
+  longer_samples.arrive(kTemp, 90.0);
+  EXPECT_EQ(longer_samples.pass(kSubscribed, Pass::kValues, milliseconds(0)), 0);
+  EXPECT_EQ(longer_samples.pass(kSubscribed, Pass::kRecheck, milliseconds(999)), 0);
+  EXPECT_EQ(longer_samples.pass(kSubscribed, Pass::kRecheck, milliseconds(1000)), 1);
+}
+
+TEST(DetectionPipeline, SubscribedBlipShorterThanTheWaitRaisesNothing) {
+  // 300 ms above the threshold, rechecked on every step: polling at 500 ms
+  // sees that at most once, and a 3-sample rule must not raise on it here
+  // either, however often it is rechecked.
+  Harness h("sub_blip_samples", "    raise_after_samples: 3\n");
+  ASSERT_TRUE(h.loaded());
+  for (int round = 0; round < 5; ++round) {
+    const auto start = milliseconds(2000 * round);
+    h.arrive(kTemp, 90.0);
+    EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, start), 0);
+    for (int i = 1; i <= 2; ++i) {
+      EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, start + milliseconds(100 * i)), 0) << "round " << round;
+    }
+    h.arrive(kTemp, 70.0);
+    EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, start + milliseconds(300)), 0);
+    EXPECT_FALSE(h.pipeline().has_pending());
+    EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, start + milliseconds(1500)), 0);
+  }
+  EXPECT_FALSE(h.shown_active());
+}
+
 TEST(DetectionPipeline, SubscribedOtherNodesChangesAreNotSamples) {
-  // Every data change re-evaluates every point. Changes of another node must
-  // not count as samples of this one.
+  // Every data change re-evaluates every point. Changes of another node do not
+  // make the wait shorter; they only let it end once its time is up.
   Harness h("sub_other", "    raise_after_samples: 3\n");
   ASSERT_TRUE(h.loaded());
   h.arrive(kTemp, 90.0);
@@ -229,49 +285,8 @@ TEST(DetectionPipeline, SubscribedOtherNodesChangesAreNotSamples) {
     EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(10 * i)), 0);
   }
   EXPECT_FALSE(h.shown_active());
-  EXPECT_TRUE(h.pipeline().has_pending());
-}
-
-TEST(DetectionPipeline, SubscribedHeldValueCountsOnePerTick) {
-  // A steady value sends one data change. Without the timer passes a
-  // samples-only rule would never raise. Each tick a full poll after the last
-  // counted sample is one more.
-  Harness h("sub_tick", "    raise_after_samples: 3\n");
-  ASSERT_TRUE(h.loaded());
-  h.arrive(kTemp, 90.0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(0)), 0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(500)), 0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(1000)), 1);
-  EXPECT_TRUE(h.shown_active());
-}
-
-TEST(DetectionPipeline, SubscribedTickRightAfterAChangeIsNotASecondSample) {
-  // Data changes arrive between polls, so a tick can come a few ms after a
-  // change. Counting it would let a 2-sample rule raise on a 100 ms blip that
-  // polling never sees twice.
-  Harness h("sub_blip_samples", "    raise_after_samples: 2\n");
-  ASSERT_TRUE(h.loaded());
-  for (int round = 0; round < 5; ++round) {
-    const auto start = milliseconds(1000 * round);
-    h.arrive(kTemp, 90.0);
-    EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, start), 0);
-    EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, start + milliseconds(20)), 0) << "round " << round;
-    h.arrive(kTemp, 70.0);
-    EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, start + milliseconds(100)), 0);
-    EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, start + milliseconds(520)), 0);
-  }
-  EXPECT_FALSE(h.shown_active());
-}
-
-TEST(DetectionPipeline, SubscribedSamplesStayOneTickApart) {
-  // A change just before a tick, then the value holds: the second sample is
-  // the tick after the next one, a full interval later, as with polling.
-  Harness h("sub_spacing", "    raise_after_samples: 2\n");
-  ASSERT_TRUE(h.loaded());
-  h.arrive(kTemp, 90.0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(980)), 0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(1000)), 0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(2000)), 1);
+  h.arrive(kOther, 11.0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(1000)), 1);
 }
 
 TEST(DetectionPipeline, SubscribedTwoQuickChangesAreOneSample) {
@@ -288,7 +303,7 @@ TEST(DetectionPipeline, SubscribedTwoQuickChangesAreOneSample) {
   EXPECT_FALSE(h.shown_active());
 }
 
-TEST(DetectionPipeline, SubscribedMovingValueCountsOncePerPoll) {
+TEST(DetectionPipeline, SubscribedMovingValueTakesAsLongAsUnderPolling) {
   // A noisy value above the threshold changes every 50 ms. It must take as
   // long to qualify as under a 500 ms poll: samples at 0, 500 and 1000 ms.
   Harness h("sub_moving", "    raise_after_samples: 3\n");
@@ -301,24 +316,15 @@ TEST(DetectionPipeline, SubscribedMovingValueCountsOncePerPoll) {
   EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(1000)), 1);
 }
 
-TEST(DetectionPipeline, SubscribedRecheckEndsADurationButCountsNoSample) {
-  // Between ticks the poll thread rechecks waiting faults, so raise_after_ms
-  // ends on time instead of at the next poll. A recheck is not a sample.
+TEST(DetectionPipeline, SubscribedRecheckEndsADuration) {
+  // Between polls the poll thread rechecks waiting faults, so raise_after_ms
+  // ends on time instead of at the next poll.
   Harness h("sub_recheck_ms", "    raise_after_ms: 300\n");
   ASSERT_TRUE(h.loaded());
   h.arrive(kTemp, 90.0);
   EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(0)), 0);
   EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(299)), 0);
   EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(300)), 1);
-
-  Harness s("sub_recheck_samples", "    raise_after_samples: 2\n");
-  ASSERT_TRUE(s.loaded());
-  s.arrive(kTemp, 90.0);
-  EXPECT_EQ(s.pass(kSubscribed, Pass::kValues, milliseconds(0)), 0);
-  for (int i = 1; i <= 50; ++i) {
-    EXPECT_EQ(s.pass(kSubscribed, Pass::kRecheck, milliseconds(20 * i)), 0);
-  }
-  EXPECT_FALSE(s.shown_active());
 }
 
 TEST(DetectionPipeline, SubscribedHeldValueCompletesADuration) {
@@ -328,7 +334,7 @@ TEST(DetectionPipeline, SubscribedHeldValueCompletesADuration) {
   ASSERT_TRUE(h.loaded());
   h.arrive(kTemp, 90.0);
   h.pass(kSubscribed, Pass::kValues, milliseconds(0));
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(1999)), 0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(1999)), 0);
   h.arrive(kOther, 1.0);
   EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(2000)), 1);
 }
@@ -338,12 +344,26 @@ TEST(DetectionPipeline, SubscribedChangeBackToHealthyBeforeTheWindowRaisesNothin
   ASSERT_TRUE(h.loaded());
   h.arrive(kTemp, 90.0);
   h.pass(kSubscribed, Pass::kValues, milliseconds(0));
-  h.pass(kSubscribed, Pass::kTick, milliseconds(500));
+  h.pass(kSubscribed, Pass::kRecheck, milliseconds(500));
   h.arrive(kTemp, 70.0);
   EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(1000)), 0);
   EXPECT_FALSE(h.pipeline().has_pending());
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(5000)), 0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(5000)), 0);
   EXPECT_FALSE(h.shown_active());
+}
+
+TEST(DetectionPipeline, AWaitStartedBeforeSubscribingEndsOnARecheck) {
+  // While the subscription is set up, values arrive before the poller is in
+  // subscription mode, so a samples rule starts its wait as under polling. The
+  // rechecks after that still have to end it while the value holds.
+  Harness h("pending_switch", "    raise_after_samples: 3\n");
+  ASSERT_TRUE(h.loaded());
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(0)), 0);
+  EXPECT_TRUE(h.pipeline().has_pending());
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(999)), 0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(1000)), 1);
+  EXPECT_FALSE(h.pipeline().has_pending()) << "raised, nothing left to wait for";
 }
 
 // -- Outages --------------------------------------------------------------------
@@ -358,45 +378,14 @@ TEST(DetectionPipeline, LinkLostRestartsTheWait) {
   // Back 10 s later with the same value: the wait starts from here.
   h.arrive(kTemp, 90.0);
   EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(10000)), 0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(10999)), 0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(11000)), 1);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(10999)), 0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(11000)), 1);
 }
 
-TEST(DetectionPipeline, SubscribedRecheckBetweenAChangeAndATickDoesNotArmTheTick) {
-  // Only a tick marks the start of an interval. A recheck in between must not,
-  // or the tick right after the change would count.
-  Harness h("sub_recheck_tick", "    raise_after_samples: 2\n");
-  ASSERT_TRUE(h.loaded());
-  h.arrive(kTemp, 90.0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(0)), 0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(20)), 0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(30)), 0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(1030)), 1);
-}
-
-TEST(DetectionPipeline, OnlyADurationRuleAsksForRechecks) {
-  // A recheck can end a raise_after_ms wait but never adds a sample, so a
-  // samples-only wait must not keep the poll thread rechecking.
-  Harness samples("pending_samples", "    raise_after_samples: 3\n");
-  ASSERT_TRUE(samples.loaded());
-  samples.arrive(kTemp, 90.0);
-  samples.pass(kSubscribed, Pass::kValues, milliseconds(0));
-  EXPECT_TRUE(samples.pipeline().has_pending());
-  EXPECT_FALSE(samples.pipeline().has_pending_duration());
-
-  Harness duration("pending_duration", "    raise_after_ms: 500\n");
-  ASSERT_TRUE(duration.loaded());
-  duration.arrive(kTemp, 90.0);
-  duration.pass(kSubscribed, Pass::kValues, milliseconds(0));
-  EXPECT_TRUE(duration.pipeline().has_pending_duration());
-  duration.pass(kSubscribed, Pass::kRecheck, milliseconds(500));
-  EXPECT_FALSE(duration.pipeline().has_pending_duration()) << "raised, nothing left to wait for";
-}
-
-TEST(DetectionPipeline, SubscribedValueFromBeforeAnOutageIsNotASample) {
+TEST(DetectionPipeline, SubscribedValueFromBeforeAnOutageStartsNoWait) {
   // After a reconnect the snapshot still holds the value from before the
-  // outage. Until the node reports again, a tick must not count it or start a
-  // wait with it, even when another node's change has already arrived.
+  // outage. Until the node reports again, no pass may start a wait with it,
+  // even when another node's change has already arrived.
   Harness h("link_stale", "    raise_after_samples: 2\n");
   ASSERT_TRUE(h.loaded());
   h.arrive(kTemp, 90.0);
@@ -405,14 +394,14 @@ TEST(DetectionPipeline, SubscribedValueFromBeforeAnOutageIsNotASample) {
   h.arrive(kOther, 1.0);
   EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(5000)), 0);
   for (int i = 1; i <= 5; ++i) {
-    EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(5000 + 500 * i)), 0) << "tick " << i;
+    EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(5000 + 500 * i)), 0) << "recheck " << i;
   }
   EXPECT_FALSE(h.pipeline().has_pending());
-  // The node reports again: now its value counts, spaced as usual.
+  // The node reports again: the wait starts from its report.
   h.arrive(kTemp, 90.0);
   EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(8000)), 0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(8100)), 0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(8500)), 1);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(8499)), 0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(8500)), 1);
 }
 
 TEST(DetectionPipeline, SubscribedPlainPointIgnoresItsOldValueAfterAnOutage) {
@@ -426,9 +415,24 @@ TEST(DetectionPipeline, SubscribedPlainPointIgnoresItsOldValueAfterAnOutage) {
   h.pipeline().link_lost();
   h.arrive(kOther, 1.0);
   EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(1000)), 0);
-  EXPECT_EQ(h.pass(kSubscribed, Pass::kTick, milliseconds(1500)), 0);
   h.arrive(kTemp, 90.0);
   EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(2000)), 1);
+}
+
+TEST(DetectionPipeline, SwitchingToPollingAfterAnOutageCountsSamplesAgain) {
+  // A wait started under a subscription is dropped when the link is lost, so a
+  // reconnect that falls back to polling counts the samples rule from zero.
+  Harness h("switch", "    raise_after_samples: 3\n");
+  ASSERT_TRUE(h.loaded());
+  h.arrive(kTemp, 90.0);
+  h.pass(kSubscribed, Pass::kValues, milliseconds(0));
+  h.pipeline().link_lost();
+  for (int i = 0; i < 2; ++i) {
+    h.arrive(kTemp, 90.0);
+    EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(5000 + 500 * i)), 0) << "read " << i;
+  }
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(6000)), 1);
 }
 
 TEST(DetectionPipeline, LinkLostKeepsARaisedFault) {
