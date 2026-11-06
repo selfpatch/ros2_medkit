@@ -326,14 +326,19 @@ classification pass over the full Component set:
   filters via ``is_healthy()``). Two consequences operators should plan
   around:
 
-  - If a colliding peer goes unhealthy between merges, it drops out of
-    the snapshot. The remaining peer becomes the new last-writer and
-    routing silently flips to it. The request itself cannot fail (the
-    dead peer cannot serve it), so this flip is required behaviour -
-    but the ``/health.warnings`` entry also disappears (only one
-    claimant is left), which hides the routing change from a snapshot
-    comparison. Alert on the transition from ``warnings`` non-empty to
-    empty, not just on the presence of warnings.
+  - If a colliding peer goes unhealthy between merges, it stops
+    claiming the Component. Its declaration is retained and replayed
+    after the live peers, but a replay yields a Component a live peer
+    contributes (``EntityMerger::set_replay``): it is listed as a
+    contributor and claims no route. The remaining peer becomes the new
+    last-writer and routing silently flips to it. The request itself
+    cannot fail (the dead peer cannot serve it), so this flip is
+    required behaviour - but the ``/health.warnings`` entry also
+    disappears (only one claimant is left), which hides the routing
+    change from a snapshot comparison. Alert on the transition from
+    ``warnings`` non-empty to empty, not just on the presence of
+    warnings. A Component only silent peers declare stays routed to the
+    last of them and is marked unavailable.
   - Insertion order within ``peers_`` is stable across a merge but can
     vary across gateway restarts, so two fresh primaries with the same
     peer list may pick different last-writers. Sticky routing across
@@ -1139,8 +1144,9 @@ refresh decided for the peer from its health check (``Reachability``): to the
 declaration replayed for an unreachable peer, and, after the merge, to every
 entity routed to such a peer. ``EntityMerger`` keeps a merged Area or Function
 available when any contributor is, because it is then served from the merged
-view, and gives a merged Component the peer's reachability, because its requests
-go to that peer; a merged Component the classification makes a parent is served
+view, and gives a merged Component the reachability of the peer it merges in last,
+because its requests go to that peer (the classification's last-writer-wins), not
+the combination of every contributor's; a merged Component the classification makes a parent is served
 here and is available again (``serve_here``). ``HandlerContext::validate_entity_for_route`` reads the flag off the
 entity it found and never forwards an unavailable one: an Area or a Function is
 served here from the declaration on its discovery routes (``is_discovery_route``:

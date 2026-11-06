@@ -669,8 +669,14 @@ it is forwarded to the silent peer:
   the members behind the silent link are marked.
 - A Component merged from this gateway and a peer is that peer's to serve, so
   it takes the peer's reachability: ``available: false`` while the peer is
-  silent, or while the peer reports it so. A parent Component, which this
-  gateway serves from the merged view, stays available.
+  silent, or while the peer reports it so. When several peers declare the same
+  leaf Component, its requests go to the last of them (see the leaf collision
+  warning), and it is that peer's account that counts: another peer reporting
+  the Component unavailable does not mark it while the peer it is routed to
+  serves it. A peer that stops answering yields the Component to the peers that
+  still do: its retained declaration keeps it in the contributors but does not
+  take its requests. A parent Component, which this gateway serves from the merged
+  view, stays available.
 
 An Area keeps its place in ``/areas`` (or under its parent's ``subareas``) as
 the peer declared it. A Component the peer declared in it is listed under

@@ -76,6 +76,10 @@ std::string EntityMerger::prefix_name(const std::string & name) const {
   return served;
 }
 
+void EntityMerger::set_replay(std::unordered_set<std::string> live_sources) {
+  replay_yields_to_ = std::move(live_sources);
+}
+
 std::string EntityMerger::peer_source() const {
   return "peer:" + peer_name_;
 }
@@ -452,6 +456,18 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
       // Collision: merge by combining tags and subcomponent relationships
       auto & merged = result[it->second];
 
+      // A retained declaration is merged after every peer that answered, so
+      // last-writer-wins would hand it a Component a live peer serves, and
+      // route the Component's requests to a gateway that is silent. It stays
+      // the live peer's.
+      if (replay_yields_to_ &&
+          std::any_of(merged.contributors.begin(), merged.contributors.end(), [this](const std::string & tag) {
+            return replay_yields_to_->count(tag) > 0u;
+          })) {
+        append_contributor_unique(merged.contributors, peer_source());
+        continue;
+      }
+
       // Merge tags without duplicates
       std::unordered_set<std::string> tag_set(merged.tags.begin(), merged.tags.end());
       for (const auto & tag : remote_comp.tags) {
@@ -492,11 +508,16 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
       // presence in discovery listings.
       routing_table_[merged.id] = peer_name_;
       append_contributor_unique(merged.contributors, peer_source());
-      // Its requests go to the peer, so the peer's account of whether it can be
+      // Its requests go to this peer, so this peer's account of whether it can be
       // reached is the Component's: a middle gateway reports one its silent leaf
-      // holds as unavailable. A Component the classification later serves here,
-      // as a parent, is reachable again (AggregationManager, stamp_routes).
-      merged.available = merged.available && remote_comp.available;
+      // holds as unavailable. Taken over, not combined with what an earlier
+      // contributor said: routing goes to the last peer that claims the
+      // Component (last-writer-wins), and an earlier peer's false must not mark
+      // a Component unreachable that its routed peer serves. A Component the
+      // classification later serves here, as a parent, is reachable again, and
+      // one routed to a peer this refresh found silent is marked unreachable
+      // (AggregationManager, stamp_routes).
+      merged.available = remote_comp.available;
       continue;
     }
 

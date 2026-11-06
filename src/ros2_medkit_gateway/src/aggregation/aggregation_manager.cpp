@@ -609,7 +609,9 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
 
   // A peer this cycle could not describe still contributes what it declared.
   // Merged after the peers that did answer, so a live declaration always wins
-  // over a retained one carrying the same id.
+  // over a retained one carrying the same id: an App keeps its id for the live
+  // one, and a Component a live peer serves stays routed to it.
+  std::unordered_set<std::string> silent_replays;
   for (const auto & peer : unread_peers) {
     auto retained = replay_declaration(peer.name, peer.reachability);
     if (retained.areas.empty() && retained.components.empty() && retained.apps.empty() && retained.functions.empty()) {
@@ -631,6 +633,18 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
     replayed.success = true;
     replayed.entities = std::move(retained);
     to_merge.push_back(std::move(replayed));
+    if (peer.reachability == Reachability::kUnreachable) {
+      silent_replays.insert(peer.name);
+    }
+  }
+
+  // The peers whose entities this refresh can reach: a retained declaration of
+  // a silent peer yields a Component one of them contributes (EntityMerger::set_replay).
+  std::unordered_set<std::string> live_sources;
+  for (const auto & pfr : to_merge) {
+    if (silent_replays.count(pfr.peer_name) == 0u) {
+      live_sources.insert("peer:" + pfr.peer_name);
+    }
   }
 
   // Every collision met this pass: a stable key and the line that reports it.
@@ -645,6 +659,9 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
                         EntityMerger::collect_ids(merged.areas, merged.components, merged.apps, merged.functions),
                         EntityMerger::collect_ids(pfr.entities.areas, pfr.entities.components, pfr.entities.apps,
                                                   pfr.entities.functions));
+    if (silent_replays.count(pfr.peer_name) > 0u) {
+      merger.set_replay(live_sources);
+    }
     // Areas, then Components, then Apps, then Functions: each step reads the
     // renames of the ones before it to keep the peer's references pointing at
     // the IDs its entities are served under.
