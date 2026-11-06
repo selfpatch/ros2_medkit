@@ -532,6 +532,7 @@ TEST_F(EntityCacheTest, ConcurrentReadsDoNotBlock) {
 
   std::atomic<int> completed{0};
   std::vector<std::thread> readers;
+  readers.reserve(10);
 
   // Start multiple readers
   for (int i = 0; i < 10; ++i) {
@@ -566,6 +567,7 @@ TEST_F(EntityCacheTest, ConcurrentReadsAndWritesDoNotDeadlock) {
 
   // Multiple readers
   std::vector<std::thread> readers;
+  readers.reserve(4);
   for (int i = 0; i < 4; ++i) {
     readers.emplace_back([this, &keep_running, &read_count] {
       while (keep_running) {
