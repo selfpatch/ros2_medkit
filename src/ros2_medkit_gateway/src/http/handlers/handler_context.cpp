@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
+#include <algorithm>
 #include <unordered_set>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
@@ -38,20 +39,18 @@ namespace handlers {
 
 namespace {
 
-/// Whether a request addressed to `entity` can arrive. An App or Component
-/// retained from a silent peer carries `available == false`; an Area or a
-/// Function is a view over its members and is always addressable.
-bool entity_available(const App & app) {
-  return app.available;
+/// Whether a request addressed to `entity` can arrive: false for an entity in
+/// the tree only from the declaration of a silent gateway (AggregationManager
+/// marks it on the refresh that found the gateway unreachable).
+template <class Entity>
+bool entity_available(const Entity & entity) {
+  return entity.available;
 }
-bool entity_available(const Component & component) {
-  return component.available;
-}
-bool entity_available(const Area & /*area*/) {
-  return true;
-}
-bool entity_available(const Function & /*function*/) {
-  return true;
+
+/// An Area or a Function is a grouping: a view over members, built from what
+/// this gateway holds.
+bool is_grouping(SovdEntityType type) {
+  return type == SovdEntityType::AREA || type == SovdEntityType::FUNCTION;
 }
 
 }  // namespace
@@ -442,7 +441,8 @@ void translate_forwarded_location(httplib::Response & res, const std::string & p
 }  // namespace
 
 http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(const http::TypedRequest & req,
-                                                                            const std::string & entity_id) const {
+                                                                            const std::string & entity_id,
+                                                                            RetainedAccess retained) const {
   using ErrorVariant = std::variant<ErrorInfo, http::Forwarded>;
 
   // Step 1: Validate entity ID format.
@@ -521,6 +521,20 @@ http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(cons
     // asked for is not reachable. The retained declaration is exactly the
     // information needed to answer properly, so answer here. The reachability
     // is the found entity's own, so an App sharing the id cannot stand in for it.
+    //
+    // A grouping is served here instead. Its detail and its structure come from
+    // the retained declaration. Its resources are its members' resources: while
+    // one of its members can be reached they are served from the members, each
+    // answering for itself, and when none can the grouping answers as they
+    // would - "not responding". A handler that answers a leaf from the
+    // declaration says so, and is handed the entity too.
+    if (!entity_info.available && is_grouping(entity_info.sovd_type()) &&
+        (is_discovery_route(raw_req.path) || has_available_member(entity_info))) {
+      return entity_info;
+    }
+    if (!entity_info.available && retained == RetainedAccess::kServeDeclaration) {
+      return entity_info;
+    }
     if (!entity_info.available) {
       ErrorInfo err;
       err.code = ERR_NOT_RESPONDING;
@@ -633,6 +647,13 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
     translate_forwarded_location(*tl_forward_response, *peer, peer_ids);
   }
   return MemberDispatch::kForwarded;
+}
+
+bool HandlerContext::has_available_member(const EntityInfo & entity) const {
+  const auto members = services_.entity_cache().get_members(entity.sovd_type(), entity.id);
+  return std::any_of(members.begin(), members.end(), [this](const MemberRef & member) {
+    return is_member_available(member);
+  });
 }
 
 /// False when the member is present only because its peer's declaration is

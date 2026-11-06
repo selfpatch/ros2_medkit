@@ -46,7 +46,10 @@ namespace ros2_medkit_gateway {
 ///       change of an Area no longer fires the triggers of a Function that
 ///       shares its id. Source-incompatible for a plugin that calls notify():
 ///       pass the type of the entity the change is of (UNKNOWN for a change
-///       that names no entity type, which triggers match by id alone).
+///       that names no entity type, which triggers match by id alone). The
+///       Area and Function models gain `available` (false while every
+///       gateway contributing the entity is silent), which changes their
+///       layout in IntrospectionInput / NewEntities.
 ///       PluginContext::register_sampler takes a sampler of (SovdEntityType,
 ///       entity_id, resource_path): the entity the subscription was created
 ///       on, by type and id (source-incompatible for a sampler). PluginContext

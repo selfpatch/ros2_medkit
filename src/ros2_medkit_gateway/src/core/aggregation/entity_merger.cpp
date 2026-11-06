@@ -292,6 +292,11 @@ std::vector<Area> EntityMerger::merge_areas(const std::vector<Area> & local, con
 
       append_contributor_unique(merged.contributors, peer_source());
 
+      // A grouping is reachable while any gateway contributing it is: a request
+      // for it is answered here from the merged view, and its members say which
+      // of them can be reached.
+      merged.available = merged.available || remote_area.available;
+
       // Merged areas do NOT go into routing table - they are combined local+remote
       continue;
     }
@@ -379,6 +384,9 @@ std::vector<Function> EntityMerger::merge_functions(const std::vector<Function> 
       }
 
       append_contributor_unique(merged.contributors, peer_source());
+
+      // Reachable while any contributor is; see merge_areas.
+      merged.available = merged.available || remote_func.available;
 
       // Merged functions do NOT go into routing table
       continue;
@@ -484,6 +492,11 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
       // presence in discovery listings.
       routing_table_[merged.id] = peer_name_;
       append_contributor_unique(merged.contributors, peer_source());
+      // Its requests go to the peer, so the peer's account of whether it can be
+      // reached is the Component's: a middle gateway reports one its silent leaf
+      // holds as unavailable. A Component the classification later serves here,
+      // as a parent, is reachable again (AggregationManager, stamp_routes).
+      merged.available = merged.available && remote_comp.available;
       continue;
     }
 

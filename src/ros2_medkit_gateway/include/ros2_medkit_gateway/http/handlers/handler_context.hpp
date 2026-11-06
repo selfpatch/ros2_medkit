@@ -67,6 +67,13 @@ inline SovdEntityType to_sovd_entity_type(EntityType type) {
   }
 }
 
+/// What validate_entity_for_route does with an App or a Component whose gateway
+/// is silent and that is in the tree only from that gateway's declaration.
+enum class RetainedAccess {
+  kRefuse,            ///< 504 not-responding: the request cannot arrive.
+  kServeDeclaration,  ///< Hand the entity back; the handler answers from the declaration.
+};
+
 /**
  * @brief Information about a resolved entity
  */
@@ -289,14 +296,22 @@ class HandlerContext {
    * to the caller (defeats the typed surface). Keeping the proxy write inside
    * the validator preserves the historical aggregation behavior bit-for-bit.
    *
+   * An entity whose gateway is silent (EntityInfo::available false) is never
+   * forwarded. An Area or a Function is handed back, to be served here from
+   * the retained declaration and through its members. An App or a Component
+   * answers 504 `not-responding`, unless `retained` asks for the entity to be
+   * handed back so the handler can answer from the declaration.
+   *
    * @param req Typed HTTP request (used to extract expected type from path and
    *            to drive the forward proxy).
    * @param entity_id Entity ID to validate.
+   * @param retained What to do with an App or Component whose gateway is silent.
    * @return EntityInfo on local success, or an error variant indicating local
    *         failure (ErrorInfo) vs. peer forwarding completed (Forwarded).
    */
   http::ValidatorResult<EntityInfo> validate_entity_for_route(const http::TypedRequest & req,
-                                                              const std::string & entity_id) const;
+                                                              const std::string & entity_id,
+                                                              RetainedAccess retained = RetainedAccess::kRefuse) const;
 
   /**
    * @brief Serve a member-qualified request on the gateway that owns the member.
@@ -361,6 +376,9 @@ class HandlerContext {
   /// type: by id alone a Component retained from a silent peer would read the
   /// reachability of an App sharing its id.
   bool is_member_available(const MemberRef & member) const;
+
+  /// True when at least one member of the grouping `entity` can be reached.
+  bool has_available_member(const EntityInfo & entity) const;
 
   void set_cors_headers(httplib::Response & res, const std::string & origin) const;
 

@@ -331,6 +331,15 @@ Areas
         item. A gateway aggregating this one reads an Area's origin from it, and
         keeps a ``manifest`` Area while this gateway is not answering (see
         :ref:`Peer Refresh Completeness <aggregation-peer-refresh-completeness>`).
+      - ``available`` - ``false`` when every gateway that contributes the Area
+        is silent and it is in the tree only from a retained declaration;
+        omitted otherwise, so absence means reachable. Served wherever
+        ``source`` is. Such an Area answers its detail and its structural
+        routes (``subareas``, ``components``, ``contains``) here, with 200. Its
+        resource collections are its members': while a member can be reached
+        they are served from the members, each answering for itself; when none
+        can, they answer ``504 not-responding``, as the members would. An Area a
+        live gateway also contributes stays available.
       - ``ros2.namespace`` - the ROS 2 namespace the Area maps to.
       - ``parent_area_id`` - the parent of a subarea (detail only).
       - ``contributors`` - the merge inputs on a gateway with aggregation
@@ -520,6 +529,17 @@ Functions
 
 ``GET /api/v1/functions/{function_id}``
    Get function capabilities.
+
+   .. note::
+
+      **ros2_medkit extension:** a Function's ``x-medkit`` carries
+      ``available: false`` on the list and the detail when every gateway that
+      contributes it is silent and it is in the tree only from a retained
+      declaration (omitted otherwise). Such a Function answers its detail and
+      ``/hosts`` here, with 200. Its resource collections are its hosts': while
+      a host can be reached they are served from the hosts, each answering for
+      itself; when none can, they answer ``504 not-responding``, as the hosts
+      would. A Function a live gateway also contributes stays available.
 
 ``GET /api/v1/functions/{function_id}/hosts``
    List apps that host this function.
@@ -1257,6 +1277,11 @@ Read Status
    Component is ``ready`` while reachable, any other Component is ``ready`` while
    at least one hosted App is online) and no transition URIs are returned.
 
+   An App or Component retained from a silent peer (``x-medkit.available:
+   false``) answers ``{"status": "notReady"}`` with no transition URIs, from
+   what it declared; a transition request for it answers ``504
+   not-responding``.
+
    - **200:** Lifecycle status
    - **404:** Entity not found
 
@@ -1291,6 +1316,7 @@ Request Transition
    - **404:** Entity not found
    - **409:** A precondition was not fulfilled (``precondition-not-fulfilled``)
    - **501:** No lifecycle provider is registered for the entity (``not-implemented``)
+   - **504:** The entity is retained from a silent peer (``not-responding``)
 
    .. code-block:: bash
 
