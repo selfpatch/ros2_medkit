@@ -593,15 +593,25 @@ MergeResult MergePipeline::execute() {
 
   report.total_entities = result.areas.size() + result.components.size() + result.apps.size() + result.functions.size();
 
-  // Cross-type ID collision detection
+  // Ids held by entities of more than one type. They are legitimate: every
+  // route names the entity type, so each entity is served on its own. They are
+  // counted on every run, and each pair is logged once when it appears and
+  // again only after it went away and came back.
   std::unordered_map<std::string, std::string> global_ids;
+  std::set<std::string> cross_type_ids;
   auto check_ids = [&](const auto & entities, const std::string & type) {
     for (const auto & e : entities) {
       auto [it, inserted] = global_ids.emplace(e.id, type);
       if (!inserted && it->second != type) {
         report.id_collision_count++;
-        RCLCPP_ERROR(logger_, "ID collision: '%s' used by both %s and %s", e.id.c_str(), it->second.c_str(),
-                     type.c_str());
+        auto key = e.id + ' ' + it->second + ' ' + type;
+        if (logged_cross_type_ids_.count(key) == 0) {
+          RCLCPP_INFO(logger_,
+                      "Entity id '%s' is held by two entity types, %s and %s; requests name the entity type, so "
+                      "both are served",
+                      e.id.c_str(), it->second.c_str(), type.c_str());
+        }
+        cross_type_ids.insert(std::move(key));
       }
     }
   };
@@ -609,6 +619,7 @@ MergeResult MergePipeline::execute() {
   check_ids(result.components, "Component");
   check_ids(result.apps, "App");
   check_ids(result.functions, "Function");
+  logged_cross_type_ids_ = std::move(cross_type_ids);
 
   // inherit_runtime_resources=false must mean the app exposes only what the
   // manifest declares. Gating RuntimeLinker::enrich_app is not enough to
