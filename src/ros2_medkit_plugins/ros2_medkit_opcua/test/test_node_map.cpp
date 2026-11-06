@@ -2245,4 +2245,169 @@ TEST(AutoAlarmsFinalizeOverlayTest, EmptySourceNodeDisablesRatherThanCrashing) {
   EXPECT_FALSE(map.auto_alarms().enabled);
 }
 
+// -- Raise qualifier from the node map ---------------------------------------
+
+namespace {
+
+// Load a one-file node map from YAML text written under /tmp.
+bool load_map(NodeMap & map, const std::string & name, const std::string & yaml) {
+  const std::string path = "/tmp/test_node_map_" + name + ".yaml";
+  std::ofstream f(path);
+  f << yaml;
+  f.close();
+  return map.load(path);
+}
+
+const NodeMapEntry * entry_for(const NodeMap & map, const std::string & node_id) {
+  for (const auto * e : map.detection_entries()) {
+    if (e->node_id_str == node_id) {
+      return e;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+TEST(NodeMapRaiseQualifier, DefaultIsImmediate) {
+  NodeMap map;
+  ASSERT_TRUE(load_map(map, "rq_default", R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Temp"
+    entity_id: ent
+    data_name: temp
+    data_type: float
+    alarm:
+      fault_code: HIGH_TEMP
+      threshold: 80.0
+)"));
+  const auto * e = entry_for(map, "ns=1;s=Temp");
+  ASSERT_NE(e, nullptr);
+  EXPECT_TRUE(e->raise_qualifier.immediate());
+}
+
+TEST(NodeMapRaiseQualifier, ParsedForEveryDetectionMode) {
+  NodeMap map;
+  ASSERT_TRUE(load_map(map, "rq_modes", R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Temp"
+    entity_id: ent
+    data_name: temp
+    data_type: float
+    raise_after_samples: 3
+    alarm:
+      fault_code: HIGH_TEMP
+      threshold: 80.0
+  - node_id: "ns=1;s=Status"
+    entity_id: ent
+    data_name: status
+    data_type: int
+    raise_after_ms: 1500
+    status_bits:
+      - bit: 0
+        fault_code: E_STOP
+  - node_id: "ns=1;s=Code"
+    entity_id: ent
+    data_name: code
+    data_type: int
+    raise_after_samples: 2
+    raise_after_ms: 250
+    fault_enum:
+      codes:
+        - code: 10
+          fault_code: OVERVOLT
+)"));
+  const auto * temp = entry_for(map, "ns=1;s=Temp");
+  const auto * status = entry_for(map, "ns=1;s=Status");
+  const auto * code = entry_for(map, "ns=1;s=Code");
+  ASSERT_NE(temp, nullptr);
+  ASSERT_NE(status, nullptr);
+  ASSERT_NE(code, nullptr);
+
+  EXPECT_EQ(temp->raise_qualifier.min_samples, 3u);
+  EXPECT_EQ(temp->raise_qualifier.min_duration.count(), 0);
+  EXPECT_EQ(status->raise_qualifier.min_samples, 1u);
+  EXPECT_EQ(status->raise_qualifier.min_duration.count(), 1500);
+  EXPECT_EQ(code->raise_qualifier.min_samples, 2u);
+  EXPECT_EQ(code->raise_qualifier.min_duration.count(), 250);
+}
+
+TEST(NodeMapRaiseQualifier, OutOfRangeIsClampedAndTheMapStillLoads) {
+  NodeMap map;
+  ASSERT_TRUE(load_map(map, "rq_clamp", R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Low"
+    entity_id: ent
+    data_name: low
+    data_type: float
+    raise_after_samples: 0
+    raise_after_ms: -5
+    alarm:
+      fault_code: LOW
+      threshold: 1.0
+  - node_id: "ns=1;s=High"
+    entity_id: ent
+    data_name: high
+    data_type: float
+    raise_after_samples: 99999999
+    raise_after_ms: 99999999999
+    alarm:
+      fault_code: HIGH
+      threshold: 1.0
+)"));
+  const auto * low = entry_for(map, "ns=1;s=Low");
+  const auto * high = entry_for(map, "ns=1;s=High");
+  ASSERT_NE(low, nullptr);
+  ASSERT_NE(high, nullptr);
+  EXPECT_TRUE(low->raise_qualifier.immediate());
+  EXPECT_EQ(high->raise_qualifier.min_samples, 10000u);
+  EXPECT_EQ(high->raise_qualifier.min_duration.count(), 3600000);
+}
+
+TEST(NodeMapRaiseQualifier, WrongTypeFallsBackToTheDefault) {
+  NodeMap map;
+  ASSERT_TRUE(load_map(map, "rq_type", R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Temp"
+    entity_id: ent
+    data_name: temp
+    data_type: float
+    raise_after_samples: lots
+    raise_after_ms: [1, 2]
+    alarm:
+      fault_code: HIGH_TEMP
+      threshold: 80.0
+)"));
+  const auto * e = entry_for(map, "ns=1;s=Temp");
+  ASSERT_NE(e, nullptr);
+  EXPECT_TRUE(e->raise_qualifier.immediate());
+}
+
+TEST(NodeMapRaiseQualifier, IgnoredOnAPointWithNoDetection) {
+  // A qualifier on a plain data point warns and is dropped; the point itself
+  // still loads as data.
+  NodeMap map;
+  ASSERT_TRUE(load_map(map, "rq_nodetect", R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Speed"
+    entity_id: ent
+    data_name: speed
+    data_type: float
+    raise_after_samples: 5
+)"));
+  EXPECT_TRUE(map.detection_entries().empty());
+  ASSERT_EQ(map.entries().size(), 1u);
+  EXPECT_TRUE(map.entries()[0].raise_qualifier.immediate());
+}
+
 }  // namespace ros2_medkit_gateway
