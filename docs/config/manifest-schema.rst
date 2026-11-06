@@ -1255,7 +1255,11 @@ Manifests are validated during loading. The validator checks:
 **Uniqueness:**
 
 - All entity IDs must be unique within their type
-- IDs must be unique across all entity types (areas, components, apps, functions, scripts)
+- IDs must be unique across all entity types (areas, components, apps, functions, scripts), so a
+  reference to an ID names one entity. The finding names both kinds when the ID was taken by
+  another type, for example ``[R005] ERROR: ID 'x' is used by both Area and Function``. The rule
+  is reported under the second entity's type: ``R002`` areas, ``R003`` components, ``R004`` apps,
+  ``R005`` functions, ``R012`` scripts.
 
 **Format:**
 

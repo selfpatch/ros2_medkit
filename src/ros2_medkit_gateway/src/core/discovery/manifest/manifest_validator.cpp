@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/core/discovery/manifest/manifest_validator.hpp"
 
+#include <map>
 #include <set>
 #include <stack>
 
@@ -43,46 +44,37 @@ void ManifestValidator::validate_version(const Manifest & manifest, ValidationRe
 }
 
 void ManifestValidator::validate_unique_ids(const Manifest & manifest, ValidationResult & result) const {
-  std::set<std::string> seen_ids;
+  // One manifest gives every id to one entity, whatever its type, so a
+  // reference to an id names one entity. The finding names both kinds when the
+  // id was taken by another type.
+  std::map<std::string, std::string> kind_of_id;
+  const auto check = [&](const std::string & id, const std::string & kind, const char * rule,
+                         const std::string & duplicate_label, const std::string & path) {
+    auto [it, inserted] = kind_of_id.emplace(id, kind);
+    if (inserted) {
+      return;
+    }
+    if (it->second == kind) {
+      result.add_error(rule, "Duplicate " + duplicate_label + " ID: " + id, path);
+    } else {
+      result.add_error(rule, "ID '" + id + "' is used by both " + it->second + " and " + kind, path);
+    }
+  };
 
-  // Check area IDs
   for (const auto & area : manifest.areas) {
-    if (seen_ids.count(area.id)) {
-      result.add_error("R002", "Duplicate area ID: " + area.id, "areas");
-    }
-    seen_ids.insert(area.id);
+    check(area.id, "Area", "R002", "area", "areas");
   }
-
-  // Check component IDs
   for (const auto & comp : manifest.components) {
-    if (seen_ids.count(comp.id)) {
-      result.add_error("R003", "Duplicate component ID: " + comp.id, "components");
-    }
-    seen_ids.insert(comp.id);
+    check(comp.id, "Component", "R003", "component", "components");
   }
-
-  // Check app IDs
   for (const auto & app : manifest.apps) {
-    if (seen_ids.count(app.id)) {
-      result.add_error("R004", "Duplicate app ID: " + app.id, "apps");
-    }
-    seen_ids.insert(app.id);
+    check(app.id, "App", "R004", "app", "apps");
   }
-
-  // Check function IDs
   for (const auto & func : manifest.functions) {
-    if (seen_ids.count(func.id)) {
-      result.add_error("R005", "Duplicate function ID: " + func.id, "functions");
-    }
-    seen_ids.insert(func.id);
+    check(func.id, "Function", "R005", "function", "functions");
   }
-
-  // Check script IDs
   for (const auto & script : manifest.scripts) {
-    if (seen_ids.count(script.id)) {
-      result.add_error("R012", "Duplicate script ID: " + script.id, "scripts");
-    }
-    seen_ids.insert(script.id);
+    check(script.id, "Script", "R012", "script", "scripts");
   }
 }
 
