@@ -37,6 +37,7 @@
 /// would not be present in that host, so the detection logic is compiled
 /// directly into each plugin instead.
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -315,6 +316,26 @@ struct RaiseQualifier {
   /// True when the qualifier does not delay anything.
   bool immediate() const {
     return min_samples <= 1 && min_duration.count() <= 0;
+  }
+
+  /// The same rule for a source that reports changes only (a subscription).
+  /// Such a source sends nothing while a value holds, so it has no samples to
+  /// count. ``min_samples`` samples ``sample_period`` apart span
+  /// ``(min_samples - 1) * sample_period``, so that becomes the wait, or
+  /// ``min_duration`` when it is longer. A ``sample_period`` that is not
+  /// positive turns the samples into no wait. The product saturates instead of
+  /// overflowing.
+  RaiseQualifier for_change_notifications(std::chrono::milliseconds sample_period) const {
+    RaiseQualifier out;
+    out.min_duration = min_duration;
+    if (min_samples > 1 && sample_period.count() > 0) {
+      const auto steps = static_cast<std::chrono::milliseconds::rep>(min_samples - 1);
+      const auto max = std::chrono::milliseconds::max().count();
+      const auto span = sample_period.count() > max / steps ? std::chrono::milliseconds::max()
+                                                            : std::chrono::milliseconds(sample_period.count() * steps);
+      out.min_duration = std::max(min_duration, span);
+    }
+    return out;
   }
 };
 
