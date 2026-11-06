@@ -85,7 +85,10 @@ tl::expected<std::string, ErrorInfo> read_param_id(const http::TypedRequest & re
 
 /// Parsed parameter ID with optional app prefix.
 struct ParsedParamId {
-  std::string app_id;      ///< Target app ID (empty if not prefixed)
+  std::string app_id;  ///< Target app ID (empty if not prefixed)
+  /// The type of the member `app_id` names. An App wins over a Component that
+  /// shares its id: a parameter belongs to a ROS node, which is an App's.
+  SovdEntityType member_type{SovdEntityType::APP};
   std::string param_name;  ///< Parameter name
   bool has_prefix{false};  ///< Whether the ID had an app prefix
 };
@@ -128,12 +131,18 @@ ParsedParamId address_parameter(const ThreadSafeEntityCache & cache, const Entit
     return result;
   }
 
-  const auto members = cache.get_members(entity.sovd_type(), entity.id);
-  if (std::find(members.begin(), members.end(), candidate) == members.end()) {
+  std::optional<SovdEntityType> named_type;
+  for (const auto & member : cache.get_members(entity.sovd_type(), entity.id)) {
+    if (member.id == candidate && (!named_type || member.type == SovdEntityType::APP)) {
+      named_type = member.type;
+    }
+  }
+  if (!named_type) {
     return result;
   }
 
   result.app_id = std::move(candidate);
+  result.member_type = *named_type;
   result.param_name = param_id.substr(colon_pos + 1);
   result.has_prefix = true;
   return result;
@@ -168,8 +177,9 @@ const NodeConfigInfo * find_node_for_app(const std::vector<NodeConfigInfo> & nod
 std::optional<ErrorInfo> dispatch_configuration(const HandlerContext & ctx, const http::TypedRequest & req,
                                                 const std::string & entity_id, const std::string & param_id,
                                                 const ParsedParamId & parsed) {
-  auto dispatch = ctx.dispatch_to_member(req, parsed.app_id, "configurations/" + parsed.param_name,
-                                         json{{"entity_id", entity_id}, {"id", param_id}});
+  auto dispatch =
+      ctx.dispatch_to_member(req, MemberRef{parsed.member_type, parsed.app_id}, "configurations/" + parsed.param_name,
+                             json{{"entity_id", entity_id}, {"id", param_id}});
   if (!dispatch) {
     return dispatch.error();
   }
@@ -892,7 +902,10 @@ ConfigHandlers::delete_all_configurations(const http::TypedRequest & req) {
       // Apps only: a parameter belongs to a ROS node, an App is what carries
       // one, and a peer-owned Component's Apps are members in their own right.
       // Naming the Component too would report the same gap twice.
-      auto app = cache.get_app(member);
+      if (member.type != SovdEntityType::APP) {
+        continue;
+      }
+      auto app = cache.get_app(member.id);
       if (!app) {
         continue;
       }
@@ -902,7 +915,7 @@ ConfigHandlers::delete_all_configurations(const http::TypedRequest & req) {
       }
 
       std::string reason = "Not reset here: '";
-      reason += member;
+      reason += member.id;
       reason += "' is owned by gateway '";
       reason += *peer;
       // That gateway knows the App by the id it was renamed from, if the merge
@@ -912,7 +925,7 @@ ConfigHandlers::delete_all_configurations(const http::TypedRequest & req) {
       reason += "/configurations route.";
 
       dto::ConfigurationDeleteResultItem entry;
-      entry.app_id = member;
+      entry.app_id = member.id;
       entry.success = false;
       entry.error = std::move(reason);
       all_reset = false;

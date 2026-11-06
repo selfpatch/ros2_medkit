@@ -225,7 +225,7 @@ ResolvedOperation resolve_operation(const AggregatedOperations & ops, const http
       return true;
     }
     auto owner = ops.owner_by_path.find(full_path);
-    return owner != ops.owner_by_path.end() && owner->second == parsed.member_id;
+    return owner != ops.owner_by_path.end() && owner->second.id == parsed.member_id;
   };
 
   ResolvedOperation resolved;
@@ -261,7 +261,7 @@ std::vector<OperationMatch> matching_operations(const AggregatedOperations & ops
   std::vector<OperationMatch> matches;
   const auto record = [&ops, &parsed, &matches](const std::string & full_path) {
     auto owner = ops.owner_by_path.find(full_path);
-    const std::string member = owner != ops.owner_by_path.end() ? owner->second : std::string{};
+    const std::string member = owner != ops.owner_by_path.end() ? owner->second.id : std::string{};
     if (parsed.has_member && member != parsed.member_id) {
       return;
     }
@@ -420,16 +420,16 @@ http::Result<MemberDispatch> dispatch_execution_to_owner(const HandlerContext & 
   // which holds no goal of it, the status, stop and cancel of every execution
   // a peer's App was asked for answered 404 here, and so did the `Location`
   // its start handed out.
-  auto owner = ops.owner_by_path.find(full_path);
-  std::string owner_id = owner != ops.owner_by_path.end() ? owner->second : std::string{};
-  if (owner_id.empty() && !ops.is_aggregated) {
-    owner_id = entity_id;
+  auto owner_entry = ops.owner_by_path.find(full_path);
+  MemberRef owner = owner_entry != ops.owner_by_path.end() ? owner_entry->second : MemberRef{};
+  if (owner.id.empty() && !ops.is_aggregated) {
+    owner = MemberRef{entity_info.sovd_type(), entity_id};
   }
-  if (owner_id.empty()) {
+  if (owner.id.empty()) {
     return MemberDispatch::kServeLocally;
   }
   return ctx.dispatch_to_member(
-      req, owner_id, "operations/" + parsed.item_id + "/executions/" + execution_id,
+      req, owner, "operations/" + parsed.item_id + "/executions/" + execution_id,
       json{{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}});
 }
 
@@ -440,14 +440,8 @@ http::Result<MemberDispatch> dispatch_execution_to_owner(const HandlerContext & 
 /// says why it cannot be served right now. The alternatives are what this
 /// replaces - quietly running a different member's operation, or a 200 with
 /// nothing in it.
-bool member_is_unreachable(const ThreadSafeEntityCache & cache, const std::string & member_id) {
-  if (auto app = cache.get_app(member_id)) {
-    return !app->available;
-  }
-  if (auto component = cache.get_component(member_id)) {
-    return !component->available;
-  }
-  return false;
+bool member_is_unreachable(const HandlerContext & ctx, const MemberRef & member) {
+  return !ctx.is_member_available(member);
 }
 
 /// Convert a ROS 2 action goal status into the SOVD `ExecutionStatus` enum
@@ -851,7 +845,7 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
       item.x_medkit = build_action_xmedkit(op, entity_id, type_schemas);
     }
     if (auto owner = ops.owner_by_path.find(op.full_path); owner != ops.owner_by_path.end() && ops.is_aggregated) {
-      item.x_medkit->member_ids = std::vector<std::string>{owner->second};
+      item.x_medkit->member_ids = std::vector<std::string>{owner->second.id};
     }
     qualify_from_declared_tree(item);
     return item;
@@ -965,7 +959,7 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
       // and it is the same reading `dispatch_to_member` acts on, so the listing
       // and the execution cannot disagree.
       auto owner = ops.owner_by_path.find(path);
-      if (owner != ops.owner_by_path.end() && member_is_unreachable(cache, owner->second)) {
+      if (owner != ops.owner_by_path.end() && member_is_unreachable(ctx_, owner->second)) {
         item.x_medkit->available = false;
       }
       collection.items.push_back(std::move(item));
@@ -1102,7 +1096,7 @@ http::Result<dto::OperationDetail> OperationHandlers::get_operation(const http::
   const std::string & full_path =
       resolved.service.has_value() ? resolved.service->full_path : resolved.action->full_path;
   if (auto owner = ops.owner_by_path.find(full_path);
-      owner != ops.owner_by_path.end() && member_is_unreachable(cache, owner->second)) {
+      owner != ops.owner_by_path.end() && member_is_unreachable(ctx_, owner->second)) {
     detail.item.x_medkit->available = false;
   }
   return detail;
@@ -1269,7 +1263,8 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
     // operation ids can be qualified: recorded with the goal, as the grouping
     // stops listing the action when its server goes.
     const auto owner = ops.owner_by_path.find(action_info->full_path);
-    const std::string owner_id = ops.is_aggregated && owner != ops.owner_by_path.end() ? owner->second : std::string{};
+    const std::string owner_id =
+        ops.is_aggregated && owner != ops.owner_by_path.end() ? owner->second.id : std::string{};
     auto action_result = operation_mgr->send_action_goal(action_info->full_path, action_type, goal_data, entity_id,
                                                          entity_info.sovd_type(), owner_id);
 

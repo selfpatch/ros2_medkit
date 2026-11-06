@@ -1049,9 +1049,9 @@ void ThreadSafeEntityCache::rebuild_relationship_indexes() {
   });
 }
 
-std::vector<std::string> ThreadSafeEntityCache::get_members(SovdEntityType type, const std::string & entity_id) const {
+std::vector<MemberRef> ThreadSafeEntityCache::get_members(SovdEntityType type, const std::string & entity_id) const {
   std::shared_lock lock(mutex_);
-  std::vector<std::string> members;
+  std::vector<MemberRef> members;
   std::unordered_set<std::string> seen;
 
   // One traversal for every grouping kind. Before this there were several, and
@@ -1064,10 +1064,14 @@ std::vector<std::string> ThreadSafeEntityCache::get_members(SovdEntityType type,
   // `seen` is not defensive bookkeeping. Component-parent cycles are known to
   // occur - the aggregation classifier handles them explicitly - and the
   // manifest validator only checks that a parent exists, not that the graph is
-  // acyclic.
-  const auto add = [&](const std::string & id) {
-    if (!id.empty() && seen.insert(id).second) {
-      members.push_back(id);
+  // acyclic. Keyed by type and id: an App sharing its Component's id is a
+  // member of its own, not a repeat of the Component.
+  const auto key = [](SovdEntityType member_type, const std::string & id) {
+    return to_string(member_type) + ":" + id;
+  };
+  const auto add = [&](SovdEntityType member_type, const std::string & id) {
+    if (!id.empty() && seen.insert(key(member_type, id)).second) {
+      members.push_back(MemberRef{member_type, id});
     }
   };
 
@@ -1076,17 +1080,17 @@ std::vector<std::string> ThreadSafeEntityCache::get_members(SovdEntityType type,
   std::function<void(const std::string &)> collect_area;
 
   collect_component = [&](const std::string & component_id) {
-    add(component_id);
+    add(SovdEntityType::COMPONENT, component_id);
     if (const std::vector<uint32_t> * app_slots = component_to_apps_.find(component_id)) {
       for (uint32_t slot : *app_slots) {
         if (apps_.is_live(slot)) {
-          add(apps_[slot].id);
+          add(SovdEntityType::APP, apps_[slot].id);
         }
       }
     }
     if (const std::vector<uint32_t> * child_slots = component_to_subcomponents_.find(component_id)) {
       for (uint32_t slot : *child_slots) {
-        if (components_.is_live(slot) && !seen.count(components_[slot].id)) {
+        if (components_.is_live(slot) && !seen.count(key(SovdEntityType::COMPONENT, components_[slot].id))) {
           collect_component(components_[slot].id);
         }
       }
@@ -1103,7 +1107,7 @@ std::vector<std::string> ThreadSafeEntityCache::get_members(SovdEntityType type,
     }
     if (const std::vector<uint32_t> * sub_slots = area_to_subareas_.find(area_id)) {
       for (uint32_t slot : *sub_slots) {
-        if (areas_.is_live(slot) && seen.insert("area:" + areas_[slot].id).second) {
+        if (areas_.is_live(slot) && seen.insert(key(SovdEntityType::AREA, areas_[slot].id)).second) {
           collect_area(areas_[slot].id);
         }
       }
@@ -1112,7 +1116,7 @@ std::vector<std::string> ThreadSafeEntityCache::get_members(SovdEntityType type,
 
   switch (type) {
     case SovdEntityType::AREA:
-      seen.insert("area:" + entity_id);
+      seen.insert(key(SovdEntityType::AREA, entity_id));
       collect_area(entity_id);
       break;
     case SovdEntityType::COMPONENT:
@@ -1125,7 +1129,7 @@ std::vector<std::string> ThreadSafeEntityCache::get_members(SovdEntityType type,
       if (const std::vector<uint32_t> * app_slots = function_to_apps_.find(entity_id)) {
         for (uint32_t slot : *app_slots) {
           if (apps_.is_live(slot)) {
-            add(apps_[slot].id);
+            add(SovdEntityType::APP, apps_[slot].id);
           }
         }
       }
@@ -1144,7 +1148,7 @@ std::vector<std::string> ThreadSafeEntityCache::get_members(SovdEntityType type,
       // against one needs no traversal and no special case of its own. Listed
       // rather than defaulted because the build treats an unhandled enumerator
       // as an error, which is what makes a new entity type surface here.
-      add(entity_id);
+      add(type, entity_id);
       break;
   }
 
@@ -1193,13 +1197,13 @@ void ThreadSafeEntityCache::collect_operations_from_apps(const std::vector<uint3
     for (const auto & svc : app.services) {
       if (seen_paths.insert(svc.full_path).second) {
         result.services.push_back(svc);
-        result.owner_by_path.emplace(svc.full_path, app.id);
+        result.owner_by_path.emplace(svc.full_path, MemberRef{SovdEntityType::APP, app.id});
       }
     }
     for (const auto & act : app.actions) {
       if (seen_paths.insert(act.full_path).second) {
         result.actions.push_back(act);
-        result.owner_by_path.emplace(act.full_path, app.id);
+        result.owner_by_path.emplace(act.full_path, MemberRef{SovdEntityType::APP, app.id});
       }
     }
   }
@@ -1219,13 +1223,13 @@ void ThreadSafeEntityCache::collect_operations_from_component(uint32_t comp_slot
   for (const auto & svc : comp.services) {
     if (seen_paths.insert(svc.full_path).second) {
       result.services.push_back(svc);
-      result.owner_by_path.emplace(svc.full_path, comp.id);
+      result.owner_by_path.emplace(svc.full_path, MemberRef{SovdEntityType::COMPONENT, comp.id});
     }
   }
   for (const auto & act : comp.actions) {
     if (seen_paths.insert(act.full_path).second) {
       result.actions.push_back(act);
-      result.owner_by_path.emplace(act.full_path, comp.id);
+      result.owner_by_path.emplace(act.full_path, MemberRef{SovdEntityType::COMPONENT, comp.id});
     }
   }
 }
@@ -1314,6 +1318,7 @@ AggregatedData ThreadSafeEntityCache::get_area_data(const std::string & area_id)
   result.aggregation_level = "area";
   result.is_aggregated = true;
   result.source_ids.push_back(area_id);
+  result.source_types.push_back(SovdEntityType::AREA);
 
   std::unordered_set<std::string> seen_topics;
 
@@ -1376,6 +1381,7 @@ AggregatedData ThreadSafeEntityCache::get_function_data(const std::string & func
   result.aggregation_level = "function";
   result.is_aggregated = true;
   result.source_ids.push_back(function_id);
+  result.source_types.push_back(SovdEntityType::FUNCTION);
 
   std::unordered_set<std::string> seen_topics;
 
@@ -1400,6 +1406,7 @@ void ThreadSafeEntityCache::collect_topics_from_app(uint32_t app_slot, std::unor
 
   const auto & app = apps_[app_slot];
   result.source_ids.push_back(app.id);
+  result.source_types.push_back(SovdEntityType::APP);
 
   // Record this app against every topic it touches, whichever side it is on.
   // A topic seen from both sides stays one item, so its owner list is what
@@ -1463,6 +1470,7 @@ void ThreadSafeEntityCache::collect_topics_from_component(uint32_t comp_slot,
 
   const auto & comp = components_[comp_slot];
   result.source_ids.push_back(comp.id);
+  result.source_types.push_back(SovdEntityType::COMPONENT);
 
   // Publishers
   for (const auto & topic : comp.topics.publishes) {
