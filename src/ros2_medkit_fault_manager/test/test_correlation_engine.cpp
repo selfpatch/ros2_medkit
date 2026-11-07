@@ -791,6 +791,70 @@ TEST_F(CorrelationEngineTest, ClearRepresentativeAfterNewWindowReplacesPendingRe
   EXPECT_EQ("ERROR", clusters[0].representative_severity);
 }
 
+TEST_F(CorrelationEngineTest, ReReportRepresentativeAfterWindowAndClearReassignsActiveCluster) {
+  auto config = create_auto_cluster_config();  // highest_severity, min_count=3, window_ms=500
+  CorrelationEngine engine(config);
+
+  auto t0 = std::chrono::steady_clock::now();
+
+  // Activate cluster: SENSOR_TIMEOUT (CRITICAL) is representative
+  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
+  engine.process_fault("SENSOR_TIMEOUT", "CRITICAL", t0 + 10ms);
+  engine.process_fault("DRIVE_COMM_ERROR", "ERROR", t0 + 20ms);
+  ASSERT_EQ(1u, engine.get_cluster_count());
+  const auto active_id = engine.get_clusters()[0].cluster_id;
+
+  // Re-report the representative after window_ms (500ms); it must stay in the active cluster
+  // rather than starting a new pending cluster and overwriting fault_to_cluster_
+  auto rereport = engine.process_fault("SENSOR_TIMEOUT", "CRITICAL", t0 + 600ms);
+  EXPECT_EQ(active_id, rereport.cluster_id);
+  EXPECT_FALSE(rereport.should_mute);
+
+  // Clearing the representative must still update the active cluster
+  engine.process_clear("SENSOR_TIMEOUT");
+
+  auto clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  EXPECT_EQ(2u, clusters[0].fault_codes.size());
+  EXPECT_EQ("DRIVE_COMM_ERROR", clusters[0].representative_code);
+  EXPECT_EQ("ERROR", clusters[0].representative_severity);
+}
+
+TEST_F(CorrelationEngineTest, ClearBelowMinCountInWindowThenNewFaultJoinsUpdatesActiveCluster) {
+  auto config = create_auto_cluster_config();  // highest_severity, min_count=3, window_ms=500
+  CorrelationEngine engine(config);
+
+  auto t0 = std::chrono::steady_clock::now();
+
+  // Activate cluster with 3 faults: SENSOR_TIMEOUT (CRITICAL) is representative
+  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
+  engine.process_fault("SENSOR_TIMEOUT", "CRITICAL", t0 + 10ms);
+  engine.process_fault("DRIVE_COMM_ERROR", "WARNING", t0 + 20ms);
+  ASSERT_EQ(1u, engine.get_cluster_count());
+
+  // Clear 2 members inside the window so the cluster holds only 1 code (< min_count)
+  engine.process_clear("MOTOR_COMM_FL");
+  engine.process_clear("DRIVE_COMM_ERROR");
+  ASSERT_EQ(1u, engine.get_cluster_count());
+
+  // A new code joins inside the window while cluster size (2) is still below min_count (3)
+  auto join_res = engine.process_fault("NEW_COMM_ERROR", "ERROR", t0 + 50ms);
+  EXPECT_TRUE(join_res.should_mute);
+
+  auto clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  EXPECT_EQ(2u, clusters[0].fault_codes.size());
+
+  // Clearing the original representative must reassign to the newly joined code
+  engine.process_clear("SENSOR_TIMEOUT");
+
+  clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  EXPECT_EQ(1u, clusters[0].fault_codes.size());
+  EXPECT_EQ("NEW_COMM_ERROR", clusters[0].representative_code);
+  EXPECT_EQ("ERROR", clusters[0].representative_severity);
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
