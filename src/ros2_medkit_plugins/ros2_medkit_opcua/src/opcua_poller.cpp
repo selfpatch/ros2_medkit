@@ -1390,8 +1390,7 @@ void OpcuaPoller::poll_loop() {
       }
       {
         std::unique_lock<std::mutex> lock(stop_mutex_);
-        const auto wait =
-            std::min<std::chrono::steady_clock::duration>(step, std::chrono::steady_clock::duration(deadline - now));
+        const auto wait = std::min<std::chrono::steady_clock::duration>(step, deadline - now);
         if (stop_cv_.wait_for(lock, wait, [this] {
               return !running_.load();
             })) {
