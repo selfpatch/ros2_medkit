@@ -201,13 +201,15 @@ int reserve_local_port() {
 constexpr int kFixtureStartAttempts = 3;
 
 // Boots the test_alarm_server binary as a child process and blocks until it
-// prints the "READY " line, which it does once it listens. Keeps its output and
-// prints it when the running test has failed. SIGTERM on teardown.
+// prints the "READY " line, which it does once it listens. Keeps the output of
+// every fixture it ran; report_if_failed() and the destructor print it once when
+// the running test has failed. SIGTERM on teardown.
 class AlarmServer {
  public:
   AlarmServer() = default;
   ~AlarmServer() {
     stop();
+    report_if_failed();
   }
   // Owns a child process, its pipe descriptors and the thread reading them, so a
   // member-wise copy or move would leave two objects stopping the same process
@@ -225,6 +227,7 @@ class AlarmServer {
       output_.clear();
     }
     wait_status_ = -1;
+    port_ = port;
     // Close-on-exec, so a later fixture child does not hold these pipes open.
     int pipefd[2];
     if (pipe2(pipefd, O_CLOEXEC) != 0) {
@@ -300,12 +303,23 @@ class AlarmServer {
     return write(write_fd_, line.c_str(), line.size()) == static_cast<ssize_t>(line.size());
   }
 
+  // A failed start() printed its output already, so only a fixture that was
+  // running is kept for report_if_failed().
   void stop() {
     const bool was_running = pid_ > 0;
     stop_process();
-    if (was_running && ::testing::Test::HasFailure()) {
-      std::cerr << "--- test_alarm_server output ---\n" << output() << "--- end of test_alarm_server output ---\n";
+    if (was_running) {
+      unreported_ += "--- test_alarm_server on port " + std::to_string(port_) + " ---\n" + output();
     }
+  }
+
+  // Prints the kept output when the running test has failed, then drops it.
+  void report_if_failed() {
+    if (unreported_.empty() || !::testing::Test::HasFailure()) {
+      return;
+    }
+    std::cerr << unreported_ << "--- end of test_alarm_server output ---\n";
+    unreported_.clear();
   }
 
   // Everything the fixture wrote to stdout and stderr since the last start().
@@ -391,6 +405,9 @@ class AlarmServer {
   int read_fd_{-1};
   int write_fd_{-1};
   int wait_status_{-1};
+  int port_{0};
+  // Output of stopped fixtures not printed yet. Test thread only.
+  std::string unreported_;
   std::thread drain_;
   mutable std::mutex output_mutex_;
   std::string output_;
@@ -424,6 +441,7 @@ class OpcuaIdentityE2ETest : public ::testing::Test {
 
   void TearDown() override {
     server_.stop();
+    server_.report_if_failed();
   }
 
   // Tear the fixture down and boot a fresh instance on the SAME port with
@@ -530,6 +548,41 @@ TEST(AlarmServerStartTest, ATakenPortFailsTheStartAndTheNextAttemptMovesOn) {
                                        }),
             0);
   EXPECT_EQ(calls, kFixtureStartAttempts);
+}
+
+// Stops its fixture, then fails. Runs only as the child of the test below.
+TEST(AlarmServerReportTest, DISABLED_FailsAfterTheFixtureStopped) {
+  AlarmServer server;
+  ASSERT_NE(server.start_on_new_port(fixture_binary()), 0);
+  server.stop();
+  ADD_FAILURE() << "deliberate failure after stop";
+}
+
+// A test that fails after its fixture stopped prints the fixture's output once.
+TEST(AlarmServerReportTest, AFailureAfterStopPrintsTheFixtureOutputOnce) {
+  ASSERT_TRUE(fixture_available()) << "test_alarm_server fixture missing or not executable at '" << fixture_binary()
+                                   << "'";
+  const std::string self = std::filesystem::read_symlink("/proc/self/exe").string();
+  const std::string command = "'" + self +
+                              "' --gtest_also_run_disabled_tests"
+                              " --gtest_filter=AlarmServerReportTest.DISABLED_FailsAfterTheFixtureStopped 2>&1";
+  FILE * child = popen(command.c_str(), "r");
+  ASSERT_NE(child, nullptr) << "could not run " << command;
+  std::string output;
+  char buf[4096];
+  size_t n = 0;
+  while ((n = fread(buf, 1, sizeof(buf), child)) > 0) {
+    output.append(buf, n);
+  }
+  const int status = pclose(child);
+  EXPECT_TRUE(status != -1 && WIFEXITED(status) && WEXITSTATUS(status) != 0)
+      << "the child test did not fail (wait status " << status << "):\n"
+      << output;
+  size_t ready_lines = 0;
+  for (size_t at = output.find("READY port="); at != std::string::npos; at = output.find("READY port=", at + 1)) {
+    ++ready_lines;
+  }
+  EXPECT_EQ(ready_lines, 1u) << "the fixture's READY line should appear once in the failed test's output:\n" << output;
 }
 
 TEST_F(OpcuaIdentityE2ETest, ClientReadsServerBuildInfo) {

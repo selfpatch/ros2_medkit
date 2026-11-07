@@ -603,10 +603,13 @@ def main():
         if server[0] is not None:
             alarm_fixture.stop(server[0])
         if first_server is not None and not passed:
-            for name in ('alarm_server.log', 'alarm_server_restarted.log'):
-                if (workdir / name).exists():
-                    print(f'fixture server {name}:\n'
-                          + alarm_fixture.read_log(workdir / name), file=sys.stderr)
+            # A failed restart printed its own output.
+            names = ['alarm_server.log']
+            if server[0] is not None and server[0] is not first_server:
+                names.append('alarm_server_restarted.log')
+            for name in names:
+                print(f'fixture server {name}:\n'
+                      + alarm_fixture.read_log(workdir / name), file=sys.stderr)
         shutil.rmtree(workdir, ignore_errors=True)
 
 
