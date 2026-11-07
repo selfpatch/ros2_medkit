@@ -267,11 +267,12 @@ class TestAggregatedFunctionHosts(unittest.TestCase):
         detail, hosts = self.functions['peer_only_ns']
         self.assertEqual(detail.status_code, 200, detail.text)
         x_medkit = detail.json().get('x-medkit', {})
-        # The peer's own view: its filter is off, so its hidden App is a host,
-        # and no aggregation provenance is attached.
+        # The peer's own view: its filter is off, so its hidden App is a host.
+        # Its provenance is the aggregator's: contributed by the peer alone.
         self.assertEqual(
             set(x_medkit.get('hosts', [])), {'peer_only_sensor', '_peer_only_internal'}, x_medkit)
-        self.assertNotIn('contributors', x_medkit)
+        self.assertEqual(x_medkit.get('contributors'), [f'peer:{PEER_NAME}'], x_medkit)
+        self.assertEqual(x_medkit.get('source'), f'peer:{PEER_NAME}', x_medkit)
         self.assertEqual(hosts.status_code, 200, hosts.text)
         self.assertEqual(
             {item['id'] for item in hosts.json().get('items', [])},

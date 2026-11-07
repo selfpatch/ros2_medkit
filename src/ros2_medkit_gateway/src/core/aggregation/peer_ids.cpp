@@ -159,9 +159,9 @@ class ServedIdWalk {
   /// `root_type`, when given, is the type of the entity the body describes
   /// when it names none itself: a detail route's. `items`, when given, is what
   /// the relationship collection the body is lists.
-  ServedIdWalk(const PeerIdIndex::Peer * ids, std::optional<SovdEntityType> root_type,
+  ServedIdWalk(const PeerIdIndex * index, const PeerIdIndex::Peer * ids, std::optional<SovdEntityType> root_type,
                std::optional<RelationshipItems> items)
-    : ids_(ids), root_type_(root_type), items_(items) {
+    : index_(index), ids_(ids), root_type_(root_type), items_(items) {
   }
 
   ServedIdRewrite run(nlohmann::json & body) {
@@ -214,11 +214,15 @@ class ServedIdWalk {
   /// budget, before the replacement is copied in. False, and the walk over,
   /// when it would take the body past kMaxServedIdRewriteGrowth.
   bool charge(const std::string & current, const std::string & replacement) {
+    return charge_size(json_text_size(current), json_text_size(replacement));
+  }
+
+  /// Charge replacing `before` bytes of the body's JSON text by `after` bytes,
+  /// as charge() does for one string.
+  bool charge_size(size_t before, size_t after) {
     if (too_large_) {
       return false;
     }
-    const size_t before = json_text_size(current);
-    const size_t after = json_text_size(replacement);
     if (after <= before) {
       return true;
     }
@@ -256,6 +260,103 @@ class ServedIdWalk {
 
   bool member(nlohmann::json & value) {
     return value.is_string() && apply(value, member_fate_of(ids_, value.get<std::string>()));
+  }
+
+  /// The type of the member a peer names `member_id`, as member_fate_of reads it.
+  SovdEntityType member_type(const std::string & member_id) const {
+    return fate_of(ids_of(ids_, SovdEntityType::APP), member_id).kind != Fate::kUnknown ? SovdEntityType::APP
+                                                                                        : SovdEntityType::COMPONENT;
+  }
+
+  /// The length of `values` as a JSON array of strings in the served body.
+  static size_t json_array_size(const std::vector<std::string> & values) {
+    size_t size = 2 + (values.empty() ? 0 : values.size() - 1);
+    for (const auto & value : values) {
+      size += json_text_size(value);
+    }
+    return size;
+  }
+
+  /// The length of `value` in the served body, for the provenance fields: a
+  /// string or an array of strings; anything else counts as nothing.
+  static size_t provenance_size(const nlohmann::json & value) {
+    if (value.is_string()) {
+      return json_text_size(value.get_ref<const std::string &>());
+    }
+    if (!value.is_array()) {
+      return 0;
+    }
+    size_t size = 2 + (value.empty() ? 0 : value.size() - 1);
+    for (const auto & entry : value) {
+      size += entry.is_string() ? json_text_size(entry.get_ref<const std::string &>()) : 0;
+    }
+    return size;
+  }
+
+  /// Set the provenance field `key` of the `x-medkit` block `xm` to `served`,
+  /// or remove it when `served` is empty. False, and the walk over, when the
+  /// write would take the body past the growth budget.
+  template <class Served>
+  bool set_provenance(nlohmann::json & xm, const char * key, const Served & served, size_t served_size) {
+    const bool present = xm.contains(key);
+    if (served.empty()) {
+      if (present) {
+        xm.erase(key);
+        changed_ = true;
+      }
+      return true;
+    }
+    nlohmann::json wanted = served;
+    if (present && xm[key] == wanted) {
+      return true;
+    }
+    // A new key also adds its quoted name, a colon and a separator.
+    const size_t before = present ? provenance_size(xm[key]) : 0;
+    const size_t after = served_size + (present ? 0 : json_text_size(key) + 2);
+    if (!charge_size(before, after)) {
+      return false;
+    }
+    xm[key] = std::move(wanted);
+    changed_ = true;
+    return true;
+  }
+
+  /// Give the object `value`, which describes the entity of `type` served here
+  /// as `served_id`, this gateway's provenance for it: the `x-medkit.source`
+  /// and `x-medkit.contributors` its own answers give the entity. The peer
+  /// writes its own - "local" for an entity it declares - which here names
+  /// this gateway. The detail itself (`detail`) takes both, as this gateway's
+  /// own detail serves them; any other object takes the ones it carries, so
+  /// an item keeps the shape of the route that lists it. Without an index, or
+  /// for an entity no peer contributes, the object is left as sent.
+  void attribute(nlohmann::json & value, SovdEntityType type, const std::string & served_id, bool detail) {
+    const PeerIdIndex::Provenance * provenance = index_ != nullptr ? index_->provenance_of(type, served_id) : nullptr;
+    if (provenance == nullptr) {
+      return;
+    }
+    if (!value.contains("x-medkit")) {
+      if (!detail) {
+        return;
+      }
+      // `"x-medkit":{}` and a separator.
+      if (!charge_size(0, json_text_size("x-medkit") + 4)) {
+        return;
+      }
+      value["x-medkit"] = nlohmann::json::object();
+      changed_ = true;
+    }
+    nlohmann::json & xm = value["x-medkit"];
+    if (!xm.is_object()) {
+      return;
+    }
+    if (detail || xm.contains("source")) {
+      if (!set_provenance(xm, "source", provenance->source, json_text_size(provenance->source))) {
+        return;
+      }
+    }
+    if (detail || xm.contains("contributors")) {
+      (void)set_provenance(xm, "contributors", provenance->contributors, json_array_size(provenance->contributors));
+    }
   }
 
   /// An entity URI - `/api/v1/<collection>/<id>...`, or the same behind
@@ -380,8 +481,9 @@ class ServedIdWalk {
     }
     // The entity an object describes names its type: a detail, or an item of a
     // relationship collection. A renamed one takes its served ID and the name
-    // the listings serve it under; a dropped one is removed whole. A detail
-    // that names no type is of the type its route asked for.
+    // the listings serve it under; a dropped one is removed whole. Each one
+    // kept takes this gateway's provenance (attribute). A detail that names no
+    // type is of the type its route asked for.
     //
     // Read through contains() and operator[], not find(): with the type
     // branches below, GCC 13 inlines the find() iterator's dereference into
@@ -413,6 +515,8 @@ class ServedIdWalk {
       nlohmann::json & entity_id = value["id"];
       const auto fate = member ? member_fate_of(ids_, entity_id.get<std::string>())
                                : fate_of(ids_of(ids_, entity_type), entity_id.get<std::string>());
+      // A member is the peer's App when it declared one by the ID, else its Component.
+      const SovdEntityType described = member ? member_type(entity_id.get<std::string>()) : entity_type;
       if (fate.kind == Fate::kDropped || fate.kind == Fate::kUnknown) {
         changed_ = true;
         return true;
@@ -429,6 +533,11 @@ class ServedIdWalk {
           value["name"] = fate.renamed->name;
         }
         changed_ = true;
+      }
+      const std::string served_id = value["id"].get<std::string>();
+      attribute(value, described, served_id, depth == 0);
+      if (halted()) {
+        return false;
       }
     }
     std::vector<std::string> removed;
@@ -459,6 +568,7 @@ class ServedIdWalk {
     return false;
   }
 
+  const PeerIdIndex * index_;
   const PeerIdIndex::Peer * ids_;
   std::optional<SovdEntityType> root_type_;
   std::optional<RelationshipItems> items_;
@@ -614,7 +724,7 @@ ServedIdRewrite rewrite_to_served_ids(nlohmann::json & body, const std::string &
   }
   // One snapshot for the whole body: every rename and drop it applies is of
   // the same generation.
-  return ServedIdWalk(peer_ids_of(peer_ids, peer), root_type, items).run(body);
+  return ServedIdWalk(peer_ids.get(), peer_ids_of(peer_ids, peer), root_type, items).run(body);
 }
 
 }  // namespace ros2_medkit_gateway
