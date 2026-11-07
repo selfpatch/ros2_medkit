@@ -149,6 +149,11 @@ class CorrelationEngine {
   /// Generate unique cluster ID
   std::string generate_cluster_id(const std::string & rule_id);
 
+  /// Record a re-reported member's severity and update the representative if it changes
+  void update_member_severity(const CorrelationRule & rule, ClusterData & cluster,
+                              std::map<std::string, std::string> & fault_severities, const std::string & fault_code,
+                              const std::string & severity) const;
+
   /// Reassign cluster representative from remaining fault_codes and their severities
   void reassign_representative(ClusterData & cluster,
                                const std::map<std::string, std::string> & fault_severities) const;

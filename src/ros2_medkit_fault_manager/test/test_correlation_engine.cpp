@@ -855,6 +855,63 @@ TEST_F(CorrelationEngineTest, ClearBelowMinCountInWindowThenNewFaultJoinsUpdates
   EXPECT_EQ("ERROR", clusters[0].representative_severity);
 }
 
+TEST_F(CorrelationEngineTest, ReReportActiveMemberWithHigherSeverityInWindowBecomesRepresentative) {
+  auto config = create_auto_cluster_config();  // highest_severity, min_count=3, window_ms=500
+  CorrelationEngine engine(config);
+
+  auto t0 = std::chrono::steady_clock::now();
+  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
+  engine.process_fault("SENSOR_TIMEOUT", "ERROR", t0 + 10ms);
+  engine.process_fault("DRIVE_COMM_ERROR", "WARNING", t0 + 20ms);
+  ASSERT_EQ(1u, engine.get_cluster_count());
+
+  auto res = engine.process_fault("MOTOR_COMM_FL", "CRITICAL", t0 + 30ms);
+  EXPECT_FALSE(res.should_mute);
+
+  auto clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  EXPECT_EQ("MOTOR_COMM_FL", clusters[0].representative_code);
+  EXPECT_EQ("CRITICAL", clusters[0].representative_severity);
+}
+
+TEST_F(CorrelationEngineTest, ReReportActiveMemberWithHigherSeverityAfterWindowBecomesRepresentative) {
+  auto config = create_auto_cluster_config();  // highest_severity, min_count=3, window_ms=500
+  CorrelationEngine engine(config);
+
+  auto t0 = std::chrono::steady_clock::now();
+  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
+  engine.process_fault("SENSOR_TIMEOUT", "ERROR", t0 + 10ms);
+  engine.process_fault("DRIVE_COMM_ERROR", "WARNING", t0 + 20ms);
+  ASSERT_EQ(1u, engine.get_cluster_count());
+
+  auto res = engine.process_fault("MOTOR_COMM_FL", "CRITICAL", t0 + 600ms);
+  EXPECT_FALSE(res.should_mute);
+
+  auto clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  EXPECT_EQ("MOTOR_COMM_FL", clusters[0].representative_code);
+  EXPECT_EQ("CRITICAL", clusters[0].representative_severity);
+}
+
+TEST_F(CorrelationEngineTest, ReReportRepresentativeWithLowerSeverityHandsOverRepresentative) {
+  auto config = create_auto_cluster_config();  // highest_severity, min_count=3, window_ms=500
+  CorrelationEngine engine(config);
+
+  auto t0 = std::chrono::steady_clock::now();
+  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
+  engine.process_fault("SENSOR_TIMEOUT", "CRITICAL", t0 + 10ms);
+  engine.process_fault("DRIVE_COMM_ERROR", "ERROR", t0 + 20ms);
+  ASSERT_EQ(1u, engine.get_cluster_count());
+
+  auto res = engine.process_fault("SENSOR_TIMEOUT", "WARNING", t0 + 600ms);
+  EXPECT_TRUE(res.should_mute);
+
+  auto clusters = engine.get_clusters();
+  ASSERT_EQ(1u, clusters.size());
+  EXPECT_EQ("DRIVE_COMM_ERROR", clusters[0].representative_code);
+  EXPECT_EQ("ERROR", clusters[0].representative_severity);
+}
+
 int main(int argc, char ** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
