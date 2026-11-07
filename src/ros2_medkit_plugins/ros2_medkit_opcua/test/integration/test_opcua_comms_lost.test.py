@@ -186,6 +186,8 @@ class Run:
         self.env = env
         self.procs = []
         self.logs = {}
+        # Logs of fixtures that printed READY. A failed start printed its own.
+        self.server_logs = []
 
     def _start(self, cmd, log_path, env=None, stdin=False):
         log = open(log_path, 'w')
@@ -223,6 +225,7 @@ class Run:
             raise AssertionError(f'fixture {name} printed no READY (last port {port})')
         self.logs[proc.pid] = proc._log
         self.procs.append(proc)
+        self.server_logs.append(log)
         return proc, port
 
     def start_fault_manager(self, name):
@@ -481,7 +484,7 @@ def main():
         else:
             failures += 1
             print(f'FAIL {name} ({elapsed:.0f} s): {error}', file=sys.stderr)
-            for log in sorted(workdir.glob('*_server.log')):
+            for log in run.server_logs:
                 print(f'{log.name}:\n' + alarm_fixture.read_log(log), file=sys.stderr)
     return 1 if failures else 0
 
