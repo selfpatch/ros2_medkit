@@ -61,6 +61,9 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'fixtures' / 'test_alarm_server'))
+import alarm_fixture  # noqa: E402
+
 CTEST_SKIP = 77
 USERNAME = 'medkit'
 PASSWORD = 'secret'
@@ -245,21 +248,19 @@ def start_gateway(params_file, log_path, env):
     return proc
 
 
-def send_cmd(server, server_log, cmd):
+def send_cmd(server, cmd):
     """
     Write one alarm-CLI command, reporting a dead server instead of EPIPE.
 
     A bare write to an exited server raises BrokenPipeError from whichever
     command comes next, naming neither the server nor a reason. Check first and
-    dump the server log, which carries the UA_Server_run status.
+    report the exit code; main() prints the server log on every failure.
 
     Returns True on success, False if the server is gone (caller should fail).
     """
     def report():
         rc = server.returncode
         print(f'FAIL: alarm server gone (rc={rc}) before {cmd!r}', file=sys.stderr)
-        print('server log:\n' + Path(server_log).read_text(errors='replace'),
-              file=sys.stderr)
         return False
 
     if server.poll() is not None:
@@ -379,6 +380,7 @@ def main():
     env = dict(os.environ, ROS_DOMAIN_ID=ros_domain_id)
 
     server = fault_mgr = gw_good = gw_bad = gw_catch = None
+    passed = False
     try:
         # --- Certificates (regenerated every run, never committed) ---------
         subprocess.run(['bash', str(gen_certs), str(certs)], check=True,
@@ -389,26 +391,22 @@ def main():
         write_node_map(node_map)
         manifest.write_text('manifest_version: "1.0"\n')
 
-        server_port = free_port()
+        # --- Secure server fixture (stdin pipe for the alarm CLI) ----------
+        server, server_port = alarm_fixture.start_fixture(
+            server_bin, server_log, '--secure',
+            '--cert', str(certs / 'server_cert.der'),
+            '--key', str(certs / 'server_key.pem'),
+            '--trust', str(certs / 'client_cert.der'),
+            '--app-uri', APP_URI_SERVER,
+            '--username', USERNAME, '--password', PASSWORD,
+            deadline=20)
+        if server is None:
+            print(f'secure server printed no READY on {alarm_fixture.ATTEMPTS} ports',
+                  file=sys.stderr)
+            return 1
+        # Drawn while the fixture holds its port, so none can coincide with it.
         good_port = free_port()
         bad_port = free_port()
-
-        # --- Secure server fixture (stdin pipe for the alarm CLI) ----------
-        slog = open(server_log, 'w')
-        server = subprocess.Popen(
-            [str(server_bin), '--secure', '--port', str(server_port),
-             '--cert', str(certs / 'server_cert.der'),
-             '--key', str(certs / 'server_key.pem'),
-             '--trust', str(certs / 'client_cert.der'),
-             '--app-uri', APP_URI_SERVER,
-             '--username', USERNAME, '--password', PASSWORD],
-            stdin=subprocess.PIPE, stdout=slog, stderr=subprocess.STDOUT,
-            text=True, start_new_session=True,
-        )
-        if not wait_log(server_log, 'READY ', deadline=20):
-            print('secure server did not become READY', file=sys.stderr)
-            print(Path(server_log).read_text(errors='replace'), file=sys.stderr)
-            return 1
 
         # --- fault_manager_node --------------------------------------------
         # storage_type:=memory, as every other integration test does. The
@@ -463,7 +461,6 @@ def main():
             lambda j: j.get('connected') is True, deadline=70)
         if not (status and status.get('connected') is True):
             print('FAIL: gateway did not connect over the secure channel', file=sys.stderr)
-            print('server log:\n' + Path(server_log).read_text(errors='replace'), file=sys.stderr)
             gw_tail = Path(workdir / 'gateway_good.log').read_text(errors='replace')[-3000:]
             print('gateway log tail:\n' + gw_tail, file=sys.stderr)
             return 1
@@ -474,12 +471,10 @@ def main():
         if not wait_log(server_log, 'securityMode=3', deadline=20):
             print('FAIL: server never logged an encrypted (SignAndEncrypt) session',
                   file=sys.stderr)
-            print(Path(server_log).read_text(errors='replace'), file=sys.stderr)
             return 1
         if 'securityPolicyUri=http://opcfoundation.org/UA/SecurityPolicy#Basic256Sha256' \
                 not in Path(server_log).read_text(errors='replace'):
             print('FAIL: negotiated SecurityPolicy was not Basic256Sha256', file=sys.stderr)
-            print(Path(server_log).read_text(errors='replace'), file=sys.stderr)
             return 1
         print('  OK encrypted channel: Basic256Sha256 securityMode=3 (SignAndEncrypt)')
 
@@ -499,7 +494,7 @@ def main():
         print(f'  OK secured read: tank_level = {value}')
 
         # Secured A&C: fire an alarm over the server stdin -> CONFIRMED fault.
-        if not send_cmd(server, server_log, 'fire Overpressure 750'):
+        if not send_cmd(server, 'fire Overpressure 750'):
             return 1
         # Generous deadline for slow CI runners: the alarm has already fired on
         # the server, but report -> fault_manager -> REST propagation can take
@@ -512,7 +507,6 @@ def main():
                                for i in faults.get('items', []))):
             print('FAIL: alarm did not surface as a CONFIRMED fault', file=sys.stderr)
             print(json.dumps(faults), file=sys.stderr)
-            print('server log:\n' + Path(server_log).read_text(errors='replace'), file=sys.stderr)
             return 1
         print('  OK secured A&C: PLC_OVERPRESSURE CONFIRMED via encrypted event subscription')
 
@@ -527,7 +521,7 @@ def main():
         # while a real condition on the catch-all still faults. Reset the still-
         # active Overpressure condition first so its ConditionRefresh replay does
         # not pre-map PLC_ALARM before the sysevent is even fired.
-        if not send_cmd(server, server_log, 'clear Overpressure'):
+        if not send_cmd(server, 'clear Overpressure'):
             return 1
 
         catch_node_map = workdir / 'catchall_nodes.yaml'
@@ -550,7 +544,7 @@ def main():
             return 1
 
         # Fire the non-condition system event; the guard must drop it.
-        if not send_cmd(server, server_log, 'sysevent'):
+        if not send_cmd(server, 'sysevent'):
             return 1
         leaked = wait_json(
             f'{catch_base}/faults',
@@ -560,14 +554,12 @@ def main():
             print('FAIL: non-condition event surfaced as PLC_ALARM (guard regressed)',
                   file=sys.stderr)
             print(json.dumps(leaked), file=sys.stderr)
-            print('server log:\n' + Path(server_log).read_text(errors='replace'),
-                  file=sys.stderr)
             return 1
         print('  OK non-condition guard: sysevent did NOT raise PLC_ALARM')
 
         # A real condition on the catch-all source still faults (proves the
         # pipeline can produce PLC_ALARM, so the absence above is meaningful).
-        if not send_cmd(server, server_log, 'fire Overpressure 750'):
+        if not send_cmd(server, 'fire Overpressure 750'):
             return 1
         catch_faults = wait_json(
             f'{catch_base}/faults',
@@ -580,8 +572,6 @@ def main():
             print('FAIL: real condition on the i=2253 catch-all did not surface as PLC_ALARM',
                   file=sys.stderr)
             print(json.dumps(catch_faults), file=sys.stderr)
-            print('server log:\n' + Path(server_log).read_text(errors='replace'),
-                  file=sys.stderr)
             return 1
         print('  OK catch-all: real condition surfaced as PLC_ALARM CONFIRMED')
 
@@ -622,6 +612,7 @@ def main():
         print('  OK fail-closed: wrong password rejected (BadUserAccessDenied)')
 
         print('PASS: secured OPC-UA A&C integration test')
+        passed = True
         return 0
     finally:
         terminate(gw_good)
@@ -629,16 +620,9 @@ def main():
         terminate(gw_bad)
         terminate(fault_mgr)
         if server is not None:
-            try:
-                if server.stdin:
-                    server.stdin.close()
-            except OSError:
-                pass
-            terminate(server)
-        try:
-            slog.close()
-        except (NameError, OSError):
-            pass
+            alarm_fixture.stop(server)
+            if not passed:
+                print('server log:\n' + alarm_fixture.read_log(server_log), file=sys.stderr)
         shutil.rmtree(workdir, ignore_errors=True)
 
 
