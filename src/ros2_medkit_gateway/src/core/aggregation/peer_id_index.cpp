@@ -17,6 +17,7 @@
 #include <string_view>
 
 #include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/common.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -53,6 +54,25 @@ void add_admitted(PeerIdIndex & index, const std::vector<Entity> & entities, Mem
   }
 }
 
+/// Record the provenance of every entity of `entities` a peer contributes, by
+/// the ID it is served under.
+template <class Entity>
+void add_provenance(std::unordered_map<std::string, PeerIdIndex::Provenance> & provenance,
+                    const std::vector<Entity> & entities) {
+  for (const auto & entity : entities) {
+    if (!peer_targets_of(entity).empty()) {
+      provenance[entity.id] = PeerIdIndex::Provenance{entity.source, sorted_contributors(entity.contributors)};
+    }
+  }
+}
+
+const PeerIdIndex::Provenance *
+find_provenance(const std::unordered_map<std::string, PeerIdIndex::Provenance> & of_type,
+                const std::string & served_id) {
+  auto it = of_type.find(served_id);
+  return it != of_type.end() ? &it->second : nullptr;
+}
+
 }  // namespace
 
 const PeerIdIndex::Ids & PeerIdIndex::Peer::of(SovdEntityType type) const {
@@ -78,6 +98,23 @@ const PeerIdIndex::Peer & PeerIdIndex::peer(const std::string & name) const {
   return it != peers.end() ? it->second : kEmpty;
 }
 
+const PeerIdIndex::Provenance * PeerIdIndex::provenance_of(SovdEntityType type, const std::string & served_id) const {
+  switch (type) {
+    case SovdEntityType::AREA:
+      return find_provenance(provenance.areas, served_id);
+    case SovdEntityType::COMPONENT:
+      return find_provenance(provenance.components, served_id);
+    case SovdEntityType::APP:
+      return find_provenance(provenance.apps, served_id);
+    case SovdEntityType::FUNCTION:
+      return find_provenance(provenance.functions, served_id);
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+      break;
+  }
+  return nullptr;
+}
+
 PeerIdIndex make_peer_id_index(const std::vector<Area> & areas, const std::vector<Component> & components,
                                const std::vector<App> & apps, const std::vector<Function> & functions,
                                const std::unordered_map<std::string, PeerDrops> & drops) {
@@ -90,6 +127,10 @@ PeerIdIndex make_peer_id_index(const std::vector<Area> & areas, const std::vecto
   add_admitted(index, components, &PeerIdIndex::Peer::components);
   add_admitted(index, apps, &PeerIdIndex::Peer::apps);
   add_admitted(index, functions, &PeerIdIndex::Peer::functions);
+  add_provenance(index.provenance.areas, areas);
+  add_provenance(index.provenance.components, components);
+  add_provenance(index.provenance.apps, apps);
+  add_provenance(index.provenance.functions, functions);
   for (const auto & [peer, dropped] : drops) {
     auto & entry = index.peers[peer];
     entry.areas.dropped.insert(dropped.areas.begin(), dropped.areas.end());

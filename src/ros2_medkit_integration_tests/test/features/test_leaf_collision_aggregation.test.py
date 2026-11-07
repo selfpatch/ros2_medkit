@@ -23,8 +23,10 @@ the wire this surfaces as:
   peers under ``peer_names``.
 - ``GET /components/ecu-shared`` from the primary resolves to one of the
   peers (last-writer-wins) and returns 200 - never a local stub.
-- The resolving peer's ``x-medkit.contributors`` reflects THAT peer only,
-  not both.
+- The forwarded detail carries this gateway's provenance for the leaf, not
+  the resolving peer's own: ``x-medkit.contributors`` names both peers, as
+  the merge records them, and ``x-medkit.source`` is the one the listing
+  serves.
 
 Three gateways, three distinct DDS domains, aggregation is the only channel
 between them. All three domains are allocated to this test alone, by the
@@ -240,17 +242,19 @@ class TestLeafCollisionAggregation(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
         self.assertEqual(body.get('id'), SHARED_LEAF_ID)
-        # peer_b and peer_c do not run aggregation themselves, so their
-        # local responses do not emit x-medkit.contributors. That absence
-        # is the signal: the request reached a peer directly (rather than
-        # being synthesised by the primary's merge), otherwise contributors
-        # would be populated. A non-empty contributors list here would
-        # indicate the primary fabricated a merged view for a leaf ID,
-        # which is precisely what the routing table must prevent.
-        contributors = body.get('x-medkit', {}).get('contributors', [])
+        # The detail is the resolving peer's, attributed as the primary
+        # attributes the leaf: peer_b and peer_c run no aggregation and emit
+        # no contributors of their own, and the primary names both peers that
+        # declared it, as its merge records them, with the source its listing
+        # serves. The primary declares no ecu-shared, so it has no view of its
+        # own to serve; the detail is forwarded.
+        x_medkit = body.get('x-medkit', {})
+        self.assertEqual(x_medkit.get('contributors'), ['peer:peer_b', 'peer:peer_c'], body)
+        listing = requests.get(f'{PRIMARY_URL}/components', timeout=5).json()
+        listed = {item['id']: item for item in listing.get('items', [])}
+        self.assertIn(SHARED_LEAF_ID, listed)
         self.assertEqual(
-            contributors, [],
-            f'routed leaf response must not carry merged contributors, got: {contributors}',
+            x_medkit.get('source'), listed[SHARED_LEAF_ID].get('x-medkit', {}).get('source'), body,
         )
 
     def test_root_capabilities_flag_aggregation_enabled(self):

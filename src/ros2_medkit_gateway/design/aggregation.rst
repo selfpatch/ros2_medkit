@@ -474,7 +474,19 @@ classification pass over the full Component set:
   ``EntityInfo::peer_ids``; so do the fan-outs below. A refresh that lands
   while the peer answers can rename or drop the entity the request named, and
   the newest snapshot would then map the peer's id to the local entity that
-  took its place. A rewritten body drops the peer's ``ETag``.
+  took its place. Each object the walk recognizes as an entity served here
+  also takes this gateway's provenance for it, from the same snapshot
+  (``PeerIdIndex::provenance``, the ``source`` and sorted ``contributors`` of
+  every served entity a peer contributes): the peer writes its own, ``"local"``
+  for an entity it declares, which here would name this gateway, and passed
+  through, a peer-only Area's detail would read ``["local"]`` while the peer
+  answers and ``["peer:<name>"]`` once it is retained. The detail takes both fields, as
+  this gateway's own detail serves them; a relationship item takes the ones it
+  carries, so it keeps the shape of the route that lists it. Read from the
+  snapshot of the request's generation, never from the newest cache: a
+  refresh that renamed the entity meanwhile would otherwise attribute the
+  peer's entity as the local one that took its id. A rewritten body drops the
+  peer's ``ETag``.
   Responses of the resource collections (data, faults, operations and the
   rest) are passed through as the peer sent them, except for the member IDs a
   fan-out reads off them (see the member-qualified items below): a dropped
@@ -532,6 +544,10 @@ list is populated during merge:
   never produces duplicate entries.
 - Apps that collide receive only ``"peer:<name>"`` because the
   prefix strategy turns them into distinct entities.
+- A discovery response forwarded to the peer that serves the entity carries
+  this list too, not the peer's own (``rewrite_to_served_ids``), so the
+  detail of a peer-only entity reads the same whether its peer answers or it
+  is served from the retained declaration.
 - Outputs are sorted with ``"local"`` first (when present) and
   ``"peer:<name>"`` entries alphabetically, so clients and snapshot
   tests can rely on a stable order regardless of peer merge order.

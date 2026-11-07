@@ -75,16 +75,39 @@ struct PeerIdIndex {
     const Ids & of(SovdEntityType type) const;
   };
 
+  /// How this gateway attributes a served entity a peer contributes: the
+  /// `x-medkit.source` and `x-medkit.contributors` its own answers give it,
+  /// the contributors in the order they are served (sorted_contributors).
+  struct Provenance {
+    std::string source;
+    std::vector<std::string> contributors;
+  };
+
+  /// Served ID -> provenance, per type, of every served entity a peer
+  /// contributes: the only entities a peer's answer can name and keep.
+  struct Attributions {
+    std::unordered_map<std::string, Provenance> areas;
+    std::unordered_map<std::string, Provenance> components;
+    std::unordered_map<std::string, Provenance> apps;
+    std::unordered_map<std::string, Provenance> functions;
+  };
+
   std::unordered_map<std::string, Peer> peers;
+  Attributions provenance;
 
   /// The IDs of `peer`; empty ones for a peer nothing was renamed or dropped for.
   const Peer & peer(const std::string & name) const;
+
+  /// The provenance of the served entity of `type` named `served_id`, or
+  /// nullptr when no peer contributes one.
+  const Provenance * provenance_of(SovdEntityType type, const std::string & served_id) const;
 };
 
 /// The index of the served entities - every one a peer contributes, by the ID
 /// that peer knows it by, and those whose `original_id` is set as renamed, by
 /// the peer their `source` names - and of `drops`, peer name -> that peer's
-/// drops.
+/// drops. Each served entity a peer contributes is also recorded with its
+/// provenance, by the ID it is served under.
 PeerIdIndex make_peer_id_index(const std::vector<Area> & areas, const std::vector<Component> & components,
                                const std::vector<App> & apps, const std::vector<Function> & functions,
                                const std::unordered_map<std::string, PeerDrops> & drops);

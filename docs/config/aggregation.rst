@@ -489,7 +489,12 @@ A prefixed entity is forwarded under the ID its peer knows it by, and the
 discovery responses that come back (its detail, its relationship collections)
 are rewritten to the IDs this gateway serves: the entity's own ID and its name
 (``arm__Camera driver``, as the listings show it), its self, resource and
-relationship links, and the related entities' IDs. A response whose rewrite
+relationship links, and the related entities' IDs. Each entity such a response
+describes is attributed as this gateway attributes it: its ``x-medkit.source``
+and ``x-medkit.contributors`` are the merged entity's, the values the listings
+and the retained declaration serve, not the peer's own, which call the peer
+``"local"``. The detail carries both; a relationship item keeps the fields the
+peer's route gives it. A response whose rewrite
 would add more than 10 MB to it - one naming a renamed entity in far more
 objects than its own size accounts for - is refused with ``502``. A reference to a peer
 entity that is not served (see the taken prefixed ID above), or to an ID the

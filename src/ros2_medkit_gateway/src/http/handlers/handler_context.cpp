@@ -327,7 +327,9 @@ void refuse_forwarded_discovery(httplib::Response & res, const std::string & pee
 }
 
 /// A discovery response `peer` answered for a forwarded GET, with every entity
-/// it names named by the id this gateway serves it under. The peer describes
+/// it names named by the id this gateway serves it under, and attributed as
+/// this gateway attributes it (its x-medkit source and contributors, not the
+/// peer's own, which name the peer "local"). The peer describes
 /// its own tree in its own ids, and an entity this gateway renamed on
 /// collision is another entity here under the peer's id, so its self link,
 /// resource links and relationships would lead a client following them to the

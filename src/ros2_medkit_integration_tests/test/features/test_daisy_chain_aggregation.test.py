@@ -306,20 +306,19 @@ class TestDaisyChainAggregation(unittest.TestCase):
         """@verifies REQ_INTEROP_003.
 
         GET /components/ecu-b through the primary is transparently forwarded
-        to peer_b (1-hop). The response body is peer_b's own serialised view
-        of ecu-b, where peer_b is the local gateway, so contributors starts
-        with "local" under the stable "local first, then peer:* sorted"
-        ordering. The assertion therefore validates that peer_b's
-        x-medkit.contributors is present and proxied intact - a regression
-        dropping the field on Area/App/Function detail handlers would flip
-        this test. That the request is forwarded (not served with a merged
+        to peer_b (1-hop). peer_b serialises ecu-b as its own, "local", and
+        the primary attributes it as it does in its listing: contributed by
+        peer_b alone, so contributors is ["peer:peer_b"] and source
+        "peer:peer_b". A "local" here would name the primary, which declares
+        no ecu-b. That the request is forwarded (not served with a merged
         primary view) is verified separately by
         test_primary_forwards_ecu_b_detail_one_hop.
         """
         r = requests.get(f'{PRIMARY_URL}/components/ecu-b', timeout=5)
         self.assertEqual(r.status_code, 200)
-        contributors = r.json().get('x-medkit', {}).get('contributors', [])
-        self.assertEqual(contributors[:1], ['local'])
+        x_medkit = r.json().get('x-medkit', {})
+        self.assertEqual(x_medkit.get('contributors'), ['peer:peer_b'], x_medkit)
+        self.assertEqual(x_medkit.get('source'), 'peer:peer_b', x_medkit)
 
     def test_app_detail_contributors_present(self):
         # Apps flow through x-medkit.contributors the same way Components do

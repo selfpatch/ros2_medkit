@@ -120,8 +120,9 @@ Server Capabilities
    require peers to be present - a gateway with aggregation enabled but
    zero peers still reports ``true`` and still emits the
    aggregation-only response fields (``peers`` on ``/health``, which may
-   be an empty array; ``x-medkit.contributors`` on entities, which will
-   contain only ``"local"`` until a peer contributes). Clients can
+   be an empty array; ``x-medkit.contributors`` on entities once a peer is
+   configured or discovered, which will contain only ``"local"`` until a
+   peer contributes). Clients can
    feature-detect those fields using this flag instead of probing for
    field presence. ``warnings`` is **not** one of them: it is served on
    every ``/health`` response regardless of this flag.
@@ -343,9 +344,18 @@ Areas
       - ``ros2.namespace`` - the ROS 2 namespace the Area maps to.
       - ``parent_area_id`` - the parent of a subarea (detail only).
       - ``contributors`` - the merge inputs on a gateway with aggregation
-        enabled (detail only).
+        enabled (detail only): ``"local"`` for this gateway, ``peer:<name>``
+        for each peer.
       - ``missing`` and ``unresolved_component`` - only on a
         ``/apps/{app_id}/belongs-to`` item whose Area cannot be resolved.
+
+      A detail or relationship collection this gateway forwards to the peer
+      that serves the entity carries this gateway's ``source`` and
+      ``contributors`` for each entity it describes, not the peer's own (which
+      name the peer ``"local"``): a peer-only Area's detail says
+      ``"contributors": ["peer:<name>"]`` and ``"source": "peer:<name>"``, as
+      its list item does and as its retained declaration does while the peer
+      is silent. The same holds for Components, Apps and Functions.
 
 ``GET /api/v1/areas/{area_id}``
    Get area capabilities and metadata.
