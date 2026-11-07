@@ -494,11 +494,12 @@ class OpcuaClient {
   void drop_session_bookkeeping_locked();
 
   /// Marks the client disconnected when ``e`` is a transport-level loss
-  /// (connection closed, secure channel closed, not connected) and drops the
-  /// session's bookkeeping; a per-node error such as BadNodeIdUnknown leaves
-  /// the session up. Called with client_mutex held from every operation that
-  /// can observe the drop, so OpcuaPoller's reconnect logic, keyed off
-  /// is_connected(), fires whichever operation saw it first.
+  /// (connection closed, secure channel closed, not connected) and ends the
+  /// session; a per-node error such as BadNodeIdUnknown leaves the session up.
+  /// The transport codes count only while the channel or the session is
+  /// down: a value whose own status is BadNotConnected leaves it up too. Called with client_mutex held from every
+  /// operation that can observe the drop, so OpcuaPoller's reconnect logic, keyed off is_connected(), fires whichever
+  /// operation saw it first.
   /// @return true when this call flipped the client to disconnected.
   bool mark_disconnected_on_transport_error(const opcua::BadStatus & e);
 };
