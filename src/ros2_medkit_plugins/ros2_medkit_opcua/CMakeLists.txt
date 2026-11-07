@@ -541,6 +541,28 @@ if(BUILD_TESTING)
 
     install(TARGETS test_alarm_server
       RUNTIME DESTINATION lib/${PROJECT_NAME})
+
+    # OpcuaClient across a blackholed or cut link and back, against the
+    # fixture above behind an in-test TCP proxy.
+    medkit_add_gtest(test_opcua_client_reconnect
+      test/test_opcua_client_reconnect.cpp
+      src/opcua_client.cpp
+      TIMEOUT 120
+    )
+    add_dependencies(test_opcua_client_reconnect test_alarm_server)
+    target_compile_definitions(test_opcua_client_reconnect PRIVATE
+      TEST_ALARM_SERVER_BIN="$<TARGET_FILE:test_alarm_server>")
+    target_include_directories(test_opcua_client_reconnect PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    medkit_target_dependencies(test_opcua_client_reconnect
+      ros2_medkit_gateway
+      rclcpp
+    )
+    target_link_libraries(test_opcua_client_reconnect
+      open62541pp::open62541pp
+      nlohmann_json::nlohmann_json
+    )
     install(PROGRAMS
       test/fixtures/test_alarm_server/smoke_test.py
       test/fixtures/test_alarm_server/run_ctest.py

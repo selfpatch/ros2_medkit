@@ -1308,11 +1308,9 @@ void OpcuaPoller::poll_loop() {
         }
         // Re-subscribe to AlarmCondition events on the new session and re-fire
         // ConditionRefresh so conditions that changed state while the link was
-        // down are recovered. The client dropped the previous session's event
-        // contexts and subscription handles when it marked itself disconnected,
-        // and again inside connect(), so the monitored-item ids this session
-        // hands out, which start from 1 again, register fresh contexts under
-        // their own ids.
+        // down are recovered. The client closed the previous session when it
+        // marked itself disconnected, and again inside connect(), so nothing of
+        // the old subscriptions is left to publish into this one.
         event_subscription_id_ = 0;
         event_monitored_item_ids_.clear();
         if (has_alarm_sources()) {

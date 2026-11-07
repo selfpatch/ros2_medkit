@@ -673,6 +673,24 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
       }
       return;
     }
+    // ``notconnected <NodeName>``: reads of the variable then return
+    // BadNotConnected, as a PLC does for a value whose source is offline,
+    // over a session that stays up.
+    if (cmd == "notconnected") {
+      UA_DataValue dv;
+      UA_DataValue_init(&dv);
+      dv.hasStatus = true;
+      dv.status = UA_STATUSCODE_BADNOTCONNECTED;
+      UA_NodeId target = UA_NODEID_STRING_ALLOC(ns, name.c_str());
+      UA_StatusCode rc = UA_Server_writeDataValue(server, target, dv);
+      UA_NodeId_clear(&target);
+      if (rc == UA_STATUSCODE_GOOD) {
+        std::cout << "OK notconnected " << name << '\n';
+      } else {
+        std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << '\n';
+      }
+      return;
+    }
     // ``sysevent`` fires a non-condition BaseEventType on the Server object
     // (i=2253); it has no <name> and is not in g_conditions, so handle it
     // before the condition lookup (like ``quit`` / ``set``).
