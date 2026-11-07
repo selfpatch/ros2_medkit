@@ -24,6 +24,7 @@
 #include <deque>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -79,7 +80,9 @@ static void on_event_item_deleted_c(UA_Client * client, UA_UInt32 sub_id, void *
 struct EventContextRegistry {
   std::mutex mutex;
   std::unordered_set<EventCallbackContext *> live;
-  std::unordered_map<uint32_t, EventCallbackContext *> by_monitored_item;
+  /// Keyed by (subscription id, monitored item id): item ids are unique only
+  /// within their subscription.
+  std::map<std::pair<uint32_t, uint32_t>, EventCallbackContext *> items;
 };
 
 /// Context passed to the open62541 C event callback. open62541 owns it from
@@ -260,9 +263,9 @@ struct OpcuaClient::Impl {
   std::vector<std::pair<uint32_t, uint32_t>> event_item_ids() {
     std::lock_guard<std::mutex> ev_lock(event_callbacks.mutex);
     std::vector<std::pair<uint32_t, uint32_t>> ids;
-    ids.reserve(event_callbacks.by_monitored_item.size());
-    for (const auto & [mi_id, ctx] : event_callbacks.by_monitored_item) {
-      ids.emplace_back(ctx->subscription_id, mi_id);
+    ids.reserve(event_callbacks.items.size());
+    for (const auto & [key, ctx] : event_callbacks.items) {
+      ids.push_back(key);
     }
     return ids;
   }
@@ -1694,9 +1697,9 @@ static void on_event_item_deleted_c(UA_Client * /*client*/, UA_UInt32 /*sub_id*/
   auto & registry = *ctx->registry;
   std::lock_guard<std::mutex> ev_lock(registry.mutex);
   registry.live.erase(ctx.get());
-  auto it = registry.by_monitored_item.find(ctx->monitored_item_id);
-  if (it != registry.by_monitored_item.end() && it->second == ctx.get()) {
-    registry.by_monitored_item.erase(it);
+  auto it = registry.items.find({ctx->subscription_id, ctx->monitored_item_id});
+  if (it != registry.items.end() && it->second == ctx.get()) {
+    registry.items.erase(it);
   }
 }
 
@@ -1757,6 +1760,15 @@ bool OpcuaClient::mark_disconnected_on_transport_error(const opcua::BadStatus & 
       code != UA_STATUSCODE_BADNOTCONNECTED) {
     return false;
   }
+  // The same codes also arrive as the status of a single value, e.g. a
+  // gateway server reporting a tag whose device is offline as BadNotConnected.
+  // The session is gone only if the channel or the session says so.
+  UA_SecureChannelState channel_state = UA_SECURECHANNELSTATE_CLOSED;
+  UA_SessionState session_state = UA_SESSIONSTATE_CLOSED;
+  UA_Client_getState(impl_->client.handle(), &channel_state, &session_state, nullptr);
+  if (channel_state == UA_SECURECHANNELSTATE_OPEN && session_state == UA_SESSIONSTATE_ACTIVATED) {
+    return false;
+  }
   if (!impl_->connected.exchange(false)) {
     return false;
   }
@@ -1773,19 +1785,22 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
     return 0;
   }
 
-  // open62541 owns the context from createEvent on: it frees it through
-  // on_event_item_deleted_c, including when the create fails. Registered as
-  // live first so a create that returns without calling that is told apart.
-  auto * raw_ctx = new EventCallbackContext();
-  raw_ctx->owner = this;
-  raw_ctx->registry = &impl_->event_callbacks;
-  raw_ctx->generation_snapshot = impl_->generation.load(std::memory_order_acquire);
-  raw_ctx->subscription_id = subscription_id;
-  raw_ctx->callback = std::move(callback);
-  {
-    std::lock_guard<std::mutex> ev_lock(impl_->event_callbacks.mutex);
-    impl_->event_callbacks.live.insert(raw_ctx);
-  }
+  // Everything that can throw runs while this function still owns the
+  // context, so a throw frees it and leaves nothing registered.
+  auto ctx = std::make_unique<EventCallbackContext>();
+  ctx->owner = this;
+  ctx->registry = &impl_->event_callbacks;
+  ctx->generation_snapshot = impl_->generation.load(std::memory_order_acquire);
+  ctx->subscription_id = subscription_id;
+  ctx->callback = std::move(callback);
+
+  // Debug-level diagnostic so integration-test failures can surface the
+  // exact NodeId / select-clause count we hand to the server. Quiet at
+  // INFO; ``ros2 launch --log-level opcua.client:=debug`` (or env var
+  // RCUTILS_CONSOLE_OUTPUT_FORMAT) re-enables it.
+  RCLCPP_DEBUG_STREAM(opcua_client_logger(),
+                      "add_event_monitored_item: subId=" << subscription_id << " nodeId=" << source_node.toString()
+                                                         << " selectClauses=" << (select_specs.size() + 3));
 
   UA_EventFilter filter = make_event_filter(select_specs);
 
@@ -1802,31 +1817,32 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
   item.requestedParameters.queueSize = 100;
   UA_ExtensionObject_setValueNoDelete(&item.requestedParameters.filter, &filter, &UA_TYPES[UA_TYPES_EVENTFILTER]);
 
-  // Debug-level diagnostic so integration-test failures can surface the
-  // exact NodeId / select-clause count we hand to the server. Quiet at
-  // INFO; ``ros2 launch --log-level opcua.client:=debug`` (or env var
-  // RCUTILS_CONSOLE_OUTPUT_FORMAT) re-enables it.
-  RCLCPP_DEBUG_STREAM(opcua_client_logger(),
-                      "add_event_monitored_item: subId=" << subscription_id << " nodeId=" << source_node.toString()
-                                                         << " selectClauses=" << (select_specs.size() + 3));
+  // Detach the filter from item.requestedParameters before clearing the
+  // request (setValueNoDelete: the ExtensionObject does not own it), then
+  // free the filter and the request members.
+  auto clear_request = [&] {
+    UA_ExtensionObject_init(&item.requestedParameters.filter);
+    UA_MonitoredItemCreateRequest_clear(&item);
+    UA_EventFilter_clear(&filter);
+  };
 
+  // Registered as live before open62541 gets it, so a create that returns
+  // without calling on_event_item_deleted_c is told apart from one that did.
+  try {
+    std::lock_guard<std::mutex> ev_lock(impl_->event_callbacks.mutex);
+    impl_->event_callbacks.live.insert(ctx.get());
+  } catch (...) {
+    clear_request();
+    throw;
+  }
+
+  // open62541 owns the context from here on and frees it through
+  // on_event_item_deleted_c, including when it rejects the item.
+  EventCallbackContext * raw_ctx = ctx.release();
   UA_MonitoredItemCreateResult result =
       UA_Client_MonitoredItems_createEvent(impl_->client.handle(), subscription_id, UA_TIMESTAMPSTORETURN_BOTH, item,
                                            raw_ctx, on_event_trampoline_c, on_event_item_deleted_c);
-
-  // Free the locally-allocated request members (the ExtensionObject does
-  // NOT own the filter because we used setValueNoDelete; clear it
-  // separately below). UA_MonitoredItemCreateRequest_clear walks the
-  // struct including itemToMonitor.nodeId.
-  // Detach the filter from item.requestedParameters before clearing the
-  // request, otherwise UA_*_clear would try to free our stack filter.
-  // Re-init the ExtensionObject to a valid empty state.
-  UA_ExtensionObject_init(&item.requestedParameters.filter);
-  UA_MonitoredItemCreateRequest_clear(&item);
-  UA_EventFilter_clear(&filter);
-
-  RCLCPP_DEBUG_STREAM(opcua_client_logger(), "createEvent result: status=" << UA_StatusCode_name(result.statusCode)
-                                                                           << " miId=" << result.monitoredItemId);
+  clear_request();
 
   const UA_StatusCode status = result.statusCode;
   const uint32_t mi_id = result.monitoredItemId;
@@ -1836,18 +1852,20 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
   {
     std::lock_guard<std::mutex> ev_lock(impl_->event_callbacks.mutex);
     if (impl_->event_callbacks.live.count(raw_ctx) == 0) {
-      return 0;  // open62541 already freed it
-    }
-    if (status != UA_STATUSCODE_GOOD) {
-      // Rejected before open62541 took it (no subscription, no memory).
+      // open62541 rejected the item and already freed the context.
+    } else if (status != UA_STATUSCODE_GOOD) {
+      // Refused before open62541 took it (no subscription, no memory).
       impl_->event_callbacks.live.erase(raw_ctx);
       orphan.reset(raw_ctx);
-      return 0;
+    } else {
+      raw_ctx->monitored_item_id = mi_id;
+      impl_->event_callbacks.items[{subscription_id, mi_id}] = raw_ctx;
     }
-    raw_ctx->monitored_item_id = mi_id;
-    impl_->event_callbacks.by_monitored_item[mi_id] = raw_ctx;
   }
-  return mi_id;
+
+  RCLCPP_DEBUG_STREAM(opcua_client_logger(),
+                      "createEvent result: status=" << UA_StatusCode_name(status) << " miId=" << mi_id);
+  return status == UA_STATUSCODE_GOOD ? mi_id : 0;
 }
 
 bool OpcuaClient::remove_event_monitored_item(uint32_t subscription_id, uint32_t mi_id) {
@@ -1855,8 +1873,8 @@ bool OpcuaClient::remove_event_monitored_item(uint32_t subscription_id, uint32_t
 
   {
     std::lock_guard<std::mutex> ev_lock(impl_->event_callbacks.mutex);
-    auto it = impl_->event_callbacks.by_monitored_item.find(mi_id);
-    if (it == impl_->event_callbacks.by_monitored_item.end() || it->second->subscription_id != subscription_id) {
+    auto it = impl_->event_callbacks.items.find({subscription_id, mi_id});
+    if (it == impl_->event_callbacks.items.end()) {
       return false;
     }
     // Silences this item at once without touching the global generation,
@@ -1864,7 +1882,7 @@ bool OpcuaClient::remove_event_monitored_item(uint32_t subscription_id, uint32_t
     // context itself goes when open62541 deletes the item: right below, or at
     // the latest when the subscription or the session goes.
     it->second->active.store(false, std::memory_order_release);
-    impl_->event_callbacks.by_monitored_item.erase(it);
+    impl_->event_callbacks.items.erase(it);
   }
 
   if (impl_->connected) {

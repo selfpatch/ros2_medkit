@@ -31,9 +31,12 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -69,7 +72,9 @@ uint16_t free_port() {
   return port;
 }
 
-/// test_alarm_server as a child process, driven over its stdin.
+/// test_alarm_server as a child process, driven over its stdin. Its stdout,
+/// command replies and open62541's log both, is drained for the child's whole
+/// life so a full pipe can never stall the server.
 class AlarmServer {
  public:
   bool start(const std::string & binary) {
@@ -77,15 +82,20 @@ class AlarmServer {
       port_ = free_port();
       int in[2];
       int out[2];
-      if (::pipe(in) != 0 || ::pipe(out) != 0) {
+      if (::pipe(in) != 0) {
         return false;
       }
+      if (::pipe(out) != 0) {
+        ::close(in[0]);
+        ::close(in[1]);
+        return false;
+      }
+      ::fcntl(in[1], F_SETFD, FD_CLOEXEC);
+      ::fcntl(out[0], F_SETFD, FD_CLOEXEC);
       pid_ = ::fork();
       if (pid_ == 0) {
         ::dup2(in[0], STDIN_FILENO);
         ::dup2(out[1], STDOUT_FILENO);
-        ::close(in[1]);
-        ::close(out[0]);
         const std::string port = std::to_string(port_);
         ::execl(binary.c_str(), binary.c_str(), "--port", port.c_str(), static_cast<char *>(nullptr));
         ::_exit(127);
@@ -94,6 +104,14 @@ class AlarmServer {
       ::close(out[1]);
       stdin_ = ::fdopen(in[1], "w");
       stdout_fd_ = out[0];
+      {
+        std::lock_guard<std::mutex> lock(output_mutex_);
+        output_.clear();
+        output_closed_ = false;
+      }
+      reader_ = std::thread([this] {
+        drain();
+      });
       if (wait_for_line("READY", 15s)) {
         return true;
       }
@@ -122,8 +140,14 @@ class AlarmServer {
     }
     if (pid_ > 0) {
       ::kill(pid_, SIGTERM);
-      ::waitpid(pid_, nullptr, 0);
+      if (!reap(5s)) {
+        ::kill(pid_, SIGKILL);
+        ::waitpid(pid_, nullptr, 0);
+      }
       pid_ = -1;
+    }
+    if (reader_.joinable()) {
+      reader_.join();
     }
     if (stdout_fd_ >= 0) {
       ::close(stdout_fd_);
@@ -136,30 +160,54 @@ class AlarmServer {
   }
 
  private:
-  bool wait_for_line(const std::string & prefix, std::chrono::milliseconds timeout) {
+  bool reap(std::chrono::milliseconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
-    std::string buffer;
     while (std::chrono::steady_clock::now() < deadline) {
-      pollfd p{stdout_fd_, POLLIN, 0};
-      if (::poll(&p, 1, 100) <= 0) {
-        continue;
-      }
-      char chunk[256];
-      ssize_t n = ::read(stdout_fd_, chunk, sizeof(chunk));
-      if (n <= 0) {
-        return false;
-      }
-      buffer.append(chunk, static_cast<size_t>(n));
-      const auto at = buffer.find(prefix);
-      if (at != std::string::npos && buffer.find('\n', at) != std::string::npos) {
-        const auto ns_at = buffer.find("namespace=", at);
-        if (ns_at != std::string::npos) {
-          namespace_index_ = static_cast<uint16_t>(std::stoi(buffer.substr(ns_at + 10)));
-        }
+      if (::waitpid(pid_, nullptr, WNOHANG) == pid_) {
         return true;
       }
+      std::this_thread::sleep_for(20ms);
     }
     return false;
+  }
+
+  // Runs until the child closes its stdout, which it does when it exits.
+  void drain() {
+    char chunk[4096];
+    for (;;) {
+      ssize_t n = ::read(stdout_fd_, chunk, sizeof(chunk));
+      if (n < 0 && errno == EINTR) {
+        continue;
+      }
+      std::lock_guard<std::mutex> lock(output_mutex_);
+      if (n <= 0) {
+        output_closed_ = true;
+        output_cv_.notify_all();
+        return;
+      }
+      // Only the start-up banner is ever looked up; keep the head, drop the rest.
+      if (output_.size() < 64 * 1024) {
+        output_.append(chunk, static_cast<size_t>(n));
+      }
+      output_cv_.notify_all();
+    }
+  }
+
+  bool wait_for_line(const std::string & prefix, std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(output_mutex_);
+    size_t at = std::string::npos;
+    const bool found = output_cv_.wait_for(lock, timeout, [&] {
+      at = output_.find(prefix);
+      return (at != std::string::npos && output_.find('\n', at) != std::string::npos) || output_closed_;
+    });
+    if (!found || at == std::string::npos) {
+      return false;
+    }
+    const auto ns_at = output_.find("namespace=", at);
+    if (ns_at != std::string::npos) {
+      namespace_index_ = static_cast<uint16_t>(std::stoi(output_.substr(ns_at + 10)));
+    }
+    return true;
   }
 
   pid_t pid_{-1};
@@ -167,6 +215,11 @@ class AlarmServer {
   uint16_t namespace_index_{0};
   FILE * stdin_{nullptr};
   int stdout_fd_{-1};
+  std::thread reader_;
+  std::mutex output_mutex_;
+  std::condition_variable output_cv_;
+  std::string output_;
+  bool output_closed_{false};
 };
 
 /// TCP proxy in front of the server. ``blackhole`` keeps every connection open
@@ -193,8 +246,14 @@ class LinkProxy {
     return port_;
   }
 
+  /// Returns once the proxy runs a pass under ``mode``, so nothing sent
+  /// after this call is forwarded under the old one.
   void set_mode(Mode mode) {
     mode_ = mode;
+    const uint64_t wanted = ++mode_requests_;
+    while (mode_applied_.load() < wanted) {
+      std::this_thread::sleep_for(1ms);
+    }
   }
 
   void cut() {
@@ -229,9 +288,13 @@ class LinkProxy {
         pairs_.clear();
         cut_requested_ = false;
       }
+      // Request count first, mode second: a pass that saw a request also
+      // sees the mode that came with it.
+      const uint64_t requests = mode_requests_.load();
+      const bool forward = mode_ == Mode::Up;
+      mode_applied_ = requests;
       std::vector<pollfd> fds;
       fds.push_back({listen_fd_, POLLIN, 0});
-      const bool forward = mode_ == Mode::Up;
       for (auto & [a, b] : pairs_) {
         fds.push_back({a, static_cast<short>(forward ? POLLIN : 0), 0});
         fds.push_back({b, static_cast<short>(forward ? POLLIN : 0), 0});
@@ -257,7 +320,7 @@ class LinkProxy {
       std::vector<size_t> dead;
       for (size_t i = 0; i < polled; ++i) {
         const auto & [a, b] = pairs_[i];
-        for (int side = 0; side < 2; ++side) {
+        for (size_t side = 0; side < 2; ++side) {
           const pollfd & p = fds[1 + 2 * i + side];
           if ((p.revents & (POLLIN | POLLHUP | POLLERR)) == 0) {
             continue;
@@ -285,6 +348,8 @@ class LinkProxy {
   int listen_fd_{-1};
   std::atomic<bool> running_{false};
   std::atomic<Mode> mode_{Mode::Up};
+  std::atomic<uint64_t> mode_requests_{0};
+  std::atomic<uint64_t> mode_applied_{0};
   std::atomic<bool> cut_requested_{false};
   std::vector<std::pair<int, int>> pairs_;
   std::thread thread_;
@@ -307,11 +372,17 @@ class OpcuaClientReconnect : public ::testing::Test {
   void subscribe(std::atomic<int> & counter) {
     const uint32_t sub = client_.create_subscription(50.0, [](const std::string &, const OpcuaValue &) {});
     ASSERT_NE(sub, 0u);
-    const uint32_t mi = client_.add_event_monitored_item(
-        sub, kServerObject, {}, [&counter](const auto &, const auto &, const auto &, const auto &) {
-          counter.fetch_add(1);
-        });
-    ASSERT_NE(mi, 0u);
+    ASSERT_NE(add_counting_item(sub, kServerObject, counter), 0u);
+  }
+
+  /// Event item counting into ``counter``. The callback also holds ``held``,
+  /// so a test can see when the client lets go of it.
+  uint32_t add_counting_item(uint32_t sub, const opcua::NodeId & source, std::atomic<int> & counter,
+                             std::shared_ptr<int> held = nullptr) {
+    return client_.add_event_monitored_item(sub, source, {},
+                                            [&counter, held](const auto &, const auto &, const auto &, const auto &) {
+                                              counter.fetch_add(1);
+                                            });
   }
 
   bool pump_until(const std::function<bool()> & done, std::chrono::milliseconds timeout = 5s) {
@@ -338,7 +409,9 @@ class OpcuaClientReconnect : public ::testing::Test {
   // deliver while the client is torn down.
   std::atomic<int> old_events{0};
   std::atomic<int> new_events{0};
-  std::atomic<int> round_events[5]{};
+  std::atomic<int> round_events[6]{};
+  std::atomic<int> old_changes{0};
+  std::atomic<int> new_changes{0};
 
   AlarmServer server_;
   LinkProxy proxy_;
@@ -369,11 +442,10 @@ TEST_F(OpcuaClientReconnect, BlackholedReadThenReconnect) {
   EXPECT_EQ(old_events.load(), old_before);
 }
 
-// A read the server answers with BadNotConnected marks the client
-// disconnected while its channel and session stay up. The reconnect then finds
-// the channel open, and the old subscription keeps publishing on that session:
-// its event item must still be safe to deliver to, and must stay silent.
-TEST_F(OpcuaClientReconnect, NotConnectedReadThenReconnect) {
+// A value whose own status is BadNotConnected (a gateway server reporting a
+// tag whose device is offline) is not a lost link: the read fails, but the
+// session, its event item and every other value stay up.
+TEST_F(OpcuaClientReconnect, NotConnectedValueKeepsSession) {
   subscribe(old_events);
   ASSERT_TRUE(fire_and_wait(old_events));
 
@@ -382,14 +454,10 @@ TEST_F(OpcuaClientReconnect, NotConnectedReadThenReconnect) {
   ASSERT_TRUE(pump_until([&] {
     return !client_.read_value(status_word).good;
   }));
-  ASSERT_FALSE(client_.is_connected());
-
-  ASSERT_TRUE(client_.connect(config_));
-  subscribe(new_events);
-  const int old_before = old_events.load();
-  ASSERT_TRUE(fire_and_wait(new_events));
-  ASSERT_TRUE(fire_and_wait(new_events));
-  EXPECT_EQ(old_events.load(), old_before);
+  EXPECT_TRUE(client_.is_connected());
+  EXPECT_TRUE(client_.read_value(opcua::NodeId(server_.namespace_index(), "Tank.Level")).good);
+  ASSERT_TRUE(fire_and_wait(old_events));
+  EXPECT_TRUE(client_.is_connected());
 }
 
 // Same, with the read failing on a link that was cut instead.
@@ -428,12 +496,29 @@ TEST_F(OpcuaClientReconnect, CutLinkSeenByIterateThenReconnect) {
 }
 
 // Repeated flaps on one client, each followed by a reconnect and resubscribe,
-// as the poller does on a link with a bad cable.
+// as the poller does on a link with a bad cable. Every item of an earlier
+// round must stay silent while the current one delivers.
 TEST_F(OpcuaClientReconnect, RepeatedFlaps) {
-  for (int round = 0; round < 5; ++round) {
+  constexpr int kRounds = 5;
+  auto retired_unchanged = [&](int round, const std::vector<int> & before) {
+    for (int r = 0; r < round; ++r) {
+      EXPECT_EQ(round_events[r].load(), before[static_cast<size_t>(r)]) << "item of round " << r << " delivered";
+    }
+  };
+  for (int round = 0; round <= kRounds; ++round) {
     auto & events = round_events[round];
     subscribe(events);
+    std::vector<int> before;
+    for (int r = 0; r < round; ++r) {
+      before.push_back(round_events[r].load());
+    }
     ASSERT_TRUE(fire_and_wait(events)) << "round " << round;
+    // A second event so a late delivery to a retired item has had its chance.
+    ASSERT_TRUE(fire_and_wait(events)) << "round " << round;
+    retired_unchanged(round, before);
+    if (round == kRounds) {
+      break;
+    }
     if (round % 2 == 0) {
       proxy_.set_mode(LinkProxy::Mode::Blackhole);
       EXPECT_FALSE(client_.read_value(kServerCurrentTime).good);
@@ -446,6 +531,117 @@ TEST_F(OpcuaClientReconnect, RepeatedFlaps) {
     ASSERT_FALSE(client_.is_connected()) << "round " << round;
     ASSERT_TRUE(client_.connect(config_)) << "round " << round;
   }
+}
+
+// Removing one live item of a subscription silences it and releases its
+// callback right away, while its peer on the same subscription keeps
+// delivering.
+TEST_F(OpcuaClientReconnect, RemoveLiveItemKeepsPeer) {
+  const uint32_t sub = client_.create_subscription(50.0, [](const std::string &, const OpcuaValue &) {});
+  ASSERT_NE(sub, 0u);
+  auto held = std::make_shared<int>(0);
+  std::weak_ptr<int> watch = held;
+  const uint32_t removed = add_counting_item(sub, kServerObject, old_events, std::move(held));
+  ASSERT_NE(removed, 0u);
+  ASSERT_NE(add_counting_item(sub, kServerObject, new_events), 0u);
+  ASSERT_TRUE(fire_and_wait(old_events));
+  ASSERT_TRUE(pump_until([&] {
+    return new_events.load() > 0;
+  }));
+
+  ASSERT_TRUE(client_.remove_event_monitored_item(sub, removed));
+  EXPECT_TRUE(watch.expired()) << "the removed item's callback is still held";
+  EXPECT_FALSE(client_.remove_event_monitored_item(sub, removed)) << "removed twice";
+
+  const int old_before = old_events.load();
+  ASSERT_TRUE(fire_and_wait(new_events));
+  ASSERT_TRUE(fire_and_wait(new_events));
+  EXPECT_EQ(old_events.load(), old_before);
+}
+
+// An item the client cannot create returns 0 and lets go of its callback,
+// whether the client refuses it before any request (unknown subscription) or
+// the server rejects it (unknown event source). A valid item created next
+// still delivers.
+TEST_F(OpcuaClientReconnect, FailedItemCreationReleasesCallback) {
+  const uint32_t sub = client_.create_subscription(50.0, [](const std::string &, const OpcuaValue &) {});
+  ASSERT_NE(sub, 0u);
+
+  auto unknown_sub = std::make_shared<int>(0);
+  std::weak_ptr<int> unknown_sub_watch = unknown_sub;
+  EXPECT_EQ(add_counting_item(sub + 1000, kServerObject, old_events, std::move(unknown_sub)), 0u);
+  EXPECT_TRUE(unknown_sub_watch.expired()) << "callback of an item on an unknown subscription is still held";
+
+  auto unknown_source = std::make_shared<int>(0);
+  std::weak_ptr<int> unknown_source_watch = unknown_source;
+  EXPECT_EQ(add_counting_item(sub, opcua::NodeId(0, 999999u), old_events, std::move(unknown_source)), 0u);
+  EXPECT_TRUE(unknown_source_watch.expired()) << "callback of an item the server rejected is still held";
+
+  ASSERT_NE(add_counting_item(sub, kServerObject, new_events), 0u);
+  ASSERT_TRUE(fire_and_wait(new_events));
+  EXPECT_EQ(old_events.load(), 0);
+}
+
+// Two subscriptions each get their own monitored item ids, so both of these
+// items can carry the same id. Removing one must remove that one only.
+TEST_F(OpcuaClientReconnect, SameItemIdInTwoSubscriptions) {
+  const uint32_t sub_a = client_.create_subscription(50.0, [](const std::string &, const OpcuaValue &) {});
+  const uint32_t sub_b = client_.create_subscription(50.0, [](const std::string &, const OpcuaValue &) {});
+  ASSERT_NE(sub_a, 0u);
+  ASSERT_NE(sub_b, 0u);
+  const uint32_t item_a = add_counting_item(sub_a, kServerObject, old_events);
+  const uint32_t item_b = add_counting_item(sub_b, kServerObject, new_events);
+  ASSERT_NE(item_a, 0u);
+  ASSERT_NE(item_b, 0u);
+  ASSERT_TRUE(fire_and_wait(old_events));
+
+  ASSERT_TRUE(client_.remove_event_monitored_item(sub_a, item_a));
+  const int a_before = old_events.load();
+  ASSERT_TRUE(fire_and_wait(new_events));
+  ASSERT_TRUE(fire_and_wait(new_events));
+  EXPECT_EQ(old_events.load(), a_before);
+  EXPECT_TRUE(client_.remove_event_monitored_item(sub_b, item_b));
+}
+
+// Data-change items go the same way as event items: across a cut link and a
+// reconnect, the old item stays silent and the one created on the new session
+// delivers, next to an event item on the same subscription.
+TEST_F(OpcuaClientReconnect, DataChangeItemAcrossReconnect) {
+  const opcua::NodeId status_word(server_.namespace_index(), "StatusWord");
+  auto data_item = [&](std::atomic<int> & changes, std::atomic<int> & events) {
+    const uint32_t sub = client_.create_subscription(50.0, [&changes](const std::string &, const OpcuaValue &) {
+      changes.fetch_add(1);
+    });
+    ASSERT_NE(sub, 0u);
+    ASSERT_TRUE(client_.add_monitored_item(sub, status_word));
+    ASSERT_NE(add_counting_item(sub, kServerObject, events), 0u);
+  };
+  auto change_and_wait = [&](std::atomic<int> & changes, int value) {
+    const int before = changes.load();
+    server_.command("set StatusWord " + std::to_string(value));
+    return pump_until([&] {
+      return changes.load() > before;
+    });
+  };
+
+  data_item(old_changes, old_events);
+  ASSERT_TRUE(change_and_wait(old_changes, 1));
+  ASSERT_TRUE(fire_and_wait(old_events));
+
+  proxy_.cut();
+  ASSERT_TRUE(pump_until([&] {
+    return !client_.is_connected();
+  }));
+  ASSERT_TRUE(client_.connect(config_));
+
+  data_item(new_changes, new_events);
+  const int old_changes_before = old_changes.load();
+  const int old_events_before = old_events.load();
+  ASSERT_TRUE(change_and_wait(new_changes, 2));
+  ASSERT_TRUE(change_and_wait(new_changes, 3));
+  ASSERT_TRUE(fire_and_wait(new_events));
+  EXPECT_EQ(old_changes.load(), old_changes_before);
+  EXPECT_EQ(old_events.load(), old_events_before);
 }
 
 }  // namespace
