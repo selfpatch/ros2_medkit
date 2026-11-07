@@ -44,6 +44,9 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'fixtures' / 'test_alarm_server'))
+import alarm_fixture  # noqa: E402
+
 COMMS_LOST = 'PLC_COMMS_LOST'
 HELD_BY_OTHERS = f'{COMMS_LOST} is held by sources this bridge did not report under ['
 # Discovery identifies OPC-UA only on this port.
@@ -206,14 +209,21 @@ class Run:
             self.logs.pop(proc.pid).close()
         self.procs = []
 
-    def start_server(self, name, port, *extra):
-        """Start the fixture PLC and wait for READY."""
+    def start_server(self, name, *extra, port=None):
+        """
+        Start the fixture PLC and return (proc, port) once it listens.
+
+        Without port it runs on a newly reserved one. With port it must keep that
+        port, and fails when another process took it.
+        """
         log = self.workdir / f'{name}_server.log'
-        proc = self._start([str(self.server_bin), '--port', str(port), *extra], log, stdin=True)
-        if not wait_log(log, 'READY ', 20):
-            raise AssertionError(f'fixture on port {port} never became READY:\n'
-                                 + log.read_text(errors='replace'))
-        return proc
+        proc, port = alarm_fixture.start_fixture(self.server_bin, log, *extra, port=port,
+                                                 deadline=20 * SCALE)
+        if proc is None:
+            raise AssertionError(f'fixture {name} printed no READY (last port {port})')
+        self.logs[proc.pid] = proc._log
+        self.procs.append(proc)
+        return proc, port
 
     def start_fault_manager(self, name):
         """Start fault_manager_node with memory storage."""
@@ -309,7 +319,8 @@ def scenario_pinned_stand_in(run):
     run.start_fault_manager('pinned')
     raise_while_down(run, 'pinned_before', endpoint)
 
-    run.start_server('pinned', port)
+    # The gateway above was pinned to this port, so the fixture must take it.
+    run.start_server('pinned', port=port)
     after = run.start_gateway('pinned_after', endpoint=endpoint)
     expect_status(after, 'CLEARED', 60,
                   'a fault raised under the stand-in of the pinned endpoint '
@@ -317,11 +328,10 @@ def scenario_pinned_stand_in(run):
 
 
 def scenario_foreign_stand_in(run):
-    port = free_port()
     run.start_fault_manager('foreign')
     raise_while_down(run, 'foreign_before', f'opc.tcp://127.0.0.2:{free_port()}')
 
-    run.start_server('foreign', port)
+    _, port = run.start_server('foreign')
     after = run.start_gateway('foreign_after', endpoint=f'opc.tcp://127.0.0.1:{port}')
     if not wait_log(after.log, HELD_BY_OTHERS, 60):
         raise AssertionError('the gateway never decided on the standing fault:\n'
@@ -331,10 +341,9 @@ def scenario_foreign_stand_in(run):
 
 
 def scenario_late_nameplate(run):
-    port = free_port()
-    endpoint = f'opc.tcp://127.0.0.1:{port}'
     run.start_fault_manager('late')
-    named = run.start_server('late_named', port)
+    named, port = run.start_server('late_named')
+    endpoint = f'opc.tcp://127.0.0.1:{port}'
     before = run.start_gateway('late_before', endpoint=endpoint)
     if not wait_log(before.log, 'Connected to OPC-UA server', 30):
         raise AssertionError('the first gateway never connected:\n'
@@ -349,7 +358,8 @@ def scenario_late_nameplate(run):
     expect_status(before, 'CONFIRMED', 60, 'the outage of a named device was never reported')
     run.stop(before.proc)
 
-    unnamed = run.start_server('late_unnamed', port, '--no-nameplate')
+    # The same device reboots, so it keeps its port.
+    unnamed, _ = run.start_server('late_unnamed', '--no-nameplate', port=port)
     # Five identity reads at this interval leave room to name the device after the decision.
     after = run.start_gateway('late_after', endpoint=endpoint, poll_ms=int(1500 * SCALE))
     if not wait_log(after.log, HELD_BY_OTHERS, 60):
@@ -408,7 +418,7 @@ def expect_binding_failure_survived(gateway, binding, deadline):
 
 
 def scenario_binding_directory_at_start(run):
-    run.start_server('binding_start', DISCOVERY_PORT)
+    run.start_server('binding_start', port=DISCOVERY_PORT)
     gateway, binding = start_discovering_gateway(run, 'binding_start')
     expect_binding_failure_survived(gateway, binding, 60)
 
@@ -419,7 +429,7 @@ def scenario_binding_directory_on_reconnect(run):
     if not wait_log(gateway.log, 'OPC-UA discovery summary: 0 data server(s)', 30):
         raise AssertionError('the start-up sweep did not come back empty:\n'
                              + tail(gateway))
-    run.start_server('binding_reconnect', DISCOVERY_PORT)
+    run.start_server('binding_reconnect', port=DISCOVERY_PORT)
     expect_binding_failure_survived(gateway, binding, 60)
 
 
@@ -471,6 +481,8 @@ def main():
         else:
             failures += 1
             print(f'FAIL {name} ({elapsed:.0f} s): {error}', file=sys.stderr)
+            for log in sorted(workdir.glob('*_server.log')):
+                print(f'{log.name}:\n' + alarm_fixture.read_log(log), file=sys.stderr)
     return 1 if failures else 0
 
 

@@ -545,6 +545,10 @@ if(BUILD_TESTING)
       test/fixtures/test_alarm_server/smoke_test.py
       test/fixtures/test_alarm_server/run_ctest.py
       DESTINATION lib/${PROJECT_NAME})
+    # Start helper the installed scripts import; they sit in the same directory.
+    install(FILES
+      test/fixtures/test_alarm_server/alarm_fixture.py
+      DESTINATION lib/${PROJECT_NAME})
 
     # CTest wrapper that boots test_alarm_server on an ephemeral port and runs
     # the asyncua-based smoke test against it. Skips with CTest exit 77 when
@@ -564,6 +568,17 @@ if(BUILD_TESTING)
     # OPC UA over TCP end to end, with no ROS node anywhere in it. AFTER the
     # LABELS assignment above, which would otherwise replace the declaration.
     medkit_test_needs_no_domain(test_alarm_server_smoke)
+
+    # The fixture on a port another process listens on prints no READY and
+    # exits; start_fixture then moves to a new port. Plain TCP, no ROS node.
+    add_test(NAME test_alarm_server_held_port
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/test_alarm_server/held_port_test.py"
+              "${CMAKE_BINARY_DIR}/test_alarm_server")
+    set_tests_properties(test_alarm_server_held_port PROPERTIES
+      LABELS "integration"
+      TIMEOUT 120)
+    medkit_test_needs_no_domain(test_alarm_server_held_port)
 
     # ---- Secured A&C integration test (issue #477) ------------------------
     # Drives the gateway's apply_security_config() success path against the

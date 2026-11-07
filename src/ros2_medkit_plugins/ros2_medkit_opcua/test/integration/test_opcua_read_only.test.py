@@ -52,6 +52,9 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'fixtures' / 'test_alarm_server'))
+import alarm_fixture  # noqa: E402
+
 # The fixture registers these under the Objects folder in namespace 2. The two
 # Int32 registers carry AccessLevel READ|WRITE, so the server would let a
 # write-capable client change them; Tank.Level is READ only.
@@ -183,21 +186,6 @@ def terminate(proc):
     log = getattr(proc, '_log', None)
     if log is not None:
         log.close()
-
-
-def start_server(server_bin, port, log_path):
-    """Start the plain (unsecured) fixture server and wait for its READY line."""
-    log = open(log_path, 'w')
-    proc = subprocess.Popen(
-        [str(server_bin), '--port', str(port)],
-        stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT,
-        text=True, start_new_session=True,
-    )
-    proc._log = log
-    if not wait_log(log_path, 'READY ', deadline=25):
-        terminate(proc)
-        return None
-    return proc
 
 
 def send_cmd(server, cmd):
@@ -526,9 +514,11 @@ def run_auto_browse_leg(workdir, env, plugin, server_bin, server, server_port,
             # runtime path that redoes the walk - the node map itself is read
             # once at configure() and has no reload.
             print(f'--- auto_browse leg ({label}) after a reconnect ---')
-            terminate(server[0])
-            server[0] = start_server(server_bin, server_port,
-                                     workdir / 'alarm_server_restarted.log')
+            alarm_fixture.stop(server[0])
+            # Same port: the gateway keeps its endpoint. A port taken in between
+            # fails the restart, and start_fixture prints the fixture's output.
+            server[0], _ = alarm_fixture.start_fixture(
+                server_bin, workdir / 'alarm_server_restarted.log', port=server_port, deadline=25)
             if not check(server[0] is not None, 'fixture server restarted on the same port'):
                 return
             reconnected = wait_json(f'{base}/components/{COMPONENT}/x-plc-status',
@@ -585,12 +575,14 @@ def main():
     env = dict(os.environ, ROS_DOMAIN_ID=ros_domain_id)
     manifest = workdir / 'manifest.yaml'
     manifest.write_text('manifest_version: "1.0"\n')
-    server_port = free_port()
-    server = [start_server(server_bin, server_port, workdir / 'alarm_server.log')]
+    first_server, server_port = alarm_fixture.start_fixture(
+        server_bin, workdir / 'alarm_server.log', deadline=25)
+    server = [first_server]
+    passed = False
     try:
         if server[0] is None:
-            print('FAIL: fixture server did not become READY', file=sys.stderr)
-            print((workdir / 'alarm_server.log').read_text(errors='replace'), file=sys.stderr)
+            print(f'FAIL: fixture server printed no READY on {alarm_fixture.ATTEMPTS} ports',
+                  file=sys.stderr)
             return 1
 
         run_node_map_leg(workdir, env, plugin, server_port, manifest, read_only)
@@ -605,9 +597,16 @@ def main():
                 print(f'  - {f}', file=sys.stderr)
             return 1
         print(f'PASS: the {variant} plugin behaves as its build declares')
+        passed = True
         return 0
     finally:
-        terminate(server[0])
+        if server[0] is not None:
+            alarm_fixture.stop(server[0])
+        if first_server is not None and not passed:
+            for name in ('alarm_server.log', 'alarm_server_restarted.log'):
+                if (workdir / name).exists():
+                    print(f'fixture server {name}:\n'
+                          + alarm_fixture.read_log(workdir / name), file=sys.stderr)
         shutil.rmtree(workdir, ignore_errors=True)
 
 

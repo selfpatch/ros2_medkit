@@ -18,7 +18,8 @@ CTest entry point for the test_alarm_server smoke check (issue #386).
 
 Spawns the freshly-built test_alarm_server binary on an ephemeral port,
 waits for the ``READY`` line, runs the AlarmConditionType smoke test
-against it via ``asyncua``, then terminates the binary cleanly.
+against it via ``asyncua``, then terminates the binary cleanly. The
+fixture's output is printed when the smoke test fails.
 
 Skips (exits 77 - the CTest convention for a skipped test) when
 ``asyncua`` is not importable AND the env var
@@ -32,43 +33,14 @@ regressions.
 
 import os
 from pathlib import Path
-import socket
+import shutil
 import subprocess
 import sys
-import time
+import tempfile
+
+import alarm_fixture
 
 CTEST_SKIP = 77
-
-
-def find_free_port():
-    """Bind ``:0`` on localhost, return the OS-assigned port and release it."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
-
-
-def wait_for_ready(proc, deadline_s=15):
-    """
-    Block until the binary prints 'READY ' to stdout, or the deadline expires.
-
-    The server emits 'READY port=NNNN namespace=N' once the OPC UA listen
-    socket is bound. We avoid sleeping; we read line-by-line.
-    """
-    start = time.monotonic()
-    while time.monotonic() - start < deadline_s:
-        if proc.poll() is not None:
-            raise RuntimeError(
-                f'test_alarm_server exited early (rc={proc.returncode})'
-            )
-        line = proc.stdout.readline()
-        if not line:
-            time.sleep(0.05)
-            continue
-        if line.startswith('READY '):
-            return
-    raise TimeoutError(
-        f'test_alarm_server did not print READY within {deadline_s}s'
-    )
 
 
 def main():
@@ -111,28 +83,31 @@ def main():
         print('asyncua not installed - skipping smoke test (CTest skip code)')
         return CTEST_SKIP
 
-    port = find_free_port()
-    proc = subprocess.Popen(
-        [str(binary), '--port', str(port)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    workdir = Path(tempfile.mkdtemp(prefix='alarm_server_smoke_'))
+    log_path = workdir / 'alarm_server.log'
+    proc, port = alarm_fixture.start_fixture(binary, log_path, deadline=15)
     try:
-        wait_for_ready(proc, deadline_s=15)
-        result = subprocess.run(
-            [sys.executable, str(smoke_test), f'opc.tcp://127.0.0.1:{port}'],
-            check=False,
-            timeout=30,
-        )
-        return result.returncode
-    finally:
-        proc.terminate()
+        if proc is None:
+            print('test_alarm_server printed no READY on '
+                  f'{alarm_fixture.ATTEMPTS} reserved ports', file=sys.stderr)
+            return 1
         try:
-            proc.wait(timeout=5)
+            returncode = subprocess.run(
+                [sys.executable, str(smoke_test), f'opc.tcp://127.0.0.1:{port}'],
+                check=False,
+                timeout=30,
+            ).returncode
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            print('smoke test timed out after 30 s', file=sys.stderr)
+            returncode = 1
+        if returncode != 0:
+            print('test_alarm_server output:\n' + alarm_fixture.read_log(log_path),
+                  file=sys.stderr)
+        return returncode
+    finally:
+        if proc is not None:
+            alarm_fixture.stop(proc)
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 if __name__ == '__main__':

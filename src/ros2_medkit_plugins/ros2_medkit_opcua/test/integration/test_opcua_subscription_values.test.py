@@ -40,6 +40,9 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'fixtures' / 'test_alarm_server'))
+import alarm_fixture  # noqa: E402
+
 COMPONENT = 'subscription_runtime'
 ENTITY = 'plc_app'
 CONSTANT = 'TANK_ABOVE_40'
@@ -159,21 +162,6 @@ def terminate(proc):
         log.close()
 
 
-def start_server(server_bin, port, log_path):
-    """Start the fixture server and wait for its READY line."""
-    log = open(log_path, 'w')
-    proc = subprocess.Popen(
-        [str(server_bin), '--port', str(port)],
-        stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT,
-        text=True, start_new_session=True,
-    )
-    proc._log = log
-    if not wait_log(log_path, 'READY ', deadline=25 * SCALE):
-        terminate(proc)
-        return None
-    return proc
-
-
 def set_register(server, log_path, name, value):
     """Write one Int32 register through the fixture and wait for its OK line."""
     needle = f'OK {name}={value}'
@@ -285,18 +273,20 @@ def main():
 
     workdir = Path(tempfile.mkdtemp(prefix='opcua_subscription_values_'))
     env = dict(os.environ, ROS_DOMAIN_ID=ros_domain_id)
-    server_port = free_port()
-    gateway_port = free_port()
     server_log = workdir / 'alarm_server.log'
     gateway_log = workdir / 'gateway.log'
     fault_manager_log = workdir / 'fault_manager.log'
-    server = start_server(server_bin, server_port, server_log)
+    server, server_port = alarm_fixture.start_fixture(server_bin, server_log,
+                                                      deadline=25 * SCALE)
+    # Drawn while the fixture holds its port, so the two cannot coincide.
+    gateway_port = free_port()
     fault_manager = None
     gateway = None
+    passed = False
     try:
         if server is None:
-            print('FAIL: fixture server did not become READY', file=sys.stderr)
-            print(server_log.read_text(errors='replace'), file=sys.stderr)
+            print(f'FAIL: fixture server printed no READY on {alarm_fixture.ATTEMPTS} ports',
+                  file=sys.stderr)
             return 1
         fault_manager = start_fault_manager(fault_manager_log, env)
         if fault_manager is None:
@@ -366,11 +356,16 @@ def main():
             print(gateway_log.read_text(errors='replace')[-3000:], file=sys.stderr)
             return 1
         print('PASS: subscription mode delivers values for plain nodes')
+        passed = True
         return 0
     finally:
         terminate(gateway)
         terminate(fault_manager)
-        terminate(server)
+        if server is not None:
+            alarm_fixture.stop(server)
+            if not passed:
+                print('fixture server log:\n' + alarm_fixture.read_log(server_log),
+                      file=sys.stderr)
         shutil.rmtree(workdir, ignore_errors=True)
 
 
