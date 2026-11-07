@@ -399,9 +399,12 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const std:
       if (active_it != active_clusters_.end() && active_it->second.rule_id == rule.id) {
         auto & active_cluster = active_it->second;
         active_cluster.last_at = now_system;
-        if (pending_it != pending_clusters_.end() &&
-            pending_it->second.data.cluster_id == active_cluster.cluster_id) {
+        update_member_severity(rule, active_cluster, active_cluster_severities_[active_cluster.cluster_id], fault_code,
+                               severity);
+        if (pending_it != pending_clusters_.end() && pending_it->second.data.cluster_id == active_cluster.cluster_id) {
           pending_it->second.data.last_at = now_system;
+          update_member_severity(rule, pending_it->second.data, pending_it->second.fault_severities, fault_code,
+                                 severity);
         }
         ProcessFaultResult result;
         result.cluster_id = active_cluster.cluster_id;
@@ -444,6 +447,7 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const std:
     // Check for duplicate
     if (std::find(cluster.fault_codes.begin(), cluster.fault_codes.end(), fault_code) != cluster.fault_codes.end()) {
       // Already in cluster - ensure consistent muting for duplicates
+      update_member_severity(rule, cluster, pending.fault_severities, fault_code, severity);
       ProcessFaultResult result;
       result.cluster_id = cluster.cluster_id;
       if (rule.show_as_single && fault_code != cluster.representative_code &&
@@ -514,6 +518,22 @@ std::string CorrelationEngine::generate_cluster_id(const std::string & rule_id) 
   std::ostringstream oss;
   oss << rule_id << "_" << cluster_counter_;
   return oss.str();
+}
+
+void CorrelationEngine::update_member_severity(const CorrelationRule & rule, ClusterData & cluster,
+                                               std::map<std::string, std::string> & fault_severities,
+                                               const std::string & fault_code, const std::string & severity) const {
+  fault_severities[fault_code] = severity;
+  if (rule.representative != Representative::HIGHEST_SEVERITY) {
+    return;
+  }
+  if (cluster.representative_code == fault_code) {
+    // A downgraded representative may no longer be the highest
+    reassign_representative(cluster, fault_severities);
+  } else if (severity_rank(severity) > severity_rank(cluster.representative_severity)) {
+    cluster.representative_code = fault_code;
+    cluster.representative_severity = severity;
+  }
 }
 
 void CorrelationEngine::reassign_representative(ClusterData & cluster,
