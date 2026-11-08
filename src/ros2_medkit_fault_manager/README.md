@@ -86,7 +86,7 @@ That single-writer property also shapes what each fault of a burst gets. Nothing
 | Parameter                             | Type     | Default         | Description                                                                                                                |
 | ------------------------------------- | -------- | --------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `snapshots.enabled`                   | bool     | `true`          | Enable/disable snapshot capture                                                                                            |
-| `snapshots.background_capture`        | bool     | `false`         | Use background subscriptions (caches latest message) vs on-demand capture                                                  |
+| `snapshots.background_capture`        | bool     | `false`         | Cache each configured topic's latest message vs on-demand capture; a topic absent at startup is cached once it appears     |
 | `snapshots.timeout_sec`               | double   | `1.0`           | Timeout waiting for topic message (on-demand mode)                                                                         |
 | `snapshots.max_message_size`          | int      | `65536`         | Maximum message size in bytes (larger messages skipped)                                                                    |
 | `snapshots.default_topics`            | string[] | `[]`            | Topics to capture for all faults                                                                                           |

@@ -220,6 +220,16 @@ class SnapshotCapture {
   /// Initialize background subscriptions for all configured topics
   void init_background_subscriptions();
 
+  /// Create the background subscription for one configured topic.
+  /// @return false only while the graph reports no type for @p topic, the one
+  ///         outcome that can change later. A subscription that fails to create
+  ///         for a known type is logged and settled: asking again finds the same
+  ///         missing type support.
+  bool try_subscribe_background(const std::string & topic);
+
+  /// Retry timer callback: subscribe the topics that had no type so far.
+  void retry_pending_background_topics();
+
   /// Collect all unique topics from configuration
   std::vector<std::string> collect_all_configured_topics() const;
 
@@ -259,6 +269,15 @@ class SnapshotCapture {
 
   /// Background subscriptions (kept alive for continuous caching)
   std::vector<rclcpp::GenericSubscription::SharedPtr> background_subscriptions_;
+
+  /// Configured topics the graph had no type for yet, and the timer that looks
+  /// for them again. Both are touched by the constructor, the executor thread
+  /// that runs the timer, and the destructor, never by the capture pool, so they
+  /// need no lock of their own. Like RosbagCapture's discovery timer, the
+  /// destructor cancels the timer and assumes no callback of this object is
+  /// running then: the node's owner stops spinning it before tearing it down.
+  std::vector<std::string> pending_background_topics_;
+  rclcpp::TimerBase::SharedPtr background_retry_timer_;
 };
 
 }  // namespace ros2_medkit_fault_manager

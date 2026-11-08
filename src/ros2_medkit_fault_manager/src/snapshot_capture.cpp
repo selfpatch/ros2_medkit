@@ -119,7 +119,15 @@ SnapshotCapture::SnapshotCapture(rclcpp::Node * node, FaultStorage * storage, co
 }
 
 SnapshotCapture::~SnapshotCapture() {
-  // Subscriptions are automatically cleaned up by shared_ptr
+  // The timer goes first: a tick after the subscriptions are gone would create
+  // one again on a capture that is being destroyed.
+  if (background_retry_timer_) {
+    background_retry_timer_->cancel();
+  }
+  // Destroying a subscription mutates the node as creating one does (see
+  // LockedSubscriptionGuard), so it is serialised the same way.
+  std::lock_guard<std::mutex> lock(node_ops_mutex_);
+  background_retry_timer_.reset();
   background_subscriptions_.clear();
 }
 
@@ -533,49 +541,98 @@ void SnapshotCapture::init_background_subscriptions() {
   RCLCPP_INFO(node_->get_logger(), "Initializing %zu background subscriptions for snapshot capture", topics.size());
 
   for (const auto & topic : topics) {
-    std::string msg_type = get_topic_type(topic);
-    if (msg_type.empty()) {
-      RCLCPP_WARN(node_->get_logger(), "Cannot determine type for topic '%s', skipping background subscription",
+    if (!try_subscribe_background(topic)) {
+      RCLCPP_WARN(node_->get_logger(),
+                  "Cannot determine type for topic '%s' yet; its background subscription is created once the topic "
+                  "appears",
                   topic.c_str());
-      continue;
+      pending_background_topics_.push_back(topic);
     }
+  }
 
-    try {
-      rclcpp::QoS qos = rclcpp::SensorDataQoS();
+  if (pending_background_topics_.empty()) {
+    return;
+  }
 
-      // NOLINTNEXTLINE(performance-unnecessary-value-param)
-      auto callback = [this, topic, msg_type](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
-        try {
-          // Check message size
-          if (msg->size() > config_.max_message_size) {
-            return;  // Skip oversized messages silently
-          }
+  // No retry budget, unlike RosbagCapture's fixed-mode 10 s: when the publisher
+  // comes up is decided by the rest of the robot (a stack launched minutes
+  // later, a node respawned after a crash), and a cap only moves the moment the
+  // topic is lost for good. While something is pending the cost is one read of
+  // the local graph cache per period; once nothing is, the timer is gone.
+  // A wall timer, so a paused or not-yet-started /clock cannot stall it.
+  static constexpr std::chrono::seconds kBackgroundRetryPeriod{1};
+  std::lock_guard<std::mutex> lock(node_ops_mutex_);
+  background_retry_timer_ = node_->create_wall_timer(kBackgroundRetryPeriod, [this]() {
+    retry_pending_background_topics();
+  });
+}
 
-          ros2_medkit_serialization::JsonSerializer ser;
-          auto json_data = ser.deserialize(msg_type, *msg);
+bool SnapshotCapture::try_subscribe_background(const std::string & topic) {
+  const std::string msg_type = get_topic_type(topic);
+  if (msg_type.empty()) {
+    return false;
+  }
 
-          std::lock_guard<std::mutex> lock(cache_mutex_);
-          auto & cached = message_cache_[topic];
-          cached.topic = topic;
-          cached.message_type = msg_type;
-          cached.data = json_data.dump();
-          // Use wall clock time, not sim time, for proper timestamps
-          cached.timestamp_ns = get_wall_clock_ns();
+  try {
+    rclcpp::QoS qos = rclcpp::SensorDataQoS();
 
-        } catch (const std::exception & e) {
-          RCLCPP_DEBUG(node_->get_logger(), "Failed to cache message from '%s': %s", topic.c_str(), e.what());
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
+    auto callback = [this, topic, msg_type](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
+      try {
+        // Check message size
+        if (msg->size() > config_.max_message_size) {
+          return;  // Skip oversized messages silently
         }
-      };
 
-      auto subscription = node_->create_generic_subscription(topic, msg_type, qos, callback);
-      background_subscriptions_.push_back(subscription);
+        ros2_medkit_serialization::JsonSerializer ser;
+        auto json_data = ser.deserialize(msg_type, *msg);
 
-      RCLCPP_DEBUG(node_->get_logger(), "Created background subscription for '%s'", topic.c_str());
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        auto & cached = message_cache_[topic];
+        cached.topic = topic;
+        cached.message_type = msg_type;
+        cached.data = json_data.dump();
+        // Use wall clock time, not sim time, for proper timestamps
+        cached.timestamp_ns = get_wall_clock_ns();
 
-    } catch (const std::exception & e) {
-      RCLCPP_WARN(node_->get_logger(), "Failed to create background subscription for '%s': %s", topic.c_str(),
-                  e.what());
+      } catch (const std::exception & e) {
+        RCLCPP_DEBUG(node_->get_logger(), "Failed to cache message from '%s': %s", topic.c_str(), e.what());
+      }
+    };
+
+    // Taken even from the constructor, where nothing else runs yet: the retry
+    // timer reaches this from the executor thread while capture pool workers
+    // create and destroy their on-demand subscriptions on the same node.
+    rclcpp::GenericSubscription::SharedPtr subscription;
+    {
+      std::lock_guard<std::mutex> lock(node_ops_mutex_);
+      subscription = node_->create_generic_subscription(topic, msg_type, qos, callback);
     }
+    background_subscriptions_.push_back(subscription);
+
+    RCLCPP_DEBUG(node_->get_logger(), "Created background subscription for '%s'", topic.c_str());
+
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(node_->get_logger(), "Failed to create background subscription for '%s': %s", topic.c_str(), e.what());
+  }
+  return true;
+}
+
+void SnapshotCapture::retry_pending_background_topics() {
+  std::vector<std::string> still_pending;
+  for (const auto & topic : pending_background_topics_) {
+    if (try_subscribe_background(topic)) {
+      RCLCPP_INFO(node_->get_logger(), "Background snapshot topic '%s' appeared on the graph", topic.c_str());
+    } else {
+      still_pending.push_back(topic);
+    }
+  }
+  pending_background_topics_ = std::move(still_pending);
+
+  if (pending_background_topics_.empty() && background_retry_timer_) {
+    background_retry_timer_->cancel();
+    std::lock_guard<std::mutex> lock(node_ops_mutex_);
+    background_retry_timer_.reset();
   }
 }
 
