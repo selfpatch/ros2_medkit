@@ -19,14 +19,12 @@
 
 #include "ros2_medkit_opcua/opcua_client.hpp"
 
+#include "link_proxy.hpp"
+
 #include <gtest/gtest.h>
 
-#include <arpa/inet.h>
 #include <fcntl.h>
-#include <netinet/in.h>
-#include <poll.h>
 #include <signal.h>
-#include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -40,30 +38,15 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace ros2_medkit_gateway {
 namespace {
 
 using namespace std::chrono_literals;
-
-int listen_loopback(uint16_t * port) {
-  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  int one = 1;
-  ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = 0;
-  if (::bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0 || ::listen(fd, 16) != 0) {
-    ::close(fd);
-    return -1;
-  }
-  socklen_t len = sizeof(addr);
-  ::getsockname(fd, reinterpret_cast<sockaddr *>(&addr), &len);
-  *port = ntohs(addr.sin_port);
-  return fd;
-}
+using test_support::LinkProxy;
+using test_support::listen_loopback;
 
 uint16_t free_port() {
   uint16_t port = 0;
@@ -159,6 +142,13 @@ class AlarmServer {
     stop();
   }
 
+  // Owns a child process, its pipes and the thread draining them.
+  AlarmServer() = default;
+  AlarmServer(const AlarmServer &) = delete;
+  AlarmServer & operator=(const AlarmServer &) = delete;
+  AlarmServer(AlarmServer &&) = delete;
+  AlarmServer & operator=(AlarmServer &&) = delete;
+
  private:
   bool reap(std::chrono::milliseconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -222,139 +212,6 @@ class AlarmServer {
   bool output_closed_{false};
 };
 
-/// TCP proxy in front of the server. ``blackhole`` keeps every connection open
-/// and forwards nothing (a dead switch port), ``cut`` closes them (a pulled
-/// cable). The server never notices either, so its session stays alive.
-class LinkProxy {
- public:
-  enum class Mode { Up, Blackhole };
-
-  bool start(uint16_t target_port) {
-    target_port_ = target_port;
-    listen_fd_ = listen_loopback(&port_);
-    if (listen_fd_ < 0) {
-      return false;
-    }
-    running_ = true;
-    thread_ = std::thread([this] {
-      loop();
-    });
-    return true;
-  }
-
-  uint16_t port() const {
-    return port_;
-  }
-
-  /// Returns once the proxy runs a pass under ``mode``, so nothing sent
-  /// after this call is forwarded under the old one.
-  void set_mode(Mode mode) {
-    mode_ = mode;
-    const uint64_t wanted = ++mode_requests_;
-    while (mode_applied_.load() < wanted) {
-      std::this_thread::sleep_for(1ms);
-    }
-  }
-
-  void cut() {
-    cut_requested_ = true;
-    while (cut_requested_) {
-      std::this_thread::sleep_for(10ms);
-    }
-  }
-
-  ~LinkProxy() {
-    running_ = false;
-    if (thread_.joinable()) {
-      thread_.join();
-    }
-    for (auto & [a, b] : pairs_) {
-      ::close(a);
-      ::close(b);
-    }
-    if (listen_fd_ >= 0) {
-      ::close(listen_fd_);
-    }
-  }
-
- private:
-  void loop() {
-    while (running_) {
-      if (cut_requested_) {
-        for (auto & [a, b] : pairs_) {
-          ::close(a);
-          ::close(b);
-        }
-        pairs_.clear();
-        cut_requested_ = false;
-      }
-      // Request count first, mode second: a pass that saw a request also
-      // sees the mode that came with it.
-      const uint64_t requests = mode_requests_.load();
-      const bool forward = mode_ == Mode::Up;
-      mode_applied_ = requests;
-      std::vector<pollfd> fds;
-      fds.push_back({listen_fd_, POLLIN, 0});
-      for (auto & [a, b] : pairs_) {
-        fds.push_back({a, static_cast<short>(forward ? POLLIN : 0), 0});
-        fds.push_back({b, static_cast<short>(forward ? POLLIN : 0), 0});
-      }
-      if (::poll(fds.data(), fds.size(), 20) <= 0) {
-        continue;
-      }
-      const size_t polled = pairs_.size();
-      if (fds[0].revents & POLLIN) {
-        int client = ::accept(listen_fd_, nullptr, nullptr);
-        int upstream = ::socket(AF_INET, SOCK_STREAM, 0);
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr.sin_port = htons(target_port_);
-        if (::connect(upstream, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
-          pairs_.emplace_back(client, upstream);
-        } else {
-          ::close(client);
-          ::close(upstream);
-        }
-      }
-      std::vector<size_t> dead;
-      for (size_t i = 0; i < polled; ++i) {
-        const auto & [a, b] = pairs_[i];
-        for (size_t side = 0; side < 2; ++side) {
-          const pollfd & p = fds[1 + 2 * i + side];
-          if ((p.revents & (POLLIN | POLLHUP | POLLERR)) == 0) {
-            continue;
-          }
-          char buf[16384];
-          const int from = side == 0 ? a : b;
-          const int to = side == 0 ? b : a;
-          ssize_t n = ::read(from, buf, sizeof(buf));
-          if (n <= 0 || ::send(to, buf, static_cast<size_t>(n), MSG_NOSIGNAL) != n) {
-            dead.push_back(i);
-            break;
-          }
-        }
-      }
-      for (auto it = dead.rbegin(); it != dead.rend(); ++it) {
-        ::close(pairs_[*it].first);
-        ::close(pairs_[*it].second);
-        pairs_.erase(pairs_.begin() + static_cast<std::ptrdiff_t>(*it));
-      }
-    }
-  }
-
-  uint16_t target_port_{0};
-  uint16_t port_{0};
-  int listen_fd_{-1};
-  std::atomic<bool> running_{false};
-  std::atomic<Mode> mode_{Mode::Up};
-  std::atomic<uint64_t> mode_requests_{0};
-  std::atomic<uint64_t> mode_applied_{0};
-  std::atomic<bool> cut_requested_{false};
-  std::vector<std::pair<int, int>> pairs_;
-  std::thread thread_;
-};
-
 const opcua::NodeId kServerObject(0, UA_NS0ID_SERVER);
 const opcua::NodeId kServerCurrentTime(0, UA_NS0ID_SERVER_SERVERSTATUS_CURRENTTIME);
 
@@ -379,10 +236,10 @@ class OpcuaClientReconnect : public ::testing::Test {
   /// so a test can see when the client lets go of it.
   uint32_t add_counting_item(uint32_t sub, const opcua::NodeId & source, std::atomic<int> & counter,
                              std::shared_ptr<int> held = nullptr) {
-    return client_.add_event_monitored_item(sub, source, {},
-                                            [&counter, held](const auto &, const auto &, const auto &, const auto &) {
-                                              counter.fetch_add(1);
-                                            });
+    return client_.add_event_monitored_item(
+        sub, source, {}, [&counter, held = std::move(held)](const auto &, const auto &, const auto &, const auto &) {
+          counter.fetch_add(1);
+        });
   }
 
   bool pump_until(const std::function<bool()> & done, std::chrono::milliseconds timeout = 5s) {
@@ -477,6 +334,21 @@ TEST_F(OpcuaClientReconnect, CutLinkReadThenReconnect) {
   EXPECT_EQ(old_events.load(), old_before);
 }
 
+// The peer resets the connection between two requests and nothing calls
+// run_iterate, as in poll mode. open62541 closes the socket on the failed send
+// and returns BadConnectionClosed, but its channel still reads OPEN and its
+// session ACTIVATED, so the code alone must mark the client down.
+TEST_F(OpcuaClientReconnect, ResetLinkPollOnly) {
+  ASSERT_TRUE(client_.read_value(kServerCurrentTime).good);
+  proxy_.reset();
+  int failed = 0;
+  for (int i = 0; i < 5; ++i) {
+    failed += client_.read_value(kServerCurrentTime).good ? 0 : 1;
+  }
+  EXPECT_EQ(failed, 5);
+  EXPECT_FALSE(client_.is_connected());
+}
+
 // The event pump sees the cut first (run_iterate), the reconnect follows.
 TEST_F(OpcuaClientReconnect, CutLinkSeenByIterateThenReconnect) {
   subscribe(old_events);
@@ -509,6 +381,7 @@ TEST_F(OpcuaClientReconnect, RepeatedFlaps) {
     auto & events = round_events[round];
     subscribe(events);
     std::vector<int> before;
+    before.reserve(static_cast<size_t>(round));
     for (int r = 0; r < round; ++r) {
       before.push_back(round_events[r].load());
     }

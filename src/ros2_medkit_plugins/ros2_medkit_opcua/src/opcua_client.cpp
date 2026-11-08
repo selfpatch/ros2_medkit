@@ -1760,14 +1760,18 @@ bool OpcuaClient::mark_disconnected_on_transport_error(const opcua::BadStatus & 
       code != UA_STATUSCODE_BADNOTCONNECTED) {
     return false;
   }
-  // The same codes also arrive as the status of a single value, e.g. a
-  // gateway server reporting a tag whose device is offline as BadNotConnected.
-  // The session is gone only if the channel or the session says so.
-  UA_SecureChannelState channel_state = UA_SECURECHANNELSTATE_CLOSED;
-  UA_SessionState session_state = UA_SESSIONSTATE_CLOSED;
-  UA_Client_getState(impl_->client.handle(), &channel_state, &session_state, nullptr);
-  if (channel_state == UA_SECURECHANNELSTATE_OPEN && session_state == UA_SESSIONSTATE_ACTIVATED) {
-    return false;
+  // BadNotConnected also arrives as the status of a single value, e.g. a
+  // gateway server reporting a tag whose device is offline, so for it the
+  // session is gone only if the channel or the session says so. The closed
+  // codes always end it: after a failed send open62541 1.3 closes the socket
+  // and returns BadConnectionClosed while its channel still reads OPEN.
+  if (code == UA_STATUSCODE_BADNOTCONNECTED) {
+    UA_SecureChannelState channel_state = UA_SECURECHANNELSTATE_CLOSED;
+    UA_SessionState session_state = UA_SESSIONSTATE_CLOSED;
+    UA_Client_getState(impl_->client.handle(), &channel_state, &session_state, nullptr);
+    if (channel_state == UA_SECURECHANNELSTATE_OPEN && session_state == UA_SESSIONSTATE_ACTIVATED) {
+      return false;
+    }
   }
   if (!impl_->connected.exchange(false)) {
     return false;
