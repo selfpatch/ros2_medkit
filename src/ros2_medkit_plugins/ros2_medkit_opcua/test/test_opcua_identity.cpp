@@ -55,6 +55,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -67,6 +68,7 @@
 #include <ros2_medkit_msgs/srv/get_fault.hpp>
 #include <ros2_medkit_msgs/srv/report_fault.hpp>
 
+#include "link_proxy.hpp"
 #include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 
 #ifndef MEDKIT_ALARM_SERVER_BIN
@@ -1398,6 +1400,102 @@ TEST_F(OpcuaIdentityE2ETest, DeviceReportedAlarmClearKeepsTheCorrelationCascade)
   const auto link_state_clear_skips = clear_for(kCommsLostFaultCode);
   ASSERT_TRUE(link_state_clear_skips.has_value()) << "the connect-time clear never arrived";
   EXPECT_TRUE(*link_state_clear_skips);
+}
+
+// The whole plugin across a link that goes dark: a node map in poll mode with
+// native alarms, the server behind a proxy that blackholes the link. An alarm
+// that fires while the link is down must reach the fault store once the link
+// is back, through the poller's reconnect, resubscribe and ConditionRefresh,
+// and the alarm subscription of the dropped session must be torn down without
+// taking the process with it.
+TEST_F(OpcuaIdentityE2ETest, AnAlarmRaisedWhileTheLinkIsBlackholedArrivesAfterTheLinkReturns) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_blackhole");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_identity_blackhole_faultmgr");
+
+  test_support::LinkProxy proxy;
+  ASSERT_TRUE(proxy.start(static_cast<uint16_t>(port_)));
+  const std::string proxied = "opc.tcp://127.0.0.1:" + std::to_string(proxy.port());
+
+  FaultStoreStub store(fault_manager);
+  store.open_reports();
+  store.open_clears();
+  store.open_reads();
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(fault_manager);
+  ScopedExecutorSpin spin(executor);
+
+  const std::string yaml_path = write_minimal_node_map();
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["node_map_path"] = yaml_path;
+  config["endpoint_url"] = proxied;
+  config["poll_interval_ms"] = 100;
+  config["comms_lost_debounce_ms"] = 0;
+  config["auto_alarms"] = nlohmann::json{{"enabled", true}, {"auto_clear", true}};
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  plugin.set_context(ctx);
+
+  const auto wait_for = [](const std::function<bool()> & done, std::chrono::seconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!done() && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return done();
+  };
+  const auto reported_codes = [&store]() {
+    const auto codes = store.reported();
+    return std::set<std::string>(codes.begin(), codes.end());
+  };
+  const auto cleared_count = [&store](const std::string & code) {
+    const auto codes = store.cleared_codes();
+    return std::count(codes.begin(), codes.end(), code);
+  };
+
+  // Fire until the event subscription is up and a report lands; an event fired
+  // before the subscribe is not delivered.
+  const auto fire_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (reported_codes().empty() && std::chrono::steady_clock::now() < fire_deadline) {
+    ASSERT_TRUE(server_.send("fire Overpressure 750"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  }
+  const auto before_outage = reported_codes();
+  ASSERT_EQ(before_outage.size(), 1u) << "the first alarm never reached the fault manager";
+  ASSERT_EQ(before_outage.count(kCommsLostFaultCode), 0u);
+
+  proxy.set_mode(test_support::LinkProxy::Mode::Blackhole);
+  ASSERT_TRUE(wait_for(
+      [&]() {
+        return reported_codes().count(kCommsLostFaultCode) == 1;
+      },
+      std::chrono::seconds(30)))
+      << "the plugin never reported the blackholed link";
+  const auto comms_clears_during_outage = cleared_count(kCommsLostFaultCode);
+
+  ASSERT_TRUE(server_.send("fire Overheat 800"));
+  proxy.cut();
+  proxy.set_mode(test_support::LinkProxy::Mode::Up);
+
+  const auto arrived = [&]() {
+    const auto codes = reported_codes();
+    return codes.size() == 3;
+  };
+  ASSERT_TRUE(wait_for(arrived, std::chrono::seconds(30)))
+      << "the alarm raised while the link was down never reached the fault manager after the link returned";
+  EXPECT_TRUE(wait_for(
+      [&]() {
+        return cleared_count(kCommsLostFaultCode) > comms_clears_during_outage;
+      },
+      std::chrono::seconds(30)))
+      << "the link coming back sent no PLC_COMMS_LOST clear";
+
+  spin.stop();
+  plugin.shutdown();
+  std::remove(yaml_path.c_str());
 }
 
 // One gateway may bridge two field buses, both raising PLC_COMMS_LOST, and
