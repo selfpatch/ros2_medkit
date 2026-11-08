@@ -479,8 +479,9 @@ TEST_F(SnapshotCaptureTest, BackgroundCaptureSubscribesToATopicThatAppearsAfterS
   ASSERT_TRUE(parsed.contains(topic));
   EXPECT_DOUBLE_EQ(parsed[topic]["data"].get<double>(), 77.25);
 
-  // The topic is looked for again until it is found, and only until then: one
-  // subscription, however many checks it took.
+  // One subscription, however many checks it took to find the topic. That a
+  // found topic is not handed over again on later checks is pinned by
+  // PendingTopicWatcherTest, which can afford to wait out many periods.
   EXPECT_EQ(node_->count_subscribers(topic), 1u);
 }
 

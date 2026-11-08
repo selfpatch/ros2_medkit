@@ -26,6 +26,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/pending_topic_watcher.hpp"
 
 namespace ros2_medkit_fault_manager {
 
@@ -220,15 +221,10 @@ class SnapshotCapture {
   /// Initialize background subscriptions for all configured topics
   void init_background_subscriptions();
 
-  /// Create the background subscription for one configured topic.
-  /// @return false only while the graph reports no type for @p topic, the one
-  ///         outcome that can change later. A subscription that fails to create
-  ///         for a known type is logged and settled: asking again finds the same
-  ///         missing type support.
-  bool try_subscribe_background(const std::string & topic);
-
-  /// Retry timer callback: subscribe the topics that had no type so far.
-  void retry_pending_background_topics();
+  /// Create the background subscription for @p topic, whose type is known.
+  /// A failure is logged and not retried: asking again meets the same missing
+  /// type support.
+  void subscribe_background(const std::string & topic, const std::string & msg_type);
 
   /// Collect all unique topics from configuration
   std::vector<std::string> collect_all_configured_topics() const;
@@ -267,17 +263,15 @@ class SnapshotCapture {
   /// not thread-safe for concurrent entity creation.
   std::mutex node_ops_mutex_;
 
-  /// Background subscriptions (kept alive for continuous caching)
+  /// Background subscriptions (kept alive for continuous caching). Appended by
+  /// the constructor and, for a topic that appears later, by the watcher on the
+  /// executor thread; never touched by the capture pool.
   std::vector<rclcpp::GenericSubscription::SharedPtr> background_subscriptions_;
 
-  /// Configured topics the graph had no type for yet, and the timer that looks
-  /// for them again. Both are touched by the constructor, the executor thread
-  /// that runs the timer, and the destructor, never by the capture pool, so they
-  /// need no lock of their own. Like RosbagCapture's discovery timer, the
-  /// destructor cancels the timer and assumes no callback of this object is
-  /// running then: the node's owner stops spinning it before tearing it down.
-  std::vector<std::string> pending_background_topics_;
-  rclcpp::TimerBase::SharedPtr background_retry_timer_;
+  /// Waits for the configured topics the graph had no type for at startup.
+  /// Null when there were none. Declared last so it goes before everything its
+  /// hand-over uses.
+  std::unique_ptr<PendingTopicWatcher> background_topic_watcher_;
 };
 
 }  // namespace ros2_medkit_fault_manager

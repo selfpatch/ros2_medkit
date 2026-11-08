@@ -119,15 +119,13 @@ SnapshotCapture::SnapshotCapture(rclcpp::Node * node, FaultStorage * storage, co
 }
 
 SnapshotCapture::~SnapshotCapture() {
-  // The timer goes first: a tick after the subscriptions are gone would create
-  // one again on a capture that is being destroyed.
-  if (background_retry_timer_) {
-    background_retry_timer_->cancel();
-  }
+  // The watcher goes first: a hand-over after the subscriptions are gone would
+  // create one again on a capture that is being destroyed. It takes
+  // node_ops_mutex_ itself, so it has to be gone before the lock below.
+  background_topic_watcher_.reset();
   // Destroying a subscription mutates the node as creating one does (see
   // LockedSubscriptionGuard), so it is serialised the same way.
   std::lock_guard<std::mutex> lock(node_ops_mutex_);
-  background_retry_timer_.reset();
   background_subscriptions_.clear();
 }
 
@@ -540,17 +538,21 @@ void SnapshotCapture::init_background_subscriptions() {
 
   RCLCPP_INFO(node_->get_logger(), "Initializing %zu background subscriptions for snapshot capture", topics.size());
 
+  std::vector<std::string> pending;
   for (const auto & topic : topics) {
-    if (!try_subscribe_background(topic)) {
+    const std::string msg_type = get_topic_type(topic);
+    if (msg_type.empty()) {
       RCLCPP_WARN(node_->get_logger(),
                   "Cannot determine type for topic '%s' yet; its background subscription is created once the topic "
                   "appears",
                   topic.c_str());
-      pending_background_topics_.push_back(topic);
+      pending.push_back(topic);
+      continue;
     }
+    subscribe_background(topic, msg_type);
   }
 
-  if (pending_background_topics_.empty()) {
+  if (pending.empty()) {
     return;
   }
 
@@ -558,21 +560,18 @@ void SnapshotCapture::init_background_subscriptions() {
   // comes up is decided by the rest of the robot (a stack launched minutes
   // later, a node respawned after a crash), and a cap only moves the moment the
   // topic is lost for good. While something is pending the cost is one read of
-  // the local graph cache per period; once nothing is, the timer is gone.
-  // A wall timer, so a paused or not-yet-started /clock cannot stall it.
+  // the local graph per period; once nothing is, the watcher's timer stops.
   static constexpr std::chrono::seconds kBackgroundRetryPeriod{1};
-  std::lock_guard<std::mutex> lock(node_ops_mutex_);
-  background_retry_timer_ = node_->create_wall_timer(kBackgroundRetryPeriod, [this]() {
-    retry_pending_background_topics();
-  });
+  background_topic_watcher_ = std::make_unique<PendingTopicWatcher>(
+      node_, node_ops_mutex_, std::move(pending), kBackgroundRetryPeriod,
+      [this](const std::string & topic, const std::string & msg_type) {
+        // Logged before the attempt, so a creation failure is the last word.
+        RCLCPP_INFO(node_->get_logger(), "Background snapshot topic '%s' appeared on the graph", topic.c_str());
+        subscribe_background(topic, msg_type);
+      });
 }
 
-bool SnapshotCapture::try_subscribe_background(const std::string & topic) {
-  const std::string msg_type = get_topic_type(topic);
-  if (msg_type.empty()) {
-    return false;
-  }
-
+void SnapshotCapture::subscribe_background(const std::string & topic, const std::string & msg_type) {
   try {
     rclcpp::QoS qos = rclcpp::SensorDataQoS();
 
@@ -600,9 +599,9 @@ bool SnapshotCapture::try_subscribe_background(const std::string & topic) {
       }
     };
 
-    // Taken even from the constructor, where nothing else runs yet: the retry
-    // timer reaches this from the executor thread while capture pool workers
-    // create and destroy their on-demand subscriptions on the same node.
+    // Taken even from the constructor, where nothing else runs yet: the watcher
+    // reaches this from the executor thread while capture pool workers create
+    // and destroy their on-demand subscriptions on the same node.
     rclcpp::GenericSubscription::SharedPtr subscription;
     {
       std::lock_guard<std::mutex> lock(node_ops_mutex_);
@@ -614,25 +613,6 @@ bool SnapshotCapture::try_subscribe_background(const std::string & topic) {
 
   } catch (const std::exception & e) {
     RCLCPP_WARN(node_->get_logger(), "Failed to create background subscription for '%s': %s", topic.c_str(), e.what());
-  }
-  return true;
-}
-
-void SnapshotCapture::retry_pending_background_topics() {
-  std::vector<std::string> still_pending;
-  for (const auto & topic : pending_background_topics_) {
-    if (try_subscribe_background(topic)) {
-      RCLCPP_INFO(node_->get_logger(), "Background snapshot topic '%s' appeared on the graph", topic.c_str());
-    } else {
-      still_pending.push_back(topic);
-    }
-  }
-  pending_background_topics_ = std::move(still_pending);
-
-  if (pending_background_topics_.empty() && background_retry_timer_) {
-    background_retry_timer_->cancel();
-    std::lock_guard<std::mutex> lock(node_ops_mutex_);
-    background_retry_timer_.reset();
   }
 }
 

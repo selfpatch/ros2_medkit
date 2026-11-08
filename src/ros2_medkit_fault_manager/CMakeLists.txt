@@ -123,6 +123,7 @@ include(cmake/fault_manager_core.cmake)
 set(FAULT_MANAGER_FILES
     src/capture_thread_pool.cpp
     src/fault_manager_node.cpp
+    src/pending_topic_watcher.cpp
     src/snapshot_capture.cpp
     src/rosbag_capture.cpp
     src/ros2/fault_msg_conversions.cpp
@@ -227,6 +228,11 @@ endif()
   medkit_add_gtest(test_snapshot_capture test/test_snapshot_capture.cpp)
   target_link_libraries(test_snapshot_capture fault_manager_lib)
   medkit_target_dependencies(test_snapshot_capture rclcpp ros2_medkit_msgs std_msgs)
+
+  # Pending topic watcher tests (topics a capture waits for until they appear)
+  medkit_add_gtest(test_pending_topic_watcher test/test_pending_topic_watcher.cpp)
+  target_link_libraries(test_pending_topic_watcher fault_manager_lib)
+  medkit_target_dependencies(test_pending_topic_watcher rclcpp std_msgs)
 
   # Rosbag capture tests. The suite drives real post-roll windows (multi-second
   # buffer fills and timer waits), so it needs more than the 60s default.
