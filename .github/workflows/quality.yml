@@ -285,8 +285,9 @@ jobs:
     # Cold-cache ASan builds are ~33 min; with the test budget a full run is
     # ~55 min, so the previous 60 min still cancelled on slower runners before
     # the post step could save the ccache. 90 min gives a cold-cache cycle real
-    # headroom so a slow runner does not cancel the job mid-run.
-    timeout-minutes: 90
+    # headroom so a slow runner does not cancel the job mid-run. Runs on main
+    # reached 84 min (a 46 min build), so 120 keeps that headroom.
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
@@ -438,9 +439,10 @@ jobs:
       volumes:
         - "/mnt:/mnt"
       options: --privileged
-    # Successful runs reach 59 min, and a timeout here reads as "TSan found
-    # something" rather than "the job ran out of clock". Keep the headroom.
-    timeout-minutes: 90
+    # Successful runs reach 69 min, and a timeout here reads as "TSan found
+    # something" rather than "the job ran out of clock". Keep the headroom:
+    # the test step alone may take 60 min on top of a slow build.
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
@@ -515,7 +517,8 @@ jobs:
             | grep -oE 'TIMEOUT "[0-9]+"' | sort -t'"' -k2 -n | uniq -c
 
       - name: Run unit + integration tests with TSan
-        timeout-minutes: 45
+        # Runs on main take 40-45 min, so 45 failed on any slower runner.
+        timeout-minutes: 60
         env:
           # Same factor as the ctest TIMEOUT rewrite above, for the wall-clock
           # budgets tests assert internally - ctest's clock cannot reach those.
