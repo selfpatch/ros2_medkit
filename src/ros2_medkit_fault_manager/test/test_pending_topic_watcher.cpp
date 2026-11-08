@@ -90,6 +90,7 @@ class PendingTopicWatcherTest : public ::testing::Test {
   std::map<std::string, std::vector<std::string>> handed_over_;
 };
 
+// @verifies REQ_INTEROP_088
 TEST_F(PendingTopicWatcherTest, HandsOverATopicOnceItsTypeIsKnown) {
   auto watcher = make_watcher({"/watcher/late"});
   auto pub = node_->create_publisher<std_msgs::msg::Float64>("/watcher/late", rclcpp::QoS(10));
@@ -105,6 +106,7 @@ TEST_F(PendingTopicWatcherTest, HandsOverATopicOnceItsTypeIsKnown) {
   EXPECT_EQ(handed_over_["/watcher/late"].front(), "std_msgs/msg/Float64");
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(PendingTopicWatcherTest, KeepsWatchingTheTopicsThatAreStillMissing) {
   auto watcher = make_watcher({"/watcher/first", "/watcher/second"});
   auto first = node_->create_publisher<std_msgs::msg::Float64>("/watcher/first", rclcpp::QoS(10));
