@@ -402,8 +402,8 @@ TEST_F(SnapshotCaptureTest, BackgroundCaptureCachesFreezeFrame) {
     }
   });
 
-  // The constructor sets up the background subscription only for a topic whose type the graph
-  // already carries, so wait for it before constructing.
+  // Waiting for the type keeps this test on the constructor's subscribe path; a topic that
+  // appears only after construction is BackgroundCaptureSubscribesToATopicThatAppearsAfterStartup.
   await_topic_type(node_, "/plc/temperature");
 
   SnapshotConfig config;
@@ -438,6 +438,50 @@ TEST_F(SnapshotCaptureTest, BackgroundCaptureCachesFreezeFrame) {
   ASSERT_FALSE(snapshots.empty());
   EXPECT_EQ(snapshots.back().topic, "/plc/temperature");
   EXPECT_EQ(snapshots.back().message_type, "std_msgs/msg/Float64");
+}
+
+// A fault manager that starts with the robot routinely comes up before the
+// publisher it is configured to capture (#696). The publisher here is created
+// only after the capture is constructed, which is that start order.
+// @verifies REQ_INTEROP_088
+TEST_F(SnapshotCaptureTest, BackgroundCaptureSubscribesToATopicThatAppearsAfterStartup) {
+  const std::string topic = "/plc/late_temperature";
+  SnapshotConfig config;
+  config.enabled = true;
+  config.background_capture = true;
+  config.fault_specific["PLC_LATE_TEMP_HIGH"] = {topic};
+  SnapshotCapture capture(node_.get(), storage_.get(), config);
+
+  auto pub = node_->create_publisher<std_msgs::msg::Float64>(topic, rclcpp::QoS(10));
+  ScopedPublisherThread pub_thread([&pub](std::atomic<bool> & stop) {
+    while (!stop.load()) {
+      std_msgs::msg::Float64 msg;
+      msg.data = 77.25;
+      pub->publish(msg);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+
+  bool got_frame = false;
+  const auto start = std::chrono::steady_clock::now();
+  while (!got_frame && std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
+    spin_some_once(node_);
+    capture.capture("PLC_LATE_TEMP_HIGH");
+    auto frame = storage_->get_freeze_frame("PLC_LATE_TEMP_HIGH");
+    got_frame = frame.has_value() && frame->data != "{}";
+    if (!got_frame) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+  ASSERT_TRUE(got_frame) << "the background cache never carried " << topic << ", which appeared after startup";
+
+  auto parsed = nlohmann::json::parse(storage_->get_freeze_frame("PLC_LATE_TEMP_HIGH")->data);
+  ASSERT_TRUE(parsed.contains(topic));
+  EXPECT_DOUBLE_EQ(parsed[topic]["data"].get<double>(), 77.25);
+
+  // The topic is looked for again until it is found, and only until then: one
+  // subscription, however many checks it took.
+  EXPECT_EQ(node_->count_subscribers(topic), 1u);
 }
 
 // @verifies REQ_INTEROP_088

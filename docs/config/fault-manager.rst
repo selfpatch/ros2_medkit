@@ -423,7 +423,7 @@ Basic Snapshot Settings
      ros__parameters:
        snapshots:
          enabled: true                     # Enable snapshot capture
-         background_capture: false         # Capture in background thread
+         background_capture: false         # Cache configured topics instead of sampling on confirm
          timeout_sec: 1.0                  # Timeout for topic sampling
          max_message_size: 65536           # Max message size in bytes (64KB)
          default_topics: []                # Topics to capture for all faults
@@ -446,7 +446,11 @@ Basic Snapshot Settings
      - Master switch to enable/disable snapshot capture.
    * - ``snapshots.background_capture``
      - ``false``
-     - Capture snapshots in background thread (non-blocking).
+     - Keep a subscription to every configured topic and capture its latest
+       cached message, instead of sampling the topic when the fault confirms.
+       A topic the graph does not know yet at startup is checked for once a
+       second and subscribed as soon as it appears, so the fault manager may
+       start before the nodes whose topics it captures.
    * - ``snapshots.timeout_sec``
      - ``1.0``
      - Timeout for sampling each topic.

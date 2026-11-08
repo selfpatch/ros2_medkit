@@ -116,7 +116,8 @@ Configure snapshot capture via fault manager parameters:
      - Maximum message size in bytes (larger messages skipped)
    * - ``snapshots.background_capture``
      - ``false``
-     - Use background subscriptions (caches latest message)
+     - Use background subscriptions (caches latest message). A topic that
+       appears after the fault manager starts is subscribed once it does.
    * - ``snapshots.recapture_cooldown_sec``
      - ``60.0``
      - Minimum seconds between snapshot captures for the same fault code.
