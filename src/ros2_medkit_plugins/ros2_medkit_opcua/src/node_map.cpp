@@ -244,6 +244,24 @@ bool NodeMap::load(const std::string & yaml_path) {
         return def;
       }
     };
+    // A list of state values decides which faults are raised, so a wrong one
+    // fails the load instead of being dropped.
+    auto parse_int_list = [logger](const YAML::Node & node, const char * field,
+                                   const std::string & context) -> std::optional<std::vector<std::int64_t>> {
+      std::vector<std::int64_t> out;
+      try {
+        if (!node.IsSequence()) {
+          throw YAML::Exception(node.Mark(), "not a list");
+        }
+        for (const auto & v : node) {
+          out.push_back(v.as<std::int64_t>());
+        }
+      } catch (const YAML::Exception &) {
+        RCLCPP_ERROR(logger, "%s: %s must be a list of integers", context.c_str(), field);
+        return std::nullopt;
+      }
+      return out;
+    };
     // Defensive required-string read: a missing or wrong-typed (sequence / map /
     // null) string field warns naming node_id + field and returns nullopt so
     // the caller skips just this node / bit / code. An unguarded
@@ -625,6 +643,13 @@ bool NodeMap::load(const std::string & yaml_path) {
       } else if (n["fault_enum"]) {
         fd::EnumMapRule rule;
         rule.ok_value = parse_int64(n["fault_enum"]["ok_value"], 0, "fault_enum.ok_value", entry.node_id_str);
+        if (n["fault_enum"]["ok_values"]) {
+          auto ok_values = parse_int_list(n["fault_enum"]["ok_values"], "fault_enum.ok_values", entry.node_id_str);
+          if (!ok_values) {
+            return false;
+          }
+          rule.ok_values = std::move(*ok_values);
+        }
         const auto codes = n["fault_enum"]["codes"];
         if (codes && codes.IsSequence()) {
           for (const auto & c : codes) {
@@ -675,6 +700,27 @@ bool NodeMap::load(const std::string & yaml_path) {
         }
       }
 
+      for (const char * key : {"inhibit_when", "only_when"}) {
+        if (!n[key]) {
+          continue;
+        }
+        const std::string label = std::string(key) + " on node_id=" + entry.node_id_str;
+        if (!entry.detection.has_value()) {
+          RCLCPP_ERROR(logger, "%s: the entry has no alarm/status_bits/fault_enum rule to gate", label.c_str());
+          return false;
+        }
+        const auto & g = n[key];
+        auto gate_node = g.IsMap() ? parse_string(g["node_id"], "node_id", label) : std::nullopt;
+        auto values = g.IsMap() && g["values"] ? parse_int_list(g["values"], "values", label) : std::nullopt;
+        if (!gate_node || gate_node->empty() || !values || values->empty()) {
+          RCLCPP_ERROR(logger, "%s needs node_id and a non-empty list of integer values", label.c_str());
+          return false;
+        }
+        warn_unknown_keys(g, label, {"node_id", "values"});
+        StateGate gate{*gate_node, std::move(*values)};
+        (std::string(key) == "inhibit_when" ? entry.inhibit_when : entry.only_when) = std::move(gate);
+      }
+
       size_t idx = entries_.size();
       node_id_index_[entry.node_id_str] = idx;
       entity_index_[entry.entity_id].push_back(idx);
@@ -691,6 +737,23 @@ bool NodeMap::load(const std::string & yaml_path) {
                   writable_ignored);
     }
 #endif
+
+    // A gate reads the polled value of another point, so it must name one.
+    for (const auto & entry : entries_) {
+      for (const auto * gate : {&entry.inhibit_when, &entry.only_when}) {
+        if (!gate->has_value()) {
+          continue;
+        }
+        const auto it = node_id_index_.find((*gate)->node_id_str);
+        if (it == node_id_index_.end() || (*gate)->node_id_str == entry.node_id_str) {
+          RCLCPP_ERROR(logger,
+                       "Gate on node_id=%s names node_id=%s, which is not another entry under nodes: - add that "
+                       "point to the map (written exactly as its node_id) so its value is polled",
+                       entry.node_id_str.c_str(), (*gate)->node_id_str.c_str());
+          return false;
+        }
+      }
+    }
 
     // Issue #386: native AlarmConditionType event subscriptions. Loaded from
     // top-level ``event_alarms:`` (sibling of ``nodes:``). Each entry must

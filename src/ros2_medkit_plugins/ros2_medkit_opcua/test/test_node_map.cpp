@@ -864,6 +864,128 @@ nodes:
   EXPECT_FALSE(signals[2].active);  // catch-all (a mapped code is not "unmapped")
 }
 
+namespace {
+
+bool load_text(NodeMap & map, const std::string & path, const std::string & yaml) {
+  std::ofstream f(path);
+  f << yaml;
+  f.close();
+  return map.load(path);
+}
+
+// A state register with three healthy states, a mode register that inhibits
+// it, and a reason register that counts only while the state is stopped.
+const char * kStateMap = R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Mode"
+    entity_id: machine
+    data_name: mode
+    data_type: int
+  - node_id: "ns=1;s=State"
+    entity_id: machine
+    data_name: state
+    data_type: int
+    fault_enum:
+      ok_value: 6
+      ok_values: [2, 4]
+      codes:
+        - code: 9
+          fault_code: MACHINE_ABORTED
+    inhibit_when:
+      node_id: "ns=1;s=Mode"
+      values: [2, 3]
+  - node_id: "ns=1;s=Reason"
+    entity_id: machine
+    data_name: stop_reason
+    data_type: int
+    fault_enum:
+      codes:
+        - code: 101
+          fault_code: MACHINE_JAM
+    only_when:
+      node_id: "ns=1;s=State"
+      values: [2, 9]
+)";
+
+}  // namespace
+
+TEST_F(NodeMapTest, StateRegisterWithOkValuesAndGates) {
+  NodeMap map;
+  ASSERT_TRUE(load_text(map, "/tmp/test_node_map_state_gates.yaml", kStateMap));
+  ASSERT_EQ(map.detection_entries().size(), 2u);
+
+  const auto * state = map.detection_entries()[0];
+  const auto & rule = std::get<fd::EnumMapRule>(*state->detection);
+  EXPECT_EQ(rule.ok_value, 6);
+  EXPECT_EQ(rule.ok_values, (std::vector<std::int64_t>{2, 4}));
+  ASSERT_TRUE(state->inhibit_when.has_value());
+  EXPECT_EQ(state->inhibit_when->node_id_str, "ns=1;s=Mode");
+  EXPECT_EQ(state->inhibit_when->values, (std::vector<std::int64_t>{2, 3}));
+  EXPECT_FALSE(state->only_when.has_value());
+
+  const auto * reason = map.detection_entries()[1];
+  ASSERT_TRUE(reason->only_when.has_value());
+  EXPECT_EQ(reason->only_when->node_id_str, "ns=1;s=State");
+  EXPECT_EQ(reason->only_when->values, (std::vector<std::int64_t>{2, 9}));
+  EXPECT_FALSE(reason->inhibit_when.has_value());
+}
+
+TEST_F(NodeMapTest, RejectsGateOnAPointThatIsNotPolled) {
+  std::string yaml = kStateMap;
+  yaml.replace(yaml.find("node_id: \"ns=1;s=Mode\"\n      values"), 22, "node_id: \"ns=1;s=Nope\"");
+  NodeMap map;
+  EXPECT_FALSE(load_text(map, "/tmp/test_node_map_gate_missing.yaml", yaml));
+}
+
+TEST_F(NodeMapTest, RejectsGateOnItself) {
+  NodeMap map;
+  EXPECT_FALSE(load_text(map, "/tmp/test_node_map_gate_self.yaml", R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=State"
+    entity_id: machine
+    data_name: state
+    data_type: int
+    fault_enum:
+      codes: [{code: 9, fault_code: MACHINE_ABORTED}]
+    inhibit_when: {node_id: "ns=1;s=State", values: [2]}
+)"));
+}
+
+TEST_F(NodeMapTest, RejectsMalformedStateLists) {
+  const char * base = R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Mode"
+    entity_id: machine
+    data_name: mode
+    data_type: int
+  - node_id: "ns=1;s=State"
+    entity_id: machine
+    data_name: state
+    data_type: int
+)";
+  const std::vector<std::string> bad = {
+      // ok_values not a list, or not integers
+      "    fault_enum: {ok_values: 2, codes: [{code: 9, fault_code: A}]}\n",
+      "    fault_enum: {ok_values: [2, x], codes: [{code: 9, fault_code: A}]}\n",
+      // gate without values, with an empty list, without node_id
+      "    fault_enum: {codes: [{code: 9, fault_code: A}]}\n    inhibit_when: {node_id: \"ns=1;s=Mode\"}\n",
+      "    fault_enum: {codes: [{code: 9, fault_code: A}]}\n    only_when: {node_id: \"ns=1;s=Mode\", values: []}\n",
+      "    fault_enum: {codes: [{code: 9, fault_code: A}]}\n    only_when: {values: [1]}\n",
+      // a gate on a point that detects nothing
+      "    inhibit_when: {node_id: \"ns=1;s=Mode\", values: [1]}\n",
+  };
+  for (size_t i = 0; i < bad.size(); ++i) {
+    NodeMap map;
+    EXPECT_FALSE(load_text(map, "/tmp/test_node_map_gate_bad.yaml", std::string(base) + bad[i])) << bad[i];
+  }
+}
+
 TEST_F(NodeMapTest, RejectsDuplicateDetectionFaultCode) {
   // The poller shares one FaultTransitionTracker keyed by fault_code alone, so
   // two detection entries emitting the same code (here on different entities)

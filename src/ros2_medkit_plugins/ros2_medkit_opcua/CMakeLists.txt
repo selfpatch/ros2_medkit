@@ -618,6 +618,7 @@ if(BUILD_TESTING)
       test/integration/test_opcua_secured.test.py
       test/integration/test_opcua_read_only.test.py
       test/integration/test_opcua_subscription_values.test.py
+      test/integration/test_opcua_state_gates.test.py
       test/integration/test_opcua_comms_lost.test.py
       test/integration/test_opcua_startup_sweep_signal.test.py
       DESTINATION lib/${PROJECT_NAME})
@@ -646,6 +647,15 @@ if(BUILD_TESTING)
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_subscription_values.test.py"
               "${CMAKE_BINARY_DIR}/test_alarm_server")
     set_tests_properties(test_opcua_subscription_values PROPERTIES
+      LABELS "integration"
+      TIMEOUT 300)
+    # State-register gates (ok_values, inhibit_when, only_when): raise, hold
+    # and clear decisions reach a real fault manager over real HTTP.
+    medkit_add_wrapped_test(test_opcua_state_gates
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_state_gates.test.py"
+              "${CMAKE_BINARY_DIR}/test_alarm_server")
+    set_tests_properties(test_opcua_state_gates PROPERTIES
       LABELS "integration"
       TIMEOUT 300)
     # This one boots a real gateway and fault manager, so it needs a domain, and

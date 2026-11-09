@@ -35,6 +35,7 @@
 /// would not be present in that host, so the detection logic is compiled
 /// directly into each plugin instead.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -88,6 +89,10 @@ struct EnumRule {
 struct EnumMapRule {
   std::vector<EnumRule> codes;
   std::int64_t ok_value{0};  // value meaning "no fault" (no rule raised)
+  /// Further values that mean "no fault". A state register (machine state
+  /// machine, operating mode) has many healthy values, and without this list
+  /// each of them would raise the catch-all.
+  std::vector<std::int64_t> ok_values;
   /// Catch-all raised when the register reports a non-ok value that matches no
   /// configured code (firmware revisions routinely add codes the config has
   /// not enumerated). Empty ``fault_code`` disables the catch-all. When its
@@ -228,7 +233,8 @@ inline std::vector<FaultSignal> evaluate(const Value & value, const DetectionRul
           if (!detail::as_int(value, code)) {
             return;  // undecidable -> emit nothing, hold last state
           }
-          const bool healthy = code == r.ok_value;
+          const bool healthy =
+              code == r.ok_value || std::find(r.ok_values.begin(), r.ok_values.end(), code) != r.ok_values.end();
           bool matched = false;
           for (const auto & e : r.codes) {
             const bool active = !healthy && code == e.code;

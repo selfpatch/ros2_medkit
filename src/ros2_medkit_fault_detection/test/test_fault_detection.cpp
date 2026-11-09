@@ -210,6 +210,26 @@ TEST(EnumMapRule, OkValueRaisesNothing) {
   EXPECT_FALSE(out[0].active);
 }
 
+TEST(EnumMapRule, OkValuesAreHealthyStates) {
+  // A state register: Stopped 2, Idle 4, Execute 6 are healthy, Aborted 9 is a
+  // fault, anything else unmapped raises the catch-all.
+  fd::EnumMapRule r;
+  r.ok_value = 6;
+  r.ok_values = {2, 4};
+  r.codes = {{9, {"ABORTED", "ERROR", "aborted"}}};
+  r.unknown_fault = {"STATE_UNMAPPED", "WARNING", ""};
+
+  for (std::int64_t healthy : {2, 4, 6}) {
+    auto out = fd::evaluate(fd::Value{healthy}, r);
+    EXPECT_FALSE(find(out, "ABORTED")->active) << healthy;
+    EXPECT_FALSE(find(out, "STATE_UNMAPPED")->active) << healthy;
+  }
+  EXPECT_TRUE(find(fd::evaluate(fd::Value{static_cast<std::int64_t>(9)}, r), "ABORTED")->active);
+  auto other = fd::evaluate(fd::Value{static_cast<std::int64_t>(11)}, r);
+  EXPECT_FALSE(find(other, "ABORTED")->active);
+  EXPECT_TRUE(find(other, "STATE_UNMAPPED")->active);
+}
+
 TEST(EnumMapRule, UnmappedNonOkRaisesCatchAll) {
   // A non-ok value with no configured label must stay visible via the catch-all
   // (firmware adds codes the config has not enumerated), not read as healthy.

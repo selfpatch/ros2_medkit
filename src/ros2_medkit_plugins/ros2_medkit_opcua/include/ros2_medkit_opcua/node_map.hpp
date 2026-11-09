@@ -184,6 +184,14 @@ struct AutoAlarmsConfig {
   std::vector<std::string> exclude_patterns;
 };
 
+/// Condition on another polled point that gates a detection rule. ``node_id``
+/// is the ``node_id`` string of another ``nodes:`` entry, written the same
+/// way; ``values`` are the integer values of that point the gate matches.
+struct StateGate {
+  std::string node_id_str;
+  std::vector<std::int64_t> values;
+};
+
 /// Mapping entry: OPC-UA NodeId -> SOVD entity data point
 struct NodeMapEntry {
   std::string node_id_str;          // OPC-UA node ID string (e.g., "ns=1;s=TankLevel")
@@ -205,6 +213,12 @@ struct NodeMapEntry {
   // ``status_bits:`` or ``fault_enum:`` node-map block. The poller evaluates
   // this through the shared ``fault_detection::evaluate`` regardless of mode.
   std::optional<ros2_medkit::fault_detection::DetectionRule> detection;
+  // While the gate matches, a fault of this point is not raised (planned
+  // stop, changeover, setup); one already raised clears only by its own value.
+  std::optional<StateGate> inhibit_when;
+  // The rule applies only while the gate matches; outside it its faults clear
+  // (a stop reason that stays latched after the machine runs again).
+  std::optional<StateGate> only_when;
 
   bool has_range() const {
     return min_value.has_value() && max_value.has_value();
