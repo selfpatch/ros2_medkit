@@ -506,4 +506,10 @@ class OpcuaClient {
   bool mark_disconnected_on_transport_error(const opcua::BadStatus & e);
 };
 
+namespace detail {
+/// EventFilter for add_event_monitored_item: EventType, SourceNode and
+/// ConditionId are prepended to ``user_specs``. Exposed for tests.
+UA_EventFilter make_event_filter(const std::vector<OpcuaClient::EventFieldSpec> & user_specs);
+}  // namespace detail
+
 }  // namespace ros2_medkit_gateway

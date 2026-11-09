@@ -1560,7 +1560,7 @@ OpcuaClient::DeviceInfo OpcuaClient::read_device_info() {
 // in unique_ptr storage so lifetime is explicit.
 // ----------------------------------------------------------------------------
 
-namespace {
+namespace detail {
 
 /// Build an OPC-UA EventFilter from per-field SimpleAttributeOperand specs.
 /// open62541 servers reject SAOs whose BrowsePath does not resolve directly
@@ -1600,7 +1600,12 @@ UA_EventFilter make_event_filter(const std::vector<OpcuaClient::EventFieldSpec> 
     sao.attributeId = all_specs[i].attribute_id;
     const auto & path = all_specs[i].browse_path;
     sao.browsePathSize = path.size();
-    if (sao.browsePathSize > 0) {
+    if (sao.browsePathSize == 0) {
+      // A NULL pointer encodes as a null array (length -1). A Siemens S7-1500
+      // then resolves the ConditionId clause to a null NodeId and every native
+      // alarm is dropped as a non-condition event. Send an empty array.
+      sao.browsePath = static_cast<UA_QualifiedName *>(UA_EMPTY_ARRAY_SENTINEL);
+    } else {
       sao.browsePath =
           static_cast<UA_QualifiedName *>(UA_Array_new(sao.browsePathSize, &UA_TYPES[UA_TYPES_QUALIFIEDNAME]));
       for (size_t j = 0; j < path.size(); ++j) {
@@ -1611,7 +1616,7 @@ UA_EventFilter make_event_filter(const std::vector<OpcuaClient::EventFieldSpec> 
   return filter;
 }
 
-}  // namespace
+}  // namespace detail
 
 // C-linkage trampoline matching ``UA_Client_EventNotificationCallback``.
 // Defined at namespace scope so its address is a stable function pointer.
@@ -1806,7 +1811,7 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
                       "add_event_monitored_item: subId=" << subscription_id << " nodeId=" << source_node.toString()
                                                          << " selectClauses=" << (select_specs.size() + 3));
 
-  UA_EventFilter filter = make_event_filter(select_specs);
+  UA_EventFilter filter = detail::make_event_filter(select_specs);
 
   UA_MonitoredItemCreateRequest item;
   UA_MonitoredItemCreateRequest_init(&item);
