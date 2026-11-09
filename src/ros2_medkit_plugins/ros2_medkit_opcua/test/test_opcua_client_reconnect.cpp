@@ -33,6 +33,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -60,7 +62,7 @@ uint16_t free_port() {
 /// life so a full pipe can never stall the server.
 class AlarmServer {
  public:
-  bool start(const std::string & binary) {
+  bool start(const std::string & binary, const std::vector<std::string> & extra_args = {}) {
     for (int attempt = 0; attempt < 3; ++attempt) {
       port_ = free_port();
       int in[2];
@@ -80,7 +82,13 @@ class AlarmServer {
         ::dup2(in[0], STDIN_FILENO);
         ::dup2(out[1], STDOUT_FILENO);
         const std::string port = std::to_string(port_);
-        ::execl(binary.c_str(), binary.c_str(), "--port", port.c_str(), static_cast<char *>(nullptr));
+        std::vector<char *> argv{const_cast<char *>(binary.c_str()), const_cast<char *>("--port"),
+                                 const_cast<char *>(port.c_str())};
+        for (const auto & arg : extra_args) {
+          argv.push_back(const_cast<char *>(arg.c_str()));
+        }
+        argv.push_back(nullptr);
+        ::execv(binary.c_str(), argv.data());
         ::_exit(127);
       }
       ::close(in[0]);
@@ -516,6 +524,93 @@ TEST_F(OpcuaClientReconnect, DataChangeItemAcrossReconnect) {
   EXPECT_EQ(old_changes.load(), old_changes_before);
   EXPECT_EQ(old_events.load(), old_events_before);
 }
+
+#ifdef UA_ENABLE_ENCRYPTION
+// Overwrites the stack below the caller with a pattern, where the frames of the
+// calls it returned from (connect among them) lived.
+__attribute__((noinline)) void scribble_dead_stack() {
+  volatile unsigned char junk[256 * 1024];
+  for (auto & byte : junk) {
+    byte = 0xA5;
+  }
+}
+
+// A secured client behind the proxy: Basic256Sha256 SignAndEncrypt and a user
+// login, against the fixture started with --secure and certificates made for
+// this run.
+class SecuredOpcuaClientReconnect : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    char dir_template[] = "/tmp/opcua_secured_reconnect_XXXXXX";
+    ASSERT_NE(::mkdtemp(dir_template), nullptr);
+    cert_dir_ = dir_template;
+    const std::string gen = std::string("bash '") + GEN_TEST_CERTS_SH + "' '" + cert_dir_ + "' " + kServerUri + " " +
+                            kClientUri + " >/dev/null";
+    ASSERT_EQ(std::system(gen.c_str()), 0) << "gen_test_certs.sh failed";
+    ASSERT_TRUE(
+        server_.start(TEST_ALARM_SERVER_BIN, {"--secure", "--cert", cert_dir_ + "/server_cert.der", "--key",
+                                              cert_dir_ + "/server_key.pem", "--trust", cert_dir_ + "/client_cert.der",
+                                              "--app-uri", kServerUri, "--username", "medkit", "--password", "secret"}))
+        << "secured test_alarm_server did not start";
+    ASSERT_TRUE(proxy_.start(server_.port()));
+    config_.endpoint_url = "opc.tcp://127.0.0.1:" + std::to_string(proxy_.port());
+    config_.connect_timeout = 2000ms;
+    config_.security_policy = SecurityPolicy::Basic256Sha256;
+    config_.security_mode = SecurityMode::SignAndEncrypt;
+    config_.client_cert_path = cert_dir_ + "/client_cert.der";
+    config_.client_key_path = cert_dir_ + "/client_key.pem";
+    config_.application_uri = kClientUri;
+    config_.trust_list_paths = {cert_dir_ + "/server_cert.der"};
+    config_.user_auth_mode = UserAuthMode::UsernamePassword;
+    config_.username = "medkit";
+    config_.password = "secret";
+  }
+
+  void TearDown() override {
+    if (!cert_dir_.empty()) {
+      std::error_code ec;
+      std::filesystem::remove_all(cert_dir_, ec);
+    }
+  }
+
+  bool pump_until_down(std::chrono::milliseconds timeout = 5s) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline && client_.is_connected()) {
+      client_.run_iterate(20);
+    }
+    return !client_.is_connected();
+  }
+
+  static constexpr const char * kServerUri = "urn:test:alarms:server";
+  static constexpr const char * kClientUri = "urn:selfpatch:medkit:opcua-client";
+
+  std::string cert_dir_;
+  AlarmServer server_;
+  LinkProxy proxy_;
+  OpcuaClientConfig config_;
+  OpcuaClient client_;
+};
+
+// The security policies log when a secured channel closes, through a pointer to
+// the logger of the config the client was built from. That config has to
+// outlive the client: kept only for the connect call, the pointer led into a
+// stack frame long gone, and the close after a dropped link crashed the
+// gateway (SIGSEGV in UA_ChannelModule_Delete_Context).
+TEST_F(SecuredOpcuaClientReconnect, ChannelClosesAfterConnectReturned) {
+  ASSERT_TRUE(client_.connect(config_));
+  ASSERT_TRUE(client_.read_value(kServerCurrentTime).good);
+  scribble_dead_stack();
+
+  proxy_.cut();
+  ASSERT_TRUE(pump_until_down());
+
+  ASSERT_TRUE(client_.connect(config_));
+  ASSERT_TRUE(client_.read_value(kServerCurrentTime).good);
+  scribble_dead_stack();
+  client_.disconnect();
+  EXPECT_FALSE(client_.is_connected());
+}
+#endif  // UA_ENABLE_ENCRYPTION
 
 }  // namespace
 }  // namespace ros2_medkit_gateway
