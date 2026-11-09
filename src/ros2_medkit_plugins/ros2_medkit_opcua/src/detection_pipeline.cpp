@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_opcua/detection_pipeline.hpp"
 
+#include <algorithm>
+#include <optional>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -60,8 +62,7 @@ DetectionPipeline::evaluate(const std::vector<const NodeMapEntry *> & entries,
     // it changes nothing for a point without a qualifier, and keeps a waiting
     // point from counting it. Under a subscription it is the current value and
     // lets a wait end, but it starts none.
-    const bool fresh = arrived;
-    if (!fresh && !subscribed) {
+    if (!arrived && !subscribed) {
       continue;
     }
     // Under a subscription the cached value only stands for the current one
@@ -70,8 +71,48 @@ DetectionPipeline::evaluate(const std::vector<const NodeMapEntry *> & entries,
       continue;
     }
 
-    const auto signals =
-        qualifier_.apply(fd::evaluate(to_fd_value(it->second), *entry->detection), qualifier, now, fresh);
+    // State gates work on the rule's own verdict, before the qualifier, so a
+    // gated fault does not wait toward a raise. An unread gate point gates
+    // nothing: the rule then behaves as ungated.
+    std::uint64_t gate_stamp = 0;
+    auto gate_matches = [&](const std::optional<StateGate> & gate) -> std::optional<bool> {
+      if (!gate) {
+        return std::nullopt;
+      }
+      if (const auto n = nodes_.find(gate->node_id_str); n != nodes_.end()) {
+        gate_stamp += n->second.received;
+      }
+      const auto g = values.find(gate->node_id_str);
+      std::int64_t v = 0;
+      if (g == values.end() || !fd::detail::as_int(to_fd_value(g->second), v)) {
+        return std::nullopt;
+      }
+      return std::find(gate->values.begin(), gate->values.end(), v) != gate->values.end();
+    };
+    const auto only = gate_matches(entry->only_when);
+    const auto inhibit = gate_matches(entry->inhibit_when);
+    // A new value of a gate point is an observation of this point too: under a
+    // subscription the cached value is the current one, so a wait may start.
+    bool gate_arrived = false;
+    if (entry->only_when || entry->inhibit_when) {
+      auto & seen = gate_stamps_[entry->node_id_str];
+      gate_arrived = seen != gate_stamp;
+      seen = gate_stamp;
+    }
+    const bool fresh = arrived || gate_arrived;
+
+    auto raw = fd::evaluate(to_fd_value(it->second), *entry->detection);
+    for (auto & s : raw) {
+      if (only.has_value() && !*only) {
+        s.active = false;
+      } else if (inhibit.value_or(false) && s.active) {
+        // Not raised while inhibited; a fault raised before keeps its state.
+        const auto prev = alarms.find(s.fault_code);
+        s.active = prev != alarms.end() && prev->second;
+      }
+    }
+
+    const auto signals = qualifier_.apply(raw, qualifier, now, fresh);
     for (const auto & s : signals) {
       alarms[s.fault_code] = s.active;
     }

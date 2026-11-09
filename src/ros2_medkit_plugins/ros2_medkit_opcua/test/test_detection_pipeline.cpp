@@ -448,6 +448,74 @@ TEST(DetectionPipeline, LinkLostKeepsARaisedFault) {
   EXPECT_TRUE(h.shown_active());
 }
 
+// -- State gates ----------------------------------------------------------------
+
+namespace {
+const char * const kInhibit = "    inhibit_when: {node_id: \"ns=1;s=Other\", values: [2]}\n";
+const char * const kOnly = "    only_when: {node_id: \"ns=1;s=Other\", values: [2]}\n";
+}  // namespace
+
+TEST(DetectionPipeline, InhibitedFaultIsNotRaisedAndARaisedOneStays) {
+  Harness h("gate_inhibit", kInhibit);
+  ASSERT_TRUE(h.loaded());
+  h.arrive(kOther, 2.0);
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(0)), 0);  // inhibited
+  h.arrive(kOther, 1.0);
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(500)), 1);
+  h.arrive(kOther, 2.0);
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(1000)), 0);  // raised before: stays
+  EXPECT_TRUE(h.shown_active());
+  h.arrive(kTemp, 20.0);
+  EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(1500)), -1);  // its own value clears it
+}
+
+TEST(DetectionPipeline, OnlyWhenClearsOutsideTheGateAndAnUnreadGateGatesNothing) {
+  Harness h("gate_only", kOnly);
+  ASSERT_TRUE(h.loaded());
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(0)), 1);  // gate point not read yet
+  h.arrive(kOther, 1.0);
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(500)), -1);
+  h.arrive(kOther, 2.0);
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(1000)), 1);
+}
+
+TEST(DetectionPipeline, InhibitedFaultDoesNotWaitTowardARaise) {
+  Harness h("gate_wait_polled", std::string("    raise_after_samples: 2\n") + kInhibit);
+  ASSERT_TRUE(h.loaded());
+  for (int i = 0; i < 3; ++i) {
+    h.arrive(kOther, 2.0);
+    h.arrive(kTemp, 90.0);
+    EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(500 * i)), 0);
+  }
+  h.arrive(kOther, 1.0);
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(1500)), 0);  // first sample of the wait
+  h.arrive(kOther, 1.0);
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kPolled, Pass::kValues, milliseconds(2000)), 1);
+}
+
+TEST(DetectionPipeline, SubscribedGateChangeStartsTheWaitOfAHeldValue) {
+  Harness h("gate_wait_subscribed", std::string("    raise_after_ms: 1000\n") + kInhibit);
+  ASSERT_TRUE(h.loaded());
+  h.arrive(kOther, 2.0);
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(0)), 0);
+  EXPECT_FALSE(h.pipeline().has_pending());  // inhibited: nothing waits
+  // Only the gate point changes; the gated value is held and reports nothing.
+  h.arrive(kOther, 1.0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(5000)), 0);
+  EXPECT_TRUE(h.pipeline().has_pending());
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(5900)), 0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(6000)), 1);
+}
+
 // -- Value translation ----------------------------------------------------------
 
 TEST(DetectionPipeline, TranslatesEveryOpcuaValueType) {
