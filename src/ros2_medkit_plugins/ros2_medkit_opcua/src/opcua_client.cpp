@@ -232,9 +232,11 @@ namespace {
 
 // Why a connect failed, where open62541 1.3 keeps it. A refused certificate
 // or a server's ERR message closes the channel, and the connect then throws
-// BadConnectionClosed (ua_client.c receiveResponse): the reason is only
-// logged. Two taps on the client's own plugins keep it: the certificate check
-// of the server's certificate, and the ERR message the server sent.
+// BadConnectionClosed (ua_client.c receiveResponse); a server that offers no
+// token policy for the configured user ends it with BadInternalError
+// (ua_client_connect.c). The reason is only logged. Two taps on the client's
+// own plugins keep it: the certificate check of the server's certificate, and
+// the logger, for the ERR message the server sent and the missing policy.
 struct ConnectTaps {
   UA_CertificateVerification verification{};
   UA_Logger logger{};
@@ -259,6 +261,10 @@ struct ConnectTaps {
 constexpr const char * kErrResponseFormat = "Connection %i | SecureChannel %" PRIu32
                                             " | Received an ERR response with StatusCode %s and the following "
                                             "reason: %.*s%.0s";
+// ua_client_connect.c selectEndpoint, verbatim: none of the server's endpoints
+// takes the user the client is set up with (anonymous on a server that wants
+// a user, a user on one that takes only certificates).
+constexpr const char * kNoTokenPolicyFormat = "No suitable UserTokenPolicy found for the possible endpoints";
 
 UA_StatusCode tap_verify(void * context, const UA_ByteString * certificate) {
   auto * taps = static_cast<ConnectTaps *>(context);
@@ -285,7 +291,9 @@ void tap_verification_clear(UA_CertificateVerification * cv) {
 
 void tap_log(void * context, UA_LogLevel level, UA_LogCategory category, const char * msg, va_list args) {
   auto * taps = static_cast<ConnectTaps *>(context);
-  if (msg != nullptr && std::strcmp(msg, kErrResponseFormat) == 0) {
+  if (msg != nullptr && std::strcmp(msg, kNoTokenPolicyFormat) == 0) {
+    taps->note(UA_STATUSCODE_BADIDENTITYTOKENINVALID);
+  } else if (msg != nullptr && std::strcmp(msg, kErrResponseFormat) == 0) {
     va_list copy;
     va_copy(copy, args);
     (void)va_arg(copy, int);
@@ -674,7 +682,11 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
   impl_->config = config;
 
   try {
-    if (impl_->client.isConnected()) {
+    // A channel left open by a refused ActivateSession reads as connected to
+    // open62541pp; only an activated session is one.
+    UA_SessionState session_state = UA_SESSIONSTATE_CLOSED;
+    UA_Client_getState(impl_->client.handle(), nullptr, &session_state, nullptr);
+    if (impl_->client.isConnected() && session_state == UA_SESSIONSTATE_ACTIVATED) {
       impl_->connected = true;
       return true;
     }
