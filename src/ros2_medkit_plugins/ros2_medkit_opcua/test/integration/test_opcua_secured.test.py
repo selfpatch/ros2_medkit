@@ -39,6 +39,15 @@ POSITIVE (good credentials):
 
 NEGATIVE (wrong password):
   * The gateway never reaches connected == true: fail-closed.
+  * x-plc-status names the refusal: last_error == BadUserAccessDenied.
+
+NEGATIVE (server certificate not in the gateway's trust list):
+  * x-plc-status says connected == false and last_error ==
+    BadCertificateUntrusted, and no value is served.
+
+NEGATIVE (gateway certificate not in the server's trust list):
+  * x-plc-status says connected == false and last_error ==
+    BadSecurityChecksFailed, the status of the server's ERR message.
 
 Skips with the CTest convention (exit 77) unless
 ``ROS2_MEDKIT_OPCUA_SECURE_REQUIRE`` is set, mirroring the asyncua smoke-test
@@ -207,7 +216,7 @@ def write_catchall_node_map(path):
 
 
 def write_gateway_params(path, *, port, plugin, server_port, node_map, manifest,
-                         certs, password):
+                         certs, password, trusted='server_cert.der'):
     """Render a gateway params file pointing the opcua plugin at the secure server."""
     path.write_text(
         'ros2_medkit_gateway:\n'
@@ -225,7 +234,7 @@ def write_gateway_params(path, *, port, plugin, server_port, node_map, manifest,
         f'    plugins.opcua.client_cert_path: "{certs}/client_cert.der"\n'
         f'    plugins.opcua.client_key_path: "{certs}/client_key.pem"\n'
         f'    plugins.opcua.application_uri: "{APP_URI_CLIENT}"\n'
-        f'    plugins.opcua.trust_list_paths: ["{certs}/server_cert.der"]\n'
+        f'    plugins.opcua.trust_list_paths: ["{certs}/{trusted}"]\n'
         '    plugins.opcua.reject_untrusted: true\n'
         '    plugins.opcua.user_auth_mode: "UsernamePassword"\n'
         f'    plugins.opcua.username: "{USERNAME}"\n'
@@ -379,7 +388,8 @@ def main():
     server_log = workdir / 'server.log'
     env = dict(os.environ, ROS_DOMAIN_ID=ros_domain_id)
 
-    server = fault_mgr = gw_good = gw_bad = gw_catch = None
+    server = fault_mgr = gw_good = gw_bad = gw_catch = gw_untrusted = None
+    strict_server = gw_refused = None
     passed = False
     try:
         # --- Certificates (regenerated every run, never committed) ---------
@@ -407,6 +417,7 @@ def main():
         # Drawn while the fixture holds its port, so none can coincide with it.
         good_port = free_port()
         bad_port = free_port()
+        untrusted_port = free_port()
 
         # --- fault_manager_node --------------------------------------------
         # storage_type:=memory, as every other integration test does. The
@@ -611,6 +622,90 @@ def main():
             return 1
         print('  OK fail-closed: wrong password rejected (BadUserAccessDenied)')
 
+        # The status says why: a client reading it can tell a refused user from
+        # a server that does not answer.
+        bad_status = wait_json(f'{bad_base}/components/alarm_test_runtime/x-plc-status',
+                               lambda j: j.get('last_error') == 'BadUserAccessDenied',
+                               deadline=30)
+        if not (bad_status and bad_status.get('last_error') == 'BadUserAccessDenied'):
+            print('FAIL: x-plc-status does not name the refused user: '
+                  f'{json.dumps(bad_status)}', file=sys.stderr)
+            return 1
+        print('  OK x-plc-status last_error == BadUserAccessDenied')
+        terminate(gw_bad)
+        gw_bad = None
+
+        # === NEGATIVE: the server's certificate is not trusted ===============
+        # The trust list holds the client's own certificate instead of the
+        # server's, as a gateway pinned to another controller's certificate does.
+        untrusted_params = workdir / 'gateway_untrusted.yaml'
+        write_gateway_params(untrusted_params, port=untrusted_port, plugin=plugin,
+                             server_port=server_port, node_map=node_map,
+                             manifest=manifest, certs=certs, password=PASSWORD,
+                             trusted='client_cert.der')
+        untrusted_log = workdir / 'gateway_untrusted.log'
+        gw_untrusted = start_gateway(untrusted_params, untrusted_log, env)
+        untrusted_base = f'http://127.0.0.1:{untrusted_port}/api/v1'
+        untrusted_status = wait_json(
+            f'{untrusted_base}/components/alarm_test_runtime/x-plc-status',
+            lambda j: j.get('last_error') == 'BadCertificateUntrusted', deadline=60)
+        served = http_json(f'{untrusted_base}/apps/tank_process/x-plc-data')
+        value_served = bool(served) and any(
+            i.get('name') == 'tank_level' and i.get('value') is not None
+            for i in served.get('items', []))
+        if not (untrusted_status
+                and untrusted_status.get('last_error') == 'BadCertificateUntrusted'
+                and untrusted_status.get('connected') is False
+                and not value_served):
+            print('FAIL: an untrusted server certificate is not reported as such: '
+                  f'{json.dumps(untrusted_status)} (value served: {value_served})',
+                  file=sys.stderr)
+            print('gateway(untrusted) log tail:\n'
+                  + untrusted_log.read_text(errors='replace')[-3000:], file=sys.stderr)
+            return 1
+        print('  OK untrusted server certificate: connected == false, '
+              'last_error == BadCertificateUntrusted')
+        terminate(gw_untrusted)
+        gw_untrusted = None
+
+        # === NEGATIVE: the server does not trust the gateway's certificate ===
+        # A second server whose trust list holds only its own certificate, as a
+        # controller that was never told to trust the gateway.
+        strict_log = workdir / 'server_strict.log'
+        strict_server, strict_port = alarm_fixture.start_fixture(
+            server_bin, strict_log, '--secure',
+            '--cert', str(certs / 'server_cert.der'),
+            '--key', str(certs / 'server_key.pem'),
+            '--trust', str(certs / 'server_cert.der'),
+            '--app-uri', APP_URI_SERVER,
+            '--username', USERNAME, '--password', PASSWORD,
+            deadline=20)
+        if strict_server is None:
+            print('strict server printed no READY', file=sys.stderr)
+            return 1
+        refused_port = free_port()
+        refused_params = workdir / 'gateway_refused.yaml'
+        write_gateway_params(refused_params, port=refused_port, plugin=plugin,
+                             server_port=strict_port, node_map=node_map,
+                             manifest=manifest, certs=certs, password=PASSWORD)
+        refused_log = workdir / 'gateway_refused.log'
+        gw_refused = start_gateway(refused_params, refused_log, env)
+        refused_base = f'http://127.0.0.1:{refused_port}/api/v1'
+        refused_status = wait_json(
+            f'{refused_base}/components/alarm_test_runtime/x-plc-status',
+            lambda j: j.get('last_error') == 'BadSecurityChecksFailed', deadline=60)
+        if not (refused_status
+                and refused_status.get('last_error') == 'BadSecurityChecksFailed'
+                and refused_status.get('connected') is False):
+            print('FAIL: a refused gateway certificate is not reported as such: '
+                  f'{json.dumps(refused_status)}', file=sys.stderr)
+            print('gateway(refused) log tail:\n'
+                  + refused_log.read_text(errors='replace')[-3000:], file=sys.stderr)
+            print('strict server log:\n' + alarm_fixture.read_log(strict_log), file=sys.stderr)
+            return 1
+        print('  OK refused gateway certificate: connected == false, '
+              'last_error == BadSecurityChecksFailed')
+
         print('PASS: secured OPC-UA A&C integration test')
         passed = True
         return 0
@@ -618,7 +713,11 @@ def main():
         terminate(gw_good)
         terminate(gw_catch)
         terminate(gw_bad)
+        terminate(gw_untrusted)
+        terminate(gw_refused)
         terminate(fault_mgr)
+        if strict_server is not None:
+            alarm_fixture.stop(strict_server)
         if server is not None:
             alarm_fixture.stop(server)
             if not passed:

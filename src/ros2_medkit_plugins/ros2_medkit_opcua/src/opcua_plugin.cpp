@@ -1292,6 +1292,7 @@ void OpcuaPlugin::handle_plc_status(const PluginRequest & req, PluginResponse & 
   j["write_capable"] = MEDKIT_OPCUA_READ_ONLY == 0;
   j["poll_count"] = snap.poll_count;
   j["error_count"] = snap.error_count;
+  j["last_error"] = client_->last_error();
   j["node_count"] = node_map_.entries().size();
   j["entity_count"] = node_map_.entity_defs().size();
 
