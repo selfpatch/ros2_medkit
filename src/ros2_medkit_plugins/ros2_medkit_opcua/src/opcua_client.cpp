@@ -115,6 +115,12 @@ struct EventCallbackContext {
 
 namespace {
 
+// OpcuaValue holds scalars only. An array or matrix value would make every
+// getScalarCopy below throw BadVariantAccess, which no read path catches.
+bool has_scalar_value(const opcua::Variant & var) {
+  return var.isEmpty() || var.isScalar();
+}
+
 OpcuaValue variant_to_value(const opcua::Variant & var) {
   if (var.isEmpty()) {
     return std::string("<empty>");
@@ -952,8 +958,10 @@ ReadResult OpcuaClient::read_value(const opcua::NodeId & node_id) {
   try {
     opcua::Node node(impl_->client, node_id);
     auto val = node.readValue();
-    result.value = variant_to_value(val);
-    result.good = true;
+    result.good = has_scalar_value(val);
+    if (result.good) {
+      result.value = variant_to_value(val);
+    }
   } catch (const opcua::BadStatus & e) {
     result.good = false;
     mark_disconnected_on_transport_error(e);
@@ -981,8 +989,11 @@ std::vector<ReadResult> OpcuaClient::read_values(const std::vector<opcua::NodeId
     r.timestamp = now;
     try {
       opcua::Node node(impl_->client, nid);
-      r.value = variant_to_value(node.readValue());
-      r.good = true;
+      auto val = node.readValue();
+      r.good = has_scalar_value(val);
+      if (r.good) {
+        r.value = variant_to_value(val);
+      }
     } catch (const opcua::BadStatus & e) {
       r.good = false;
       impl_->set_last_error(UA_StatusCode_name(e.code()));
@@ -1215,7 +1226,7 @@ bool OpcuaClient::add_monitored_item(uint32_t subscription_id, const opcua::Node
         info.sub.subscribeDataChange(
             node_id, opcua::AttributeId::Value,
             [nid_str, cb_copy](uint32_t /*sub_id*/, uint32_t /*mon_id*/, const opcua::DataValue & dv) {
-              if (dv.hasValue()) {
+              if (dv.hasValue() && has_scalar_value(dv.getValue())) {
                 auto val = variant_to_value(dv.getValue());
                 cb_copy(nid_str, val);
               }
