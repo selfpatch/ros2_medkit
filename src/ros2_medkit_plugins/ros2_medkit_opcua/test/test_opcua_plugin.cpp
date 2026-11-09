@@ -35,6 +35,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
@@ -482,6 +483,27 @@ TEST(OpcuaPluginAutoBrowseConfig, InferWritableSourceStaysEmptyWhenTheParameterI
   EXPECT_TRUE(plugin.auto_browse_config_for_test().enabled);
   EXPECT_TRUE(plugin.auto_browse_config_for_test().infer_writable);
   EXPECT_TRUE(plugin.auto_browse_config_for_test().infer_writable_source.empty());
+}
+
+// A read-only guard beside a curated node map (auto_browse: false) must not
+// turn the walk on: only "enabled" or a walk knob does.
+TEST(OpcuaPluginAutoBrowseConfig, InferWritableAloneKeepsTheWalkOff) {
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["endpoint_url"] = "opc.tcp://nonexistent:4840";
+  config["auto_browse"] = nlohmann::json{{"infer_writable", false}};
+  plugin.configure(config);
+  EXPECT_FALSE(plugin.auto_browse_config_for_test().enabled);
+  EXPECT_FALSE(plugin.auto_browse_config_for_test().infer_writable);
+}
+
+TEST(OpcuaPluginAutoBrowseConfig, WalkKnobWithoutEnabledTurnsTheWalkOn) {
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["endpoint_url"] = "opc.tcp://nonexistent:4840";
+  config["auto_browse"] = nlohmann::json{{"max_depth", 4}};
+  plugin.configure(config);
+  EXPECT_TRUE(plugin.auto_browse_config_for_test().enabled);
 }
 
 // -- Condition operations (acknowledge / confirm) per build variant --------
@@ -1468,7 +1490,11 @@ TEST(DiscoverEndpoint, TheScanIsAnnouncedBeforeTheSweepRuns) {
   };
   reporter.previous_outcome = &outcome;
 
-  auto scan_recording_the_log = [&info, &announced_before_first_probe](const std::string &, uint16_t, int) {
+  // The scan runs on the sweep's worker threads, so the probes share this lock.
+  std::mutex probe_mutex;
+  auto scan_recording_the_log = [&info, &announced_before_first_probe, &probe_mutex](const std::string &, uint16_t,
+                                                                                     int) {
+    std::lock_guard<std::mutex> lock(probe_mutex);
     if (announced_before_first_probe.empty() && !info.empty()) {
       announced_before_first_probe = info.front();
     }

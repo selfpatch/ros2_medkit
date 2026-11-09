@@ -245,10 +245,25 @@ GET /api/v1/components/openplc_runtime/x-plc-status
   "write_capable": false,
   "poll_count": 142,
   "error_count": 0,
+  "last_error": "",
   "node_count": 5,
   "active_alarms": []
 }
 ```
+
+`last_error` says why the link last failed, as the OPC UA status name: a failed
+connect (`BadCertificateUntrusted` when the server's certificate is not in the
+trust list, the status of the server's ERR message such as
+`BadSecurityChecksFailed` when the server does not trust the client's
+certificate, `BadUserAccessDenied` for a refused user, `BadTimeout` or
+`BadConnectionClosed` for a server that does not answer), a session that dropped,
+or a value read the server refused. open62541 ends a connect whose channel was
+refused with `BadConnectionClosed` and only logs why, so the client takes the
+reason from its certificate check and from the server's ERR message. It is `BadConfigurationError` when the
+client's own certificate, key or security settings could not be applied. It is
+empty after a connect that succeeded, until something fails again, so a value
+next to `connected: true` is a read that failed in this session. The route never
+waits for a connect in progress to answer.
 
 `write_capable` is the build, not a setting: `false` in the default read-only
 build, `true` only in one built with `-DMEDKIT_OPCUA_READ_ONLY=OFF`. An absent
@@ -296,7 +311,8 @@ component_id: openplc_runtime
 component_name: OpenPLC Runtime
 
 nodes:
-  - node_id: "ns=2;i=1"          # OPC-UA NodeId (numeric or string)
+  - node_id: "ns=2;i=1"          # OPC-UA NodeId (numeric or string), or
+                                  # browse_path: (see "Addressing nodes by browse path")
     entity_id: tank_process       # SOVD app this belongs to
     data_name: tank_level         # Data point name in REST API
     display_name: Tank Level
@@ -359,6 +375,55 @@ nodes:
         - code: 11
           fault_code: VFD_OVERCURRENT
           severity: ERROR
+
+  # State register: a machine state machine (for example the ISA-TR88 state
+  # numbers) has many healthy values. `ok_values` lists the ones beside
+  # `ok_value`, so they do not raise the catch-all.
+  - node_id: "ns=2;s=Machine.State"
+    entity_id: machine
+    data_name: state
+    data_type: int
+    fault_enum:
+      ok_value: 6                  # Execute
+      ok_values: [1, 2, 3, 4, 5, 7, 13, 14, 15, 16, 17]
+      codes:
+        - code: 9
+          fault_code: MACHINE_ABORTED
+          severity: ERROR
+    # Not raised while the gate point reads one of `values` (a planned stop,
+    # changeover or setup mode). A fault raised before the gate matched is
+    # kept until the state itself clears it.
+    inhibit_when:
+      node_id: "ns=2;s=Machine.UnitMode"   # another entry under nodes:
+      values: [2, 3]
+
+  - node_id: "ns=2;s=Machine.StopReason"
+    entity_id: machine
+    data_name: stop_reason
+    data_type: int
+    fault_enum:
+      ok_values: [10, 11]          # planned stop reasons
+      codes:
+        - code: 101
+          fault_code: MACHINE_JAM
+    # Evaluated only while the gate point reads one of `values`; outside them
+    # the faults of this point clear. For a reason that stays latched after
+    # the machine runs again.
+    only_when:
+      node_id: "ns=2;s=Machine.State"
+      values: [2, 9]
+
+  - node_id: "ns=2;s=Machine.UnitMode"
+    entity_id: machine
+    data_name: unit_mode
+    data_type: int
+
+# A gate names another `nodes:` entry by its `node_id`, written the same way,
+# and compares that point's integer value. The load fails when the gate point
+# is not in the map, is the entry itself, or `values` is not a non-empty list
+# of integers. The gate point must be a `node_id` entry, the gated entry may
+# be a `browse_path` one. Until the gate point has been read once the rule is ungated.
+# Gates work with all three detection modes.
 
 # The three modes (`alarm`, `status_bits`, `fault_enum`) are evaluated by the
 # shared `ros2_medkit_fault_detection` module so every protocol plugin maps raw
@@ -450,6 +515,49 @@ curl -X POST http://localhost:8080/api/v1/apps/tank_process/operations/acknowled
 
 See `design/index.rst` for the full state machine table and vendor matrix.
 
+### Addressing nodes by browse path (`browse_path`)
+
+A companion specification (OPC 40010 Robotics, Machinery, PackML, ...) fixes
+the BrowseNames of its nodes and the namespace they live in, but not their
+NodeIds and not the namespace index: the server picks both, and may number
+its namespaces differently after a restart. A node map written against one
+server's NodeIds is a map of that server. `browse_path` addresses a node by
+the names the specification gives it instead:
+
+```yaml
+namespaces:                      # alias -> namespace URI
+  di: "http://opcfoundation.org/UA/DI/"
+  rob: "http://opcfoundation.org/UA/Robotics/"
+
+nodes:
+  - browse_path: "di:DeviceSet/*/rob:SafetyStates/*/di:ParameterSet/rob:EmergencyStop"
+    entity_id: robot_safety
+    data_name: emergency_stop
+    data_type: bool
+    alarm: {fault_code: ROBOT_EMERGENCY_STOP, severity: ERROR, threshold: 0.5, above_threshold: true}
+```
+
+- The path starts at the Objects folder. Each step is `<alias>:<BrowseName>`
+  (alias from `namespaces:`), `<index>:<BrowseName>` for a namespace given by
+  index, or `*` for any child - the instance the specification leaves to the
+  vendor to name, such as the robot under `MotionDevices`. A `/` or `\` inside
+  a BrowseName is escaped with `\`. The last step must name a Variable.
+- An entry has either `node_id` or `browse_path`, never both. Everything else
+  (`entity_id`, `data_name`, `alarm` / `status_bits` / `fault_enum`, ...) is
+  the same, and fault codes stay unique across both kinds.
+- The path is resolved by browsing once a session is up, before the poller
+  subscribes. Until then the entry is not served. A path the server does not
+  have is logged and tried again on the next session. Every new session walks
+  every path again, so a server that restarted with its namespaces in another
+  order is followed to the new NodeIds.
+- Under a `*` the children are tried in the server's browse order and the first
+  that completes the path wins. That is unambiguous while the server has one
+  such instance; with two robots on one controller, name the robot instead of
+  `*`. The walk looks at no more than 2000 children per path.
+- A `browse_path` entry wins over an `auto_browse` entry for the same node.
+- Read-only: resolving uses Browse and reads the server's NamespaceArray,
+  nothing else.
+
 ### auto_browse (zero-config discovery)
 
 Instead of (or on top of) a hand-written `nodes:` list, the plugin can build
@@ -530,6 +638,11 @@ request anybody made.
 The JSON/ROS-param form takes precedence over whatever the node-map YAML's
 `auto_browse:` block set, mirroring how environment variables override the
 rest of the plugin's YAML config.
+Without `enabled`, the ROS-param form turns the walk on only when it sets a
+walk knob (`root_nodes`, `max_depth`, `max_nodes`, `namespace_allow`,
+`namespace_deny`). `infer_writable` or `read_initial_values` alone keep the
+node map's own setting, so a read-only guard beside a curated node map with
+`auto_browse: false` does not start a walk.
 
 ### Zero-config native A&C (`auto_alarms`)
 

@@ -16,6 +16,7 @@
 
 #include "ros2_medkit_opcua/address_space_browser.hpp"
 #include "ros2_medkit_opcua/device_identity.hpp"
+#include "ros2_medkit_opcua/fault_code_lanes.hpp"
 #include "ros2_medkit_opcua/network_discovery.hpp"
 #include "ros2_medkit_opcua/node_map.hpp"
 #include "ros2_medkit_opcua/opcua_client.hpp"
@@ -709,6 +710,12 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // node_map_mutex_. No-op (never called) when auto_browse is disabled.
   void run_auto_browse();
 
+  // Resolve the node map's waiting ``browse_path:`` entries on the live
+  // session. Runs once a session is up, before auto_browse and before the
+  // poller subscribes, and again from on_connected on every new session for
+  // any entry the previous one could not resolve. Browses only.
+  void resolve_browse_paths();
+
   // Re-derive the SOVD component identity from the device once a NEW session is
   // up, in config-less mode only. Called from PollerConfig::on_connected, which
   // the poller fires right after a session comes up and BEFORE it
@@ -924,6 +931,10 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // of the critical section.
   std::mutex pending_reports_mutex_;
   std::vector<PendingFaultDispatch> pending_reports_;
+
+  // Report and clear calls for one fault code go out one at a time, in order
+  // (see FaultCodeLanes): the two services give no ordering between them.
+  FaultCodeLanes fault_lanes_;
 
   // Where the fault store's answer is parked between the executor thread that
   // receives it and the poll thread that acts on it.

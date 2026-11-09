@@ -123,6 +123,13 @@ class OpcuaClient {
   /// Check if currently connected
   bool is_connected() const;
 
+  /// Why the link last failed, as the OPC UA status name ("BadCertificateUntrusted",
+  /// "BadUserAccessDenied", "BadTimeout", ...): a failed connect, a session that
+  /// dropped, or a value read the server refused. "BadConfigurationError" when the
+  /// client's own security settings could not be applied. Empty after a connect
+  /// that succeeded, until something fails again. Never waits for a connect.
+  std::string last_error() const;
+
   /// Number of successfully established sessions so far (0 before the first
   /// connect). Increments once per fresh connect, NOT on a connect() call that
   /// finds the session already open. Lets callers detect a reconnect and
@@ -174,6 +181,10 @@ class OpcuaClient {
   /// vendor-defined types (auto_browse treats those as unsupported and skips
   /// the variable) and when not connected or the read fails.
   std::string read_variable_type_name(const opcua::NodeId & variable_node);
+
+  /// Index of namespace ``uri`` in the server's NamespaceArray, or -1 when the
+  /// server does not have it, the read failed or there is no session.
+  int namespace_index(const std::string & uri);
 
   /// Read a single value
   ReadResult read_value(const opcua::NodeId & node_id);
@@ -505,5 +516,11 @@ class OpcuaClient {
   /// @return true when this call flipped the client to disconnected.
   bool mark_disconnected_on_transport_error(const opcua::BadStatus & e);
 };
+
+namespace detail {
+/// EventFilter for add_event_monitored_item: EventType, SourceNode and
+/// ConditionId are prepended to ``user_specs``. Exposed for tests.
+UA_EventFilter make_event_filter(const std::vector<OpcuaClient::EventFieldSpec> & user_specs);
+}  // namespace detail
 
 }  // namespace ros2_medkit_gateway

@@ -387,6 +387,13 @@ class OpcuaPoller {
     apply_condition_state(cfg, condition_id, input, severity, message, event_id, require_confirm_for_clear);
   }
 
+  /// ``on_event`` reached without a server: a notification as the event
+  /// MonitoredItem of ``cfg`` delivers it. Not part of the supported surface.
+  void on_event_for_test(const AlarmEventConfig & cfg, const std::vector<opcua::Variant> & values,
+                         const opcua::NodeId & event_type, const opcua::NodeId & condition_id) {
+    on_event(cfg, values, cfg.source_node_id, event_type, condition_id);
+  }
+
   /// True only for a real OPC-UA Condition event. Per Part 9 §5.5.2.13 the
   /// ConditionId SAO resolves to a non-null NodeId only for AlarmConditionType
   /// (and subtype) instances; a plain BaseEvent / SystemEvent notification -
@@ -451,9 +458,11 @@ class OpcuaPoller {
   /// otherwise stay latched. ``seen`` is the set of ConditionIds the server
   /// replayed during the burst; any tracked-active condition NOT in it cleared
   /// offline and is cleared here. Unlike the read fallback this needs no
-  /// per-source modeling gate: a delivered RefreshEnd is an authoritative,
-  /// subscription-wide replay (works on EventNotifier-only servers too).
-  void reconcile_after_refresh(const std::set<std::string> & seen);
+  /// per-source modeling gate: a delivered RefreshEnd is an authoritative
+  /// replay for its MonitoredItem (works on EventNotifier-only servers too).
+  /// Only conditions first seen on ``source_id`` are reconciled: the burst of
+  /// one event MonitoredItem says nothing about another item's conditions.
+  void reconcile_after_refresh(const std::string & source_id, const std::set<std::string> & seen);
 
   /// Dispatch a batch of ClearFault deliveries to the event-alarm callback.
   /// Shared by the read- and refresh-based reconcile paths. Must be called with
@@ -549,8 +558,13 @@ class OpcuaPoller {
   // current-branch conditions; the state machine already drops non-current
   // branches via BranchId. Touched only on the poll thread (the burst is
   // delivered via run_iterate there), same convention as read_modeled_sources_.
-  std::atomic<bool> condition_refresh_in_progress_{false};
-  std::set<std::string> refresh_seen_;
+  //
+  // Kept per alarm source: Part 9 §5.5.7 sends the RefreshStart / RefreshEnd
+  // pair to every event MonitoredItem of the subscription, and each item only
+  // carries the conditions of its own notifier. With two sources (one per
+  // machine object), the second item's RefreshEnd must not reconcile the first
+  // item's conditions against its own (possibly empty) burst.
+  std::unordered_map<std::string, std::set<std::string>> refresh_seen_;  // source -> replayed ids
 
   // Throttle the warn-level log emitted from condition_refresh() failures.
   // Reset to false on each fresh subscribe in setup_event_subscriptions()

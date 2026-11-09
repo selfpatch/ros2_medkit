@@ -337,6 +337,15 @@ if(BUILD_TESTING)
     OpenSSL::SSL OpenSSL::Crypto
   )
 
+  medkit_add_gtest(test_fault_code_lanes
+    test/test_fault_code_lanes.cpp
+  )
+  target_include_directories(test_fault_code_lanes PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  # Plain C++, no ROS node in it.
+  medkit_test_needs_no_domain(test_fault_code_lanes)
+
   medkit_add_gtest(test_node_map
     test/test_node_map.cpp
     src/node_map.cpp
@@ -470,6 +479,26 @@ if(BUILD_TESTING)
     yaml-cpp::yaml-cpp
   )
 
+  medkit_add_gtest(test_browse_path
+    test/test_browse_path.cpp
+    src/address_space_browser.cpp
+    src/node_map.cpp
+    src/opcua_client.cpp
+  )
+  target_include_directories(test_browse_path PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_target_dependencies(test_browse_path
+    ros2_medkit_gateway
+    ros2_medkit_fault_detection
+    rclcpp
+  )
+  target_link_libraries(test_browse_path
+    open62541pp::open62541pp
+    nlohmann_json::nlohmann_json
+    yaml-cpp::yaml-cpp
+  )
+
   # ---- test_alarm_server fixture ------------------------------------------
   # Standalone OPC-UA server emitting AlarmConditionType events for
   # integration testing of native alarm subscriptions (issue #386).
@@ -551,7 +580,8 @@ if(BUILD_TESTING)
     )
     add_dependencies(test_opcua_client_reconnect test_alarm_server)
     target_compile_definitions(test_opcua_client_reconnect PRIVATE
-      TEST_ALARM_SERVER_BIN="$<TARGET_FILE:test_alarm_server>")
+      TEST_ALARM_SERVER_BIN="$<TARGET_FILE:test_alarm_server>"
+      GEN_TEST_CERTS_SH="${CMAKE_CURRENT_SOURCE_DIR}/test/integration/gen_test_certs.sh")
     target_include_directories(test_opcua_client_reconnect PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
@@ -618,6 +648,7 @@ if(BUILD_TESTING)
       test/integration/test_opcua_secured.test.py
       test/integration/test_opcua_read_only.test.py
       test/integration/test_opcua_subscription_values.test.py
+      test/integration/test_opcua_state_gates.test.py
       test/integration/test_opcua_comms_lost.test.py
       test/integration/test_opcua_startup_sweep_signal.test.py
       DESTINATION lib/${PROJECT_NAME})
@@ -646,6 +677,15 @@ if(BUILD_TESTING)
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_subscription_values.test.py"
               "${CMAKE_BINARY_DIR}/test_alarm_server")
     set_tests_properties(test_opcua_subscription_values PROPERTIES
+      LABELS "integration"
+      TIMEOUT 300)
+    # State-register gates (ok_values, inhibit_when, only_when): raise, hold
+    # and clear decisions reach a real fault manager over real HTTP.
+    medkit_add_wrapped_test(test_opcua_state_gates
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_state_gates.test.py"
+              "${CMAKE_BINARY_DIR}/test_alarm_server")
+    set_tests_properties(test_opcua_state_gates PROPERTIES
       LABELS "integration"
       TIMEOUT 300)
     # This one boots a real gateway and fault manager, so it needs a domain, and

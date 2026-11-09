@@ -15,6 +15,8 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -184,6 +186,26 @@ struct AutoAlarmsConfig {
   std::vector<std::string> exclude_patterns;
 };
 
+/// One step of a ``browse_path`` node address: a child whose BrowseName is
+/// ``name`` in the namespace given by URI (looked up in the server's
+/// NamespaceArray on every session) or by index, or ``any`` for whatever child
+/// is there (an instance a companion specification leaves to the vendor to
+/// name, such as the robot under ``MotionDevices``).
+struct BrowsePathElement {
+  bool any{false};
+  std::string namespace_uri;
+  std::optional<uint16_t> namespace_index;
+  std::string name;
+};
+
+/// Condition on another polled point that gates a detection rule. ``node_id``
+/// is the ``node_id`` string of another ``nodes:`` entry, written the same
+/// way; ``values`` are the integer values of that point the gate matches.
+struct StateGate {
+  std::string node_id_str;
+  std::vector<std::int64_t> values;
+};
+
 /// Mapping entry: OPC-UA NodeId -> SOVD entity data point
 struct NodeMapEntry {
   std::string node_id_str;          // OPC-UA node ID string (e.g., "ns=1;s=TankLevel")
@@ -200,11 +222,24 @@ struct NodeMapEntry {
   std::optional<AlarmConfig> alarm;  // Optional threshold alarm -> fault mapping (back-compat)
   std::string ros2_topic;            // ROS 2 topic for value bridging (auto: /plc/{entity}/{name})
 
+  // ``browse_path:`` address, from the Objects folder down, in place of a
+  // node_id. Empty for a node_id entry. Such an entry waits outside
+  // ``entries()`` until a live session resolves it to a NodeId
+  // (``NodeMap::resolve_browse_entries``); node_id / node_id_str are set then.
+  std::vector<BrowsePathElement> browse_path;
+  std::string browse_path_str;
+
   // Shared fault-detection rule for this point: threshold, status-word bit
   // decode, or fault-code enum. Built at load time from the ``alarm:``,
   // ``status_bits:`` or ``fault_enum:`` node-map block. The poller evaluates
   // this through the shared ``fault_detection::evaluate`` regardless of mode.
   std::optional<ros2_medkit::fault_detection::DetectionRule> detection;
+  // While the gate matches, a fault of this point is not raised (planned
+  // stop, changeover, setup); one already raised clears only by its own value.
+  std::optional<StateGate> inhibit_when;
+  // The rule applies only while the gate matches; outside it its faults clear
+  // (a stop reason that stays latched after the machine runs again).
+  std::optional<StateGate> only_when;
 
   bool has_range() const {
     return min_value.has_value() && max_value.has_value();
@@ -304,6 +339,44 @@ class NodeMap {
   const std::vector<NodeMapEntry> & entries() const {
     return entries_;
   }
+
+  /// ``browse_path:`` entries no session has resolved yet. Not part of
+  /// ``entries()``: they have no NodeId to read or subscribe.
+  const std::vector<NodeMapEntry> & unresolved_browse_entries() const {
+    return unresolved_browse_entries_;
+  }
+
+  /// What one ``resolve_browse_entries`` pass changed.
+  struct BrowseResolution {
+    std::size_t joined{0};  // waiting entries that now have a NodeId
+    /// Entries already in ``entries()`` whose path now leads to another NodeId
+    /// (the server restarted with its namespaces in another order): old and
+    /// new ``node_id_str``.
+    std::vector<std::pair<std::string, std::string>> moved;
+  };
+
+  /// Resolve every ``browse_path:`` entry with ``resolve`` (a live session's
+  /// walk, see ``resolve_browse_path``). A waiting entry that resolves joins
+  /// ``entries()`` under its NodeId; one that does not keeps waiting for the
+  /// next session. A joining entry takes the place of an auto-browsed entry
+  /// for the same node (explicit config wins); one whose node another explicit
+  /// entry already maps is dropped with a warning. An entry already in
+  /// ``entries()`` follows its path to a new NodeId; one whose path is not
+  /// found this time keeps the NodeId it has. Rebuilds the entity defs when
+  /// an entry joined.
+  BrowseResolution
+  resolve_browse_entries(const std::function<std::optional<opcua::NodeId>(const NodeMapEntry &)> & resolve);
+
+  /// True when any ``browse_path:`` entry exists, resolved or not.
+  bool has_browse_entries() const;
+
+  /// Parse a ``browse_path:`` string: ``/``-separated steps from the Objects
+  /// folder, each ``<alias>:<BrowseName>`` with an alias from the top-level
+  /// ``namespaces:`` map, ``<index>:<BrowseName>``, or ``*`` for any child.
+  /// A ``/`` or ``\`` inside a BrowseName is escaped with ``\``. Returns false
+  /// and sets ``error`` on a malformed path or an unknown alias.
+  static bool parse_browse_path(const std::string & str, const std::map<std::string, std::string> & namespaces,
+                                std::vector<BrowsePathElement> & out, std::string & error);
 
   /// Get entries for a specific SOVD entity
   std::vector<const NodeMapEntry *> entries_for_entity(const std::string & entity_id) const;
@@ -498,6 +571,7 @@ class NodeMap {
   void build_entity_defs();
 
   std::vector<NodeMapEntry> entries_;
+  std::vector<NodeMapEntry> unresolved_browse_entries_;
   std::vector<PlcEntityDef> entity_defs_;
   std::unordered_map<std::string, std::vector<size_t>> entity_index_;  // entity_id -> entry indices
   std::unordered_map<std::string, size_t> node_id_index_;              // node_id_str -> entry index

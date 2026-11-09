@@ -115,44 +115,44 @@ std::string variant_to_display(const opcua::Variant & v) {
   if (v.isEmpty()) {
     return "";
   }
-  if (v.isType<opcua::LocalizedText>()) {
+  if (v.isScalar() && v.isType<opcua::LocalizedText>()) {
     return std::string(v.getScalarCopy<opcua::LocalizedText>().getText());
   }
-  if (v.isType<opcua::String>()) {
+  if (v.isScalar() && v.isType<opcua::String>()) {
     return std::string(v.getScalarCopy<opcua::String>());
   }
-  if (v.isType<bool>()) {
+  if (v.isScalar() && v.isType<bool>()) {
     return v.getScalarCopy<bool>() ? "true" : "false";
   }
-  if (v.isType<int16_t>()) {
+  if (v.isScalar() && v.isType<int16_t>()) {
     return std::to_string(v.getScalarCopy<int16_t>());
   }
-  if (v.isType<uint16_t>()) {
+  if (v.isScalar() && v.isType<uint16_t>()) {
     return std::to_string(v.getScalarCopy<uint16_t>());
   }
-  if (v.isType<int32_t>()) {
+  if (v.isScalar() && v.isType<int32_t>()) {
     return std::to_string(v.getScalarCopy<int32_t>());
   }
-  if (v.isType<uint32_t>()) {
+  if (v.isScalar() && v.isType<uint32_t>()) {
     return std::to_string(v.getScalarCopy<uint32_t>());
   }
-  if (v.isType<int64_t>()) {
+  if (v.isScalar() && v.isType<int64_t>()) {
     return std::to_string(v.getScalarCopy<int64_t>());
   }
-  if (v.isType<float>()) {
+  if (v.isScalar() && v.isType<float>()) {
     return std::to_string(v.getScalarCopy<float>());
   }
-  if (v.isType<double>()) {
+  if (v.isScalar() && v.isType<double>()) {
     return std::to_string(v.getScalarCopy<double>());
   }
   return "";
 }
 
 std::string variant_to_string_scalar(const opcua::Variant & v) {
-  if (v.isType<opcua::String>()) {
+  if (v.isScalar() && v.isType<opcua::String>()) {
     return std::string(v.getScalarCopy<opcua::String>());
   }
-  if (v.isType<opcua::LocalizedText>()) {
+  if (v.isScalar() && v.isType<opcua::LocalizedText>()) {
     return std::string(v.getScalarCopy<opcua::LocalizedText>().getText());
   }
   return "";
@@ -161,7 +161,7 @@ std::string variant_to_string_scalar(const opcua::Variant & v) {
 // Extract a scalar of type T from a Variant, returning the default if absent.
 template <class T>
 T variant_or(const opcua::Variant & v, T fallback) {
-  if (v.isType<T>()) {
+  if (v.isScalar() && v.isType<T>()) {
     return v.getScalarCopy<T>();
   }
   return fallback;
@@ -169,11 +169,11 @@ T variant_or(const opcua::Variant & v, T fallback) {
 
 // Decode a LocalizedText event field to plain UTF-8 (Message uses LT).
 std::string variant_to_localized_text(const opcua::Variant & v) {
-  if (v.isType<opcua::LocalizedText>()) {
+  if (v.isScalar() && v.isType<opcua::LocalizedText>()) {
     auto lt = v.getScalarCopy<opcua::LocalizedText>();
     return std::string(lt.getText());
   }
-  if (v.isType<opcua::String>()) {
+  if (v.isScalar() && v.isType<opcua::String>()) {
     return std::string(v.getScalarCopy<opcua::String>());
   }
   return "";
@@ -783,12 +783,12 @@ void OpcuaPoller::reconcile_after_read(const std::set<std::string> & seen, const
   dispatch_condition_clears(clears);
 }
 
-void OpcuaPoller::reconcile_after_refresh(const std::set<std::string> & seen) {
+void OpcuaPoller::reconcile_after_refresh(const std::string & source_id, const std::set<std::string> & seen) {
   std::vector<AlarmEventDelivery> clears;
   {
     std::unique_lock lock(conditions_mutex_);
     for (auto & [cid, runtime] : conditions_) {
-      if (!should_clear_after_refresh(runtime.last_status, cid, seen)) {
+      if (runtime.source_id != source_id || !should_clear_after_refresh(runtime.last_status, cid, seen)) {
         continue;
       }
       if (same_code_active_elsewhere_locked(runtime.fault_code, cid)) {
@@ -842,14 +842,16 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
   if (event_type.getNamespaceIndex() == 0 && event_type.getIdentifierType() == opcua::NodeIdType::Numeric) {
     auto numeric = event_type.getIdentifierAs<uint32_t>();
     if (numeric == kRefreshStartEventTypeId) {
-      refresh_seen_.clear();
-      condition_refresh_in_progress_.store(true, std::memory_order_release);
+      refresh_seen_[cfg.source_node_id_str].clear();
       return;
     }
     if (numeric == kRefreshEndEventTypeId) {
-      condition_refresh_in_progress_.store(false, std::memory_order_release);
-      reconcile_after_refresh(refresh_seen_);
-      refresh_seen_.clear();
+      auto burst = refresh_seen_.find(cfg.source_node_id_str);
+      if (burst != refresh_seen_.end()) {  // an End without its Start reconciles nothing
+        const std::set<std::string> seen = std::move(burst->second);
+        refresh_seen_.erase(burst);
+        reconcile_after_refresh(cfg.source_node_id_str, seen);
+      }
       return;
     }
   }
@@ -902,8 +904,8 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
   // A condition (re)reported inside a refresh burst is still active; remember it
   // so RefreshEnd does not clear it. Recorded before the field-count bail below
   // so even a partial-field replay counts as "seen".
-  if (condition_refresh_in_progress_.load(std::memory_order_acquire)) {
-    refresh_seen_.insert(condition_id.toString());
+  if (auto burst = refresh_seen_.find(cfg.source_node_id_str); burst != refresh_seen_.end()) {
+    burst->second.insert(condition_id.toString());
   }
 
   if (values.size() < kAlarmFieldCount) {
@@ -917,13 +919,13 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
   AlarmEventInput input;
   input.enabled_state = variant_or<bool>(values[kFieldEnabledState], true);
   input.active_state = variant_or<bool>(values[kFieldActiveState], false);
-  input.active_state_present = values[kFieldActiveState].isType<bool>();
+  input.active_state_present = values[kFieldActiveState].isScalar() && values[kFieldActiveState].isType<bool>();
   input.acked_state = variant_or<bool>(values[kFieldAckedState], false);
   input.confirmed_state = variant_or<bool>(values[kFieldConfirmedState], false);
 
   // ShelvingState.CurrentState.Id is itself a NodeId (one of i=2929/2930/
   // 2932). Anything other than Unshelved => alarm is operator-suppressed.
-  if (values[kFieldShelvingState].isType<opcua::NodeId>()) {
+  if (values[kFieldShelvingState].isScalar() && values[kFieldShelvingState].isType<opcua::NodeId>()) {
     auto shelv_state = values[kFieldShelvingState].getScalarCopy<opcua::NodeId>();
     // Treat as shelved only when ShelvingState/CurrentState/Id explicitly
     // points at TimedShelved (i=2930) or OneShotShelved (i=2932). A null /
@@ -941,7 +943,7 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
   // BranchId is a NodeId; null branch maps to identifier i=0 in namespace
   // 0. Either an empty NodeId (server omitted) or the canonical null
   // counts as "live state" for the bridge.
-  if (values[kFieldBranchId].isType<opcua::NodeId>()) {
+  if (values[kFieldBranchId].isScalar() && values[kFieldBranchId].isType<opcua::NodeId>()) {
     auto branch = values[kFieldBranchId].getScalarCopy<opcua::NodeId>();
     bool is_null = branch.getNamespaceIndex() == 0 && branch.getIdentifierType() == opcua::NodeIdType::Numeric &&
                    branch.getIdentifierAs<uint32_t>() == 0u;
@@ -1073,7 +1075,7 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
   // Capture the live EventId for spec-compliant Acknowledge / Confirm.
   opcua::ByteString event_id;
   bool have_event_id = false;
-  if (values[kFieldEventId].isType<opcua::ByteString>()) {
+  if (values[kFieldEventId].isScalar() && values[kFieldEventId].isType<opcua::ByteString>()) {
     event_id = values[kFieldEventId].getScalarCopy<opcua::ByteString>();
     have_event_id = true;
   }
@@ -1478,6 +1480,28 @@ void OpcuaPoller::evaluate_alarms() {
       }
 
       auto signals = fd::evaluate(to_fd_value(it->second), *entry->detection);
+      // An unread gate point gates nothing: the rule then behaves as ungated.
+      auto gate_matches = [&](const std::optional<StateGate> & gate) -> std::optional<bool> {
+        if (!gate) {
+          return std::nullopt;
+        }
+        auto g = snapshot_.values.find(gate->node_id_str);
+        std::int64_t v = 0;
+        if (g == snapshot_.values.end() || !fd::detail::as_int(to_fd_value(g->second), v)) {
+          return std::nullopt;
+        }
+        return std::find(gate->values.begin(), gate->values.end(), v) != gate->values.end();
+      };
+      const auto only = gate_matches(entry->only_when);
+      const auto inhibit = gate_matches(entry->inhibit_when);
+      for (auto & s : signals) {
+        if (only.has_value() && !*only) {
+          s.active = false;
+        } else if (inhibit.value_or(false) && s.active) {
+          auto prev = snapshot_.alarms.find(s.fault_code);
+          s.active = prev != snapshot_.alarms.end() && prev->second;
+        }
+      }
       for (const auto & s : signals) {
         snapshot_.alarms[s.fault_code] = s.active;
       }

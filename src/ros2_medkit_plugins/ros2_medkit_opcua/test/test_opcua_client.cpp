@@ -32,6 +32,7 @@ TEST(OpcuaClientTest, DefaultState) {
   // server_description() is only populated after a successful connect.
   EXPECT_EQ(client.endpoint_url(), "opc.tcp://localhost:4840");
   EXPECT_TRUE(client.server_description().empty());
+  EXPECT_TRUE(client.last_error().empty());
 }
 
 TEST(OpcuaClientTest, ConnectFailsWithoutServer) {
@@ -43,6 +44,11 @@ TEST(OpcuaClientTest, ConnectFailsWithoutServer) {
 
   EXPECT_FALSE(client.connect(config));
   EXPECT_FALSE(client.is_connected());
+  // The refused connect is named by its status, so a reader can tell it from a
+  // refused certificate or user.
+  const auto why = client.last_error();
+  EXPECT_EQ(why.rfind("Bad", 0), 0u) << why;
+  EXPECT_EQ(why.find("Certificate"), std::string::npos) << why;
 }
 
 TEST(OpcuaClientTest, DisconnectWhenNotConnected) {
@@ -244,6 +250,8 @@ TEST(OpcuaClientSecurity, ConnectRejectsContradictorySecurityConfig) {
   cfg.security_policy = SecurityPolicy::None;
   EXPECT_FALSE(client.connect(cfg));
   EXPECT_FALSE(client.is_connected());
+  // The client's own settings are at fault, not the server.
+  EXPECT_EQ(client.last_error(), "BadConfigurationError");
 }
 
 TEST(OpcuaClientSecurity, ConnectSecureWithoutCertFailsFast) {
@@ -441,6 +449,31 @@ TEST(OpcuaClientClassifyCallResult, OverallStatusBeatsArgResults) {
   auto result = OpcuaClient::classify_call_result(UA_STATUSCODE_BADTIMEOUT, {UA_STATUSCODE_BADEVENTIDUNKNOWN});
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code, OpcuaClient::MethodError::MethodTimeout);
+}
+
+// The ConditionId clause has an empty BrowsePath. On the wire it must be an
+// empty array (length 0), not a null one (length -1): a Siemens S7-1500 answers
+// a null array with a null ConditionId, and every native alarm is then dropped.
+TEST(EventFilterTest, ConditionIdClauseSendsEmptyNotNullBrowsePath) {
+  UA_EventFilter filter = detail::make_event_filter({});
+  ASSERT_EQ(filter.selectClausesSize, 3u);
+  const UA_SimpleAttributeOperand & cond = filter.selectClauses[2];
+  EXPECT_EQ(cond.attributeId, static_cast<UA_UInt32>(UA_ATTRIBUTEID_NODEID));
+  EXPECT_EQ(cond.browsePathSize, 0u);
+  EXPECT_NE(cond.browsePath, nullptr);
+
+  UA_ByteString wire = UA_BYTESTRING_NULL;
+  ASSERT_EQ(UA_encodeBinary(&cond, &UA_TYPES[UA_TYPES_SIMPLEATTRIBUTEOPERAND], &wire), UA_STATUSCODE_GOOD);
+  UA_SimpleAttributeOperand decoded;
+  UA_SimpleAttributeOperand_init(&decoded);
+  ASSERT_EQ(UA_decodeBinary(&wire, &decoded, &UA_TYPES[UA_TYPES_SIMPLEATTRIBUTEOPERAND], nullptr), UA_STATUSCODE_GOOD);
+  EXPECT_EQ(decoded.browsePathSize, 0u);
+  // open62541 decodes length 0 to the empty-array sentinel and length -1 to NULL.
+  EXPECT_EQ(decoded.browsePath, UA_EMPTY_ARRAY_SENTINEL);
+
+  UA_SimpleAttributeOperand_clear(&decoded);
+  UA_ByteString_clear(&wire);
+  UA_EventFilter_clear(&filter);
 }
 
 }  // namespace ros2_medkit_gateway

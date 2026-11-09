@@ -18,6 +18,8 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cinttypes>
+#include <cstdarg>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
@@ -112,6 +114,12 @@ struct EventCallbackContext {
 };
 
 namespace {
+
+// OpcuaValue holds scalars only. An array or matrix value would make every
+// getScalarCopy below throw BadVariantAccess, which no read path catches.
+bool has_scalar_value(const opcua::Variant & var) {
+  return var.isEmpty() || var.isScalar();
+}
 
 OpcuaValue variant_to_value(const opcua::Variant & var) {
   if (var.isEmpty()) {
@@ -226,10 +234,139 @@ opcua::Variant value_to_variant(const OpcuaValue & val) {
 
 }  // namespace
 
+namespace {
+
+// Why a connect failed, where open62541 1.3 keeps it. A refused certificate
+// or a server's ERR message closes the channel, and the connect then throws
+// BadConnectionClosed (ua_client.c receiveResponse); a server that offers no
+// token policy for the configured user ends it with BadInternalError
+// (ua_client_connect.c). The reason is only logged. Two taps on the client's
+// own plugins keep it: the certificate check of the server's certificate, and
+// the logger, for the ERR message the server sent and the missing policy.
+struct ConnectTaps {
+  UA_CertificateVerification verification{};
+  UA_Logger logger{};
+  std::mutex mutex;
+  UA_StatusCode refused{UA_STATUSCODE_GOOD};
+
+  void note(UA_StatusCode code) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (refused == UA_STATUSCODE_GOOD) {
+      refused = code;
+    }
+  }
+
+  UA_StatusCode take() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return std::exchange(refused, UA_STATUSCODE_GOOD);
+  }
+};
+
+// ua_client_connect.c processERRResponse through UA_LOG_ERROR_CHANNEL
+// (ua_securechannel.h), verbatim: the connection and channel ids come first.
+constexpr const char * kErrResponseFormat = "Connection %i | SecureChannel %" PRIu32
+                                            " | Received an ERR response with StatusCode %s and the following "
+                                            "reason: %.*s%.0s";
+// ua_client_connect.c selectEndpoint, verbatim: none of the server's endpoints
+// takes the user the client is set up with (anonymous on a server that wants
+// a user, a user on one that takes only certificates).
+constexpr const char * kNoTokenPolicyFormat = "No suitable UserTokenPolicy found for the possible endpoints";
+
+UA_StatusCode tap_verify(void * context, const UA_ByteString * certificate) {
+  auto * taps = static_cast<ConnectTaps *>(context);
+  const UA_StatusCode code = taps->verification.verifyCertificate(taps->verification.context, certificate);
+  if (code != UA_STATUSCODE_GOOD) {
+    taps->note(code);
+  }
+  return code;
+}
+
+UA_StatusCode tap_verify_uri(void * context, const UA_ByteString * certificate, const UA_String * uri) {
+  auto * taps = static_cast<ConnectTaps *>(context);
+  return taps->verification.verifyApplicationURI(taps->verification.context, certificate, uri);
+}
+
+void tap_verification_clear(UA_CertificateVerification * cv) {
+  auto * taps = static_cast<ConnectTaps *>(cv->context);
+  if (taps->verification.clear != nullptr) {
+    taps->verification.clear(&taps->verification);
+  }
+  taps->verification = UA_CertificateVerification{};
+  cv->context = nullptr;
+}
+
+void tap_log(void * context, UA_LogLevel level, UA_LogCategory category, const char * msg, va_list args) {
+  auto * taps = static_cast<ConnectTaps *>(context);
+  if (msg != nullptr && std::strcmp(msg, kNoTokenPolicyFormat) == 0) {
+    taps->note(UA_STATUSCODE_BADIDENTITYTOKENINVALID);
+  } else if (msg != nullptr && std::strcmp(msg, kErrResponseFormat) == 0) {
+    va_list copy;
+    va_copy(copy, args);
+    (void)va_arg(copy, int);
+    (void)va_arg(copy, uint32_t);
+    const char * name = va_arg(copy, const char *);
+    va_end(copy);
+    if (name != nullptr) {
+      // The name back to its code: the reason text after it is the server's.
+      for (UA_StatusCode code : {UA_STATUSCODE_BADSECURITYCHECKSFAILED, UA_STATUSCODE_BADCERTIFICATEUNTRUSTED,
+                                 UA_STATUSCODE_BADCERTIFICATEINVALID, UA_STATUSCODE_BADCERTIFICATETIMEINVALID,
+                                 UA_STATUSCODE_BADCERTIFICATEURIINVALID, UA_STATUSCODE_BADCERTIFICATEREVOKED,
+                                 UA_STATUSCODE_BADCERTIFICATEUSENOTALLOWED, UA_STATUSCODE_BADSECURITYPOLICYREJECTED,
+                                 UA_STATUSCODE_BADTCPENDPOINTURLINVALID, UA_STATUSCODE_BADTCPMESSAGETOOLARGE}) {
+        if (std::strcmp(name, UA_StatusCode_name(code)) == 0) {
+          taps->note(code);
+          break;
+        }
+      }
+    }
+  }
+  if (taps->logger.log != nullptr) {
+    taps->logger.log(taps->logger.context, level, category, msg, args);
+  }
+}
+
+void tap_log_clear(void * context) {
+  auto * taps = static_cast<ConnectTaps *>(context);
+  if (taps->logger.clear != nullptr) {
+    taps->logger.clear(taps->logger.context);
+  }
+  taps->logger = UA_Logger{};
+}
+
+// Puts the taps in front of the plugins a freshly built client config holds.
+void install_taps(UA_ClientConfig * config, ConnectTaps & taps) {
+  taps.take();
+  if (config->certificateVerification.verifyCertificate != nullptr &&
+      config->certificateVerification.verifyCertificate != tap_verify) {
+    taps.verification = config->certificateVerification;
+    config->certificateVerification.context = &taps;
+    config->certificateVerification.verifyCertificate = tap_verify;
+    if (taps.verification.verifyApplicationURI != nullptr) {
+      config->certificateVerification.verifyApplicationURI = tap_verify_uri;
+    }
+    config->certificateVerification.clear = tap_verification_clear;
+  }
+  if (config->logger.log != tap_log) {
+    taps.logger = config->logger;
+    config->logger.log = tap_log;
+    config->logger.context = &taps;
+    config->logger.clear = tap_log_clear;
+  }
+}
+
+}  // namespace
+
 struct OpcuaClient::Impl {
+  // Declared before ``client``, so they outlive the config that points at them.
+  ConnectTaps taps;
+
   // Declared before ``client``: deleting the client fires the delete callback
   // of every monitored item it still holds, and those reach into this.
   EventContextRegistry event_callbacks;
+
+  // The config a secured ``client`` was built from. Declared before ``client``
+  // for the same reason: see apply_security_config.
+  std::unique_ptr<opcua::ClientConfig> secure_config;
 
   opcua::Client client;
   OpcuaClientConfig config;
@@ -258,6 +395,16 @@ struct OpcuaClient::Impl {
   // plugin can detect a poller reconnect and refresh per-session state
   // (device-info nameplate) without re-reading on every introspect.
   std::atomic<uint64_t> connect_generation{0};
+
+  // Its own lock, so a status read never waits behind a connect that holds
+  // client_mutex for its whole timeout.
+  mutable std::mutex error_mutex;
+  std::string last_error;
+
+  void set_last_error(std::string why) {
+    std::lock_guard<std::mutex> lock(error_mutex);
+    last_error = std::move(why);
+  }
 
   /// (subscription id, monitored item id) of every event item still held.
   std::vector<std::pair<uint32_t, uint32_t>> event_item_ids() {
@@ -393,7 +540,8 @@ opcua::MessageSecurityMode to_ua_security_mode(SecurityMode mode) {
 // supplied at construction (UA_ClientConfig_setDefaultEncryption). Returns
 // false on a fatal configuration error (already logged); the caller then
 // reports the connect as failed without contacting the server.
-bool apply_security_config(opcua::Client & client, const OpcuaClientConfig & cfg) {
+bool apply_security_config(opcua::Client & client, std::unique_ptr<opcua::ClientConfig> & secure_config,
+                           const OpcuaClientConfig & cfg) {
   // Reject a contradictory SecurityPolicy / MessageSecurityMode pairing before
   // building anything. Accepting e.g. security_mode=Sign with
   // security_policy=None would leave the policy URI unpinned and silently
@@ -414,6 +562,7 @@ bool apply_security_config(opcua::Client & client, const OpcuaClientConfig & cfg
     // Unsecured channel (SecurityPolicy=None, MessageSecurityMode=None). A
     // username/password or X.509 identity may still be applied below.
     client = opcua::Client();
+    secure_config.reset();
   } else {
 #ifndef UA_ENABLE_ENCRYPTION
     RCLCPP_ERROR(opcua_client_logger(),
@@ -444,7 +593,15 @@ bool apply_security_config(opcua::Client & client, const OpcuaClientConfig & cfg
       trust.push_back(std::move(b));
     }
 
-    opcua::ClientConfig cc(cert, key, trust, {});
+    // Each security policy's context keeps a pointer to this config's logger
+    // (open62541 1.3), and moving the config into the client does not update
+    // it: the client then logs through it when a secured channel closes. So
+    // the config lives on the heap until the client built from it is gone,
+    // never on this stack frame (SIGSEGV in UA_ChannelModule_Delete_Context
+    // on a dropped link). After the move it holds a default config, whose
+    // logger is the stdout one.
+    auto next_config = std::make_unique<opcua::ClientConfig>(cert, key, trust, std::vector<opcua::ByteString>{});
+    opcua::ClientConfig & cc = *next_config;
 
     // Force the requested SecurityPolicy. An empty URI lets open62541 pick the
     // highest the server offers; we want explicit selection so a downgraded
@@ -478,6 +635,9 @@ bool apply_security_config(opcua::Client & client, const OpcuaClientConfig & cfg
     }
 
     client = opcua::Client(std::move(cc));
+    // Only now: replacing ``client`` above deleted the previous one, which
+    // logged through the previous config.
+    secure_config = std::move(next_config);
 #endif
   }
 
@@ -528,7 +688,11 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
   impl_->config = config;
 
   try {
-    if (impl_->client.isConnected()) {
+    // A channel left open by a refused ActivateSession reads as connected to
+    // open62541pp; only an activated session is one.
+    UA_SessionState session_state = UA_SESSIONSTATE_CLOSED;
+    UA_Client_getState(impl_->client.handle(), nullptr, &session_state, nullptr);
+    if (impl_->client.isConnected() && session_state == UA_SESSIONSTATE_ACTIVATED) {
       impl_->connected = true;
       return true;
     }
@@ -540,20 +704,23 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
 
     // (Re)build the client with the requested security profile before every
     // connect so reconnects re-apply the same SecureChannel settings.
-    if (!apply_security_config(impl_->client, config)) {
+    if (!apply_security_config(impl_->client, impl_->secure_config, config)) {
       impl_->connected = false;
+      impl_->set_last_error(UA_StatusCode_name(UA_STATUSCODE_BADCONFIGURATIONERROR));
       return false;
     }
 
     impl_->client.config().setTimeout(static_cast<uint32_t>(config.connect_timeout.count()));
+    install_taps(impl_->client.config().handle(), impl_->taps);
     impl_->client.connect(config.endpoint_url);
     impl_->connected = true;
     impl_->connect_generation.fetch_add(1, std::memory_order_release);
+    impl_->set_last_error({});
 
     try {
       opcua::Node node(impl_->client, opcua::NodeId(0, UA_NS0ID_SERVER_SERVERSTATUS_BUILDINFO_PRODUCTNAME));
       auto val = node.readValue();
-      if (val.isType<opcua::String>()) {
+      if (val.isScalar() && val.isType<opcua::String>()) {
         impl_->server_desc = std::string(val.getScalarCopy<opcua::String>());
       }
     } catch (...) {
@@ -564,6 +731,10 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
   } catch (const opcua::BadStatus & e) {
     RCLCPP_WARN(opcua_client_logger(), "OPC-UA connect to '%s' failed: %s", config.endpoint_url.c_str(), e.what());
     impl_->connected = false;
+    // The throw names how the connect ended, often BadConnectionClosed; a
+    // tap names why, when the certificate check or the server refused it.
+    const UA_StatusCode refused = impl_->taps.take();
+    impl_->set_last_error(UA_StatusCode_name(refused != UA_STATUSCODE_GOOD ? refused : e.code()));
     return false;
   }
 }
@@ -606,6 +777,11 @@ void OpcuaClient::disconnect() {
 
 bool OpcuaClient::is_connected() const {
   return impl_->connected.load();
+}
+
+std::string OpcuaClient::last_error() const {
+  std::lock_guard<std::mutex> lock(impl_->error_mutex);
+  return impl_->last_error;
 }
 
 uint64_t OpcuaClient::connection_generation() const {
@@ -782,8 +958,10 @@ ReadResult OpcuaClient::read_value(const opcua::NodeId & node_id) {
   try {
     opcua::Node node(impl_->client, node_id);
     auto val = node.readValue();
-    result.value = variant_to_value(val);
-    result.good = true;
+    result.good = has_scalar_value(val);
+    if (result.good) {
+      result.value = variant_to_value(val);
+    }
   } catch (const opcua::BadStatus & e) {
     result.good = false;
     mark_disconnected_on_transport_error(e);
@@ -811,10 +989,14 @@ std::vector<ReadResult> OpcuaClient::read_values(const std::vector<opcua::NodeId
     r.timestamp = now;
     try {
       opcua::Node node(impl_->client, nid);
-      r.value = variant_to_value(node.readValue());
-      r.good = true;
+      auto val = node.readValue();
+      r.good = has_scalar_value(val);
+      if (r.good) {
+        r.value = variant_to_value(val);
+      }
     } catch (const opcua::BadStatus & e) {
       r.good = false;
+      impl_->set_last_error(UA_StatusCode_name(e.code()));
       mark_disconnected_on_transport_error(e);
     }
     results.push_back(std::move(r));
@@ -1044,7 +1226,7 @@ bool OpcuaClient::add_monitored_item(uint32_t subscription_id, const opcua::Node
         info.sub.subscribeDataChange(
             node_id, opcua::AttributeId::Value,
             [nid_str, cb_copy](uint32_t /*sub_id*/, uint32_t /*mon_id*/, const opcua::DataValue & dv) {
-              if (dv.hasValue()) {
+              if (dv.hasValue() && has_scalar_value(dv.getValue())) {
                 auto val = variant_to_value(dv.getValue());
                 cb_copy(nid_str, val);
               }
@@ -1126,7 +1308,7 @@ std::vector<OpcuaClient::ConditionStateSnapshot> OpcuaClient::read_source_condit
       }
       try {
         auto val = node.readValue();
-        if (val.isType<bool>()) {
+        if (val.isScalar() && val.isType<bool>()) {
           return val.getScalarCopy<bool>();
         }
         return fallback;
@@ -1224,7 +1406,7 @@ std::vector<OpcuaClient::ConditionStateSnapshot> OpcuaClient::read_source_condit
         auto retain_node = child.browseChild({{0, "Retain"}});
         try {
           auto retain = retain_node.readValue();
-          if (retain.isType<bool>()) {
+          if (retain.isScalar() && retain.isType<bool>()) {
             snap.retain = retain.getScalarCopy<bool>();
           }
         } catch (const opcua::BadStatus &) {
@@ -1245,23 +1427,23 @@ std::vector<OpcuaClient::ConditionStateSnapshot> OpcuaClient::read_source_condit
       }
       try {
         auto sev = child.browseChild({{0, "Severity"}}).readValue();
-        if (sev.isType<uint16_t>()) {
+        if (sev.isScalar() && sev.isType<uint16_t>()) {
           snap.severity = sev.getScalarCopy<uint16_t>();
         }
       } catch (const opcua::BadStatus &) {
       }
       try {
         auto cname = child.browseChild({{0, "ConditionName"}}).readValue();
-        if (cname.isType<opcua::String>()) {
+        if (cname.isScalar() && cname.isType<opcua::String>()) {
           snap.condition_name = std::string(cname.getScalarCopy<opcua::String>());
         }
       } catch (const opcua::BadStatus &) {
       }
       try {
         auto msg = child.browseChild({{0, "Message"}}).readValue();
-        if (msg.isType<opcua::LocalizedText>()) {
+        if (msg.isScalar() && msg.isType<opcua::LocalizedText>()) {
           snap.message = std::string(msg.getScalarCopy<opcua::LocalizedText>().getText());
-        } else if (msg.isType<opcua::String>()) {
+        } else if (msg.isScalar() && msg.isType<opcua::String>()) {
           snap.message = std::string(msg.getScalarCopy<opcua::String>());
         }
       } catch (const opcua::BadStatus &) {
@@ -1505,6 +1687,14 @@ void read_di_nameplate(UA_Client * client, uint16_t di_ns, OpcuaClient::DeviceIn
 
 }  // namespace
 
+int OpcuaClient::namespace_index(const std::string & uri) {
+  std::lock_guard<std::mutex> lock(impl_->client_mutex);
+  if (!impl_->connected) {
+    return -1;
+  }
+  return find_namespace_index(impl_->client.handle(), uri.c_str());
+}
+
 std::string OpcuaClient::read_server_application_uri() {
   std::lock_guard<std::mutex> lock(impl_->client_mutex);
   if (!impl_->connected) {
@@ -1560,7 +1750,7 @@ OpcuaClient::DeviceInfo OpcuaClient::read_device_info() {
 // in unique_ptr storage so lifetime is explicit.
 // ----------------------------------------------------------------------------
 
-namespace {
+namespace detail {
 
 /// Build an OPC-UA EventFilter from per-field SimpleAttributeOperand specs.
 /// open62541 servers reject SAOs whose BrowsePath does not resolve directly
@@ -1600,7 +1790,12 @@ UA_EventFilter make_event_filter(const std::vector<OpcuaClient::EventFieldSpec> 
     sao.attributeId = all_specs[i].attribute_id;
     const auto & path = all_specs[i].browse_path;
     sao.browsePathSize = path.size();
-    if (sao.browsePathSize > 0) {
+    if (sao.browsePathSize == 0) {
+      // A NULL pointer encodes as a null array (length -1). A Siemens S7-1500
+      // then resolves the ConditionId clause to a null NodeId and every native
+      // alarm is dropped as a non-condition event. Send an empty array.
+      sao.browsePath = static_cast<UA_QualifiedName *>(UA_EMPTY_ARRAY_SENTINEL);
+    } else {
       sao.browsePath =
           static_cast<UA_QualifiedName *>(UA_Array_new(sao.browsePathSize, &UA_TYPES[UA_TYPES_QUALIFIEDNAME]));
       for (size_t j = 0; j < path.size(); ++j) {
@@ -1611,7 +1806,7 @@ UA_EventFilter make_event_filter(const std::vector<OpcuaClient::EventFieldSpec> 
   return filter;
 }
 
-}  // namespace
+}  // namespace detail
 
 // C-linkage trampoline matching ``UA_Client_EventNotificationCallback``.
 // Defined at namespace scope so its address is a stable function pointer.
@@ -1652,13 +1847,13 @@ static void on_event_trampoline_c(UA_Client * /*client*/, UA_UInt32 sub_id, void
   opcua::NodeId event_type;
   opcua::NodeId source_node;
   opcua::NodeId condition_id;
-  if (n_fields >= 1 && values[0].isType<opcua::NodeId>()) {
+  if (n_fields >= 1 && values[0].isScalar() && values[0].isType<opcua::NodeId>()) {
     event_type = values[0].getScalarCopy<opcua::NodeId>();
   }
-  if (n_fields >= 2 && values[1].isType<opcua::NodeId>()) {
+  if (n_fields >= 2 && values[1].isScalar() && values[1].isType<opcua::NodeId>()) {
     source_node = values[1].getScalarCopy<opcua::NodeId>();
   }
-  if (n_fields >= 3 && values[2].isType<opcua::NodeId>()) {
+  if (n_fields >= 3 && values[2].isScalar() && values[2].isType<opcua::NodeId>()) {
     condition_id = values[2].getScalarCopy<opcua::NodeId>();
   }
 
@@ -1735,6 +1930,9 @@ void OpcuaClient::run_iterate(uint16_t timeout_ms) {
   if (!impl_->connected.exchange(false)) {
     return;
   }
+  if (connect_status != UA_STATUSCODE_GOOD) {
+    impl_->set_last_error(UA_StatusCode_name(connect_status));
+  }
   RCLCPP_WARN(opcua_client_logger(),
               "OPC-UA session dropped underneath the client (session state %d, channel %d, status %s); "
               "disconnecting so the reconnect path owns the next session",
@@ -1776,6 +1974,7 @@ bool OpcuaClient::mark_disconnected_on_transport_error(const opcua::BadStatus & 
   if (!impl_->connected.exchange(false)) {
     return false;
   }
+  impl_->set_last_error(UA_StatusCode_name(code));
   drop_session_bookkeeping_locked();
   return true;
 }
@@ -1806,7 +2005,7 @@ uint32_t OpcuaClient::add_event_monitored_item(uint32_t subscription_id, const o
                       "add_event_monitored_item: subId=" << subscription_id << " nodeId=" << source_node.toString()
                                                          << " selectClauses=" << (select_specs.size() + 3));
 
-  UA_EventFilter filter = make_event_filter(select_specs);
+  UA_EventFilter filter = detail::make_event_filter(select_specs);
 
   UA_MonitoredItemCreateRequest item;
   UA_MonitoredItemCreateRequest_init(&item);
