@@ -551,7 +551,8 @@ if(BUILD_TESTING)
     )
     add_dependencies(test_opcua_client_reconnect test_alarm_server)
     target_compile_definitions(test_opcua_client_reconnect PRIVATE
-      TEST_ALARM_SERVER_BIN="$<TARGET_FILE:test_alarm_server>")
+      TEST_ALARM_SERVER_BIN="$<TARGET_FILE:test_alarm_server>"
+      GEN_TEST_CERTS_SH="${CMAKE_CURRENT_SOURCE_DIR}/test/integration/gen_test_certs.sh")
     target_include_directories(test_opcua_client_reconnect PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
