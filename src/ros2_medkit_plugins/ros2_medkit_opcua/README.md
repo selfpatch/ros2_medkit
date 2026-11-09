@@ -638,6 +638,11 @@ request anybody made.
 The JSON/ROS-param form takes precedence over whatever the node-map YAML's
 `auto_browse:` block set, mirroring how environment variables override the
 rest of the plugin's YAML config.
+Without `enabled`, the ROS-param form turns the walk on only when it sets a
+walk knob (`root_nodes`, `max_depth`, `max_nodes`, `namespace_allow`,
+`namespace_deny`). `infer_writable` or `read_initial_values` alone keep the
+node map's own setting, so a read-only guard beside a curated node map with
+`auto_browse: false` does not start a walk.
 
 ### Zero-config native A&C (`auto_alarms`)
 

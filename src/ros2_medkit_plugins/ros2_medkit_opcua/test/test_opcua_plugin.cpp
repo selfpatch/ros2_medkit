@@ -485,6 +485,27 @@ TEST(OpcuaPluginAutoBrowseConfig, InferWritableSourceStaysEmptyWhenTheParameterI
   EXPECT_TRUE(plugin.auto_browse_config_for_test().infer_writable_source.empty());
 }
 
+// A read-only guard beside a curated node map (auto_browse: false) must not
+// turn the walk on: only "enabled" or a walk knob does.
+TEST(OpcuaPluginAutoBrowseConfig, InferWritableAloneKeepsTheWalkOff) {
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["endpoint_url"] = "opc.tcp://nonexistent:4840";
+  config["auto_browse"] = nlohmann::json{{"infer_writable", false}};
+  plugin.configure(config);
+  EXPECT_FALSE(plugin.auto_browse_config_for_test().enabled);
+  EXPECT_FALSE(plugin.auto_browse_config_for_test().infer_writable);
+}
+
+TEST(OpcuaPluginAutoBrowseConfig, WalkKnobWithoutEnabledTurnsTheWalkOn) {
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["endpoint_url"] = "opc.tcp://nonexistent:4840";
+  config["auto_browse"] = nlohmann::json{{"max_depth", 4}};
+  plugin.configure(config);
+  EXPECT_TRUE(plugin.auto_browse_config_for_test().enabled);
+}
+
 // -- Condition operations (acknowledge / confirm) per build variant --------
 //
 // Acknowledging an alarm changes condition state on the controller, so a
