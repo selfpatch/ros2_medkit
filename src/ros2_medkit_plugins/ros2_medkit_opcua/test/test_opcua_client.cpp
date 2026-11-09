@@ -32,6 +32,7 @@ TEST(OpcuaClientTest, DefaultState) {
   // server_description() is only populated after a successful connect.
   EXPECT_EQ(client.endpoint_url(), "opc.tcp://localhost:4840");
   EXPECT_TRUE(client.server_description().empty());
+  EXPECT_TRUE(client.last_error().empty());
 }
 
 TEST(OpcuaClientTest, ConnectFailsWithoutServer) {
@@ -43,6 +44,11 @@ TEST(OpcuaClientTest, ConnectFailsWithoutServer) {
 
   EXPECT_FALSE(client.connect(config));
   EXPECT_FALSE(client.is_connected());
+  // The refused connect is named by its status, so a reader can tell it from a
+  // refused certificate or user.
+  const auto why = client.last_error();
+  EXPECT_EQ(why.rfind("Bad", 0), 0u) << why;
+  EXPECT_EQ(why.find("Certificate"), std::string::npos) << why;
 }
 
 TEST(OpcuaClientTest, DisconnectWhenNotConnected) {
@@ -244,6 +250,8 @@ TEST(OpcuaClientSecurity, ConnectRejectsContradictorySecurityConfig) {
   cfg.security_policy = SecurityPolicy::None;
   EXPECT_FALSE(client.connect(cfg));
   EXPECT_FALSE(client.is_connected());
+  // The client's own settings are at fault, not the server.
+  EXPECT_EQ(client.last_error(), "BadConfigurationError");
 }
 
 TEST(OpcuaClientSecurity, ConnectSecureWithoutCertFailsFast) {
