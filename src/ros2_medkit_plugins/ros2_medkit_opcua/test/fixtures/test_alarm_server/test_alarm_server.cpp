@@ -177,6 +177,27 @@ UA_StatusCode add_int32_variable(UA_Server * server, const std::string & name, U
   return rc;
 }
 
+// A read-only Int32 array (``ns=<ns>;s=Recipe.Steps``). Servers publish
+// arrays everywhere (recipe tables, alarm lists); a client that reads one
+// must not take it for a scalar.
+UA_StatusCode add_array_variable(UA_Server * server, UA_UInt16 ns) {
+  UA_VariableAttributes attr = UA_VariableAttributes_default;
+  UA_Int32 steps[3] = {10, 20, 30};
+  UA_Variant_setArray(&attr.value, steps, 3, &UA_TYPES[UA_TYPES_INT32]);
+  attr.dataType = UA_TYPES[UA_TYPES_INT32].typeId;
+  attr.valueRank = UA_VALUERANK_ONE_DIMENSION;
+  UA_UInt32 dims[1] = {3};
+  attr.arrayDimensionsSize = 1;
+  attr.arrayDimensions = dims;
+  attr.accessLevel = UA_ACCESSLEVELMASK_READ;
+  attr.displayName = UA_LOCALIZEDTEXT(const_cast<char *>("en"), const_cast<char *>("RecipeSteps"));
+  UA_NodeId node_id = UA_NODEID_STRING(ns, const_cast<char *>("Recipe.Steps"));
+  UA_QualifiedName qname = UA_QUALIFIEDNAME(ns, const_cast<char *>("RecipeSteps"));
+  return UA_Server_addVariableNode(server, node_id, UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
+                                   UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES), qname,
+                                   UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), attr, nullptr, nullptr);
+}
+
 // A single readable Double variable (``ns=<ns>;s=Tank.Level`` = 42.0). The
 // secured integration test maps this node and reads it back over the encrypted
 // SecureChannel to prove a value read - not just an event subscription -
@@ -886,6 +907,10 @@ int main(int argc, char ** argv) {
   UA_UInt16 ns = UA_Server_addNamespace(server, NS_URI);
   if (add_variable(server, ns) != UA_STATUSCODE_GOOD) {
     UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "Failed to register Tank.Level variable");
+  }
+  if (UA_StatusCode rc = add_array_variable(server, ns); rc != UA_STATUSCODE_GOOD) {
+    UA_LOG_WARNING(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "Failed to register Recipe.Steps variable: %s",
+                   UA_StatusCode_name(rc));
   }
 
   // INV2: standard device-info nameplate for the identity integration test.
