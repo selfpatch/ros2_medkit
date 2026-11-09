@@ -849,8 +849,8 @@ bool NodeMap::load(const std::string & yaml_path) {
             }
             const std::string mapping_label = alarm_label + " mapping";
             warn_unknown_keys(m, mapping_label,
-                              {"condition_name", "source_node", "event_type", "fault_code", "severity_override",
-                               "severity", "message"});
+                              {"condition_name", "source_node", "event_type", "match_message", "fault_code",
+                               "severity_override", "severity", "message"});
             AlarmMapping mapping;
             mapping.match_condition_name = m["condition_name"].as<std::string>("");
             mapping.match_source_node = m["source_node"].as<std::string>("");

@@ -586,7 +586,14 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     if (ab.is_boolean()) {
       ab_cfg.enabled = ab.get<bool>();
     } else if (ab.is_object()) {
-      ab_cfg.enabled = ab.value("enabled", true);
+      // Without "enabled", only a walk knob turns the walk on. An object that
+      // carries just infer_writable / read_initial_values (a read-only guard
+      // set beside a curated node map) keeps the node map's own setting.
+      bool walk_knob = false;
+      for (const char * knob : {"root_nodes", "max_depth", "max_nodes", "namespace_allow", "namespace_deny"}) {
+        walk_knob = walk_knob || ab.contains(knob);
+      }
+      ab_cfg.enabled = ab.value("enabled", walk_knob || ab_cfg.enabled);
       if (ab.contains("root_nodes")) {
         if (ab["root_nodes"].is_array()) {
           ab_cfg.root_node_ids.clear();
