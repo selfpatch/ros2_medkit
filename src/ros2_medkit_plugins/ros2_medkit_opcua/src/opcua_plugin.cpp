@@ -1570,8 +1570,14 @@ void OpcuaPlugin::send_report_fault(const std::string & entity_id, const std::st
     request->severity = ros2_medkit_msgs::msg::Fault::SEVERITY_INFO;
   }
 
+  // Taken by value: rclcpp picks the response-callback overload only for (SharedFuture).
+  using ReportFuture = rclcpp::Client<ros2_medkit_msgs::srv::ReportFault>::SharedFuture;
   send_or_buffer({PendingFaultDispatch::Kind::Report, fault_code, /*link_state=*/false, [this, request]() {
-                    fault_clients_->report->async_send_request(request);
+                    fault_lanes_.submit(request->fault_code, [this, request](const std::function<void()> & done) {
+                      fault_clients_->report->async_send_request(request, [done](ReportFuture) {  // NOLINT
+                        done();
+                      });
+                    });
                   }});
 }
 
@@ -1592,8 +1598,13 @@ void OpcuaPlugin::send_clear_fault(const std::string & fault_code, ClearOrigin o
   auto request = std::make_shared<ros2_medkit_msgs::srv::ClearFault::Request>(
       make_clear_fault_request(fault_code, clear_skips_correlation(origin)));
 
+  using ClearFuture = rclcpp::Client<ros2_medkit_msgs::srv::ClearFault>::SharedFuture;
   send_or_buffer({PendingFaultDispatch::Kind::Clear, fault_code, clear_is_link_state(origin), [this, request]() {
-                    fault_clients_->clear->async_send_request(request);
+                    fault_lanes_.submit(request->fault_code, [this, request](const std::function<void()> & done) {
+                      fault_clients_->clear->async_send_request(request, [done](ClearFuture) {  // NOLINT
+                        done();
+                      });
+                    });
                   }});
 }
 
