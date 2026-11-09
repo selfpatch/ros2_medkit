@@ -337,6 +337,15 @@ if(BUILD_TESTING)
     OpenSSL::SSL OpenSSL::Crypto
   )
 
+  medkit_add_gtest(test_fault_code_lanes
+    test/test_fault_code_lanes.cpp
+  )
+  target_include_directories(test_fault_code_lanes PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  # Plain C++, no ROS node in it.
+  medkit_test_needs_no_domain(test_fault_code_lanes)
+
   medkit_add_gtest(test_node_map
     test/test_node_map.cpp
     src/node_map.cpp

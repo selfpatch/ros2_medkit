@@ -16,6 +16,7 @@
 
 #include "ros2_medkit_opcua/address_space_browser.hpp"
 #include "ros2_medkit_opcua/device_identity.hpp"
+#include "ros2_medkit_opcua/fault_code_lanes.hpp"
 #include "ros2_medkit_opcua/network_discovery.hpp"
 #include "ros2_medkit_opcua/node_map.hpp"
 #include "ros2_medkit_opcua/opcua_client.hpp"
@@ -930,6 +931,10 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // of the critical section.
   std::mutex pending_reports_mutex_;
   std::vector<PendingFaultDispatch> pending_reports_;
+
+  // Report and clear calls for one fault code go out one at a time, in order
+  // (see FaultCodeLanes): the two services give no ordering between them.
+  FaultCodeLanes fault_lanes_;
 
   // Where the fault store's answer is parked between the executor thread that
   // receives it and the poll thread that acts on it.
