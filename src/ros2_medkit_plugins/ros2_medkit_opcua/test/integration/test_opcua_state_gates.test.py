@@ -21,7 +21,8 @@ the shape of a machine state model: MachineState is a fault_enum with several
 healthy states (ok_values), inhibited while UnitMode is a maintenance mode, and
 StopReason counts only while MachineState is stopped or aborted. The test
 drives the three registers and checks the fault manager status of each fault
-after every step.
+after every step. auto_browse walks the same server, an Int32 array included,
+which must be skipped rather than read as a scalar.
 
 Usage: test_opcua_state_gates.test.py <test_alarm_server>
 """
@@ -53,8 +54,10 @@ PRODUCTION, MAINTENANCE = 1, 2
 
 def write_files(workdir, plugin, gateway_port, server_port):
     node_map = workdir / 'nodes.yaml'
+    # auto_browse walks the whole fixture, Recipe.Steps (an Int32 array) included.
     node_map.write_text(f"""area_id: plc_systems
 component_id: {COMPONENT}
+auto_browse: true
 nodes:
   - node_id: "ns=2;s=UnitMode"
     entity_id: {ENTITY}
@@ -171,6 +174,17 @@ def main():
             got, ok = helpers.wait_for(
                 statuses, lambda s: all(s[c] == w for c, w in want.items()), 3 * scale)
             check(ok, f'{step}: {want} (got {got!r})')
+
+        # An array value is not a data point, and reading one must not take
+        # the gateway down.
+        walked = helpers.http_json(f'{base}/apps') or {}
+        points = []
+        for app in walked.get('items', []):
+            data = helpers.http_json(f"{base}/apps/{app['id']}/x-plc-data") or {}
+            points += [i.get('node_id') for i in data.get('items', [])]
+        check('ns=2;s=StatusWord' in points and 'ns=2;s=Recipe.Steps' not in points,
+              f'auto_browse maps the scalars and skips the array (got {sorted(points)})')
+        check(gateway.poll() is None, 'the gateway is still running after the walk')
 
         put('UnitMode', PRODUCTION)
         put('MachineState', EXECUTE)
