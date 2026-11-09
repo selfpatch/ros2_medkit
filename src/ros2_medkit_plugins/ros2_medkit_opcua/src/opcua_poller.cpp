@@ -783,12 +783,12 @@ void OpcuaPoller::reconcile_after_read(const std::set<std::string> & seen, const
   dispatch_condition_clears(clears);
 }
 
-void OpcuaPoller::reconcile_after_refresh(const std::set<std::string> & seen) {
+void OpcuaPoller::reconcile_after_refresh(const std::string & source_id, const std::set<std::string> & seen) {
   std::vector<AlarmEventDelivery> clears;
   {
     std::unique_lock lock(conditions_mutex_);
     for (auto & [cid, runtime] : conditions_) {
-      if (!should_clear_after_refresh(runtime.last_status, cid, seen)) {
+      if (runtime.source_id != source_id || !should_clear_after_refresh(runtime.last_status, cid, seen)) {
         continue;
       }
       if (same_code_active_elsewhere_locked(runtime.fault_code, cid)) {
@@ -842,14 +842,16 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
   if (event_type.getNamespaceIndex() == 0 && event_type.getIdentifierType() == opcua::NodeIdType::Numeric) {
     auto numeric = event_type.getIdentifierAs<uint32_t>();
     if (numeric == kRefreshStartEventTypeId) {
-      refresh_seen_.clear();
-      condition_refresh_in_progress_.store(true, std::memory_order_release);
+      refresh_seen_[cfg.source_node_id_str].clear();
       return;
     }
     if (numeric == kRefreshEndEventTypeId) {
-      condition_refresh_in_progress_.store(false, std::memory_order_release);
-      reconcile_after_refresh(refresh_seen_);
-      refresh_seen_.clear();
+      auto burst = refresh_seen_.find(cfg.source_node_id_str);
+      if (burst != refresh_seen_.end()) {  // an End without its Start reconciles nothing
+        const std::set<std::string> seen = std::move(burst->second);
+        refresh_seen_.erase(burst);
+        reconcile_after_refresh(cfg.source_node_id_str, seen);
+      }
       return;
     }
   }
@@ -902,8 +904,8 @@ void OpcuaPoller::on_event(const AlarmEventConfig & cfg, const std::vector<opcua
   // A condition (re)reported inside a refresh burst is still active; remember it
   // so RefreshEnd does not clear it. Recorded before the field-count bail below
   // so even a partial-field replay counts as "seen".
-  if (condition_refresh_in_progress_.load(std::memory_order_acquire)) {
-    refresh_seen_.insert(condition_id.toString());
+  if (auto burst = refresh_seen_.find(cfg.source_node_id_str); burst != refresh_seen_.end()) {
+    burst->second.insert(condition_id.toString());
   }
 
   if (values.size() < kAlarmFieldCount) {

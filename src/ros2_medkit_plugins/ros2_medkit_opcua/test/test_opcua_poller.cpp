@@ -21,6 +21,7 @@
 
 #include <gtest/gtest.h>
 
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -245,6 +246,95 @@ TEST(AlarmRoutingTest, ARepinMovesConditionsAlreadyPinnedToTheNewEntity) {
   EXPECT_EQ(deliveries.front().entity_id, "siemens_ag_cpu_1505sp_f_alarms")
       << "a condition pinned before the rename kept the entity the rename dropped";
   EXPECT_EQ(deliveries.front().fault_code, "PLC_OVERPRESSURE");
+}
+
+// Part 9 §5.5.7 brackets the ConditionRefresh replay on every event
+// MonitoredItem of the subscription, and each item carries only its own
+// notifier's conditions. With one item per machine object, the second item's
+// RefreshEnd used to reconcile every tracked condition against its own burst
+// and clear the first machine's live alarm.
+TEST(ConditionRefreshTest, EachSourceReconcilesOnlyItsOwnConditions) {
+  const std::string path = "/tmp/test_opcua_poller_refresh_per_source.yaml";
+  {
+    std::ofstream f(path);
+    f << R"(
+area_id: line
+component_id: machines
+event_alarms:
+  - alarm_source: "ns=1;s=MachineA"
+    entity_id: machine_a
+    fault_code: A_ALARM
+  - alarm_source: "ns=1;s=MachineB"
+    entity_id: machine_b
+    fault_code: B_ALARM
+)";
+  }
+  OpcuaClient client;
+  NodeMap node_map;
+  ASSERT_TRUE(node_map.load(path));
+  ASSERT_EQ(node_map.event_alarms().size(), 2u);
+  OpcuaPoller poller(client, node_map);
+  poller.refresh_alarm_routing();
+  std::mutex deliveries_mutex;
+  std::vector<AlarmEventDelivery> deliveries;
+  poller.set_event_alarm_callback([&](const AlarmEventDelivery & delivery) {
+    std::lock_guard<std::mutex> lock(deliveries_mutex);
+    deliveries.push_back(delivery);
+  });
+  const AlarmEventConfig a = node_map.event_alarms()[0];
+  const AlarmEventConfig b = node_map.event_alarms()[1];
+  const opcua::NodeId cond_a(1, std::string("MachineA.Heating"));
+  const opcua::NodeId cond_b(1, std::string("MachineB.Mould"));
+
+  // EventId, Severity, Message, Enabled, Active, Acked, Confirmed, Shelving,
+  // BranchId, ConditionName, SourceName.
+  auto active = [](const char * name) {
+    std::vector<opcua::Variant> v(11);
+    v[1] = opcua::Variant::fromScalar(static_cast<uint16_t>(700));
+    v[2] = opcua::Variant::fromScalar(opcua::LocalizedText("en", name));
+    v[3] = opcua::Variant::fromScalar(true);
+    v[4] = opcua::Variant::fromScalar(true);
+    v[5] = opcua::Variant::fromScalar(false);
+    v[6] = opcua::Variant::fromScalar(false);
+    v[9] = opcua::Variant::fromScalar(opcua::String(name));
+    return v;
+  };
+  const std::vector<opcua::Variant> bracket(11);
+  const opcua::NodeId alarm_type(0, static_cast<uint32_t>(2915));
+  const opcua::NodeId start(0, static_cast<uint32_t>(2787));
+  const opcua::NodeId end(0, static_cast<uint32_t>(2788));
+  auto codes = [&](AlarmAction action) {
+    std::lock_guard<std::mutex> lock(deliveries_mutex);
+    std::vector<std::string> out;
+    for (const auto & d : deliveries) {
+      if (d.action == action) {
+        out.push_back(d.fault_code);
+      }
+    }
+    return out;
+  };
+
+  poller.on_event_for_test(a, active("Heating"), alarm_type, cond_a);
+  poller.on_event_for_test(b, active("Mould"), alarm_type, cond_b);
+  ASSERT_EQ(codes(AlarmAction::ReportConfirmed).size(), 2u);
+
+  // A refresh that replays both, bracketed on both items.
+  poller.on_event_for_test(a, bracket, start, opcua::NodeId());
+  poller.on_event_for_test(b, bracket, start, opcua::NodeId());
+  poller.on_event_for_test(a, active("Heating"), alarm_type, cond_a);
+  poller.on_event_for_test(b, active("Mould"), alarm_type, cond_b);
+  poller.on_event_for_test(a, bracket, end, opcua::NodeId());
+  poller.on_event_for_test(b, bracket, end, opcua::NodeId());
+  EXPECT_TRUE(codes(AlarmAction::ClearFault).empty()) << "a refresh that replayed both alarms cleared one";
+
+  // A refresh of A alone, without A's alarm: only A's alarm cleared offline.
+  poller.on_event_for_test(a, bracket, start, opcua::NodeId());
+  poller.on_event_for_test(a, bracket, end, opcua::NodeId());
+  EXPECT_EQ(codes(AlarmAction::ClearFault), std::vector<std::string>{"A_ALARM"});
+
+  // An End with no Start of its own reconciles nothing.
+  poller.on_event_for_test(b, bracket, end, opcua::NodeId());
+  EXPECT_EQ(codes(AlarmAction::ClearFault), std::vector<std::string>{"A_ALARM"});
 }
 
 TEST(IsConditionEventTest, NullConditionIdIsRejected) {
