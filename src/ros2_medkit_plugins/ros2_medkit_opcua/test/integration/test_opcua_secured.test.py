@@ -39,7 +39,9 @@ POSITIVE (good credentials):
 
 NEGATIVE (wrong password):
   * The gateway never reaches connected == true: fail-closed.
-  * x-plc-status names the refusal: last_error == BadUserAccessDenied.
+  * x-plc-status names the refusal: connected == false (the channel the
+    refused session leaves open is not a connection), last_error ==
+    BadUserAccessDenied.
 
 NEGATIVE (server certificate not in the gateway's trust list):
   * x-plc-status says connected == false and last_error ==
@@ -48,6 +50,10 @@ NEGATIVE (server certificate not in the gateway's trust list):
 NEGATIVE (gateway certificate not in the server's trust list):
   * x-plc-status says connected == false and last_error ==
     BadSecurityChecksFailed, the status of the server's ERR message.
+
+NEGATIVE (anonymous gateway, server without an anonymous token policy):
+  * x-plc-status says connected == false and last_error ==
+    BadIdentityTokenInvalid.
 
 Skips with the CTest convention (exit 77) unless
 ``ROS2_MEDKIT_OPCUA_SECURE_REQUIRE`` is set, mirroring the asyncua smoke-test
@@ -216,7 +222,7 @@ def write_catchall_node_map(path):
 
 
 def write_gateway_params(path, *, port, plugin, server_port, node_map, manifest,
-                         certs, password, trusted='server_cert.der'):
+                         certs, password, trusted='server_cert.der', user_auth='UsernamePassword'):
     """Render a gateway params file pointing the opcua plugin at the secure server."""
     path.write_text(
         'ros2_medkit_gateway:\n'
@@ -236,7 +242,7 @@ def write_gateway_params(path, *, port, plugin, server_port, node_map, manifest,
         f'    plugins.opcua.application_uri: "{APP_URI_CLIENT}"\n'
         f'    plugins.opcua.trust_list_paths: ["{certs}/{trusted}"]\n'
         '    plugins.opcua.reject_untrusted: true\n'
-        '    plugins.opcua.user_auth_mode: "UsernamePassword"\n'
+        f'    plugins.opcua.user_auth_mode: "{user_auth}"\n'
         f'    plugins.opcua.username: "{USERNAME}"\n'
         f'    plugins.opcua.password: "{password}"\n'
         '    discovery.mode: "hybrid"\n'
@@ -389,7 +395,7 @@ def main():
     env = dict(os.environ, ROS_DOMAIN_ID=ros_domain_id)
 
     server = fault_mgr = gw_good = gw_bad = gw_catch = gw_untrusted = None
-    strict_server = gw_refused = None
+    strict_server = gw_refused = gw_anonymous = None
     passed = False
     try:
         # --- Certificates (regenerated every run, never committed) ---------
@@ -623,15 +629,19 @@ def main():
         print('  OK fail-closed: wrong password rejected (BadUserAccessDenied)')
 
         # The status says why: a client reading it can tell a refused user from
-        # a server that does not answer.
+        # a server that does not answer. The channel the refused session leaves
+        # open is not a connection.
         bad_status = wait_json(f'{bad_base}/components/alarm_test_runtime/x-plc-status',
                                lambda j: j.get('last_error') == 'BadUserAccessDenied',
                                deadline=30)
-        if not (bad_status and bad_status.get('last_error') == 'BadUserAccessDenied'):
+        if not (bad_status and bad_status.get('last_error') == 'BadUserAccessDenied'
+                and bad_status.get('connected') is False):
             print('FAIL: x-plc-status does not name the refused user: '
                   f'{json.dumps(bad_status)}', file=sys.stderr)
+            print('gateway(bad) log tail:\n'
+                  + bad_log.read_text(errors='replace')[-3000:], file=sys.stderr)
             return 1
-        print('  OK x-plc-status last_error == BadUserAccessDenied')
+        print('  OK x-plc-status connected == false, last_error == BadUserAccessDenied')
         terminate(gw_bad)
         gw_bad = None
 
@@ -705,6 +715,32 @@ def main():
             return 1
         print('  OK refused gateway certificate: connected == false, '
               'last_error == BadSecurityChecksFailed')
+        terminate(gw_refused)
+        gw_refused = None
+
+        # === NEGATIVE: anonymous, and the server wants a user ================
+        anonymous_port = free_port()
+        anonymous_params = workdir / 'gateway_anonymous.yaml'
+        write_gateway_params(anonymous_params, port=anonymous_port, plugin=plugin,
+                             server_port=server_port, node_map=node_map,
+                             manifest=manifest, certs=certs, password=PASSWORD,
+                             user_auth='Anonymous')
+        anonymous_log = workdir / 'gateway_anonymous.log'
+        gw_anonymous = start_gateway(anonymous_params, anonymous_log, env)
+        anonymous_base = f'http://127.0.0.1:{anonymous_port}/api/v1'
+        anonymous_status = wait_json(
+            f'{anonymous_base}/components/alarm_test_runtime/x-plc-status',
+            lambda j: j.get('last_error') == 'BadIdentityTokenInvalid', deadline=60)
+        if not (anonymous_status
+                and anonymous_status.get('last_error') == 'BadIdentityTokenInvalid'
+                and anonymous_status.get('connected') is False):
+            print('FAIL: an anonymous gateway refused by its server is not reported as such: '
+                  f'{json.dumps(anonymous_status)}', file=sys.stderr)
+            print('gateway(anonymous) log tail:\n'
+                  + anonymous_log.read_text(errors='replace')[-3000:], file=sys.stderr)
+            return 1
+        print('  OK anonymous on a server that wants a user: connected == false, '
+              'last_error == BadIdentityTokenInvalid')
 
         print('PASS: secured OPC-UA A&C integration test')
         passed = True
@@ -715,6 +751,7 @@ def main():
         terminate(gw_bad)
         terminate(gw_untrusted)
         terminate(gw_refused)
+        terminate(gw_anonymous)
         terminate(fault_mgr)
         if strict_server is not None:
             alarm_fixture.stop(strict_server)
