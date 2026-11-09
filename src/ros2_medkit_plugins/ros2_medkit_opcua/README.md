@@ -245,10 +245,25 @@ GET /api/v1/components/openplc_runtime/x-plc-status
   "write_capable": false,
   "poll_count": 142,
   "error_count": 0,
+  "last_error": "",
   "node_count": 5,
   "active_alarms": []
 }
 ```
+
+`last_error` says why the link last failed, as the OPC UA status name: a failed
+connect (`BadCertificateUntrusted` when the server's certificate is not in the
+trust list, the status of the server's ERR message such as
+`BadSecurityChecksFailed` when the server does not trust the client's
+certificate, `BadUserAccessDenied` for a refused user, `BadTimeout` or
+`BadConnectionClosed` for a server that does not answer), a session that dropped,
+or a value read the server refused. open62541 ends a connect whose channel was
+refused with `BadConnectionClosed` and only logs why, so the client takes the
+reason from its certificate check and from the server's ERR message. It is `BadConfigurationError` when the
+client's own certificate, key or security settings could not be applied. It is
+empty after a connect that succeeded, until something fails again, so a value
+next to `connected: true` is a read that failed in this session. The route never
+waits for a connect in progress to answer.
 
 `write_capable` is the build, not a setting: `false` in the default read-only
 build, `true` only in one built with `-DMEDKIT_OPCUA_READ_ONLY=OFF`. An absent

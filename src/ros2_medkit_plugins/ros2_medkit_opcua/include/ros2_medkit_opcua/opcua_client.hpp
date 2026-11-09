@@ -123,6 +123,13 @@ class OpcuaClient {
   /// Check if currently connected
   bool is_connected() const;
 
+  /// Why the link last failed, as the OPC UA status name ("BadCertificateUntrusted",
+  /// "BadUserAccessDenied", "BadTimeout", ...): a failed connect, a session that
+  /// dropped, or a value read the server refused. "BadConfigurationError" when the
+  /// client's own security settings could not be applied. Empty after a connect
+  /// that succeeded, until something fails again. Never waits for a connect.
+  std::string last_error() const;
+
   /// Number of successfully established sessions so far (0 before the first
   /// connect). Increments once per fresh connect, NOT on a connect() call that
   /// finds the session already open. Lets callers detect a reconnect and

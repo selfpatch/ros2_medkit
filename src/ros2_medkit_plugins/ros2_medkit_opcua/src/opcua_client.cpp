@@ -18,6 +18,8 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cinttypes>
+#include <cstdarg>
 #include <cstdint>
 #include <cstring>
 #include <ctime>
@@ -226,7 +228,124 @@ opcua::Variant value_to_variant(const OpcuaValue & val) {
 
 }  // namespace
 
+namespace {
+
+// Why a connect failed, where open62541 1.3 keeps it. A refused certificate
+// or a server's ERR message closes the channel, and the connect then throws
+// BadConnectionClosed (ua_client.c receiveResponse): the reason is only
+// logged. Two taps on the client's own plugins keep it: the certificate check
+// of the server's certificate, and the ERR message the server sent.
+struct ConnectTaps {
+  UA_CertificateVerification verification{};
+  UA_Logger logger{};
+  std::mutex mutex;
+  UA_StatusCode refused{UA_STATUSCODE_GOOD};
+
+  void note(UA_StatusCode code) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (refused == UA_STATUSCODE_GOOD) {
+      refused = code;
+    }
+  }
+
+  UA_StatusCode take() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return std::exchange(refused, UA_STATUSCODE_GOOD);
+  }
+};
+
+// ua_client_connect.c processERRResponse through UA_LOG_ERROR_CHANNEL
+// (ua_securechannel.h), verbatim: the connection and channel ids come first.
+constexpr const char * kErrResponseFormat = "Connection %i | SecureChannel %" PRIu32
+                                            " | Received an ERR response with StatusCode %s and the following "
+                                            "reason: %.*s%.0s";
+
+UA_StatusCode tap_verify(void * context, const UA_ByteString * certificate) {
+  auto * taps = static_cast<ConnectTaps *>(context);
+  const UA_StatusCode code = taps->verification.verifyCertificate(taps->verification.context, certificate);
+  if (code != UA_STATUSCODE_GOOD) {
+    taps->note(code);
+  }
+  return code;
+}
+
+UA_StatusCode tap_verify_uri(void * context, const UA_ByteString * certificate, const UA_String * uri) {
+  auto * taps = static_cast<ConnectTaps *>(context);
+  return taps->verification.verifyApplicationURI(taps->verification.context, certificate, uri);
+}
+
+void tap_verification_clear(UA_CertificateVerification * cv) {
+  auto * taps = static_cast<ConnectTaps *>(cv->context);
+  if (taps->verification.clear != nullptr) {
+    taps->verification.clear(&taps->verification);
+  }
+  taps->verification = UA_CertificateVerification{};
+  cv->context = nullptr;
+}
+
+void tap_log(void * context, UA_LogLevel level, UA_LogCategory category, const char * msg, va_list args) {
+  auto * taps = static_cast<ConnectTaps *>(context);
+  if (msg != nullptr && std::strcmp(msg, kErrResponseFormat) == 0) {
+    va_list copy;
+    va_copy(copy, args);
+    (void)va_arg(copy, int);
+    (void)va_arg(copy, uint32_t);
+    const char * name = va_arg(copy, const char *);
+    va_end(copy);
+    if (name != nullptr) {
+      // The name back to its code: the reason text after it is the server's.
+      for (UA_StatusCode code : {UA_STATUSCODE_BADSECURITYCHECKSFAILED, UA_STATUSCODE_BADCERTIFICATEUNTRUSTED,
+                                 UA_STATUSCODE_BADCERTIFICATEINVALID, UA_STATUSCODE_BADCERTIFICATETIMEINVALID,
+                                 UA_STATUSCODE_BADCERTIFICATEURIINVALID, UA_STATUSCODE_BADCERTIFICATEREVOKED,
+                                 UA_STATUSCODE_BADCERTIFICATEUSENOTALLOWED, UA_STATUSCODE_BADSECURITYPOLICYREJECTED,
+                                 UA_STATUSCODE_BADTCPENDPOINTURLINVALID, UA_STATUSCODE_BADTCPMESSAGETOOLARGE}) {
+        if (std::strcmp(name, UA_StatusCode_name(code)) == 0) {
+          taps->note(code);
+          break;
+        }
+      }
+    }
+  }
+  if (taps->logger.log != nullptr) {
+    taps->logger.log(taps->logger.context, level, category, msg, args);
+  }
+}
+
+void tap_log_clear(void * context) {
+  auto * taps = static_cast<ConnectTaps *>(context);
+  if (taps->logger.clear != nullptr) {
+    taps->logger.clear(taps->logger.context);
+  }
+  taps->logger = UA_Logger{};
+}
+
+// Puts the taps in front of the plugins a freshly built client config holds.
+void install_taps(UA_ClientConfig * config, ConnectTaps & taps) {
+  taps.take();
+  if (config->certificateVerification.verifyCertificate != nullptr &&
+      config->certificateVerification.verifyCertificate != tap_verify) {
+    taps.verification = config->certificateVerification;
+    config->certificateVerification.context = &taps;
+    config->certificateVerification.verifyCertificate = tap_verify;
+    if (taps.verification.verifyApplicationURI != nullptr) {
+      config->certificateVerification.verifyApplicationURI = tap_verify_uri;
+    }
+    config->certificateVerification.clear = tap_verification_clear;
+  }
+  if (config->logger.log != tap_log) {
+    taps.logger = config->logger;
+    config->logger.log = tap_log;
+    config->logger.context = &taps;
+    config->logger.clear = tap_log_clear;
+  }
+}
+
+}  // namespace
+
 struct OpcuaClient::Impl {
+  // Declared before ``client``, so they outlive the config that points at them.
+  ConnectTaps taps;
+
   // Declared before ``client``: deleting the client fires the delete callback
   // of every monitored item it still holds, and those reach into this.
   EventContextRegistry event_callbacks;
@@ -262,6 +381,16 @@ struct OpcuaClient::Impl {
   // plugin can detect a poller reconnect and refresh per-session state
   // (device-info nameplate) without re-reading on every introspect.
   std::atomic<uint64_t> connect_generation{0};
+
+  // Its own lock, so a status read never waits behind a connect that holds
+  // client_mutex for its whole timeout.
+  mutable std::mutex error_mutex;
+  std::string last_error;
+
+  void set_last_error(std::string why) {
+    std::lock_guard<std::mutex> lock(error_mutex);
+    last_error = std::move(why);
+  }
 
   /// (subscription id, monitored item id) of every event item still held.
   std::vector<std::pair<uint32_t, uint32_t>> event_item_ids() {
@@ -559,13 +688,16 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
     // connect so reconnects re-apply the same SecureChannel settings.
     if (!apply_security_config(impl_->client, impl_->secure_config, config)) {
       impl_->connected = false;
+      impl_->set_last_error(UA_StatusCode_name(UA_STATUSCODE_BADCONFIGURATIONERROR));
       return false;
     }
 
     impl_->client.config().setTimeout(static_cast<uint32_t>(config.connect_timeout.count()));
+    install_taps(impl_->client.config().handle(), impl_->taps);
     impl_->client.connect(config.endpoint_url);
     impl_->connected = true;
     impl_->connect_generation.fetch_add(1, std::memory_order_release);
+    impl_->set_last_error({});
 
     try {
       opcua::Node node(impl_->client, opcua::NodeId(0, UA_NS0ID_SERVER_SERVERSTATUS_BUILDINFO_PRODUCTNAME));
@@ -581,6 +713,10 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
   } catch (const opcua::BadStatus & e) {
     RCLCPP_WARN(opcua_client_logger(), "OPC-UA connect to '%s' failed: %s", config.endpoint_url.c_str(), e.what());
     impl_->connected = false;
+    // The throw names how the connect ended, often BadConnectionClosed; a
+    // tap names why, when the certificate check or the server refused it.
+    const UA_StatusCode refused = impl_->taps.take();
+    impl_->set_last_error(UA_StatusCode_name(refused != UA_STATUSCODE_GOOD ? refused : e.code()));
     return false;
   }
 }
@@ -623,6 +759,11 @@ void OpcuaClient::disconnect() {
 
 bool OpcuaClient::is_connected() const {
   return impl_->connected.load();
+}
+
+std::string OpcuaClient::last_error() const {
+  std::lock_guard<std::mutex> lock(impl_->error_mutex);
+  return impl_->last_error;
 }
 
 uint64_t OpcuaClient::connection_generation() const {
@@ -832,6 +973,7 @@ std::vector<ReadResult> OpcuaClient::read_values(const std::vector<opcua::NodeId
       r.good = true;
     } catch (const opcua::BadStatus & e) {
       r.good = false;
+      impl_->set_last_error(UA_StatusCode_name(e.code()));
       mark_disconnected_on_transport_error(e);
     }
     results.push_back(std::move(r));
@@ -1757,6 +1899,9 @@ void OpcuaClient::run_iterate(uint16_t timeout_ms) {
   if (!impl_->connected.exchange(false)) {
     return;
   }
+  if (connect_status != UA_STATUSCODE_GOOD) {
+    impl_->set_last_error(UA_StatusCode_name(connect_status));
+  }
   RCLCPP_WARN(opcua_client_logger(),
               "OPC-UA session dropped underneath the client (session state %d, channel %d, status %s); "
               "disconnecting so the reconnect path owns the next session",
@@ -1798,6 +1943,7 @@ bool OpcuaClient::mark_disconnected_on_transport_error(const opcua::BadStatus & 
   if (!impl_->connected.exchange(false)) {
     return false;
   }
+  impl_->set_last_error(UA_StatusCode_name(code));
   drop_session_bookkeeping_locked();
   return true;
 }
