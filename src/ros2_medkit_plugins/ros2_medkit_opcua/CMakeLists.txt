@@ -470,6 +470,26 @@ if(BUILD_TESTING)
     yaml-cpp::yaml-cpp
   )
 
+  medkit_add_gtest(test_browse_path
+    test/test_browse_path.cpp
+    src/address_space_browser.cpp
+    src/node_map.cpp
+    src/opcua_client.cpp
+  )
+  target_include_directories(test_browse_path PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_target_dependencies(test_browse_path
+    ros2_medkit_gateway
+    ros2_medkit_fault_detection
+    rclcpp
+  )
+  target_link_libraries(test_browse_path
+    open62541pp::open62541pp
+    nlohmann_json::nlohmann_json
+    yaml-cpp::yaml-cpp
+  )
+
   # ---- test_alarm_server fixture ------------------------------------------
   # Standalone OPC-UA server emitting AlarmConditionType events for
   # integration testing of native alarm subscriptions (issue #386).

@@ -54,6 +54,11 @@ class AutoBrowseSource {
   /// ``AutoBrowseConfig::infer_writable`` so a config-less walk exposes a write
   /// surface exactly where the server permits it.
   virtual std::optional<bool> read_writable(const opcua::NodeId & variable_node) = 0;
+
+  /// Index of namespace ``uri`` on this server, or -1 when it has none.
+  virtual int namespace_index(const std::string & /*uri*/) {
+    return -1;
+  }
 };
 
 /// ``AutoBrowseSource`` backed by a live ``OpcuaClient`` session.
@@ -84,6 +89,10 @@ class OpcuaClientBrowseSource : public AutoBrowseSource {
       return std::nullopt;
     }
     return info.writable;
+  }
+
+  int namespace_index(const std::string & uri) override {
+    return client_.namespace_index(uri);
   }
 
  private:
@@ -165,5 +174,16 @@ class AutoBrowser {
   AutoBrowseSource & source_;
   AutoBrowseConfig config_;
 };
+
+/// Find the node a ``browse_path:`` names (``NodeMap::parse_browse_path``):
+/// walk from the Objects folder, matching each step's BrowseName in its
+/// namespace, a ``*`` step matching any child. Several candidates under a
+/// ``*`` are tried in the server's browse order and the first that completes
+/// the path wins, so a path is unambiguous only while the controller has one
+/// such instance. The last step must be a Variable. ``std::nullopt`` when a
+/// namespace URI is not on the server, no child matches, or more than
+/// ``max_nodes`` children were looked at. Read-only: browses only.
+std::optional<opcua::NodeId> resolve_browse_path(AutoBrowseSource & source, const std::vector<BrowsePathElement> & path,
+                                                 std::size_t max_nodes = 2000);
 
 }  // namespace ros2_medkit_gateway

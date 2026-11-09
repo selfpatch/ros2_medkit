@@ -296,4 +296,64 @@ AutoBrowseResult AutoBrowser::browse() {
   return result;
 }
 
+namespace {
+
+bool resolve_step(AutoBrowseSource & source, const opcua::NodeId & parent, const std::vector<BrowsePathElement> & path,
+                  const std::vector<int> & ns_index, std::size_t step, std::size_t & budget,
+                  std::optional<opcua::NodeId> & found) {
+  const auto & element = path[step];
+  const bool last = step + 1 == path.size();
+  for (const auto & child : source.browse_children(parent)) {
+    if (budget == 0) {
+      return false;
+    }
+    --budget;
+    if (!element.any && (child.browse_name != element.name || child.browse_name_ns != ns_index[step])) {
+      continue;
+    }
+    if (last) {
+      if (child.node_class == opcua::NodeClass::Variable) {
+        found = child.node_id;
+        return true;
+      }
+      continue;
+    }
+    if (resolve_step(source, child.node_id, path, ns_index, step + 1, budget, found)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+std::optional<opcua::NodeId> resolve_browse_path(AutoBrowseSource & source, const std::vector<BrowsePathElement> & path,
+                                                 std::size_t max_nodes) {
+  if (path.empty()) {
+    return std::nullopt;
+  }
+  std::vector<int> ns_index;
+  std::unordered_map<std::string, int> by_uri;
+  for (const auto & element : path) {
+    if (element.any) {
+      ns_index.push_back(-1);
+    } else if (element.namespace_index) {
+      ns_index.push_back(*element.namespace_index);
+    } else {
+      auto it = by_uri.find(element.namespace_uri);
+      if (it == by_uri.end()) {
+        it = by_uri.emplace(element.namespace_uri, source.namespace_index(element.namespace_uri)).first;
+      }
+      if (it->second < 0) {
+        return std::nullopt;
+      }
+      ns_index.push_back(it->second);
+    }
+  }
+  std::size_t budget = max_nodes;
+  std::optional<opcua::NodeId> found;
+  resolve_step(source, opcua::NodeId(0, UA_NS0ID_OBJECTSFOLDER), path, ns_index, 0, budget, found);
+  return found;
+}
+
 }  // namespace ros2_medkit_gateway

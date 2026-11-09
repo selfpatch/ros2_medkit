@@ -175,6 +175,10 @@ class OpcuaClient {
   /// the variable) and when not connected or the read fails.
   std::string read_variable_type_name(const opcua::NodeId & variable_node);
 
+  /// Index of namespace ``uri`` in the server's NamespaceArray, or -1 when the
+  /// server does not have it, the read failed or there is no session.
+  int namespace_index(const std::string & uri);
+
   /// Read a single value
   ReadResult read_value(const opcua::NodeId & node_id);
 

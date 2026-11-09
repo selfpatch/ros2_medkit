@@ -709,6 +709,12 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // node_map_mutex_. No-op (never called) when auto_browse is disabled.
   void run_auto_browse();
 
+  // Resolve the node map's waiting ``browse_path:`` entries on the live
+  // session. Runs once a session is up, before auto_browse and before the
+  // poller subscribes, and again from on_connected on every new session for
+  // any entry the previous one could not resolve. Browses only.
+  void resolve_browse_paths();
+
   // Re-derive the SOVD component identity from the device once a NEW session is
   // up, in config-less mode only. Called from PollerConfig::on_connected, which
   // the poller fires right after a session comes up and BEFORE it

@@ -179,8 +179,35 @@ bool NodeMap::load(const std::string & yaml_path) {
     // scalar data points to poll). The final emptiness check below rejects a
     // file that declares neither.
     entries_.clear();
+    unresolved_browse_entries_.clear();
     entity_index_.clear();
     node_id_index_.clear();
+
+    // Aliases for the namespace URIs a ``browse_path:`` names. A URI, not an
+    // index: the index of a companion-spec namespace is the server's choice
+    // and may change when it restarts.
+    std::map<std::string, std::string> namespaces;
+    if (auto ns_node = root["namespaces"]) {
+      if (!ns_node.IsMap()) {
+        RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
+                     "'namespaces:' must map an alias to a namespace URI - refusing to load");
+        return false;
+      }
+      for (const auto & kv : ns_node) {
+        const auto alias = kv.first.as<std::string>();
+        if (alias.empty() || alias.find_first_of(":/*") != std::string::npos ||
+            std::all_of(alias.begin(), alias.end(), [](unsigned char c) {
+              return std::isdigit(c);
+            })) {
+          RCLCPP_ERROR(rclcpp::get_logger("opcua.node_map"),
+                       "namespaces: alias '%s' must be a name without ':', '/' or '*' and not a number - "
+                       "refusing to load",
+                       alias.c_str());
+          return false;
+        }
+        namespaces[alias] = kv.second.as<std::string>();
+      }
+    }
 
     auto nodes = root["nodes"];
     // A ``nodes:`` key that is present but neither null nor a sequence (e.g. a
@@ -404,9 +431,14 @@ bool NodeMap::load(const std::string & yaml_path) {
       const auto & n = nodes[i];
 
       // Validate required fields
-      if (!n["node_id"] || !n["entity_id"] || !n["data_name"]) {
+      if ((!n["node_id"] && !n["browse_path"]) || !n["entity_id"] || !n["data_name"]) {
         RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
-                    "Entry %zu missing required field (node_id/entity_id/data_name) - skipping", i);
+                    "Entry %zu missing required field (node_id or browse_path/entity_id/data_name) - skipping", i);
+        continue;
+      }
+      if (n["node_id"] && n["browse_path"]) {
+        RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
+                    "Entry %zu has both node_id and browse_path - give one address, skipping", i);
         continue;
       }
 
@@ -416,14 +448,28 @@ bool NodeMap::load(const std::string & yaml_path) {
       // value (a sequence / map where a scalar is expected) warns and skips
       // just this entry rather than aborting the whole file via the outer
       // catch. (#481)
-      {
+      if (n["browse_path"]) {
+        auto path_str = parse_string(n["browse_path"], "browse_path", "entry " + std::to_string(i));
+        if (!path_str) {
+          continue;
+        }
+        std::string error;
+        if (!parse_browse_path(*path_str, namespaces, entry.browse_path, error)) {
+          RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"), "Entry %zu browse_path '%s': %s - skipping", i,
+                      path_str->c_str(), error.c_str());
+          continue;
+        }
+        entry.browse_path_str = *path_str;
+        // A label for the messages below until a session gives it a NodeId.
+        entry.node_id_str = "browse_path=" + *path_str;
+      } else {
         auto node_id_str = parse_string(n["node_id"], "node_id", "entry " + std::to_string(i));
         if (!node_id_str) {
           continue;
         }
         entry.node_id_str = *node_id_str;
+        entry.node_id = parse_node_id(entry.node_id_str);
       }
-      entry.node_id = parse_node_id(entry.node_id_str);
       if (entry.node_id_str.empty()) {
         RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"), "Entry %zu has empty node_id - skipping", i);
         continue;
@@ -675,6 +721,10 @@ bool NodeMap::load(const std::string & yaml_path) {
         }
       }
 
+      if (!entry.browse_path.empty()) {
+        unresolved_browse_entries_.push_back(std::move(entry));
+        continue;
+      }
       size_t idx = entries_.size();
       node_id_index_[entry.node_id_str] = idx;
       entity_index_[entry.entity_id].push_back(idx);
@@ -986,7 +1036,15 @@ bool NodeMap::load(const std::string & yaml_path) {
         return true;
       };
 
+      std::vector<const NodeMapEntry *> all_entries;
       for (const auto & entry : entries_) {
+        all_entries.push_back(&entry);
+      }
+      for (const auto & entry : unresolved_browse_entries_) {
+        all_entries.push_back(&entry);
+      }
+      for (const auto * entry_ptr : all_entries) {
+        const auto & entry = *entry_ptr;
         if (!entry.detection.has_value()) {
           continue;
         }
@@ -1302,6 +1360,159 @@ std::size_t NodeMap::merge_auto_browsed_entries(std::vector<NodeMapEntry> entrie
     build_entity_defs();
   }
   return added;
+}
+
+bool NodeMap::parse_browse_path(const std::string & str, const std::map<std::string, std::string> & namespaces,
+                                std::vector<BrowsePathElement> & out, std::string & error) {
+  out.clear();
+  std::vector<std::string> steps;
+  std::vector<bool> escaped_any;
+  std::string step;
+  bool step_escaped = false;
+  for (size_t i = 0; i < str.size(); ++i) {
+    const char c = str[i];
+    if (c == '\\') {
+      if (i + 1 >= str.size()) {
+        error = "ends with a lone '\\'";
+        return false;
+      }
+      step += str[++i];
+      step_escaped = true;
+    } else if (c == '/') {
+      if (i == 0) {
+        continue;  // a leading '/' names the Objects folder itself
+      }
+      steps.push_back(step);
+      escaped_any.push_back(step_escaped);
+      step.clear();
+      step_escaped = false;
+    } else {
+      step += c;
+    }
+  }
+  steps.push_back(step);
+  escaped_any.push_back(step_escaped);
+
+  for (size_t i = 0; i < steps.size(); ++i) {
+    const auto & s = steps[i];
+    BrowsePathElement element;
+    if (s == "*" && !escaped_any[i]) {
+      element.any = true;
+      out.push_back(element);
+      continue;
+    }
+    const auto colon = s.find(':');
+    if (s.empty() || colon == std::string::npos || colon == 0 || colon + 1 == s.size()) {
+      error = "step " + std::to_string(i + 1) + " '" + s + "' is not <namespace>:<BrowseName> or *";
+      out.clear();
+      return false;
+    }
+    const auto prefix = s.substr(0, colon);
+    element.name = s.substr(colon + 1);
+    if (std::all_of(prefix.begin(), prefix.end(), [](unsigned char c) {
+          return std::isdigit(c);
+        })) {
+      const auto index = std::stoul(prefix);
+      if (prefix.size() > 5 || index > 65535) {
+        error = "step " + std::to_string(i + 1) + ": namespace index " + prefix + " is out of range";
+        out.clear();
+        return false;
+      }
+      element.namespace_index = static_cast<uint16_t>(index);
+    } else {
+      auto it = namespaces.find(prefix);
+      if (it == namespaces.end()) {
+        error = "step " + std::to_string(i + 1) + ": namespace alias '" + prefix + "' is not in namespaces:";
+        out.clear();
+        return false;
+      }
+      element.namespace_uri = it->second;
+    }
+    out.push_back(std::move(element));
+  }
+  if (out.empty() || out.back().any) {
+    error = "the last step must name the variable, not '*'";
+    out.clear();
+    return false;
+  }
+  return true;
+}
+
+bool NodeMap::has_browse_entries() const {
+  return !unresolved_browse_entries_.empty() ||
+         std::any_of(entries_.begin(), entries_.end(), [](const NodeMapEntry & e) {
+           return !e.browse_path.empty();
+         });
+}
+
+NodeMap::BrowseResolution
+NodeMap::resolve_browse_entries(const std::function<std::optional<opcua::NodeId>(const NodeMapEntry &)> & resolve) {
+  BrowseResolution result;
+  for (std::size_t idx = 0; idx < entries_.size(); ++idx) {
+    auto & entry = entries_[idx];
+    if (entry.browse_path.empty()) {
+      continue;
+    }
+    auto node_id = resolve(entry);
+    if (!node_id || node_id->toString() == entry.node_id_str) {
+      continue;
+    }
+    const std::string moved_to = node_id->toString();
+    if (node_id_index_.count(moved_to) > 0) {
+      RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
+                  "browse_path '%s' now resolves to %s, which another entry maps - keeping %s",
+                  entry.browse_path_str.c_str(), moved_to.c_str(), entry.node_id_str.c_str());
+      continue;
+    }
+    node_id_index_.erase(entry.node_id_str);
+    node_id_index_[moved_to] = idx;
+    result.moved.emplace_back(entry.node_id_str, moved_to);
+    entry.node_id = *node_id;
+    entry.node_id_str = moved_to;
+  }
+
+  std::size_t resolved = 0;
+  std::vector<NodeMapEntry> still_waiting;
+  for (auto & entry : unresolved_browse_entries_) {
+    auto node_id = resolve(entry);
+    if (!node_id) {
+      still_waiting.push_back(std::move(entry));
+      continue;
+    }
+    entry.node_id = *node_id;
+    entry.node_id_str = node_id->toString();
+    auto existing = node_id_index_.find(entry.node_id_str);
+    if (existing != node_id_index_.end()) {
+      auto & current = entries_[existing->second];
+      if (current.entity_display_name.empty()) {
+        RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
+                    "browse_path '%s' resolves to %s, which another entry already maps - skipping (first wins)",
+                    entry.browse_path_str.c_str(), entry.node_id_str.c_str());
+        ++resolved;
+        continue;
+      }
+      // An auto-browsed entry for the same node: the explicit one takes its place.
+      auto & owners = entity_index_[current.entity_id];
+      owners.erase(std::remove(owners.begin(), owners.end(), existing->second), owners.end());
+      if (owners.empty()) {
+        entity_index_.erase(current.entity_id);
+      }
+      entity_index_[entry.entity_id].push_back(existing->second);
+      current = std::move(entry);
+    } else {
+      const std::size_t idx = entries_.size();
+      node_id_index_[entry.node_id_str] = idx;
+      entity_index_[entry.entity_id].push_back(idx);
+      entries_.push_back(std::move(entry));
+    }
+    ++resolved;
+  }
+  unresolved_browse_entries_ = std::move(still_waiting);
+  result.joined = resolved;
+  if (resolved > 0) {
+    build_entity_defs();
+  }
+  return result;
 }
 
 // Test / back-compat only: the live fault-evaluation path is
