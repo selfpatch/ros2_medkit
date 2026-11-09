@@ -910,7 +910,10 @@ int main(int argc, char ** argv) {
   // (independent of the AlarmConditionType events above). Driven via the
   // ``set <NodeName> <int>`` CLI command.
   if (add_int32_variable(server, "StatusWord", ns) != UA_STATUSCODE_GOOD ||
-      add_int32_variable(server, "FaultCode", ns) != UA_STATUSCODE_GOOD) {
+      add_int32_variable(server, "FaultCode", ns) != UA_STATUSCODE_GOOD ||
+      add_int32_variable(server, "MachineState", ns) != UA_STATUSCODE_GOOD ||
+      add_int32_variable(server, "UnitMode", ns) != UA_STATUSCODE_GOOD ||
+      add_int32_variable(server, "StopReason", ns) != UA_STATUSCODE_GOOD) {
     UA_LOG_ERROR(UA_Log_Stdout, UA_LOGCATEGORY_USERLAND, "Failed to register detection variables");
     UA_Server_delete(server);
     return 1;

@@ -376,6 +376,55 @@ nodes:
           fault_code: VFD_OVERCURRENT
           severity: ERROR
 
+  # State register: a machine state machine (for example the ISA-TR88 state
+  # numbers) has many healthy values. `ok_values` lists the ones beside
+  # `ok_value`, so they do not raise the catch-all.
+  - node_id: "ns=2;s=Machine.State"
+    entity_id: machine
+    data_name: state
+    data_type: int
+    fault_enum:
+      ok_value: 6                  # Execute
+      ok_values: [1, 2, 3, 4, 5, 7, 13, 14, 15, 16, 17]
+      codes:
+        - code: 9
+          fault_code: MACHINE_ABORTED
+          severity: ERROR
+    # Not raised while the gate point reads one of `values` (a planned stop,
+    # changeover or setup mode). A fault raised before the gate matched is
+    # kept until the state itself clears it.
+    inhibit_when:
+      node_id: "ns=2;s=Machine.UnitMode"   # another entry under nodes:
+      values: [2, 3]
+
+  - node_id: "ns=2;s=Machine.StopReason"
+    entity_id: machine
+    data_name: stop_reason
+    data_type: int
+    fault_enum:
+      ok_values: [10, 11]          # planned stop reasons
+      codes:
+        - code: 101
+          fault_code: MACHINE_JAM
+    # Evaluated only while the gate point reads one of `values`; outside them
+    # the faults of this point clear. For a reason that stays latched after
+    # the machine runs again.
+    only_when:
+      node_id: "ns=2;s=Machine.State"
+      values: [2, 9]
+
+  - node_id: "ns=2;s=Machine.UnitMode"
+    entity_id: machine
+    data_name: unit_mode
+    data_type: int
+
+# A gate names another `nodes:` entry by its `node_id`, written the same way,
+# and compares that point's integer value. The load fails when the gate point
+# is not in the map, is the entry itself, or `values` is not a non-empty list
+# of integers. The gate point must be a `node_id` entry, the gated entry may
+# be a `browse_path` one. Until the gate point has been read once the rule is ungated.
+# Gates work with all three detection modes.
+
 # The three modes (`alarm`, `status_bits`, `fault_enum`) are evaluated by the
 # shared `ros2_medkit_fault_detection` module so every protocol plugin maps raw
 # values to faults identically. They are mutually exclusive on a single node.

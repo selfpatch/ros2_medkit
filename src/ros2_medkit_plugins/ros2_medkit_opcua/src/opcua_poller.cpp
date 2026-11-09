@@ -1478,6 +1478,28 @@ void OpcuaPoller::evaluate_alarms() {
       }
 
       auto signals = fd::evaluate(to_fd_value(it->second), *entry->detection);
+      // An unread gate point gates nothing: the rule then behaves as ungated.
+      auto gate_matches = [&](const std::optional<StateGate> & gate) -> std::optional<bool> {
+        if (!gate) {
+          return std::nullopt;
+        }
+        auto g = snapshot_.values.find(gate->node_id_str);
+        std::int64_t v = 0;
+        if (g == snapshot_.values.end() || !fd::detail::as_int(to_fd_value(g->second), v)) {
+          return std::nullopt;
+        }
+        return std::find(gate->values.begin(), gate->values.end(), v) != gate->values.end();
+      };
+      const auto only = gate_matches(entry->only_when);
+      const auto inhibit = gate_matches(entry->inhibit_when);
+      for (auto & s : signals) {
+        if (only.has_value() && !*only) {
+          s.active = false;
+        } else if (inhibit.value_or(false) && s.active) {
+          auto prev = snapshot_.alarms.find(s.fault_code);
+          s.active = prev != snapshot_.alarms.end() && prev->second;
+        }
+      }
       for (const auto & s : signals) {
         snapshot_.alarms[s.fault_code] = s.active;
       }
