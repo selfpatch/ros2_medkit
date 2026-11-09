@@ -49,6 +49,12 @@ namespace ros2_medkit_gateway {
 ///    pass, so its old value neither starts, completes nor clears anything.
 ///
 /// Points without a raise qualifier raise and clear exactly as before.
+///
+/// State gates (``inhibit_when`` / ``only_when``) are applied to the rule's
+/// verdict before the raise qualifier. A fault held back by ``inhibit_when``
+/// does not wait: its wait starts when the gate stops matching. Under a
+/// subscription a change of the gate point counts as a new observation of the
+/// gated point.
 class DetectionPipeline {
  public:
   using Clock = ros2_medkit::fault_detection::RaiseQualifierFilter::Clock;
@@ -104,6 +110,9 @@ class DetectionPipeline {
   // One entry per node the poller records a sample for, so it is bounded by
   // the node map. Updated in place on every pass.
   std::unordered_map<std::string, NodeSamples> nodes_;
+  // Per gated entry (by its node id), the sample counts of its gate points
+  // when it was last evaluated. Bounded by the node map.
+  std::unordered_map<std::string, std::uint64_t> gate_stamps_;
   std::chrono::milliseconds poll_interval_{1000};
 };
 

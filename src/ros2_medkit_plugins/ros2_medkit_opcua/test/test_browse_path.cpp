@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <fstream>
 #include <map>
 #include <string>
@@ -230,6 +231,39 @@ TEST_F(BrowsePathNodeMap, WaitsOutsideTheEntriesUntilResolved) {
     safety_entity = safety_entity || (def.id == "safety" && def.has_faults);
   }
   EXPECT_TRUE(safety_entity);
+}
+
+TEST_F(BrowsePathNodeMap, AGateOnABrowsePathEntryJoinsWithIt) {
+  std::string yaml = kRobotMap;
+  const std::string rule = "threshold: 0.5, above_threshold: true}\n";
+  yaml.insert(yaml.find(rule) + rule.size(), "    inhibit_when: {node_id: \"ns=4;s=Plain\", values: [2, 3]}\n");
+  ASSERT_TRUE(load(yaml));
+  ASSERT_EQ(map_.unresolved_browse_entries().size(), 1u);
+  ASSERT_TRUE(map_.unresolved_browse_entries()[0].inhibit_when.has_value());
+
+  TreeSource s;
+  add_robot(s, "R1");
+  map_.resolve_browse_entries([&](const NodeMapEntry & e) {
+    return resolve_browse_path(s, e.browse_path);
+  });
+  const auto * entry = map_.find_by_data_name("safety", "emergency_stop");
+  ASSERT_NE(entry, nullptr);
+  ASSERT_TRUE(entry->inhibit_when.has_value());
+  EXPECT_EQ(entry->inhibit_when->node_id_str, "ns=4;s=Plain");
+  EXPECT_EQ(entry->inhibit_when->values, (std::vector<std::int64_t>{2, 3}));
+}
+
+TEST_F(BrowsePathNodeMap, RejectsAGateWhosePointIsMissingOrAddressedByBrowsePath) {
+  std::string missing = kRobotMap;
+  const std::string rule = "threshold: 0.5, above_threshold: true}\n";
+  missing.insert(missing.find(rule) + rule.size(), "    only_when: {node_id: \"ns=4;s=Nope\", values: [1]}\n");
+  EXPECT_FALSE(load(missing));
+
+  std::string by_path = kRobotMap;
+  by_path += R"(    alarm: {fault_code: PLAIN_HIGH, threshold: 1.0}
+    only_when: {node_id: "browse_path=di:DeviceSet/*/rob:SafetyStates/*/di:ParameterSet/rob:EmergencyStop", values: [1]}
+)";
+  EXPECT_FALSE(load(by_path));
 }
 
 TEST_F(BrowsePathNodeMap, AnUnresolvedPathKeepsWaiting) {
