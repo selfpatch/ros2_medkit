@@ -720,7 +720,7 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
     try {
       opcua::Node node(impl_->client, opcua::NodeId(0, UA_NS0ID_SERVER_SERVERSTATUS_BUILDINFO_PRODUCTNAME));
       auto val = node.readValue();
-      if (val.isType<opcua::String>()) {
+      if (val.isScalar() && val.isType<opcua::String>()) {
         impl_->server_desc = std::string(val.getScalarCopy<opcua::String>());
       }
     } catch (...) {
@@ -1308,7 +1308,7 @@ std::vector<OpcuaClient::ConditionStateSnapshot> OpcuaClient::read_source_condit
       }
       try {
         auto val = node.readValue();
-        if (val.isType<bool>()) {
+        if (val.isScalar() && val.isType<bool>()) {
           return val.getScalarCopy<bool>();
         }
         return fallback;
@@ -1406,7 +1406,7 @@ std::vector<OpcuaClient::ConditionStateSnapshot> OpcuaClient::read_source_condit
         auto retain_node = child.browseChild({{0, "Retain"}});
         try {
           auto retain = retain_node.readValue();
-          if (retain.isType<bool>()) {
+          if (retain.isScalar() && retain.isType<bool>()) {
             snap.retain = retain.getScalarCopy<bool>();
           }
         } catch (const opcua::BadStatus &) {
@@ -1427,23 +1427,23 @@ std::vector<OpcuaClient::ConditionStateSnapshot> OpcuaClient::read_source_condit
       }
       try {
         auto sev = child.browseChild({{0, "Severity"}}).readValue();
-        if (sev.isType<uint16_t>()) {
+        if (sev.isScalar() && sev.isType<uint16_t>()) {
           snap.severity = sev.getScalarCopy<uint16_t>();
         }
       } catch (const opcua::BadStatus &) {
       }
       try {
         auto cname = child.browseChild({{0, "ConditionName"}}).readValue();
-        if (cname.isType<opcua::String>()) {
+        if (cname.isScalar() && cname.isType<opcua::String>()) {
           snap.condition_name = std::string(cname.getScalarCopy<opcua::String>());
         }
       } catch (const opcua::BadStatus &) {
       }
       try {
         auto msg = child.browseChild({{0, "Message"}}).readValue();
-        if (msg.isType<opcua::LocalizedText>()) {
+        if (msg.isScalar() && msg.isType<opcua::LocalizedText>()) {
           snap.message = std::string(msg.getScalarCopy<opcua::LocalizedText>().getText());
-        } else if (msg.isType<opcua::String>()) {
+        } else if (msg.isScalar() && msg.isType<opcua::String>()) {
           snap.message = std::string(msg.getScalarCopy<opcua::String>());
         }
       } catch (const opcua::BadStatus &) {
@@ -1847,13 +1847,13 @@ static void on_event_trampoline_c(UA_Client * /*client*/, UA_UInt32 sub_id, void
   opcua::NodeId event_type;
   opcua::NodeId source_node;
   opcua::NodeId condition_id;
-  if (n_fields >= 1 && values[0].isType<opcua::NodeId>()) {
+  if (n_fields >= 1 && values[0].isScalar() && values[0].isType<opcua::NodeId>()) {
     event_type = values[0].getScalarCopy<opcua::NodeId>();
   }
-  if (n_fields >= 2 && values[1].isType<opcua::NodeId>()) {
+  if (n_fields >= 2 && values[1].isScalar() && values[1].isType<opcua::NodeId>()) {
     source_node = values[1].getScalarCopy<opcua::NodeId>();
   }
-  if (n_fields >= 3 && values[2].isType<opcua::NodeId>()) {
+  if (n_fields >= 3 && values[2].isScalar() && values[2].isType<opcua::NodeId>()) {
     condition_id = values[2].getScalarCopy<opcua::NodeId>();
   }
 
