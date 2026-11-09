@@ -35,6 +35,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
@@ -1468,7 +1469,11 @@ TEST(DiscoverEndpoint, TheScanIsAnnouncedBeforeTheSweepRuns) {
   };
   reporter.previous_outcome = &outcome;
 
-  auto scan_recording_the_log = [&info, &announced_before_first_probe](const std::string &, uint16_t, int) {
+  // The scan runs on the sweep's worker threads, so the probes share this lock.
+  std::mutex probe_mutex;
+  auto scan_recording_the_log = [&info, &announced_before_first_probe, &probe_mutex](const std::string &, uint16_t,
+                                                                                     int) {
+    std::lock_guard<std::mutex> lock(probe_mutex);
     if (announced_before_first_probe.empty() && !info.empty()) {
       announced_before_first_probe = info.front();
     }
