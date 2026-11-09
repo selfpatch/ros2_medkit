@@ -231,6 +231,10 @@ struct OpcuaClient::Impl {
   // of every monitored item it still holds, and those reach into this.
   EventContextRegistry event_callbacks;
 
+  // The config a secured ``client`` was built from. Declared before ``client``
+  // for the same reason: see apply_security_config.
+  std::unique_ptr<opcua::ClientConfig> secure_config;
+
   opcua::Client client;
   OpcuaClientConfig config;
   std::atomic<bool> connected{false};
@@ -393,7 +397,8 @@ opcua::MessageSecurityMode to_ua_security_mode(SecurityMode mode) {
 // supplied at construction (UA_ClientConfig_setDefaultEncryption). Returns
 // false on a fatal configuration error (already logged); the caller then
 // reports the connect as failed without contacting the server.
-bool apply_security_config(opcua::Client & client, const OpcuaClientConfig & cfg) {
+bool apply_security_config(opcua::Client & client, std::unique_ptr<opcua::ClientConfig> & secure_config,
+                           const OpcuaClientConfig & cfg) {
   // Reject a contradictory SecurityPolicy / MessageSecurityMode pairing before
   // building anything. Accepting e.g. security_mode=Sign with
   // security_policy=None would leave the policy URI unpinned and silently
@@ -414,6 +419,7 @@ bool apply_security_config(opcua::Client & client, const OpcuaClientConfig & cfg
     // Unsecured channel (SecurityPolicy=None, MessageSecurityMode=None). A
     // username/password or X.509 identity may still be applied below.
     client = opcua::Client();
+    secure_config.reset();
   } else {
 #ifndef UA_ENABLE_ENCRYPTION
     RCLCPP_ERROR(opcua_client_logger(),
@@ -444,7 +450,15 @@ bool apply_security_config(opcua::Client & client, const OpcuaClientConfig & cfg
       trust.push_back(std::move(b));
     }
 
-    opcua::ClientConfig cc(cert, key, trust, {});
+    // Each security policy's context keeps a pointer to this config's logger
+    // (open62541 1.3), and moving the config into the client does not update
+    // it: the client then logs through it when a secured channel closes. So
+    // the config lives on the heap until the client built from it is gone,
+    // never on this stack frame (SIGSEGV in UA_ChannelModule_Delete_Context
+    // on a dropped link). After the move it holds a default config, whose
+    // logger is the stdout one.
+    auto next_config = std::make_unique<opcua::ClientConfig>(cert, key, trust, std::vector<opcua::ByteString>{});
+    opcua::ClientConfig & cc = *next_config;
 
     // Force the requested SecurityPolicy. An empty URI lets open62541 pick the
     // highest the server offers; we want explicit selection so a downgraded
@@ -478,6 +492,9 @@ bool apply_security_config(opcua::Client & client, const OpcuaClientConfig & cfg
     }
 
     client = opcua::Client(std::move(cc));
+    // Only now: replacing ``client`` above deleted the previous one, which
+    // logged through the previous config.
+    secure_config = std::move(next_config);
 #endif
   }
 
@@ -540,7 +557,7 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
 
     // (Re)build the client with the requested security profile before every
     // connect so reconnects re-apply the same SecureChannel settings.
-    if (!apply_security_config(impl_->client, config)) {
+    if (!apply_security_config(impl_->client, impl_->secure_config, config)) {
       impl_->connected = false;
       return false;
     }
