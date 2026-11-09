@@ -337,6 +337,53 @@ event_alarms:
   EXPECT_EQ(codes(AlarmAction::ClearFault), std::vector<std::string>{"A_ALARM"});
 }
 
+// An event field of the right type but an array (a vendor associated value,
+// a server filling Message or Severity with an array) used to throw
+// BadVariantAccess out of on_event, and the notification was dropped. The
+// event is handled with that field left empty.
+TEST(EventFieldsTest, AnArrayFieldDoesNotDropTheEvent) {
+  const std::string path = "/tmp/test_opcua_poller_array_fields.yaml";
+  {
+    std::ofstream f(path);
+    f << R"(
+area_id: line
+component_id: machines
+event_alarms:
+  - alarm_source: "ns=1;s=Machine"
+    entity_id: machine
+    fault_code: MACHINE_ALARM
+    associated_values: ["PartIds"]
+)";
+  }
+  OpcuaClient client;
+  NodeMap node_map;
+  ASSERT_TRUE(node_map.load(path));
+  OpcuaPoller poller(client, node_map);
+  poller.refresh_alarm_routing();
+  std::vector<AlarmEventDelivery> deliveries;
+  poller.set_event_alarm_callback([&](const AlarmEventDelivery & delivery) {
+    deliveries.push_back(delivery);
+  });
+
+  std::vector<opcua::Variant> v(12);
+  const std::vector<uint16_t> severities{700, 800};
+  const std::vector<opcua::LocalizedText> messages{opcua::LocalizedText("en", "a"), opcua::LocalizedText("en", "b")};
+  const std::vector<opcua::String> parts{opcua::String("P1"), opcua::String("P2")};
+  v[1] = opcua::Variant::fromArray(severities);
+  v[2] = opcua::Variant::fromArray(messages);
+  v[3] = opcua::Variant::fromScalar(true);
+  v[4] = opcua::Variant::fromScalar(true);
+  v[5] = opcua::Variant::fromScalar(false);
+  v[6] = opcua::Variant::fromScalar(false);
+  v[9] = opcua::Variant::fromArray(parts);   // ConditionName as an array
+  v[11] = opcua::Variant::fromArray(parts);  // the associated value
+  ASSERT_NO_THROW(poller.on_event_for_test(node_map.event_alarms()[0], v, opcua::NodeId(0, static_cast<uint32_t>(2915)),
+                                           opcua::NodeId(1, std::string("Machine.Alarm"))));
+  ASSERT_EQ(deliveries.size(), 1u);
+  EXPECT_EQ(deliveries[0].fault_code, "MACHINE_ALARM");
+  EXPECT_EQ(deliveries[0].action, AlarmAction::ReportConfirmed);
+}
+
 TEST(IsConditionEventTest, NullConditionIdIsRejected) {
   // Part 9 §5.5.2.13: a non-condition event (e.g. a Siemens Server-object
   // system message such as "CPU not in RUN") resolves the ConditionId SAO
