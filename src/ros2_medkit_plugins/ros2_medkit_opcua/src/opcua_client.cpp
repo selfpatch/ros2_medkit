@@ -1676,6 +1676,14 @@ void read_di_nameplate(UA_Client * client, uint16_t di_ns, OpcuaClient::DeviceIn
 
 }  // namespace
 
+int OpcuaClient::namespace_index(const std::string & uri) {
+  std::lock_guard<std::mutex> lock(impl_->client_mutex);
+  if (!impl_->connected) {
+    return -1;
+  }
+  return find_namespace_index(impl_->client.handle(), uri.c_str());
+}
+
 std::string OpcuaClient::read_server_application_uri() {
   std::lock_guard<std::mutex> lock(impl_->client_mutex);
   if (!impl_->connected) {

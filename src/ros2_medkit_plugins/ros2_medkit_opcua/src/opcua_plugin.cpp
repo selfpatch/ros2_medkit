@@ -568,7 +568,11 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
       throw std::runtime_error("OPC-UA node map failed to load or validate: " + node_map_path_ +
                                " (see preceding log line for the specific rejection)");
     }
-    log_info("Loaded node map with " + std::to_string(node_map_.entries().size()) + " entries from: " + node_map_path_);
+    log_info("Loaded node map with " + std::to_string(node_map_.entries().size()) + " entries from: " + node_map_path_ +
+             (node_map_.unresolved_browse_entries().empty()
+                  ? std::string{}
+                  : " (+" + std::to_string(node_map_.unresolved_browse_entries().size()) +
+                        " by browse_path, resolved once connected)"));
   }
 
   // plugins.opcua.auto_browse (ROS param / JSON config). Overlays on top of
@@ -806,6 +810,11 @@ void OpcuaPlugin::set_context(PluginContext & context) {
     owe_comms_lost_decision();
   }
 
+  if (connected) {
+    // Before auto_browse, so an explicit browse_path entry keeps its node.
+    resolve_browse_paths();
+  }
+
   if (connected && node_map_.auto_browse_config().enabled) {
     // auto_browse needs a live session to walk the address space, so it can
     // only run here - after connect(), before the node map is consumed to
@@ -863,6 +872,9 @@ void OpcuaPlugin::set_context(PluginContext & context) {
       return false;
     }
     maybe_rederive_component_identity(kIdentityConnectRetries);
+    // Ahead of the subscribe that follows, so a path the last session could
+    // not resolve is read from this one on.
+    resolve_browse_paths();
     return true;
   };
   // Config-less discovery with no configured endpoint: let the poller's
@@ -1903,6 +1915,66 @@ void OpcuaPlugin::create_value_publishers() {
     publishers_[entry.node_id_str] =
         node->create_publisher<std_msgs::msg::Float32>(entry.ros2_topic, rclcpp::SensorDataQoS());
     log_info("PLC bridge: " + entry.node_id_str + " -> " + entry.ros2_topic + " (Float32)");
+  }
+}
+
+void OpcuaPlugin::resolve_browse_paths() {
+  if (!node_map_.has_browse_entries() || !client_ || !client_->is_connected()) {
+    return;
+  }
+  OpcuaClientBrowseSource source(*client_);
+  // The walk is a series of blocking round-trips: done before taking the lock.
+  // Every path, resolved or not: a restarted server may have moved a node.
+  std::vector<std::pair<std::string, std::optional<opcua::NodeId>>> found;
+  auto walk = [&](const NodeMapEntry & entry) {
+    if (!entry.browse_path.empty()) {
+      found.emplace_back(entry.browse_path_str, resolve_browse_path(source, entry.browse_path));
+    }
+  };
+  for (const auto & entry : node_map_.entries()) {
+    walk(entry);
+  }
+  for (const auto & entry : node_map_.unresolved_browse_entries()) {
+    walk(entry);
+  }
+  NodeMap::BrowseResolution resolution;
+  {
+    std::unique_lock<std::shared_mutex> lock(node_map_mutex_);
+    resolution = node_map_.resolve_browse_entries([&found](const NodeMapEntry & entry) -> std::optional<opcua::NodeId> {
+      for (const auto & [path, node_id] : found) {
+        if (path == entry.browse_path_str) {
+          return node_id;
+        }
+      }
+      return std::nullopt;
+    });
+  }
+  for (const auto & [old_id, new_id] : resolution.moved) {
+    std::string moved = "browse_path node moved on this session: ";
+    moved.append(old_id).append(" -> ").append(new_id);
+    log_warn(moved);
+    auto pub = publishers_.find(old_id);
+    if (pub != publishers_.end()) {
+      publishers_[new_id] = std::move(pub->second);
+      publishers_.erase(old_id);
+    }
+  }
+  if (resolution.joined > 0) {
+    for (const auto & entry : node_map_.entries()) {
+      if (!entry.browse_path.empty()) {
+        log_info("browse_path " + entry.browse_path_str + " -> " + entry.node_id_str);
+      }
+    }
+  }
+  if (!node_map_.unresolved_browse_entries().empty()) {
+    std::string missing;
+    for (const auto & entry : node_map_.unresolved_browse_entries()) {
+      missing += (missing.empty() ? "" : ", ") + entry.browse_path_str;
+    }
+    log_warn("browse_path not found on this server, retried on the next session: " + missing);
+  }
+  if (resolution.joined > 0) {
+    create_value_publishers();
   }
 }
 

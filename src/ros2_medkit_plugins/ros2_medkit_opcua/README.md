@@ -311,7 +311,8 @@ component_id: openplc_runtime
 component_name: OpenPLC Runtime
 
 nodes:
-  - node_id: "ns=2;i=1"          # OPC-UA NodeId (numeric or string)
+  - node_id: "ns=2;i=1"          # OPC-UA NodeId (numeric or string), or
+                                  # browse_path: (see "Addressing nodes by browse path")
     entity_id: tank_process       # SOVD app this belongs to
     data_name: tank_level         # Data point name in REST API
     display_name: Tank Level
@@ -464,6 +465,49 @@ curl -X POST http://localhost:8080/api/v1/apps/tank_process/operations/acknowled
 ```
 
 See `design/index.rst` for the full state machine table and vendor matrix.
+
+### Addressing nodes by browse path (`browse_path`)
+
+A companion specification (OPC 40010 Robotics, Machinery, PackML, ...) fixes
+the BrowseNames of its nodes and the namespace they live in, but not their
+NodeIds and not the namespace index: the server picks both, and may number
+its namespaces differently after a restart. A node map written against one
+server's NodeIds is a map of that server. `browse_path` addresses a node by
+the names the specification gives it instead:
+
+```yaml
+namespaces:                      # alias -> namespace URI
+  di: "http://opcfoundation.org/UA/DI/"
+  rob: "http://opcfoundation.org/UA/Robotics/"
+
+nodes:
+  - browse_path: "di:DeviceSet/*/rob:SafetyStates/*/di:ParameterSet/rob:EmergencyStop"
+    entity_id: robot_safety
+    data_name: emergency_stop
+    data_type: bool
+    alarm: {fault_code: ROBOT_EMERGENCY_STOP, severity: ERROR, threshold: 0.5, above_threshold: true}
+```
+
+- The path starts at the Objects folder. Each step is `<alias>:<BrowseName>`
+  (alias from `namespaces:`), `<index>:<BrowseName>` for a namespace given by
+  index, or `*` for any child - the instance the specification leaves to the
+  vendor to name, such as the robot under `MotionDevices`. A `/` or `\` inside
+  a BrowseName is escaped with `\`. The last step must name a Variable.
+- An entry has either `node_id` or `browse_path`, never both. Everything else
+  (`entity_id`, `data_name`, `alarm` / `status_bits` / `fault_enum`, ...) is
+  the same, and fault codes stay unique across both kinds.
+- The path is resolved by browsing once a session is up, before the poller
+  subscribes. Until then the entry is not served. A path the server does not
+  have is logged and tried again on the next session. Every new session walks
+  every path again, so a server that restarted with its namespaces in another
+  order is followed to the new NodeIds.
+- Under a `*` the children are tried in the server's browse order and the first
+  that completes the path wins. That is unambiguous while the server has one
+  such instance; with two robots on one controller, name the robot instead of
+  `*`. The walk looks at no more than 2000 children per path.
+- A `browse_path` entry wins over an `auto_browse` entry for the same node.
+- Read-only: resolving uses Browse and reads the server's NamespaceArray,
+  nothing else.
 
 ### auto_browse (zero-config discovery)
 
