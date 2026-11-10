@@ -1640,6 +1640,8 @@ struct ReportedBag {
 
   ReportedBag(const ReportedBag &) = delete;
   ReportedBag & operator=(const ReportedBag &) = delete;
+  ReportedBag(ReportedBag &&) = delete;
+  ReportedBag & operator=(ReportedBag &&) = delete;
 
   /// The row the capture would have stored for @p fault_code: footprint, not served.
   ros2_medkit_fault_manager::RosbagFileInfo row_for(const std::string & fault_code) const {

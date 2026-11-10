@@ -128,7 +128,7 @@ std::optional<std::vector<std::string>> rosbag_relative_file_paths(const std::st
 std::optional<std::filesystem::path> rosbag_named_storage_file(const std::string & bag_path,
                                                                const std::string & relative_name) {
   const std::filesystem::path bag = normalized_bag_dir(bag_path);
-  const std::filesystem::path named = (bag / relative_name).lexically_normal();
+  std::filesystem::path named = (bag / relative_name).lexically_normal();
   if (named.parent_path() != bag) {
     return std::nullopt;
   }
