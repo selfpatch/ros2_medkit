@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_fault_manager/core/fault_manager_core.hpp"
+#include "ros2_medkit_fault_manager/core/rosbag_served_size.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -135,8 +136,18 @@ ListOutcome FaultManagerCore::list(const ListQuery & query) {
 }
 
 FaultDetail FaultManagerCore::get(const std::string & code) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  return get_locked(code);
+  std::vector<std::pair<size_t, std::string>> rosbag_paths;
+  FaultDetail detail;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    detail = get_locked(code, rosbag_paths);
+  }
+  // Reads metadata.yaml per recording; outside the lock so fault reports do not wait on disk.
+  for (const auto & [index, path] : rosbag_paths) {
+    auto & entry = detail.snapshots[index];
+    entry.size_bytes = rosbag_served_bytes(path, entry.size_bytes);
+  }
+  return detail;
 }
 
 std::vector<fd::FaultRecord> FaultManagerCore::list_for_entity(const std::string & entity_id) {
@@ -631,7 +642,8 @@ ListOutcome FaultManagerCore::list_locked(const ListQuery & query) {
   return outcome;
 }
 
-FaultDetail FaultManagerCore::get_locked(const std::string & code) {
+FaultDetail FaultManagerCore::get_locked(const std::string & code,
+                                         std::vector<std::pair<size_t, std::string>> & rosbag_paths) {
   const std::string & logger = config_.logger_name;
   FaultDetail detail;
   logf(log_, LogLevel::kDebug, logger, "GetFault request for: %s", code.c_str());
@@ -712,6 +724,7 @@ FaultDetail FaultManagerCore::get_locked(const std::string & code) {
   // One entry per recording, newest first. A fault that keeps re-confirming leaves a
   // trail of black boxes, and every one of them needs its own addressable id here -
   // this list is the only place the fault itself advertises them.
+  std::vector<std::pair<size_t, std::string>> paths;
   try {
     for (const auto & rosbag_info : storage_->get_rosbag_files(code)) {
       SnapshotEntry rosbag_snapshot;
@@ -720,15 +733,18 @@ FaultDetail FaultManagerCore::get_locked(const std::string & code) {
       // The RECORDING, not the fault code: several recordings of one fault would
       // otherwise all carry the same id and collapse into one download.
       rosbag_snapshot.bulk_data_id = rosbag_info.recording_id;
+      // Stored directory total; get() replaces it with the served file's size.
       rosbag_snapshot.size_bytes = rosbag_info.size_bytes;
       rosbag_snapshot.duration_sec = rosbag_info.duration_sec;
       rosbag_snapshot.format = rosbag_info.format;
       rosbag_snapshot.captured_at_ns = rosbag_info.created_at_ns;
+      paths.emplace_back(detail.snapshots.size(), rosbag_info.file_path);
       detail.snapshots.push_back(rosbag_snapshot);
     }
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     return unavailable(e);
   }
+  rosbag_paths = std::move(paths);
 
   logf(log_, LogLevel::kDebug, logger, "GetFault returned fault '%s' with %zu snapshots", code.c_str(),
        detail.snapshots.size());

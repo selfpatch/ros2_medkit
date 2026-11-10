@@ -28,6 +28,7 @@
 #include <stdexcept>
 
 #include "ros2_medkit_fault_manager/core/fault_manager_startup.hpp"
+#include "ros2_medkit_fault_manager/core/rosbag_served_size.hpp"
 #include "ros2_medkit_fault_manager/ros2/fault_msg_conversions.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_fault_manager/time_utils.hpp"
@@ -722,7 +723,7 @@ void FaultManagerNode::handle_get_snapshots(
     nlohmann::json rosbag_json;
     rosbag_json["available"] = true;
     rosbag_json["duration_sec"] = rosbag_info->duration_sec;
-    rosbag_json["size_bytes"] = rosbag_served_bytes(rosbag_info->file_path, rosbag_info->size_bytes);
+    rosbag_json["size_bytes"] = core::rosbag_served_bytes(rosbag_info->file_path, rosbag_info->size_bytes);
     rosbag_json["format"] = rosbag_info->format;
     result["rosbag"] = rosbag_json;
   } else {
@@ -857,7 +858,7 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
   response->fault_codes = attached_codes;
   response->format = rosbag_info->format;
   response->duration_sec = rosbag_info->duration_sec;
-  response->size_bytes = rosbag_served_bytes(rosbag_info->file_path, rosbag_info->size_bytes);
+  response->size_bytes = core::rosbag_served_bytes(rosbag_info->file_path, rosbag_info->size_bytes);
 
   RCLCPP_DEBUG(get_logger(), "GetRosbag returned file '%s' for %s", rosbag_info->file_path.c_str(), subject.c_str());
 }
@@ -909,7 +910,7 @@ void FaultManagerNode::handle_list_rosbags(
     response->file_paths.push_back(info.file_path);
     response->formats.push_back(info.format);
     response->durations_sec.push_back(info.duration_sec);
-    response->sizes_bytes.push_back(rosbag_served_bytes(info.file_path, info.size_bytes));
+    response->sizes_bytes.push_back(core::rosbag_served_bytes(info.file_path, info.size_bytes));
     response->created_at_ns.push_back(info.created_at_ns);
   }
 

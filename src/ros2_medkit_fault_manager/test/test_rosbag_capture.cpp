@@ -44,6 +44,7 @@
 #include "rcutils/logging.h"
 #include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
 #include "ros2_medkit_fault_manager/core/recording_manifest.hpp"
+#include "ros2_medkit_fault_manager/core/rosbag_served_size.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
@@ -592,9 +593,7 @@ TEST(RosbagHighBandwidthTopicTest, MatchesSensorStreamsButNotLookalikes) {
 
 namespace {
 
-/// A bag directory carrying a real ``metadata.yaml``, written by the same library
-/// rosbag2 writes it with, so the parse under test is the parse that runs in
-/// production.
+/// A bag directory whose metadata.yaml is written by rosbag2's own MetadataIo, the document a real bag carries.
 class ServedBytesBag {
  public:
   explicit ServedBytesBag(const std::string & label) {
@@ -669,9 +668,9 @@ TEST(RosbagServedBytesTest, ReportsTheStorageFileNotTheDirectoryTotal) {
   // Not vacuous: metadata.yaml is on disk too, so the two numbers really differ.
   ASSERT_GT(stored_total, served) << "metadata.yaml did not land, so there is nothing to tell apart";
 
-  EXPECT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), served)
+  EXPECT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), served)
       << "the reported size must be what a download transfers";
-  EXPECT_NE(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), stored_total)
+  EXPECT_NE(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), stored_total)
       << "metadata.yaml is not served, so it must not be counted";
 }
 
@@ -683,7 +682,7 @@ TEST(RosbagServedBytesTest, AnUnreadableMetadataFallsBackToTheStoredTotalNotToZe
   const std::string db3 = bag.add_storage_file("recording_0.db3", 2048);
   bag.write_metadata({db3});
   const size_t stored_total = bag.directory_total();
-  ASSERT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), bag.file_size_of(db3))
+  ASSERT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), bag.file_size_of(db3))
       << "control: an intact bag resolves its storage file";
 
   // Now break only the metadata, leaving the storage file untouched.
@@ -692,9 +691,9 @@ TEST(RosbagServedBytesTest, AnUnreadableMetadataFallsBackToTheStoredTotalNotToZe
     out << "rosbag2_bagfile_information: [this is not a mapping\n";
   }
   const size_t stored_total_after = bag.directory_total();
-  EXPECT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total_after), stored_total_after)
+  EXPECT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total_after), stored_total_after)
       << "an unparseable metadata.yaml falls back to the stored total";
-  EXPECT_NE(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total_after), 0u)
+  EXPECT_NE(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total_after), 0u)
       << "and never to zero, which would describe the recording as empty";
 }
 
@@ -704,7 +703,7 @@ TEST(RosbagServedBytesTest, AMissingMetadataFallsBackToTheStoredTotal) {
   bag.add_storage_file("recording_0.db3", 1024);
   const size_t stored_total = bag.directory_total();
 
-  EXPECT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), stored_total);
+  EXPECT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), stored_total);
 }
 
 TEST(RosbagServedBytesTest, ANamedFileThatIsNotOnDiskFallsBackToTheStoredTotal) {
@@ -713,7 +712,7 @@ TEST(RosbagServedBytesTest, ANamedFileThatIsNotOnDiskFallsBackToTheStoredTotal) 
   bag.write_metadata({"recording_1.db3"});  // names a segment that was never written
   const size_t stored_total = bag.directory_total();
 
-  EXPECT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), stored_total);
+  EXPECT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), stored_total);
 }
 
 namespace {
@@ -727,13 +726,13 @@ namespace {
 void expect_unfollowable_name_falls_back(ServedBytesBag & bag, const std::string & unfollowable_name,
                                          const std::string & in_bag_name) {
   bag.write_metadata({in_bag_name});
-  ASSERT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), bag.directory_total()),
+  ASSERT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), bag.directory_total()),
             bag.file_size_of(in_bag_name))
       << "the in-bag control name was not followed, so this bag says nothing about " << unfollowable_name;
 
   bag.write_metadata({unfollowable_name});
   const size_t stored_total = bag.directory_total();
-  EXPECT_EQ(ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total), stored_total)
+  EXPECT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), stored_total)
       << "a name pointing outside the bag was measured as the recording: " << unfollowable_name;
 }
 
@@ -814,7 +813,7 @@ TEST(RosbagServedBytesTest, ASingleNamedFileIsSizedEvenWithAStrayFileBesideIt) {
   bag.write_metadata({named});
   const size_t stored_total = bag.directory_total();
 
-  const size_t reported = ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total);
+  const size_t reported = ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total);
   EXPECT_EQ(reported, bag.file_size_of(named));
   EXPECT_EQ(reported, 4096u) << "the rule the gateway's listing follows for this shape: the file the bag names";
   EXPECT_NE(reported, bag.file_size_of("recording_1.db3")) << "the stray file is not the recording";
@@ -831,7 +830,7 @@ TEST(RosbagServedBytesTest, ASplitRecordingFallsBackToTheStoredTotal) {
   bag.write_metadata({first, second});
   const size_t stored_total = bag.directory_total();
 
-  const size_t reported = ros2_medkit_fault_manager::rosbag_served_bytes(bag.path(), stored_total);
+  const size_t reported = ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total);
   EXPECT_EQ(reported, stored_total);
   EXPECT_NE(reported, bag.file_size_of(first)) << "picking a segment would advertise a partial recording as whole";
 }
