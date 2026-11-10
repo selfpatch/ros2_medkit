@@ -203,7 +203,7 @@ def _ros2_param(*args):
     deadline = time.monotonic() + PARAM_DISCOVERY_TIMEOUT
     while True:
         completed = subprocess.run(
-            ['ros2', 'param', *args],
+            ['ros2', 'param', args[0], '--no-daemon', *args[1:]],
             capture_output=True, text=True, timeout=30, check=False,
         )
         output = completed.stdout + completed.stderr
