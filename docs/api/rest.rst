@@ -1951,6 +1951,102 @@ fault manager and cannot be deleted via this endpoint.
 - **404 Not Found**: Entity, category, or bulk-data ID not found
 - **405 Method Not Allowed**: Delete attempted on areas or functions
 
+.. _rest-rosbag-recording-files:
+
+Rosbag Recording Manifest and Files
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A recording past ``snapshots.rosbag.max_bag_size_mb`` is several storage files,
+and the download route above serves one file. These two routes let a client
+fetch a whole recording and check what it received.
+
+``GET /api/v1/{entity-path}/bulk-data/rosbags/{recording_id}/manifest``
+
+``GET /api/v1/{entity-path}/bulk-data/rosbags/{recording_id}/files/{index}``
+
+``{recording_id}`` is a recording id, the descriptor ``id`` of the listing. A
+fault code is not accepted here. Authorization is the same as for the download
+route.
+
+**The manifest.** The fault manager writes ``manifest.json`` into the recording
+directory when it closes the recording. The manifest route returns that file
+byte for byte as ``application/json``.
+
+.. code-block:: json
+
+   {
+     "manifest_version": 1,
+     "recording_id": "fault_LIDAR_DEGRADED_1794246561043",
+     "format": "mcap",
+     "created_at_ns": 1794246561043000000,
+     "total_bytes": 589315285,
+     "files": [
+       {
+         "name": "fault_LIDAR_DEGRADED_1794246561043_0.mcap",
+         "size": 53006926,
+         "sha256": "5214ac92d2edc3f9e5fee273b5cfb0c82dae555680973a416502b1f67adb1952"
+       }
+     ]
+   }
+
+- ``files`` is in recording order, the order ``metadata.yaml`` names the files
+  in. Do not sort by name: ``_10`` sorts before ``_2``.
+- ``total_bytes`` is the sum of the file sizes. ``metadata.yaml`` is not listed
+  and not counted.
+- ``format`` is ``mcap`` or ``sqlite3`` and holds for every file.
+- Every file has a ``sha256``, computed once when the recording is closed.
+- The manifest is never rewritten. If a later read of the same id returns
+  different bytes, the id names a different recording now.
+- There are no message counts and no time ranges. Read those from the files.
+
+A recording written before this feature has no manifest, and so does one whose
+manifest could not be written. The listing tells them apart: a descriptor
+carries ``"manifest": true`` in ``x-medkit`` when the recording has a manifest,
+and has no ``manifest`` key otherwise.
+
+**One file.** The file route returns ``files[index]`` as
+``application/octet-stream`` with ``Accept-Ranges: bytes``. ``{index}`` is a
+decimal position in the manifest's ``files``. A file name is not accepted.
+
+.. code-block:: bash
+
+   BASE=http://localhost:8080/api/v1/apps/lidar/bulk-data/rosbags/fault_LIDAR_DEGRADED_1794246561043
+
+   curl -s $BASE/manifest -o manifest.json
+   curl -s $BASE/files/0 -o part_0.mcap
+
+   # Resume file 0 from byte 1000
+   curl -s -H 'Range: bytes=1000-' $BASE/files/0
+
+**Range requests** work as on the download route. A ``200`` carries
+``Content-Length`` of the whole file. A ``206`` carries ``Content-Length`` of
+the returned range. For an open-ended request such as ``bytes=1000-`` the
+``Content-Range`` header may leave the end out (``bytes 1000-/8076737``), so a
+client must accept both that form and ``bytes 1000-8076736/8076737``. A range
+must lie inside the file. A first byte at or past the end, or a last byte past
+the end, is answered with ``416``.
+
+**Response Codes:**
+
+- **200 OK**: The manifest, or the whole file
+- **206 Partial Content**: The requested byte range of the file
+- **404 Not Found** with ``vendor_code`` ``x-medkit-recording-not-found``: the
+  fault manager answered and holds no recording with this id. This is the only
+  answer that says the recording does not exist.
+- **404 Not Found** without that vendor code: unknown entity, a recording that
+  belongs to another entity, a recording without a manifest, an index past the
+  list or not a number, or a file missing on disk. It says nothing about
+  whether the recording exists.
+- **416 Range Not Satisfiable**: the ``Range`` is outside the file.
+  ``parameters.size`` carries the file size.
+- **503 Service Unavailable**: the fault manager did not answer. Try again
+  later.
+
+**The listing is complete or refused.** ``GET
+/api/v1/{entity-path}/bulk-data/rosbags`` answers ``503`` when the fault manager
+cannot be read for any of the sources the entity covers. A ``200`` is a
+complete list, so an empty ``items`` means there are no recordings.
+
 Software Updates
 ----------------
 
@@ -3467,6 +3563,10 @@ Vendor-specific ``x-medkit-*`` codes are enveloped: the response carries
    * - ``x-medkit-update-not-found``
      - 404
      - No update package with that id
+   * - ``x-medkit-recording-not-found``
+     - 404
+     - The fault manager answered and holds no recording with that id. Sent by
+       the recording manifest and file routes only, and only in that case
    * - ``x-medkit-update-already-exists``
      - 400
      - An update package with that id is already registered
@@ -3621,8 +3721,9 @@ declares it as such rather than as a body-less response: the HTTP layer itself
 writes 416 with an empty body, and the gateway's global error handler then
 fills any body-less error response with a ``GenericError``.
 
-Only the six bulk-data download routes declare a ``Range`` *request* parameter,
-because they are the only routes where sending one is useful. 416 is
+Only the bulk-data download routes and the recording file routes declare a
+``Range`` *request* parameter, because they are the only routes where sending
+one is useful. 416 is
 nevertheless reachable everywhere.
 
 416 is not the only status answered this way, and the ``error_code`` in the

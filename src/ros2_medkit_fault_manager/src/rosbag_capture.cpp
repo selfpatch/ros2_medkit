@@ -36,6 +36,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "ros2_medkit_fault_manager/core/recording_manifest.hpp"
 #include "ros2_medkit_fault_manager/time_utils.hpp"
 
 namespace ros2_medkit_fault_manager {
@@ -560,6 +561,8 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
     // The size is measured after the close: metadata.yaml exists only once the
     // writer is gone, and nothing here still needs either lock.
 
+    const int64_t created_at_ns = get_wall_clock_ns();
+    write_manifest(bag_path, created_at_ns);
     size_t bag_size = calculate_bag_size(bag_path);
 
     RosbagFileInfo info;
@@ -575,7 +578,7 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
     // serialised against each other by the node-level rosbag mutex.
     info.duration_sec = recording_span_sec;
     info.size_bytes = bag_size;
-    info.created_at_ns = get_wall_clock_ns();
+    info.created_at_ns = created_at_ns;
 
     if (store_rows_or_discard_bag({info}, bag_path)) {
       RCLCPP_INFO(node_->get_logger(), "Bag file created: %s (%.2f MB)", bag_path.c_str(),
@@ -1467,6 +1470,16 @@ void RosbagCapture::enforce_storage_limits(const std::string & keep_recording_id
   }
 }
 
+void RosbagCapture::write_manifest(const std::string & bag_path, int64_t created_at_ns) {
+  try {
+    if (const auto error = core::write_recording_manifest(bag_path, created_at_ns)) {
+      RCLCPP_WARN(node_->get_logger(), "No manifest written for recording '%s': %s", bag_path.c_str(), error->c_str());
+    }
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(node_->get_logger(), "No manifest written for recording '%s': %s", bag_path.c_str(), e.what());
+  }
+}
+
 bool RosbagCapture::store_rows_or_discard_bag(const std::vector<RosbagFileInfo> & rows, const std::string & bag_path) {
   // Reported rather than logged inside the handler, because a handler cannot throw
   // here and building the message is the one part that could.
@@ -1637,6 +1650,8 @@ void RosbagCapture::finalize_post_fault_recording() {
   destroy_writer_under_plugin_lock(closing_writer);
 
   // Calculate final size and store metadata
+  const int64_t created_at_ns = get_wall_clock_ns();
+  write_manifest(bag_path, created_at_ns);
   size_t bag_size = calculate_bag_size(bag_path);
 
   RosbagFileInfo info;
@@ -1648,7 +1663,7 @@ void RosbagCapture::finalize_post_fault_recording() {
   // a partly-filled buffer reports what it holds.
   info.duration_sec = recording_span_sec;
   info.size_bytes = bag_size;
-  info.created_at_ns = get_wall_clock_ns();
+  info.created_at_ns = created_at_ns;
 
   // One recording, one row per fault it covers: the correlated faults that
   // confirmed inside this window each need their own lookup key to serve it.

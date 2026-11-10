@@ -72,6 +72,17 @@ class BulkDataHandlers {
   /// DELETE /{entity}/bulk-data/{category_id}/{file_id} - 204 No Content.
   http::Result<http::NoContent> remove(const http::TypedRequest & req);
 
+  /// GET /{entity}/bulk-data/rosbags/{recording_id}/manifest - the recording's
+  /// manifest.json, byte for byte.
+  http::Result<std::string> recording_manifest(const http::TypedRequest & req);
+
+  /// JSON Schema of the manifest, for the OpenAPI document.
+  static nlohmann::json recording_manifest_schema();
+
+  /// GET /{entity}/bulk-data/rosbags/{recording_id}/files/{index} - one storage
+  /// file of the recording, addressed by its position in the manifest.
+  http::Result<http::BinaryResponse> recording_file(const http::TypedRequest & req);
+
   /**
    * @brief Get MIME type for rosbag format.
    * @param format Storage format ("mcap", "sqlite3", "db3")

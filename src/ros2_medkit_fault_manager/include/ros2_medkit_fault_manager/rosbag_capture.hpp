@@ -280,6 +280,9 @@ class RosbagCapture {
   /// Enforce storage limits by deleting oldest bags, never @p keep_recording_id
   void enforce_storage_limits(const std::string & keep_recording_id);
 
+  /// Write manifest.json into a closed recording. Logs and carries on when it cannot.
+  void write_manifest(const std::string & bag_path, int64_t created_at_ns);
+
   /// Make @p rows durable for the finished bag at @p bag_path, or discard the bag.
   ///
   /// Both finalisation paths end here, so a bag that cannot be looked up never

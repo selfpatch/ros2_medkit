@@ -579,7 +579,8 @@ Rosbag Configuration Options
    * - ``snapshots.rosbag.max_bag_size_mb``
      - ``50``
      - Maximum size per bag file in MB. When exceeded, rosbag2 creates
-       additional segment files.
+       additional segment files. A recording split this way is fetched file by
+       file, see :ref:`below <tutorial-split-recording>`.
    * - ``snapshots.rosbag.max_total_storage_mb``
      - ``500``
      - Total storage limit for all bag files. Oldest bags are automatically
@@ -831,6 +832,31 @@ recordings had their own identity keep working.
    curl -O -J http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/fault_MOTOR_OVERHEAT_1738664999000
 
 The ``-J`` flag uses the server-provided filename from ``Content-Disposition`` header.
+
+.. _tutorial-split-recording:
+
+**A recording split across several files.** A recording larger than
+``max_bag_size_mb`` is several storage files, and the download above serves one
+of them. The fault manager writes a ``manifest.json`` next to the files when it
+closes the recording. It lists the files in order, with the size and sha256 of
+each. The listing marks such a recording with ``"manifest": true`` in
+``x-medkit``. Fetch the manifest, then each file by its position in it:
+
+.. code-block:: bash
+
+   BASE=http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/fault_MOTOR_OVERHEAT_1738664999000
+
+   curl -s $BASE/manifest -o manifest.json
+   mkdir fault_MOTOR_OVERHEAT_1738664999000
+   for i in $(seq 0 $(($(jq '.files | length' manifest.json) - 1))); do
+     name=$(jq -r ".files[$i].name" manifest.json)
+     curl -s $BASE/files/$i -o fault_MOTOR_OVERHEAT_1738664999000/$name
+     echo "$(jq -r ".files[$i].sha256" manifest.json)  fault_MOTOR_OVERHEAT_1738664999000/$name" | sha256sum -c
+   done
+
+An interrupted file download resumes with ``Range: bytes=<offset>-``. See
+:ref:`rest-rosbag-recording-files` for the manifest fields and the error
+answers.
 
 **3. Play back the rosbag:**
 

@@ -702,6 +702,11 @@ if(BUILD_TESTING)
   medkit_add_gtest(test_bulkdata_handlers test/test_bulkdata_handlers.cpp)
   target_link_libraries(test_bulkdata_handlers gateway_ros2)
 
+  # Rosbag recording lookup, manifest and file addressing, Range check
+  medkit_add_gtest(test_rosbag_recording test/test_rosbag_recording.cpp)
+  target_link_libraries(test_rosbag_recording gateway_ros2)
+  medkit_test_needs_no_domain(test_rosbag_recording)
+
   # Add subscription manager tests
   medkit_add_gtest(test_subscription_manager test/test_subscription_manager.cpp)
   target_link_libraries(test_subscription_manager gateway_ros2)
