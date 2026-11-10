@@ -1970,7 +1970,8 @@ route.
 
 **The manifest.** The fault manager writes ``manifest.json`` into the recording
 directory when it closes the recording. The manifest route returns that file
-byte for byte as ``application/json``.
+byte for byte as ``application/json``. A ``Range`` header is ignored on this
+route: the answer is always the whole file.
 
 .. code-block:: json
 

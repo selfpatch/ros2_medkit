@@ -59,7 +59,8 @@ inline constexpr std::string_view dto_name<BulkDataCategoryList> = "BulkDataCate
 //   creation_date   - ISO 8601 timestamp string (required)
 //   description     - optional human-readable description
 //   x-medkit        - optional open vendor extension object; for rosbags:
-//                     {fault_code, duration_sec, format}; for user uploads:
+//                     {fault_code, duration_sec, format}, plus manifest: true when the
+//                     recording has a manifest; for user uploads:
 //                     arbitrary metadata JSON object set by the uploader.
 // =============================================================================
 struct BulkDataDescriptor {

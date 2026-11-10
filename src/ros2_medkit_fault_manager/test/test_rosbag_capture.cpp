@@ -797,6 +797,7 @@ TEST_F(RosbagCaptureTest, EvictionKeepsGoingWhenTheSharedBagIsNotEnough) {
   EXPECT_FALSE(std::filesystem::exists(solo_path));
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureTest, EvictionNeverDeletesTheRecordingJustStored) {
   // A recording larger than the whole quota is the newest row, so an oldest-first
   // sweep that stops only under the quota would delete it right after it was written.
@@ -831,6 +832,7 @@ TEST_F(RosbagCaptureTest, EvictionNeverDeletesTheRecordingJustStored) {
   EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 2000u);
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureTest, EvictionSkipsTheKeptRecordingWhereverItSorts) {
   // The kept recording is not always last: rows are ordered by their own timestamps.
   const auto kept_path = (temp_dir_ / "fault_KEPT_1000").string();
@@ -861,6 +863,7 @@ TEST_F(RosbagCaptureTest, EvictionSkipsTheKeptRecordingWhereverItSorts) {
   EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 900u);
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureTest, ABagPathTakenByARecordingIsNotHandedOutAgain) {
   const std::string base = temp_dir_.string();
   const auto first = RosbagCapture::claim_bag_path(base, "SAME_MS", 1785441426087);
@@ -879,6 +882,7 @@ TEST_F(RosbagCaptureTest, ABagPathTakenByARecordingIsNotHandedOutAgain) {
   RosbagCapture::release_bag_path_claim(*second);
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureTest, TwoCapturesOpeningOnTheSameMillisecondGetDistinctPaths) {
   // Neither writer has created its directory yet: the claim alone keeps them apart.
   const std::string base = temp_dir_.string();
@@ -894,12 +898,14 @@ TEST_F(RosbagCaptureTest, TwoCapturesOpeningOnTheSameMillisecondGetDistinctPaths
   EXPECT_TRUE(std::filesystem::is_empty(temp_dir_)) << "a released claim leaves nothing behind";
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureTest, NoBagPathUnderAnUnusableStorageDirectory) {
   const auto blocked = temp_dir_ / "blocked_storage";
   std::ofstream(blocked) << "not a directory";
   EXPECT_FALSE(RosbagCapture::claim_bag_path(blocked.string(), "ANY", 1785441426087).has_value());
 }
 
+// @verifies REQ_INTEROP_088
 TEST(RosbagConfigValidationTest, WarnsWhenOneStorageFileMayExceedTheWholeQuota) {
   const auto warns_about_the_quota = [](int64_t max_bag_size_mb, int64_t max_total_storage_mb) {
     ros2_medkit_fault_manager::core::FaultManagerConfig config;
@@ -2374,6 +2380,7 @@ TEST_F(RosbagCaptureIntegrationTest, TheStorageQuotaEngagesOnABoundaryRecording)
   }
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureIntegrationTest, ARecordingWithoutAPostRollCarriesAManifestToo) {
   // The other finalisation path: no post-fault window, so the bag is closed and
   // stored inside the confirmation itself.
@@ -2405,6 +2412,7 @@ TEST_F(RosbagCaptureIntegrationTest, ARecordingWithoutAPostRollCarriesAManifestT
   capture.stop();
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RosbagCaptureIntegrationTest, ARecordingNeverTakesOverAnExistingBagDirectory) {
   // The bag name carries the millisecond the path is generated in, and nothing made
   // that unique. A capture landing on a name an earlier recording owns failed to

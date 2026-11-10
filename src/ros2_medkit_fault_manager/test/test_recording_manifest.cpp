@@ -76,6 +76,7 @@ class RecordingManifestTest : public ::testing::Test {
   std::filesystem::path bag_;
 };
 
+// @verifies REQ_INTEROP_088
 TEST_F(RecordingManifestTest, Sha256MatchesKnownVectors) {
   write_file("abc", "abc");
   write_file("empty", "");
@@ -83,6 +84,7 @@ TEST_F(RecordingManifestTest, Sha256MatchesKnownVectors) {
   EXPECT_EQ(core::sha256_file_hex((bag_ / "empty").string()), kSha256OfNothing);
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RecordingManifestTest, Sha256CoversAFileLargerThanOneReadBuffer) {
   std::string content(3 * 1024 * 1024 + 17, '\0');
   for (size_t i = 0; i < content.size(); ++i) {
@@ -92,10 +94,12 @@ TEST_F(RecordingManifestTest, Sha256CoversAFileLargerThanOneReadBuffer) {
   EXPECT_EQ(core::sha256_file_hex((bag_ / "big").string()), FaultAuditLog::sha256_hex(content));
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RecordingManifestTest, Sha256OfAMissingFileIsNoValue) {
   EXPECT_FALSE(core::sha256_file_hex((bag_ / "absent").string()).has_value());
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RecordingManifestTest, ListsFilesInMetadataOrderWithSizeAndHash) {
   // `_10` sorts before `_2` in a directory listing, so order must come from metadata.yaml.
   std::vector<std::string> names;
@@ -132,6 +136,7 @@ TEST_F(RecordingManifestTest, ListsFilesInMetadataOrderWithSizeAndHash) {
                                             "total_bytes", "files"}));
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RecordingManifestTest, ReportsTheStorageFormatOfTheBag) {
   write_file("bag_0.db3", "SQLite format 3");
   write_metadata("sqlite3", {"bag_0.db3"});
@@ -139,6 +144,7 @@ TEST_F(RecordingManifestTest, ReportsTheStorageFormatOfTheBag) {
   EXPECT_EQ(nlohmann::json::parse(read_manifest())["format"], "sqlite3");
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RecordingManifestTest, AManifestIsNeverRewritten) {
   write_file("bag_0.mcap", "first");
   write_metadata("mcap", {"bag_0.mcap"});
@@ -150,6 +156,7 @@ TEST_F(RecordingManifestTest, AManifestIsNeverRewritten) {
   EXPECT_EQ(read_manifest(), first);
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RecordingManifestTest, LeavesNoTemporaryFileBehind) {
   write_file("bag_0.mcap", "data");
   write_metadata("mcap", {"bag_0.mcap"});
@@ -163,6 +170,7 @@ TEST_F(RecordingManifestTest, LeavesNoTemporaryFileBehind) {
   EXPECT_EQ(names, (std::vector<std::string>{"bag_0.mcap", "manifest.json", "metadata.yaml"}));
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RecordingManifestTest, NoManifestWhenAStorageFileIsMissing) {
   write_file("bag_0.mcap", "data");
   write_metadata("mcap", {"bag_0.mcap", "bag_1.mcap"});
@@ -172,18 +180,21 @@ TEST_F(RecordingManifestTest, NoManifestWhenAStorageFileIsMissing) {
   EXPECT_FALSE(std::filesystem::exists(bag_ / core::kRecordingManifestFile));
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RecordingManifestTest, NoManifestWithoutMetadata) {
   write_file("bag_0.mcap", "data");
   EXPECT_TRUE(core::write_recording_manifest(bag_.string(), 1).has_value());
   EXPECT_FALSE(std::filesystem::exists(bag_ / core::kRecordingManifestFile));
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RecordingManifestTest, NoManifestWhenMetadataNamesNoFile) {
   write_metadata("mcap", {});
   EXPECT_TRUE(core::write_recording_manifest(bag_.string(), 1).has_value());
   EXPECT_FALSE(std::filesystem::exists(bag_ / core::kRecordingManifestFile));
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RecordingManifestTest, NoManifestForAnUnknownStorageFormat) {
   write_file("bag_0.bin", "data");
   write_metadata("custom", {"bag_0.bin"});
@@ -191,12 +202,14 @@ TEST_F(RecordingManifestTest, NoManifestForAnUnknownStorageFormat) {
   EXPECT_FALSE(std::filesystem::exists(bag_ / core::kRecordingManifestFile));
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RecordingManifestTest, AFileNamedTwiceIsRefused) {
   write_file("bag_0.mcap", "data");
   write_metadata("mcap", {"bag_0.mcap", "bag_0.mcap"});
   EXPECT_TRUE(core::write_recording_manifest(bag_.string(), 1).has_value());
 }
 
+// @verifies REQ_INTEROP_088
 TEST_F(RecordingManifestTest, APathInMetadataIsReducedToItsFileName) {
   // Older rosbag2 releases prefix the entries with the bag directory name.
   write_file("bag_0.mcap", "data");

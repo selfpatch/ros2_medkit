@@ -772,6 +772,9 @@ RouteEntry & RouteRegistry::json_document(const std::string & openapi_path,
     }
     http::TypedRequest typed_req(req);
     auto outcome = handler(typed_req);
+    // The document is served whole: cpp-httplib applies req.ranges to any body.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+    const_cast<httplib::Request &>(req).ranges.clear();
     if (!outcome.has_value()) {
       write_typed_error(res, outcome.error(), renderer);
       return;
