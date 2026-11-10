@@ -272,6 +272,13 @@ class TestBulkDataApi(GatewayTestCase):
             int(response.headers['Content-Length']), len(body),
             'Content-Length disagrees with the body it described',
         )
+        # The only bag here written by rosbag2 itself. A parse that misses the
+        # real metadata.yaml layout omits the field, and the size asserts above
+        # still pass on the fault manager's figure.
+        self.assertEqual(
+            descriptor['x-medkit'].get('storage_files'), 1,
+            'storage_files is missing or wrong for a real rosbag2 bag',
+        )
 
     def test_bulk_data_symlinked_storage_file_is_not_followed(self):
         """A storage file replaced by a symlink to a host file is not sized or served.

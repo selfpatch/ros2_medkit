@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -118,10 +119,8 @@ class BulkDataHandlers {
   /**
    * @brief The storage file `download()` serves for a rosbag path.
    *
-   * A regular file is returned unchanged. For a bag directory: the one file its
-   * ``metadata.yaml`` names, when that is a regular ``.db3`` or ``.mcap`` directly
-   * inside the bag; otherwise the first regular ``.db3`` or ``.mcap`` the directory
-   * yields. A storage file or metadata.yaml that is a symlink is never used. Never throws.
+   * The listing sizes the same file. The rule is ``detail::rosbag_storage``.
+   * Never throws.
    *
    * @param path Rosbag path as stored by the fault manager (file or directory)
    * @return Resolved file path, or empty string if there is none
@@ -220,18 +219,44 @@ std::vector<std::string> rosbag_attached_fault_codes(const nlohmann::json & rosb
  */
 bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std::string & requested_id);
 
+/// One recording's storage, read from its ``metadata.yaml`` once.
+struct RosbagStorage {
+  /// The file the download serves. Empty when there is none.
+  std::string served_file;
+  /// How many storage files ``relative_file_paths`` names. nullopt when the bag
+  /// does not say: no metadata, unreadable metadata, or an empty list.
+  std::optional<std::size_t> file_count;
+};
+
+/**
+ * @brief Which file a recording's download serves, and how many it has.
+ *
+ * When the metadata names files, the served file is the first name, where the
+ * recording starts. If that file is missing or a symlink, or the name is not a
+ * ``.db3`` or ``.mcap`` directly inside the bag, nothing is served: no later
+ * segment, no stray beside it. Only a bag that does not say what it holds is
+ * served by directory order, skipping symlinks, and then the count is unknown.
+ * A bare storage file is one file and is served as is.
+ *
+ * ``file_count`` reaches the client as ``x-medkit.storage_files``. Never throws,
+ * because it runs once per listing row.
+ *
+ * @param bag_path Bag directory or bare storage file, as the fault manager stores it
+ */
+RosbagStorage rosbag_storage(const std::string & bag_path);
+
 /**
  * @brief Size of the file a rosbag download serves, for a single-file recording.
  *
- * A bare storage file is measured as is. A bag directory is measured by the one
- * regular ``.db3`` or ``.mcap`` its ``metadata.yaml`` names directly inside the
- * bag. The fault manager applies the same rule. See "One recording, one size" in
+ * Answers only for a recording held in one storage file: the size of
+ * ``storage.served_file``. nullopt for a split recording, a bag that does not
+ * say how many files it holds, or a file this process cannot read; the caller
+ * then keeps the fault manager's figure. See "One recording, one size" in
  * ``docs/api/rest.rst``. Never throws.
- *
- * @param bag_path Rosbag path as stored by the fault manager (file or directory)
- * @return The file's size, or nullopt when no single followable file is named
- *         or it cannot be read
  */
+std::optional<uint64_t> rosbag_served_bytes(const RosbagStorage & storage);
+
+/// rosbag_served_bytes() for the recording at @p bag_path.
 std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path);
 
 /**
@@ -251,6 +276,9 @@ std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path);
  *
  * The descriptor size is ``rosbag_served_bytes``, or the row's own figure when
  * that is nullopt.
+ *
+ * ``x-medkit.storage_files`` is ``rosbag_storage().file_count``, omitted when
+ * that is nullopt. Each row's metadata is read once.
  *
  * @param rows Rosbag rows as returned by the fault manager
  * @param faults_by_code Faults keyed by code, for timestamp enrichment
