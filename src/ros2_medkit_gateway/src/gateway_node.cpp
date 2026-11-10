@@ -595,18 +595,17 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
             auth_builder.add_client(client_id, client_secret, role);
             RCLCPP_INFO(get_logger(), "Registered client '%s' with role '%s'", client_id.c_str(), role_str.c_str());
           } catch (const std::exception &) {
-            // The role field is not quoted: `id:role:secret` puts the secret there.
+            // No field of a refused entry is logged; any of them may hold a secret.
             RCLCPP_WARN(get_logger(),
-                        "auth.clients entry %zu for id '%s' names an unknown role (viewer, operator, configurator "
-                        "or admin) and was dropped.",
-                        client_position, client_id.c_str());
+                        "auth.clients entry %zu names an unknown role (viewer, operator, configurator or admin) and "
+                        "was dropped.",
+                        client_position);
           }
         } else if (first_colon == std::string::npos) {
           RCLCPP_WARN(get_logger(), "auth.clients entry %zu has no ':' and was dropped. Expected 'id:secret:role'.",
                       client_position);
         } else {
-          RCLCPP_WARN(get_logger(), "auth.clients entry %zu for id '%s' is not 'id:secret:role' and was dropped.",
-                      client_position, client_str.substr(0, first_colon).c_str());
+          RCLCPP_WARN(get_logger(), "auth.clients entry %zu is not 'id:secret:role' and was dropped.", client_position);
         }
       }
 

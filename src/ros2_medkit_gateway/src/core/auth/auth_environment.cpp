@@ -16,7 +16,7 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <set>
+#include <map>
 #include <stdexcept>
 
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
@@ -55,7 +55,7 @@ std::string trim_surrounding_space(const std::string & value) {
 std::vector<std::string> parse_client_entries(const std::string & value, std::vector<std::string> & notices,
                                               std::size_t & entries_seen) {
   std::vector<std::string> accepted;
-  std::set<std::string> ids_taken;
+  std::map<std::string, std::size_t> id_positions;
 
   std::size_t position = 0;
   std::size_t start = 0;
@@ -94,18 +94,17 @@ std::vector<std::string> parse_client_entries(const std::string & value, std::ve
     try {
       (void)string_to_role(role);
     } catch (const std::invalid_argument &) {
-      // An entry written `id:role:secret` has its secret in the role field.
-      notice += " for id \"";
-      notice += id;
-      notice += "\" names an unknown role (viewer, operator, configurator or admin) and was dropped";
+      // Any field of a refused entry may hold a secret, so none is quoted.
+      notice += " names an unknown role (viewer, operator, configurator or admin) and was dropped";
       notices.push_back(std::move(notice));
       continue;
     }
 
-    if (!ids_taken.insert(id).second) {
-      notice += " repeats client id \"";
-      notice += id;
-      notice += "\", which an earlier entry already claimed; the earlier one stands";
+    const auto taken = id_positions.emplace(id, position);
+    if (!taken.second) {
+      notice += " repeats the client id of entry ";
+      notice += std::to_string(taken.first->second);
+      notice += " and was dropped; the earlier one stands";
       notices.push_back(std::move(notice));
       continue;
     }
@@ -140,7 +139,7 @@ AuthEnvironment resolve_auth_environment(const std::optional<std::string> & auth
   }
 
   if (!jwt_secret.has_value()) {
-    if (clients.has_value() && !clients.value().empty()) {
+    if (clients.has_value()) {
       env.notices.push_back(
           "MEDKIT_CLIENTS is set and MEDKIT_JWT_SECRET is unset, so MEDKIT_CLIENTS is ignored and auth.clients from "
           "the parameters stands. Set MEDKIT_JWT_SECRET as well to use the credentials in MEDKIT_CLIENTS.");

@@ -77,7 +77,7 @@ TEST(AuthEnvironmentClientsTest, DuplicateIdKeepsTheFirstEntry) {
   const auto env = parse("svc:first:admin,svc:second:viewer");
   ASSERT_EQ(env.clients.size(), 1U);
   EXPECT_EQ(env.clients[0], "svc:first:admin");
-  EXPECT_TRUE(mentions(env, "repeats client id"));
+  EXPECT_TRUE(mentions(env, "repeats the client id of entry 1"));
 }
 
 TEST(AuthEnvironmentClientsTest, SurroundingWhitespaceIsTrimmedAndInnerKept) {

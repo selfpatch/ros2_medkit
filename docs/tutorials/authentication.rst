@@ -25,6 +25,8 @@ The gateway node reads three environment variables when it loads its
 parameters, so the rule is the same however it is started (``ros2 run``, any
 launch file, a container). The environment wins over the params file and over
 ``-p`` arguments.
+A wrongly typed ``auth.*`` value in a params file still stops the gateway at
+start, even when an environment variable would replace it.
 
 .. list-table::
    :widths: 28 72

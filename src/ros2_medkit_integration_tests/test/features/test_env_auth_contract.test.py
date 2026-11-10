@@ -87,12 +87,15 @@ SWAPPED_ENV_SECRET = 's3cret_swapped_in_the_env_zz'
 PEER_HEADER_PARAM = 'aggregation.peer_auth_header'
 PEER_AUTH_HEADER = 'Bearer zz_peer_token_that_must_not_be_served'
 SECOND_SECRET = 'second_entry_secret_zz'
+# Sit in the id slot of entries that must be refused; no message may carry them.
+CANARY_ID = 'canary_id_zz_must_not_be_logged'
+CANARY_TWO_FIELDS = 'canary_two_fields_zz_must_not_be_logged'
 
 # Every value that must never reach a gateway's output.
 SECRETS = (
     JWT_SECRET, FILE_JWT_SECRET, SECRET_32, SECRET_31, CLIENT_SECRET,
     FILE_CLIENT_SECRET, MALFORMED_CLIENT_SECRET, SWAPPED_FILE_SECRET,
-    SWAPPED_ENV_SECRET, PEER_AUTH_HEADER, SECOND_SECRET,
+    SWAPPED_ENV_SECRET, PEER_AUTH_HEADER, SECOND_SECRET, CANARY_ID, CANARY_TWO_FIELDS,
 )
 
 _PARAMS_DIR = tempfile.mkdtemp(prefix='medkit_env_auth_')
@@ -142,6 +145,9 @@ FILE_CLOSED_PARAMS = _write_params(
 # For the subprocess gateways, which carry the default node name.
 SWEEP_OFF_PARAMS = _write_params('sweep-off.yaml', '/**', False, 'write')
 SWEEP_ON_PARAMS = _write_params('sweep-on.yaml', '/**', True, 'all')
+SWEEP_CANARY_PARAMS = _write_params(
+    'sweep-canary.yaml', '/**', True, 'all', None,
+    [f'{CANARY_ID}:x:wizard', f'{CANARY_TWO_FIELDS}:only'])
 
 
 @pytest.mark.launch_test
@@ -216,7 +222,20 @@ def _param_value(node, name):
         return ast.literal_eval(text)
     if text in ('True', 'False'):
         return text == 'True'
+    if 'Integer value' in output:
+        return int(text)
     return text
+
+
+def _other_value(value):
+    """Return a `ros2 param set` argument of the same type as `value`, but different."""
+    if isinstance(value, bool):
+        return 'false' if value else 'true'
+    if isinstance(value, list):
+        return "['x:y:admin']"
+    if isinstance(value, int):
+        return str(value + 1)
+    return 'other_value'
 
 
 def _b64url(data):
@@ -273,6 +292,7 @@ class _Gateway:
         ]
         self.timeout = timeout
         self.rc = None
+        self.ready = False
         self._chunks = []
         self._process = None
 
@@ -280,7 +300,8 @@ class _Gateway:
     def output(self):
         return b''.join(self._chunks).decode(errors='replace')
 
-    def _read_until(self, marker_or_exit):
+    def _read_until(self, marker):
+        """Return 'marker', 'exit' (output closed) or 'deadline'."""
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             readable, _, _ = select.select([self._process.stdout], [], [], 0.5)
@@ -288,18 +309,29 @@ class _Gateway:
                 continue
             chunk = os.read(self._process.stdout.fileno(), 65536)
             if not chunk:
-                return False
+                return 'exit'
             self._chunks.append(chunk)
-            if marker_or_exit.encode() in b''.join(self._chunks[-2:]):
-                return True
-        return True
+            if marker.encode() in b''.join(self._chunks[-2:]):
+                return 'marker'
+        return 'deadline'
+
+    def assert_up(self):
+        """Assert the gateway printed its ready line and answers HTTP."""
+        self.testcase.assertIsNone(self.rc, self.output[-600:])
+        self.testcase.assertTrue(
+            self.ready, f'no ready line before the deadline: {self.output[-600:]}')
+        self.testcase.assertIn(READY_LINE, self.output)
+        resp = requests.get(f'{SWEEP_BASE_URL}/health', timeout=15)
+        self.testcase.assertIn(resp.status_code, (200, 401, 403))
 
     def __enter__(self):
         self._process = subprocess.Popen(
             self.command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             env=self.env, start_new_session=True,
         )
-        if not self._read_until(READY_LINE):
+        outcome = self._read_until(READY_LINE)
+        self.ready = outcome == 'marker'
+        if outcome == 'exit':
             self._process.wait(timeout=15)
             self.rc = self._process.returncode
         return self
@@ -436,22 +468,27 @@ class TestIntrospectionAgreesWithEnforcement(GatewayTestCase):
             [f'{CLIENT_ID}:<from MEDKIT_CLIENTS>:admin'])
 
     def test_03_every_auth_parameter_is_refused_and_unchanged(self):
-        for name, value in (('auth.enabled', 'false'), ('auth.require_auth_for', 'none'),
-                            ('auth.jwt_secret', 'another_secret_zz'),
-                            ('aggregation.peer_auth_header', 'Bearer other')):
+        rc, listing = _ros2_param('list', self.NODE)
+        self.assertEqual(rc, 0, listing)
+        names = [line.strip() for line in listing.splitlines()
+                 if line.strip().startswith('auth.') or line.strip() == PEER_HEADER_PARAM]
+        self.assertIn('auth.enabled', names, listing)
+        self.assertIn('auth.clients', names, listing)
+        self.assertIn(PEER_HEADER_PARAM, names, listing)
+        for name in names:
             with self.subTest(parameter=name):
-                _, output = _ros2_param('set', self.NODE, name, value)
+                before = _param_value(self.NODE, name)
+                _, output = _ros2_param('set', self.NODE, name, _other_value(before))
                 self.assertIn('read at start', output, output)
                 self.assertNotIn('Set parameter successful', output, output)
-        self.assertIs(_param_value(self.NODE, 'auth.enabled'), True)
-        self.assertEqual(_param_value(self.NODE, 'auth.jwt_secret'), '<from MEDKIT_JWT_SECRET>')
+                self.assertEqual(_param_value(self.NODE, name), before)
         resp = requests.get(f'{CLOSED_BASE_URL}/areas', timeout=15)
         self.assertEqual(resp.status_code, 401, resp.text)
 
     def test_04_a_non_auth_parameter_is_untouched_by_the_guard(self):
         _, output = _ros2_param('set', self.NODE, 'refresh_interval_ms', '3000')
         self.assertIn('Set parameter successful', output, output)
-        self.assertEqual(_param_value(self.NODE, 'refresh_interval_ms'), '3000')
+        self.assertEqual(_param_value(self.NODE, 'refresh_interval_ms'), 3000)
 
     def test_05_a_param_load_applies_what_it_may_and_refuses_the_rest(self):
         """`ros2 param load` sets each key in turn: the auth entry is refused, the rest applies."""
@@ -466,7 +503,7 @@ class TestIntrospectionAgreesWithEnforcement(GatewayTestCase):
             )
         _, output = _ros2_param('load', self.NODE, path)
         self.assertIn('read at start', output, output)
-        self.assertEqual(_param_value(self.NODE, 'refresh_interval_ms'), '4500')
+        self.assertEqual(_param_value(self.NODE, 'refresh_interval_ms'), 4500)
         self.assertIs(_param_value(self.NODE, 'auth.enabled'), True)
         self.assertEqual(requests.get(f'{CLOSED_BASE_URL}/areas', timeout=15).status_code, 401)
 
@@ -554,7 +591,7 @@ class TestEnvironmentSweep(unittest.TestCase):
 
     def test_01_no_variable_set_leaves_main_behaviour(self):
         with _Gateway(self) as gateway:
-            self.assertIsNone(gateway.rc, gateway.output[-600:])
+            gateway.assert_up()
             self.assertEqual(_anonymous_status('/areas'), 200)
             self.assertEqual(_anonymous_status('/health'), 200)
             self.assertIs(_param_value('/ros2_medkit_gateway', 'auth.enabled'), False)
@@ -564,7 +601,7 @@ class TestEnvironmentSweep(unittest.TestCase):
 
     def test_02_a_file_closed_gateway_without_variables_is_unchanged(self):
         with _Gateway(self, params_file=SWEEP_ON_PARAMS) as gateway:
-            self.assertIsNone(gateway.rc, gateway.output[-600:])
+            gateway.assert_up()
             self.assertEqual(_anonymous_status('/areas'), 401)
             token = _authorize(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET)
             self.assertEqual(token.status_code, 200, token.text)
@@ -575,7 +612,7 @@ class TestEnvironmentSweep(unittest.TestCase):
             self.assertEqual(gateway.rc, 1, gateway.output[-600:])
             self.assertIn('MEDKIT_JWT_SECRET', gateway.output)
         with _Gateway(self, {'MEDKIT_JWT_SECRET': SECRET_32}) as gateway:
-            self.assertIsNone(gateway.rc, gateway.output[-600:])
+            gateway.assert_up()
             self.assertEqual(_anonymous_status('/areas'), 401)
 
     def test_04_an_empty_secret_refuses_to_start_and_names_the_variable(self):
@@ -589,26 +626,26 @@ class TestEnvironmentSweep(unittest.TestCase):
 
     def test_05_disabled_wins_over_an_empty_secret(self):
         with _Gateway(self, {'MEDKIT_JWT_SECRET': '', 'MEDKIT_AUTH_DISABLED': '1'}) as gateway:
-            self.assertIsNone(gateway.rc, gateway.output[-600:])
+            gateway.assert_up()
             self.assertEqual(_anonymous_status('/areas'), 200)
 
     def test_06_only_the_literal_one_disables(self):
         with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_AUTH_DISABLED': '1'},
                       params_file=SWEEP_ON_PARAMS) as gateway:
-            self.assertIsNone(gateway.rc, gateway.output[-600:])
+            gateway.assert_up()
             self.assertEqual(_anonymous_status('/areas'), 200)
         for value in ('0', 'true', ''):
             with self.subTest(value=value):
                 with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET,
                                      'MEDKIT_AUTH_DISABLED': value},
                               params_file=SWEEP_OFF_PARAMS) as gateway:
-                    self.assertIsNone(gateway.rc, gateway.output[-600:])
+                    gateway.assert_up()
                     self.assertEqual(_anonymous_status('/areas'), 401)
         for value in ('0', 'true', ''):
             with self.subTest(value=value, secret=False):
                 with _Gateway(self, {'MEDKIT_AUTH_DISABLED': value},
                               params_file=SWEEP_ON_PARAMS) as gateway:
-                    self.assertIsNone(gateway.rc, gateway.output[-600:])
+                    gateway.assert_up()
                     self.assertEqual(_anonymous_status('/areas'), 401)
 
     def test_07_the_secret_beats_every_params_source(self):
@@ -619,7 +656,7 @@ class TestEnvironmentSweep(unittest.TestCase):
                       extra_args=('-p', 'auth.enabled:=false',
                                   '-p', 'auth.require_auth_for:=write',
                                   '-p', f'auth.jwt_secret:={SECOND_SECRET}_pad_to_32')) as gateway:
-            self.assertIsNone(gateway.rc, gateway.output[-600:])
+            gateway.assert_up()
             self.assertEqual(_anonymous_status('/areas'), 401)
             token = _authorize(SWEEP_BASE_URL, CLIENT_ID, CLIENT_SECRET)
             self.assertEqual(token.status_code, 200, token.text)
@@ -635,7 +672,8 @@ class TestEnvironmentSweep(unittest.TestCase):
             self.assertIn('auth.jwt_algorithm is RS256 (parameters)', line)
         with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET},
                       extra_args=('-p', 'auth.jwt_algorithm:=HS256')) as gateway:
-            self.assertIsNone(gateway.rc, gateway.output[-600:])
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 401)
 
     def test_09_a_refusal_names_where_each_value_came_from(self):
         with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET},
@@ -651,23 +689,29 @@ class TestEnvironmentSweep(unittest.TestCase):
     def test_10_clients_unset_leaves_the_files_clients(self):
         with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET},
                       params_file=SWEEP_OFF_PARAMS) as gateway:
-            self.assertIsNone(gateway.rc, gateway.output[-600:])
+            gateway.assert_up()
             token = _authorize(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET)
             self.assertEqual(token.status_code, 200, token.text)
 
     def test_11_clients_without_a_secret_are_ignored_with_a_warning(self):
         with _Gateway(self, {'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin'},
                       params_file=SWEEP_ON_PARAMS) as gateway:
-            self.assertIsNone(gateway.rc, gateway.output[-600:])
+            gateway.assert_up()
             self.assertIn('MEDKIT_CLIENTS is set and MEDKIT_JWT_SECRET is unset', gateway.output)
             self.assertEqual(
                 _status(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET), 200)
             self.assertNotEqual(_status(SWEEP_BASE_URL, CLIENT_ID, CLIENT_SECRET), 200)
 
+    def test_11b_an_empty_clients_value_without_a_secret_is_ignored_with_a_warning(self):
+        with _Gateway(self, {'MEDKIT_CLIENTS': ''}, params_file=SWEEP_ON_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertIn('MEDKIT_CLIENTS is set and MEDKIT_JWT_SECRET is unset', gateway.output)
+            self.assertEqual(_status(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET), 200)
+
     def test_12_an_empty_clients_value_means_no_clients_and_warns(self):
         with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': ''},
                       params_file=SWEEP_OFF_PARAMS) as gateway:
-            self.assertIsNone(gateway.rc, gateway.output[-600:])
+            gateway.assert_up()
             self.assertIn('MEDKIT_CLIENTS is empty', gateway.output)
             self.assertNotEqual(
                 _status(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET), 200)
@@ -684,27 +728,57 @@ class TestEnvironmentSweep(unittest.TestCase):
                    f'{MALFORMED_CLIENT_SECRET}:x,swapped:admin:{SWAPPED_ENV_SECRET}')
         env = {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': clients}
         with _Gateway(self, env) as gateway:
-            self.assertIsNone(gateway.rc, gateway.output[-600:])
+            gateway.assert_up()
             self.assertEqual(_status(SWEEP_BASE_URL, 'good', CLIENT_SECRET), 200)
             self.assertIn('MEDKIT_CLIENTS entry 2 is not', gateway.output)
             self.assertIn('MEDKIT_CLIENTS entry 3 is not', gateway.output)
-            self.assertIn('MEDKIT_CLIENTS entry 4 for id "swapped" names an unknown role',
-                          gateway.output)
+            self.assertIn('MEDKIT_CLIENTS entry 4 names an unknown role', gateway.output)
+            self.assertNotIn('swapped', gateway.output)
 
     def test_15_a_duplicate_id_keeps_the_first_entry_and_warns(self):
         clients = f'dup:{CLIENT_SECRET}:admin,dup:{SECOND_SECRET}:viewer'
         env = {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': clients}
         with _Gateway(self, env) as gateway:
-            self.assertIsNone(gateway.rc, gateway.output[-600:])
-            self.assertIn('repeats client id "dup"', gateway.output)
+            gateway.assert_up()
+            self.assertIn(
+                'MEDKIT_CLIENTS entry 2 repeats the client id of entry 1', gateway.output)
+            self.assertNotIn('"dup"', gateway.output)
             self.assertEqual(_status(SWEEP_BASE_URL, 'dup', CLIENT_SECRET), 200)
             self.assertNotEqual(_status(SWEEP_BASE_URL, 'dup', SECOND_SECRET), 200)
+
+    def test_15b_a_refused_entry_is_reported_by_position_only(self):
+        """The id slot of a shifted entry can hold a secret, so no field is logged."""
+        env = {'MEDKIT_JWT_SECRET': JWT_SECRET,
+               'MEDKIT_CLIENTS': f'{CANARY_ID}:x:wizard,{CANARY_TWO_FIELDS}:only,'
+                                 f'good:{CLIENT_SECRET}:admin'}
+        with _Gateway(self, env) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_status(SWEEP_BASE_URL, 'good', CLIENT_SECRET), 200)
+            self.assertNotIn(CANARY_ID, gateway.output)
+            self.assertNotIn(CANARY_TWO_FIELDS, gateway.output)
+            self.assertIn('MEDKIT_CLIENTS entry 1 names an unknown role', gateway.output)
+
+    def test_15c_a_refused_file_entry_is_reported_by_position_only(self):
+        with _Gateway(self, params_file=SWEEP_CANARY_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_status(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET), 200)
+            self.assertNotIn(CANARY_ID, gateway.output)
+            self.assertNotIn(CANARY_TWO_FIELDS, gateway.output)
+            self.assertIn('auth.clients entry 2 names an unknown role', gateway.output)
+            self.assertIn('auth.clients entry 3 is not', gateway.output)
+
+    def test_15d_a_disabled_value_other_than_one_leaves_a_default_gateway_open(self):
+        for value in ('0', 'true', ''):
+            with self.subTest(value=value):
+                with _Gateway(self, {'MEDKIT_AUTH_DISABLED': value}) as gateway:
+                    gateway.assert_up()
+                    self.assertEqual(_anonymous_status('/areas'), 200)
 
     def test_16_surrounding_whitespace_is_trimmed(self):
         clients = f' one:{CLIENT_SECRET}:admin ,\ttwo:{SECOND_SECRET}:viewer\t'
         env = {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': clients}
         with _Gateway(self, env) as gateway:
-            self.assertIsNone(gateway.rc, gateway.output[-600:])
+            gateway.assert_up()
             self.assertEqual(_status(SWEEP_BASE_URL, 'one', CLIENT_SECRET), 200)
             self.assertEqual(_status(SWEEP_BASE_URL, 'two', SECOND_SECRET), 200)
 
