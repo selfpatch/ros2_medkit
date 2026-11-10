@@ -53,7 +53,9 @@ string format
 # Total duration of recording in seconds.
 float64 duration_sec
 
-# File size in bytes.
+# Bytes the download serves: the one storage file the bag's metadata.yaml names.
+# Otherwise the bag directory total: a split recording, missing or unreadable
+# metadata, or a named file that is absent or not a regular file inside the bag.
 uint64 size_bytes
 
 # Error message if success is false.

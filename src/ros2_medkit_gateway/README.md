@@ -1220,6 +1220,9 @@ ros2 bag play fault_MOTOR_OVERHEAT_1738664999000.sqlite3
 A lone storage file needs no `metadata.yaml` beside it: both commands read the
 topics, the message count and the duration out of the file itself.
 
+On Humble, reading `.mcap` needs the plugin installed first:
+`sudo apt install ros-humble-rosbag2-storage-mcap`.
+
 **Differences from JSON Snapshots:**
 
 | Feature | JSON Snapshots | Rosbag Capture |
