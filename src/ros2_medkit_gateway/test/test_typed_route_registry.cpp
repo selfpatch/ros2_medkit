@@ -600,6 +600,44 @@ TEST(TypedRouteRegistry, BinaryDownloadErrorIsNotCutByTheRangeOfTheRequest) {
   }
 }
 
+TEST(TypedRouteRegistry, JsonDocumentIsNotCutByTheRangeOfTheRequest) {
+  // The bytes of a JSON document are what a client hashes. cpp-httplib applies a
+  // Range to any body, so the document came back as a slice of itself under a 200.
+  RouteRegistry reg;
+  const std::string document = R"({"manifest_version":1,"files":[{"name":"a_0.mcap","size":16}]})";
+  std::function<Result<std::string>(TypedRequest)> ok = [document](TypedRequest /*req*/) -> Result<std::string> {
+    return document;
+  };
+  std::function<Result<std::string>(TypedRequest)> missing = [](TypedRequest /*req*/) -> Result<std::string> {
+    ros2_medkit_gateway::ErrorInfo err;
+    err.code = "resource-not-found";
+    err.message = "No such document";
+    err.http_status = 404;
+    return tl::unexpected(err);
+  };
+  const nlohmann::json schema{{"type", "object"}, {"additionalProperties", true}};
+  reg.json_document("/test/document", std::move(ok), "A document", schema).tag("Test").summary("Document");
+  reg.json_document("/test/no-document", std::move(missing), "A document", schema).tag("Test").summary("Document");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  for (const char * range : {"bytes=10-", "bytes=100000-", "bytes=0-3"}) {
+    auto r = cli.Get("/api/v1/test/document", {{"Range", range}});
+    ASSERT_TRUE(r) << range;
+    EXPECT_EQ(r->status, 200) << range;
+    EXPECT_FALSE(r->has_header("Content-Range")) << range;
+    EXPECT_EQ(r->body, document) << range;
+
+    auto e = cli.Get("/api/v1/test/no-document", {{"Range", range}});
+    ASSERT_TRUE(e) << range;
+    EXPECT_EQ(e->status, 404) << range;
+    EXPECT_FALSE(e->has_header("Content-Range")) << range;
+    const auto body = nlohmann::json::parse(e->body, nullptr, false);
+    ASSERT_TRUE(body.is_object()) << range << ": " << e->body;
+    EXPECT_EQ(body.value("error_code", ""), "resource-not-found") << range;
+  }
+}
+
 TEST(TypedRouteRegistry, BinaryDownloadDeclaresBothSuccessStatusesAndMarksItself) {
   // Two 2xx codes are only legitimate because the route says why - the document
   // contract test reads `x-medkit-partial-content` to tell this apart from a

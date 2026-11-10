@@ -1104,12 +1104,12 @@ void RosbagCapture::discard_active_writer(const std::string & bag_path) {
 }
 
 std::optional<std::string> RosbagCapture::open_bag_writer(const std::string & fault_code) {
-  const auto claimed = generate_bag_path(fault_code);
+  auto claimed = generate_bag_path(fault_code);
   if (!claimed) {
     RCLCPP_ERROR(node_->get_logger(), "No free bag path for fault '%s'", fault_code.c_str());
     return std::nullopt;
   }
-  const std::string bag_path = *claimed;
+  std::string bag_path = std::move(*claimed);
 
   try {
     rosbag2_storage::StorageOptions storage_options;
@@ -1327,7 +1327,7 @@ std::optional<std::string> RosbagCapture::claim_bag_path(const std::string & bas
   }
   constexpr int kMaxAttempts = 1000;
   for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-    const std::string candidate = base_path + "/" + bag_directory_name(fault_code, timestamp_ms + attempt);
+    std::string candidate = base_path + "/" + bag_directory_name(fault_code, timestamp_ms + attempt);
     // create_directory is atomic: of two captures racing for one name, one gets the claim.
     if (!std::filesystem::create_directory(candidate + kBagPathClaimSuffix, ec) || ec) {
       ec.clear();
