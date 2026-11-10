@@ -1999,6 +1999,8 @@ route: the answer is always the whole file.
 - The manifest is never rewritten. If a later read of the same id returns
   different bytes, the id names a different recording now.
 - There are no message counts and no time ranges. Read those from the files.
+- A symbolic link is never part of a recording. A recording whose storage file
+  is a link gets no manifest, and the routes do not follow a link.
 
 A recording written before this feature has no manifest, and so does one whose
 manifest could not be written. The listing tells them apart: a descriptor
@@ -2036,7 +2038,8 @@ the end, is answered with ``416``.
   answer that says the recording does not exist.
 - **404 Not Found** without that vendor code: unknown entity, a recording that
   belongs to another entity, a recording without a manifest, an index past the
-  list or not a number, or a file missing on disk. It says nothing about
+  list or not a number, or a file that is missing on disk or is a symbolic
+  link. It says nothing about
   whether the recording exists.
 - **416 Range Not Satisfiable**: the ``Range`` is outside the file.
   ``parameters.size`` carries the file size.

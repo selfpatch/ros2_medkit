@@ -48,6 +48,10 @@ struct FileCloser {
   }
 };
 
+std::string json_string(const std::string & text) {
+  return nlohmann::json(text).dump();
+}
+
 }  // namespace
 
 std::optional<std::string> sha256_file_hex(const std::string & path) {
@@ -112,7 +116,8 @@ std::optional<std::string> build_recording_manifest(const std::string & bag_path
     return std::nullopt;
   }
 
-  nlohmann::ordered_json files = nlohmann::ordered_json::array();
+  // Written by hand: the keys keep this order, which a sorted JSON object would not.
+  std::string files;
   uint64_t total_bytes = 0;
   std::set<std::string> seen;
   for (const auto & name : names) {
@@ -122,7 +127,8 @@ std::optional<std::string> build_recording_manifest(const std::string & bag_path
     }
     const std::filesystem::path file = bag_dir / name;
     std::error_code ec;
-    if (!std::filesystem::is_regular_file(file, ec)) {
+    // A link is not followed: the manifest covers the files of this directory only.
+    if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(file, ec))) {
       error = "storage file missing: " + name;
       return std::nullopt;
     }
@@ -136,18 +142,16 @@ std::optional<std::string> build_recording_manifest(const std::string & bag_path
       error = "cannot hash storage file: " + name;
       return std::nullopt;
     }
-    files.push_back({{"name", name}, {"size", static_cast<uint64_t>(size)}, {"sha256", *sha256}});
+    files += files.empty() ? "\n" : ",\n";
+    files += "    {\n      \"name\": " + json_string(name) + ",\n      \"size\": " + std::to_string(size) +
+             ",\n      \"sha256\": " + json_string(*sha256) + "\n    }";
     total_bytes += static_cast<uint64_t>(size);
   }
 
-  nlohmann::ordered_json manifest;
-  manifest["manifest_version"] = kManifestVersion;
-  manifest["recording_id"] = rosbag_recording_id(bag_path);
-  manifest["format"] = storage_id;
-  manifest["created_at_ns"] = created_at_ns;
-  manifest["total_bytes"] = total_bytes;
-  manifest["files"] = std::move(files);
-  return manifest.dump(2) + "\n";
+  return "{\n  \"manifest_version\": " + std::to_string(kManifestVersion) +
+         ",\n  \"recording_id\": " + json_string(rosbag_recording_id(bag_path)) +
+         ",\n  \"format\": " + json_string(storage_id) + ",\n  \"created_at_ns\": " + std::to_string(created_at_ns) +
+         ",\n  \"total_bytes\": " + std::to_string(total_bytes) + ",\n  \"files\": [" + files + "\n  ]\n}\n";
 }
 
 std::optional<std::string> write_recording_manifest(const std::string & bag_path, int64_t created_at_ns) {

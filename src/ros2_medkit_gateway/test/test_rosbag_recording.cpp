@@ -235,6 +235,16 @@ TEST_F(FindRecordingTest, ADeclinedLookupOfAListedRecordingIsNotAnAbsentRecordin
 }
 
 // @verifies REQ_INTEROP_073
+TEST_F(FindRecordingTest, ADeclinedLookupOfAnEntityWithNoSourceProvesNoAbsence) {
+  // Nothing can be listed for such an entity, so a store that could not be read
+  // would otherwise pass for a recording that does not exist.
+  transport_->get_rosbag_declines_everything = true;
+  EXPECT_EQ(find("fault_LIDAR_1000", {}).status, RecordingLookupStatus::kNotInEntity);
+  EXPECT_EQ(find("fault_LIDAR_9999", {}).status, RecordingLookupStatus::kNotInEntity);
+  EXPECT_EQ(transport_->list_rosbags_calls, 0);
+}
+
+// @verifies REQ_INTEROP_073
 TEST_F(FindRecordingTest, AnUnansweredFaultReadIsNotARefusal) {
   transport_->get_fault_unavailable = true;
   EXPECT_EQ(find("fault_LIDAR_1000").status, RecordingLookupStatus::kUnavailable);
@@ -366,6 +376,17 @@ TEST_F(RecordingFilesTest, AManifestCannotNameAFileOutsideItsDirectory) {
 // @verifies REQ_INTEROP_073
 TEST_F(RecordingFilesTest, AFileMissingOnDiskIsNotServed) {
   EXPECT_FALSE(faults::recording_file_path(bag_.string(), manifest_naming({"fault_LIDAR_1000_7.mcap"}), 0).has_value());
+}
+
+// @verifies REQ_INTEROP_073
+TEST_F(RecordingFilesTest, ALinkInTheRecordingDirectoryIsNotFollowed) {
+  std::filesystem::create_symlink(root_ / "outside.mcap", bag_ / "linked.mcap");
+  EXPECT_FALSE(faults::recording_file_path(bag_.string(), manifest_naming({"linked.mcap"}), 0).has_value());
+
+  std::ofstream(root_ / "outside.json") << "{}";
+  std::filesystem::create_symlink(root_ / "outside.json", bag_ / "manifest.json");
+  EXPECT_FALSE(faults::recording_has_manifest(bag_.string()));
+  EXPECT_FALSE(faults::read_recording_manifest(bag_.string()).has_value());
 }
 
 // @verifies REQ_INTEROP_073
@@ -656,6 +677,33 @@ TEST_F(RecordingHandlersTest, Every404ThatIsNotAboutTheRecordingCarriesNoVendorC
     const auto error = error_of(req);
     EXPECT_EQ(error.http_status, 404) << c.why;
     EXPECT_NE(error.code, ERR_X_MEDKIT_RECORDING_NOT_FOUND) << c.why;
+  }
+}
+
+// @verifies REQ_INTEROP_073
+TEST_F(RecordingHandlersTest, AFileThatIsALinkIsAPlain404) {
+  const auto bag = root_ / "fault_LIDAR_1000";
+  std::ofstream(root_ / "outside.mcap") << "not part of the recording";
+  std::filesystem::remove(bag / "fault_LIDAR_1000_1.mcap");
+  std::filesystem::create_symlink(root_ / "outside.mcap", bag / "fault_LIDAR_1000_1.mcap");
+  const auto req = request("/apps/lidar/bulk-data/rosbags/fault_LIDAR_1000/files/1");
+  const auto error = error_of(req);
+  EXPECT_EQ(error.http_status, 404);
+  EXPECT_NE(error.code, ERR_X_MEDKIT_RECORDING_NOT_FOUND);
+}
+
+// @verifies REQ_INTEROP_073
+TEST_F(RecordingHandlersTest, AManifestThatIsALinkIsAPlain404) {
+  const auto bag = root_ / "fault_LIDAR_1000";
+  std::ofstream(root_ / "outside.json") << manifest_;
+  std::filesystem::remove(bag / "manifest.json");
+  std::filesystem::create_symlink(root_ / "outside.json", bag / "manifest.json");
+  for (const char * path : {"/apps/lidar/bulk-data/rosbags/fault_LIDAR_1000/manifest",
+                            "/apps/lidar/bulk-data/rosbags/fault_LIDAR_1000/files/0"}) {
+    const auto req = request(path);
+    const auto error = error_of(req);
+    EXPECT_EQ(error.http_status, 404) << path;
+    EXPECT_NE(error.code, ERR_X_MEDKIT_RECORDING_NOT_FOUND) << path;
   }
 }
 

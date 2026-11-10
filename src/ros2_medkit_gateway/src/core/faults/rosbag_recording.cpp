@@ -82,19 +82,24 @@ bool range_spec_within_file(std::string_view spec, uint64_t size) {
   return last && *last >= *first && *last < size;
 }
 
+/// A link is not a file of the recording: it is never followed.
+bool is_plain_file(const std::filesystem::path & path) {
+  std::error_code ec;
+  return std::filesystem::is_regular_file(std::filesystem::symlink_status(path, ec));
+}
+
 }  // namespace
 
 bool recording_has_manifest(const std::string & recording_path) {
-  std::error_code ec;
-  return std::filesystem::is_regular_file(std::filesystem::path(recording_path) / kRecordingManifestFile, ec);
+  return is_plain_file(std::filesystem::path(recording_path) / kRecordingManifestFile);
 }
 
 std::optional<std::string> read_recording_manifest(const std::string & recording_path) {
   const auto manifest_path = std::filesystem::path(recording_path) / kRecordingManifestFile;
-  std::error_code ec;
-  if (!std::filesystem::is_regular_file(manifest_path, ec)) {
+  if (!is_plain_file(manifest_path)) {
     return std::nullopt;
   }
+  std::error_code ec;
   const auto size = std::filesystem::file_size(manifest_path, ec);
   if (ec || size > kMaxManifestBytes) {
     return std::nullopt;
@@ -143,8 +148,7 @@ std::optional<std::string> recording_file_path(const std::string & recording_pat
     return std::nullopt;
   }
   const auto file_path = std::filesystem::path(recording_path) / name;
-  std::error_code ec;
-  if (!std::filesystem::is_regular_file(file_path, ec)) {
+  if (!is_plain_file(file_path)) {
     return std::nullopt;
   }
   return file_path.string();
@@ -219,6 +223,12 @@ RecordingLookup find_recording(FaultManager & fault_manager, const std::string &
 
   // Declined. That covers "no such recording" and also a store that could not be read,
   // and the answer does not say which. A complete listing settles it.
+  if (source_filters.empty()) {
+    // Nothing to list, so nothing proves the recording absent. An entity with no source
+    // owns no recording either way.
+    lookup.status = RecordingLookupStatus::kNotInEntity;
+    return lookup;
+  }
   for (const auto & source_filter : source_filters) {
     const auto listed = fault_manager.list_rosbags(source_filter);
     if (!listed.success) {
