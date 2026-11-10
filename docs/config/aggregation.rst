@@ -174,6 +174,8 @@ for peer communication.
        for - so a discovered peer that requires authentication stays
        unreachable rather than being handed this gateway's credential. The
        value is redacted from the configurations API, like ``auth.jwt_secret``.
+       ``ros2 param get`` reads it back as ``<set at start>`` or empty, and
+       it cannot be changed at runtime.
 
        This is separate from ``forward_auth``, which forwards an end user's
        token per request. Where both apply, a caller's own token wins, so

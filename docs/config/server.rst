@@ -958,11 +958,11 @@ default for local development.
    * - ``auth.enabled``
      - bool
      - ``false``
-     - Enable/disable JWT authentication.
+     - Enable/disable JWT authentication. ``MEDKIT_JWT_SECRET`` turns it on and ``MEDKIT_AUTH_DISABLED=1`` turns it off, whatever this says. Reads back the value in force.
    * - ``auth.jwt_secret``
      - string
      - ``""``
-     - JWT signing secret. For HS256: the shared secret string. For RS256: path to the private key file (PEM format).
+     - JWT signing secret. For HS256: the shared secret string. For RS256: path to the private key file (PEM format). ``MEDKIT_JWT_SECRET`` overrides it; set but empty, that variable stops the gateway, and with RS256 it is refused. Read back as ``<from MEDKIT_JWT_SECRET>``, ``<set at start>`` or empty, never as the value.
    * - ``auth.jwt_public_key``
      - string
      - ``""``
@@ -982,7 +982,7 @@ default for local development.
    * - ``auth.require_auth_for``
      - string
      - ``"write"``
-     - When to require authentication: ``"none"`` (auth endpoints still available), ``"write"`` (POST/PUT/DELETE only), or ``"all"`` (every request).
+     - When to require authentication: ``"none"`` (auth endpoints still available), ``"write"`` (POST/PUT/DELETE only), or ``"all"`` (every request). ``MEDKIT_JWT_SECRET`` forces ``"all"``. Reads back the value in force, ``"none"`` while authentication is off.
    * - ``auth.issuer``
      - string
      - ``"ros2_medkit_gateway"``
@@ -990,7 +990,15 @@ default for local development.
    * - ``auth.clients``
      - string[]
      - ``[]``
-     - Pre-configured clients as ``"client_id:client_secret:role"`` strings.
+     - Pre-configured clients as ``"client_id:client_secret:role"`` strings. ``MEDKIT_CLIENTS`` replaces the list when ``MEDKIT_JWT_SECRET`` is set. Read back as ``<id>:<sentinel>:<role>``.
+
+.. note::
+
+   The three variables ``MEDKIT_JWT_SECRET``, ``MEDKIT_CLIENTS`` and
+   ``MEDKIT_AUTH_DISABLED`` are read by the gateway node and override every
+   ``auth.*`` source; see :doc:`/tutorials/authentication`. All ``auth.*``
+   parameters and ``aggregation.peer_auth_header`` are read once at start: a
+   ``ros2 param set`` or ``ros2 param load`` of them is refused.
 
 .. note::
 

@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <stdexcept>
 
 namespace ros2_medkit_gateway {
@@ -150,7 +151,10 @@ std::string role_to_string(UserRole role) {
 
 UserRole string_to_role(const std::string & role_str) {
   std::string lower_role = role_str;
-  std::transform(lower_role.begin(), lower_role.end(), lower_role.begin(), ::tolower);
+  // The unsigned char cast keeps tolower defined for bytes from 0x80 up.
+  std::transform(lower_role.begin(), lower_role.end(), lower_role.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
 
   if (lower_role == "viewer") {
     return UserRole::VIEWER;
