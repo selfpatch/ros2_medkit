@@ -1790,7 +1790,8 @@ List all bulk-data items in a category for the entity.
            "fault_codes": ["MOTOR_OVERHEAT", "MOTOR_STALL"],
            "duration_sec": 6.0,
            "format": "mcap",
-           "recording_id": "fault_MOTOR_OVERHEAT_1738664999000"
+           "recording_id": "fault_MOTOR_OVERHEAT_1738664999000",
+           "storage_files": 1
          }
        }
      ]
@@ -1803,6 +1804,13 @@ recording, and ``x-medkit.fault_codes`` lists every fault attached to it. A
 recording therefore reports its size once. One fault code can appear on several
 descriptors, one per occurrence it kept, told apart by ``creation_date``, which
 is the time that recording was made.
+
+``x-medkit.storage_files`` is how many storage files the recording is held in,
+read from the recording's own metadata. A ``1`` is the normal case and says the
+download below hands over the whole recording. A larger number is a split
+recording, and then the download hands over the first of those files. The field
+is omitted when the gateway cannot read the recording's metadata or the metadata
+names no file. An absent field means the count is not known here.
 
 For a recording that meets the rule below, ``size`` is the number of bytes the
 download route puts on the wire, so a client can size a buffer or a progress bar
@@ -1844,13 +1852,25 @@ Three shapes fall outside these rules, and there the numbers part deliberately:
   The download never serves a storage file that is a symbolic link either.
 
 In each of them the descriptor ``size`` and the nested ``size_bytes`` carry the
-recording's stored total, while the download hands over whichever single storage
-file the bag directory holds. ``size`` can therefore exceed ``Content-Length``,
-and that gap is the signal in each of these cases: a client comparing the two can
-tell the transfer it just made is a part of the recording and not the whole of
-it, which no single reported number could express. When the directory holds no
-regular storage file at all, the download has nothing to send and answers ``500``, so
-there is no ``Content-Length`` to compare.
+recording's stored total. Which file the download hands over depends on whether
+the metadata names any files:
+
+- **The metadata names files.** The download serves the first file named in
+  ``relative_file_paths`` and no other. For a split recording that is the first
+  segment, where the recording starts, so ``size`` exceeds ``Content-Length``,
+  and ``x-medkit.storage_files`` says how many segments the recording has. When
+  that first file is absent, or is a name the gateway declines, the download
+  answers ``500``. It does not fall back to a later segment or to another
+  storage file in the bag directory, because neither is the start of the
+  recording the descriptor describes. Which file is served does not depend on
+  directory order.
+- **The metadata names no file, or cannot be read.** The download serves the
+  first regular ``.db3`` or ``.mcap`` the bag directory yields, ``size`` can
+  exceed ``Content-Length``, and ``x-medkit.storage_files`` is omitted. When the
+  directory holds no regular storage file, the download answers ``500``.
+
+The download never serves a storage file that is a symbolic link. The storage
+files of a split recording after the first are not addressable over the API.
 
 Download Bulk Data
 ~~~~~~~~~~~~~~~~~~
@@ -1867,8 +1887,10 @@ Download a specific bulk-data file.
   a pre-#620 fault-code URL is not the segment the client sent, and the format
   is the one persisted at capture time (``mcap`` or ``sqlite3``). For every
   other category it is the stored item's own name, e.g. ``report.zip``.
-- ``Content-Length``: the served file's length. For how it relates to the
-  descriptor ``size`` of the same recording, see
+- ``Content-Length``: the served file's length. For a rosbag that is the
+  recording's single storage file, or, when the recording is split, the first
+  of its storage files. For how it relates to the descriptor ``size`` and
+  ``x-medkit.storage_files`` of the same recording, see
   :ref:`One recording, one size <rest-recording-size-rule>`
 - ``Accept-Ranges``: ``bytes`` - the download is served by a range-aware
   provider, so a client may fetch part of the file

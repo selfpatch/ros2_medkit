@@ -139,6 +139,29 @@ std::optional<std::filesystem::path> rosbag_named_storage_file(const std::string
   return named;
 }
 
+/// The first regular ``.db3`` or ``.mcap`` @p dir yields, in directory order.
+/// Empty when there is none or the directory cannot be walked.
+std::string first_storage_file_in(const std::string & dir) {
+  std::error_code ec;
+  std::filesystem::directory_iterator it(dir, ec);
+  if (ec) {
+    return "";
+  }
+  for (const std::filesystem::directory_iterator end; it != end; it.increment(ec)) {
+    if (ec) {
+      return "";
+    }
+    if (!is_plain_file(it->path())) {
+      continue;
+    }
+    const auto ext = it->path().extension().string();
+    if (ext == ".db3" || ext == ".mcap") {
+      return it->path().string();
+    }
+  }
+  return "";
+}
+
 }  // namespace
 
 BulkDataHandlers::BulkDataHandlers(HandlerContext & ctx) : ctx_(ctx) {
@@ -163,41 +186,7 @@ std::vector<std::string> BulkDataHandlers::download_media_types() {
 }
 
 std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path) {
-  // error_code overloads only: one unreadable or evicted bag must not fail the whole listing.
-  std::error_code ec;
-
-  if (std::filesystem::is_regular_file(path, ec)) {
-    return path;
-  }
-  if (!std::filesystem::is_directory(path, ec)) {
-    return "";
-  }
-
-  // The single file metadata.yaml names wins over directory order. A split is left to the scan.
-  if (const auto names = rosbag_relative_file_paths(path); names && names->size() == 1) {
-    if (const auto named = rosbag_named_storage_file(path, names->front()); named && is_plain_file(*named)) {
-      return named->string();
-    }
-  }
-
-  std::filesystem::directory_iterator it(path, ec);
-  if (ec) {
-    return "";
-  }
-  for (const std::filesystem::directory_iterator end; it != end; it.increment(ec)) {
-    if (ec) {
-      return "";
-    }
-    if (!is_plain_file(it->path())) {
-      continue;
-    }
-    const auto ext = it->path().extension().string();
-    if (ext == ".db3" || ext == ".mcap") {
-      return it->path().string();
-    }
-  }
-
-  return "";
+  return detail::rosbag_storage(path).served_file;
 }
 
 std::vector<std::string> BulkDataHandlers::get_source_filters(const EntityInfo & entity) const {
@@ -214,33 +203,56 @@ std::string rosbag_recording_id(const std::string & file_path) {
   return p.filename().string();
 }
 
-std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path) {
-  if (bag_path.empty()) {
+RosbagStorage rosbag_storage(const std::string & bag_path) {
+  // Only the std::error_code overloads: this runs once per listing row, and a
+  // throw fails the whole listing for one unreadable bag.
+  RosbagStorage storage;
+  std::error_code ec;
+
+  // A bare storage file is one storage file and has no metadata.yaml to ask.
+  if (std::filesystem::is_regular_file(bag_path, ec) && !ec) {
+    storage.served_file = bag_path;
+    storage.file_count = 1;
+    return storage;
+  }
+  if (!std::filesystem::is_directory(bag_path, ec) || ec) {
+    return storage;
+  }
+
+  // Metadata that names files decides alone. The served file is the first name,
+  // where the recording starts. When that file is missing or the name is not
+  // followable, nothing is served: a later segment or a stray beside it is not
+  // the start of the recording, and the response could not say which file it is.
+  if (const auto names = rosbag_relative_file_paths(bag_path); names && !names->empty()) {
+    storage.file_count = names->size();
+    if (const auto named = rosbag_named_storage_file(bag_path, names->front()); named && is_plain_file(*named)) {
+      storage.served_file = named->string();
+    }
+    return storage;
+  }
+
+  // No metadata, unreadable metadata or an empty list: the bag does not say what
+  // it holds, so directory order picks the file and the count stays unknown.
+  storage.served_file = first_storage_file_in(bag_path);
+  return storage;
+}
+
+std::optional<uint64_t> rosbag_served_bytes(const RosbagStorage & storage) {
+  // Measured here only for a recording held in one storage file. A split keeps
+  // the row's figure, the fault manager's sum of the same named files.
+  if (storage.file_count != std::size_t{1} || storage.served_file.empty()) {
     return std::nullopt;
   }
-
   std::error_code ec;
-  std::filesystem::path served;
-  if (std::filesystem::is_regular_file(bag_path, ec)) {
-    served = bag_path;
-  } else {
-    // A split has no single served file; the row carries the fault manager's sum of its files.
-    const auto names = rosbag_relative_file_paths(bag_path);
-    if (!names || names->size() != 1) {
-      return std::nullopt;
-    }
-    const auto named = rosbag_named_storage_file(bag_path, names->front());
-    if (!named || !is_plain_file(*named)) {
-      return std::nullopt;
-    }
-    served = *named;
-  }
-
-  const auto size = std::filesystem::file_size(served, ec);
+  const auto size = std::filesystem::file_size(storage.served_file, ec);
   if (ec) {
     return std::nullopt;
   }
   return static_cast<uint64_t>(size);
+}
+
+std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path) {
+  return rosbag_served_bytes(rosbag_storage(bag_path));
 }
 
 std::vector<std::string> rosbag_attached_fault_codes(const nlohmann::json & rosbag_data,
@@ -279,6 +291,7 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     std::string recording_id;
     std::string format;
     uint64_t size_bytes{0};
+    std::optional<std::size_t> storage_files;
     double duration_sec{0.0};
     int64_t created_at_ns{0};
     bool manifest{false};
@@ -329,8 +342,11 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     // Default to sqlite3 (the historical FaultManager default) when a bag predates
     // the persisted format field; the per-bag metadata normally carries the real one.
     entry.format = row.value("format", "sqlite3");
-    // Measured on the served file; the row's own figure when there is no single one.
-    entry.size_bytes = rosbag_served_bytes(row.value("file_path", "")).value_or(row.value("size_bytes", uint64_t{0}));
+    // One metadata read per row gives the served size and the file count. Without a
+    // single served file the row's own figure stands.
+    const auto storage = rosbag_storage(row.value("file_path", ""));
+    entry.size_bytes = rosbag_served_bytes(storage).value_or(row.value("size_bytes", uint64_t{0}));
+    entry.storage_files = storage.file_count;
     entry.duration_sec = row.value("duration_sec", 0.0);
     entry.created_at_ns = created_at_ns;
     entry.manifest = row.value("manifest", false);
@@ -360,6 +376,11 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     if (entry.manifest) {
       // Present only when true: its absence is what a recording without a manifest looks like.
       (*descriptor.x_medkit)["manifest"] = true;
+    }
+    // Omitted when the bag does not say. A default of one would claim the
+    // recording is whole, which is the one thing this field exists to establish.
+    if (entry.storage_files) {
+      (*descriptor.x_medkit)["storage_files"] = *entry.storage_files;
     }
     descriptors.push_back(std::move(descriptor));
   }
