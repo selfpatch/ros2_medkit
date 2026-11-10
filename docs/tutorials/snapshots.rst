@@ -583,7 +583,9 @@ Rosbag Configuration Options
    * - ``snapshots.rosbag.max_total_storage_mb``
      - ``500``
      - Total storage limit for all bag files. Oldest bags are automatically
-       deleted when this limit is exceeded. A recording shared by a burst of
+       deleted when this limit is exceeded. The recording that was just written
+       is never one of them: when it alone is over the limit it is kept, a
+       warning is logged, and every older bag is deleted. A recording shared by a burst of
        faults counts once towards the total, and eviction removes a whole
        burst's bag at a time.
    * - ``snapshots.rosbag.max_bags_per_fault``

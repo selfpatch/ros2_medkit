@@ -1101,15 +1101,14 @@ void RosbagCapture::discard_active_writer(const std::string & bag_path) {
 }
 
 std::optional<std::string> RosbagCapture::open_bag_writer(const std::string & fault_code) {
-  std::string bag_path = generate_bag_path(fault_code);
+  const auto claimed = generate_bag_path(fault_code);
+  if (!claimed) {
+    RCLCPP_ERROR(node_->get_logger(), "No free bag path for fault '%s'", fault_code.c_str());
+    return std::nullopt;
+  }
+  const std::string bag_path = *claimed;
 
   try {
-    // Create parent directory if needed
-    std::filesystem::path bag_dir(bag_path);
-    if (!bag_dir.parent_path().empty()) {
-      std::filesystem::create_directories(bag_dir.parent_path());
-    }
-
     rosbag2_storage::StorageOptions storage_options;
     storage_options.uri = bag_path;
     storage_options.storage_id = config_.format;
@@ -1124,6 +1123,8 @@ std::optional<std::string> RosbagCapture::open_bag_writer(const std::string & fa
     std::lock_guard<std::mutex> plock(plugin_mutex());
     auto writer = std::make_unique<rosbag2_cpp::Writer>();
     writer->open(storage_options);
+    // The directory exists now and keeps the name by itself.
+    release_bag_path_claim(bag_path);
 
     // Published into the member only once it is open, under writer_mutex_ and
     // nested inside plugin_mutex(). This is the one place the two are held
@@ -1142,8 +1143,10 @@ std::optional<std::string> RosbagCapture::open_bag_writer(const std::string & fa
     // them), so discard_active_writer() is free to take them again in its own
     // order. active_writer_ is untouched by a failed open - the writer only
     // reaches the member once open() has returned - so this is here for the
-    // partial directory on disk.
+    // partial directory on disk. The path was free when it was claimed, so
+    // whatever is there now is this capture's.
     discard_active_writer(bag_path);
+    release_bag_path_claim(bag_path);
     return std::nullopt;
   }
 }
@@ -1312,7 +1315,35 @@ std::string RosbagCapture::bag_directory_name(const std::string & fault_code, in
   return prefix + fault_code.substr(0, kept) + "_" + fnv1a_hex(fault_code) + suffix;
 }
 
-std::string RosbagCapture::generate_bag_path(const std::string & fault_code) const {
+std::optional<std::string> RosbagCapture::claim_bag_path(const std::string & base_path, const std::string & fault_code,
+                                                         int64_t timestamp_ms) {
+  std::error_code ec;
+  std::filesystem::create_directories(base_path, ec);
+  if (ec) {
+    return std::nullopt;
+  }
+  constexpr int kMaxAttempts = 1000;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    const std::string candidate = base_path + "/" + bag_directory_name(fault_code, timestamp_ms + attempt);
+    // create_directory is atomic: of two captures racing for one name, one gets the claim.
+    if (!std::filesystem::create_directory(candidate + kBagPathClaimSuffix, ec) || ec) {
+      ec.clear();
+      continue;
+    }
+    if (!std::filesystem::exists(candidate, ec)) {
+      return candidate;
+    }
+    release_bag_path_claim(candidate);
+  }
+  return std::nullopt;
+}
+
+void RosbagCapture::release_bag_path_claim(const std::string & bag_path) {
+  std::error_code ec;
+  std::filesystem::remove(bag_path + kBagPathClaimSuffix, ec);
+}
+
+std::optional<std::string> RosbagCapture::generate_bag_path(const std::string & fault_code) const {
   std::string base_path;
 
   if (config_.storage_path.empty()) {
@@ -1322,11 +1353,10 @@ std::string RosbagCapture::generate_bag_path(const std::string & fault_code) con
     base_path = config_.storage_path;
   }
 
-  // Create unique name with timestamp
   auto now = std::chrono::system_clock::now();
   auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
 
-  return base_path + "/" + bag_directory_name(fault_code, timestamp);
+  return claim_bag_path(base_path, fault_code, timestamp);
 }
 
 size_t RosbagCapture::calculate_bag_size(const std::string & bag_path) const {
@@ -1349,7 +1379,8 @@ size_t RosbagCapture::calculate_bag_size(const std::string & bag_path) const {
   return total_size;
 }
 
-std::vector<std::string> RosbagCapture::evict_bags_over_quota(FaultStorage * storage, size_t max_bytes) {
+std::vector<std::string> RosbagCapture::evict_bags_over_quota(FaultStorage * storage, size_t max_bytes,
+                                                              const std::string & keep_recording_id) {
   size_t current_bytes = storage->get_total_rosbag_storage_bytes();
   if (current_bytes <= max_bytes) {
     return {};
@@ -1379,6 +1410,9 @@ std::vector<std::string> RosbagCapture::evict_bags_over_quota(FaultStorage * sto
   for (const auto & path : paths_oldest_first) {
     if (current_bytes <= max_bytes) {
       break;
+    }
+    if (!keep_recording_id.empty() && recording_by_path[path] == keep_recording_id) {
+      continue;
     }
 
     // By RECORDING, not by fault code. The unit being evicted is a bag, and a
@@ -1419,9 +1453,17 @@ int64_t RosbagCapture::bounded_history_ns(int64_t now_wall_ns, int64_t oldest_ms
   return std::clamp<int64_t>(difference(now_wall_ns, oldest_msg_wall_ns), 0, uptime_ns);
 }
 
-void RosbagCapture::enforce_storage_limits() {
-  for (const auto & path : evict_bags_over_quota(storage_, config_.max_total_storage_mb * 1024 * 1024)) {
+void RosbagCapture::enforce_storage_limits(const std::string & keep_recording_id) {
+  const size_t max_bytes = config_.max_total_storage_mb * 1024 * 1024;
+  for (const auto & path : evict_bags_over_quota(storage_, max_bytes, keep_recording_id)) {
     RCLCPP_INFO(node_->get_logger(), "Deleted old bag '%s' to enforce storage limit", path.c_str());
+  }
+  // Everything older is gone by now, so what is left over the quota is the kept recording alone.
+  if (!keep_recording_id.empty() && storage_->get_total_rosbag_storage_bytes() > max_bytes) {
+    RCLCPP_WARN(node_->get_logger(),
+                "Recording '%s' alone exceeds snapshots.rosbag.max_total_storage_mb (%zu MB); it is kept, and the "
+                "storage stays over the limit until a newer recording replaces it",
+                keep_recording_id.c_str(), config_.max_total_storage_mb);
   }
 }
 
@@ -1472,7 +1514,7 @@ bool RosbagCapture::store_rows_or_discard_bag(const std::vector<RosbagFileInfo> 
   // charged against max_total_storage_mb, which sums rows. A missed sweep costs a late
   // quota, and the next capture runs it again.
   try {
-    enforce_storage_limits();
+    enforce_storage_limits(rows.empty() ? std::string() : rows.front().recording_id);
   } catch (const std::exception & e) {
     RCLCPP_WARN(node_->get_logger(), "Failed to enforce the rosbag storage limit after storing '%s': %s",
                 bag_path.c_str(), e.what());

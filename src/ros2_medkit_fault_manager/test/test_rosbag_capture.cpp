@@ -36,6 +36,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "rcutils/logging.h"
+#include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
@@ -791,6 +792,126 @@ TEST_F(RosbagCaptureTest, EvictionKeepsGoingWhenTheSharedBagIsNotEnough) {
   EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 0u);
   EXPECT_FALSE(std::filesystem::exists(shared_path));
   EXPECT_FALSE(std::filesystem::exists(solo_path));
+}
+
+TEST_F(RosbagCaptureTest, EvictionNeverDeletesTheRecordingJustStored) {
+  // A recording larger than the whole quota is the newest row, so an oldest-first
+  // sweep that stops only under the quota would delete it right after it was written.
+  const auto older_path = (temp_dir_ / "fault_OLDER_1000").string();
+  const auto newest_path = (temp_dir_ / "fault_NEWEST_2000").string();
+  std::filesystem::create_directories(older_path);
+  std::filesystem::create_directories(newest_path);
+
+  ros2_medkit_fault_manager::RosbagFileInfo older;
+  older.fault_code = "OLDER";
+  older.file_path = older_path;
+  older.format = "mcap";
+  older.size_bytes = 300;
+  older.created_at_ns = 1000;
+  storage_->store_rosbag_file(older);
+
+  ros2_medkit_fault_manager::RosbagFileInfo newest;
+  newest.fault_code = "NEWEST";
+  newest.file_path = newest_path;
+  newest.format = "mcap";
+  newest.size_bytes = 2000;
+  newest.created_at_ns = 2000;
+  storage_->store_rosbag_file(newest);
+
+  auto evicted = RosbagCapture::evict_bags_over_quota(storage_.get(), 1000, "fault_NEWEST_2000");
+
+  EXPECT_EQ(evicted, std::vector<std::string>{older_path});
+  EXPECT_FALSE(std::filesystem::exists(older_path));
+  EXPECT_TRUE(std::filesystem::exists(newest_path));
+  ASSERT_TRUE(storage_->get_rosbag_file("NEWEST").has_value());
+  // Still over the quota: that is the state the caller warns about.
+  EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 2000u);
+}
+
+TEST_F(RosbagCaptureTest, EvictionSkipsTheKeptRecordingWhereverItSorts) {
+  // The kept recording is not always last: rows are ordered by their own timestamps.
+  const auto kept_path = (temp_dir_ / "fault_KEPT_1000").string();
+  const auto later_path = (temp_dir_ / "fault_LATER_2000").string();
+  std::filesystem::create_directories(kept_path);
+  std::filesystem::create_directories(later_path);
+
+  ros2_medkit_fault_manager::RosbagFileInfo kept;
+  kept.fault_code = "KEPT";
+  kept.file_path = kept_path;
+  kept.format = "mcap";
+  kept.size_bytes = 900;
+  kept.created_at_ns = 1000;
+  storage_->store_rosbag_file(kept);
+
+  ros2_medkit_fault_manager::RosbagFileInfo later;
+  later.fault_code = "LATER";
+  later.file_path = later_path;
+  later.format = "mcap";
+  later.size_bytes = 900;
+  later.created_at_ns = 2000;
+  storage_->store_rosbag_file(later);
+
+  auto evicted = RosbagCapture::evict_bags_over_quota(storage_.get(), 1000, "fault_KEPT_1000");
+
+  EXPECT_EQ(evicted, std::vector<std::string>{later_path});
+  EXPECT_TRUE(std::filesystem::exists(kept_path));
+  EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 900u);
+}
+
+TEST_F(RosbagCaptureTest, ABagPathTakenByARecordingIsNotHandedOutAgain) {
+  const std::string base = temp_dir_.string();
+  const auto first = RosbagCapture::claim_bag_path(base, "SAME_MS", 1785441426087);
+  ASSERT_TRUE(first.has_value());
+  EXPECT_EQ(*first, base + "/fault_SAME_MS_1785441426087");
+  // What the writer does next: create the directory. The claim is then released.
+  std::filesystem::create_directories(*first);
+  std::ofstream(std::filesystem::path(*first) / "data") << "recording";
+  RosbagCapture::release_bag_path_claim(*first);
+
+  const auto second = RosbagCapture::claim_bag_path(base, "SAME_MS", 1785441426087);
+  ASSERT_TRUE(second.has_value());
+  EXPECT_EQ(*second, base + "/fault_SAME_MS_1785441426088");
+  EXPECT_FALSE(std::filesystem::exists(*second));
+  EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(*first) / "data"));
+  RosbagCapture::release_bag_path_claim(*second);
+}
+
+TEST_F(RosbagCaptureTest, TwoCapturesOpeningOnTheSameMillisecondGetDistinctPaths) {
+  // Neither writer has created its directory yet: the claim alone keeps them apart.
+  const std::string base = temp_dir_.string();
+  const auto first = RosbagCapture::claim_bag_path(base, "RACE", 1785441426087);
+  const auto second = RosbagCapture::claim_bag_path(base, "RACE", 1785441426087);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+  EXPECT_NE(*first, *second);
+  EXPECT_EQ(*second, base + "/fault_RACE_1785441426088");
+
+  RosbagCapture::release_bag_path_claim(*first);
+  RosbagCapture::release_bag_path_claim(*second);
+  EXPECT_TRUE(std::filesystem::is_empty(temp_dir_)) << "a released claim leaves nothing behind";
+}
+
+TEST_F(RosbagCaptureTest, NoBagPathUnderAnUnusableStorageDirectory) {
+  const auto blocked = temp_dir_ / "blocked_storage";
+  std::ofstream(blocked) << "not a directory";
+  EXPECT_FALSE(RosbagCapture::claim_bag_path(blocked.string(), "ANY", 1785441426087).has_value());
+}
+
+TEST(RosbagConfigValidationTest, WarnsWhenOneStorageFileMayExceedTheWholeQuota) {
+  const auto warns_about_the_quota = [](int64_t max_bag_size_mb, int64_t max_total_storage_mb) {
+    ros2_medkit_fault_manager::core::FaultManagerConfig config;
+    config.snapshots_rosbag_enabled = true;
+    config.snapshots_rosbag_max_bag_size_mb = max_bag_size_mb;
+    config.snapshots_rosbag_max_total_storage_mb = max_total_storage_mb;
+    const auto notices = config.validate();
+    return std::any_of(notices.begin(), notices.end(), [](const auto & notice) {
+      return notice.text.find("max_bag_size_mb") != std::string::npos &&
+             notice.text.find("max_total_storage_mb") != std::string::npos;
+    });
+  };
+  EXPECT_TRUE(warns_about_the_quota(600, 500));
+  EXPECT_FALSE(warns_about_the_quota(500, 500));
+  EXPECT_FALSE(warns_about_the_quota(50, 500));
 }
 
 // Clock arithmetic behind the recording's monotonic origin. Driven directly because
@@ -2137,11 +2258,20 @@ TEST_F(RosbagCaptureIntegrationTest, AFailingQuotaSweepKeepsTheBagItJustStored) 
   auto rosbag_config = create_rosbag_config();
   rosbag_config.duration_sec = 2.0;
   rosbag_config.duration_after_sec = 0.3;
-  // The bottom endpoint of the documented range. Every stored bag is over a zero
+  // The bottom endpoint of the documented range. Any stored bag is over a zero
   // quota, so the sweep always reaches its delete and always throws - no reliance on
-  // how large the bag happens to be.
+  // how large the bags happen to be.
   rosbag_config.max_total_storage_mb = 0;
   auto snapshot_config = create_snapshot_config();
+  // The recording just stored is never swept, so the sweep needs an older one to
+  // reach its delete.
+  ros2_medkit_fault_manager::RosbagFileInfo older;
+  older.fault_code = "OLDER";
+  older.file_path = (temp_dir_ / "fault_OLDER_1000").string();
+  older.format = "mcap";
+  older.size_bytes = 1;
+  older.created_at_ns = 1000;
+  sweep_failing_storage.store_rosbag_file(older);
   RosbagCapture capture(node_.get(), &sweep_failing_storage, rosbag_config, snapshot_config);
 
   capture.start();
@@ -2216,18 +2346,59 @@ TEST_F(RosbagCaptureIntegrationTest, TheStorageQuotaEngagesOnABoundaryRecording)
   {
     auto strict = create_rosbag_config();
     strict.duration_after_sec = 0.4;
-    // The bottom of the range: no bag fits, so the sweep evicts every recording it
-    // is handed, the one just stored included.
+    // The bottom of the range: no bag fits, so the sweep evicts every older
+    // recording. The one just stored is over the quota on its own and stays.
     strict.max_total_storage_mb = 0;
     RosbagCapture capture(node_.get(), storage_.get(), strict, snapshot_config);
     capture.start();
     capture.on_fault_confirmed("QUOTA_TIGHT");
-    spin_for(std::chrono::milliseconds(1500));
+    ASSERT_TRUE(wait_for_row("QUOTA_TIGHT", std::chrono::milliseconds(8000)))
+        << "a recording larger than the quota was deleted by its own sweep";
+    EXPECT_TRUE(std::filesystem::exists(storage_->get_rosbag_file("QUOTA_TIGHT")->file_path));
 
-    EXPECT_FALSE(storage_->get_rosbag_file("QUOTA_TIGHT").has_value())
+    EXPECT_FALSE(storage_->get_rosbag_file("QUOTA_ROOMY").has_value())
         << "the quota did not engage on a post-fault-only recording";
     capture.stop();
   }
+}
+
+TEST_F(RosbagCaptureIntegrationTest, ARecordingNeverTakesOverAnExistingBagDirectory) {
+  // The bag name carries the millisecond the path is generated in, and nothing made
+  // that unique. A capture landing on a name an earlier recording owns failed to
+  // open - and its cleanup then removed the earlier recording's directory. Every
+  // millisecond of the next 600 is taken here, so the confirmation below collides
+  // whenever it runs inside that window.
+  constexpr int64_t kTakenMs = 600;
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_after_sec = 0.0;
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/path_collision_probe");
+
+  const int64_t first_taken_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+          .count();
+  std::vector<std::filesystem::path> taken;
+  for (int64_t offset = 0; offset < kTakenMs; ++offset) {
+    taken.push_back(temp_dir_ / RosbagCapture::bag_directory_name("PATH_COLLISION", first_taken_ms + offset));
+    std::filesystem::create_directories(taken.back());
+    std::ofstream(taken.back() / "earlier_recording") << "kept";
+  }
+
+  capture.on_fault_confirmed("PATH_COLLISION");
+
+  auto row = storage_->get_rosbag_file("PATH_COLLISION");
+  ASSERT_TRUE(row.has_value()) << "a taken bag name cost the fault its recording";
+  EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(row->file_path) / "metadata.yaml"));
+  for (const auto & earlier : taken) {
+    ASSERT_NE(earlier.string(), row->file_path) << "the recording was written into an earlier one's directory";
+    ASSERT_TRUE(std::filesystem::exists(earlier / "earlier_recording")) << earlier << " was removed";
+  }
+  // One new directory, and no path claim left next to it.
+  EXPECT_EQ(count_bag_dirs(), static_cast<size_t>(kTakenMs) + 1u);
+  capture.stop();
 }
 
 TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingSplitsAndReportsTheWholeBag) {
