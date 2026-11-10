@@ -111,7 +111,7 @@ TEST_F(RecordingManifestTest, ListsFilesInMetadataOrderWithSizeAndHash) {
 
   ASSERT_FALSE(core::write_recording_manifest(bag_.string(), 1785441426087000000).has_value());
 
-  const auto manifest = nlohmann::ordered_json::parse(read_manifest());
+  const auto manifest = nlohmann::json::parse(read_manifest());
   EXPECT_EQ(manifest["manifest_version"], 1);
   EXPECT_EQ(manifest["recording_id"], "fault_MOTOR_OVERHEAT_1785441426087");
   EXPECT_EQ(manifest["format"], "mcap");
@@ -127,13 +127,48 @@ TEST_F(RecordingManifestTest, ListsFilesInMetadataOrderWithSizeAndHash) {
   }
   // metadata.yaml is neither listed nor counted.
   EXPECT_EQ(manifest["total_bytes"], total);
+}
 
-  std::vector<std::string> keys;
-  for (const auto & item : manifest.items()) {
-    keys.push_back(item.key());
-  }
-  EXPECT_EQ(keys, (std::vector<std::string>{"manifest_version", "recording_id", "format", "created_at_ns",
-                                            "total_bytes", "files"}));
+// @verifies REQ_INTEROP_088
+TEST_F(RecordingManifestTest, TheManifestBytesAreTheDocumentedLayout) {
+  write_file("bag \"0\".mcap", "abc");
+  write_file("bag_1.mcap", "");
+  write_metadata("mcap", {"'bag \"0\".mcap'", "bag_1.mcap"});
+
+  ASSERT_FALSE(core::write_recording_manifest(bag_.string(), 42).has_value());
+
+  EXPECT_EQ(read_manifest(),
+            "{\n"
+            "  \"manifest_version\": 1,\n"
+            "  \"recording_id\": \"fault_MOTOR_OVERHEAT_1785441426087\",\n"
+            "  \"format\": \"mcap\",\n"
+            "  \"created_at_ns\": 42,\n"
+            "  \"total_bytes\": 3,\n"
+            "  \"files\": [\n"
+            "    {\n"
+            "      \"name\": \"bag \\\"0\\\".mcap\",\n"
+            "      \"size\": 3,\n"
+            "      \"sha256\": \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\"\n"
+            "    },\n"
+            "    {\n"
+            "      \"name\": \"bag_1.mcap\",\n"
+            "      \"size\": 0,\n"
+            "      \"sha256\": \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"\n"
+            "    }\n"
+            "  ]\n"
+            "}\n");
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(RecordingManifestTest, AStorageFileThatIsALinkIsNotListed) {
+  write_file("bag_0.mcap", "data");
+  std::ofstream(root_ / "outside.mcap") << "not part of the recording";
+  std::filesystem::create_symlink(root_ / "outside.mcap", bag_ / "bag_1.mcap");
+  write_metadata("mcap", {"bag_0.mcap", "bag_1.mcap"});
+  const auto error = core::write_recording_manifest(bag_.string(), 1);
+  ASSERT_TRUE(error.has_value());
+  EXPECT_NE(error->find("bag_1.mcap"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(bag_ / core::kRecordingManifestFile));
 }
 
 // @verifies REQ_INTEROP_088
