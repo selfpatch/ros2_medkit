@@ -69,7 +69,7 @@ std::optional<std::vector<std::string>> relative_file_paths(const std::filesyste
 /// @p name inside @p bag when it is a direct child with a .db3 or .mcap extension. An absolute
 /// or `..` name would otherwise pick any file on the host.
 std::optional<std::filesystem::path> named_storage_file(const std::filesystem::path & bag, const std::string & name) {
-  const std::filesystem::path named = (bag / name).lexically_normal();
+  std::filesystem::path named = (bag / name).lexically_normal();
   if (named.parent_path() != bag) {
     return std::nullopt;
   }

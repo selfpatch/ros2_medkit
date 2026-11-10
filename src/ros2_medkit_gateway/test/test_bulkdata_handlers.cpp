@@ -917,8 +917,8 @@ TEST_F(BulkDataHandlersTest, FormatTimestampNsValidTimestamp) {
   int64_t ns = 1770458400000000000;
   auto result = ros2_medkit_gateway::format_timestamp_ns(ns);
   EXPECT_TRUE(result.find("2026") != std::string::npos);
-  EXPECT_TRUE(result.find("T") != std::string::npos);
-  EXPECT_TRUE(result.find("Z") != std::string::npos);
+  EXPECT_TRUE(result.find('T') != std::string::npos);
+  EXPECT_TRUE(result.find('Z') != std::string::npos);
 }
 
 // @verifies REQ_INTEROP_071
@@ -940,7 +940,7 @@ TEST_F(BulkDataHandlersTest, FormatTimestampNsNegativeFallback) {
   // Negative timestamps should return fallback
   auto result = ros2_medkit_gateway::format_timestamp_ns(-1);
   EXPECT_FALSE(result.empty());
-  EXPECT_TRUE(result.find("Z") != std::string::npos);
+  EXPECT_TRUE(result.find('Z') != std::string::npos);
 }
 
 // === Descriptor to JSON conversion tests ===

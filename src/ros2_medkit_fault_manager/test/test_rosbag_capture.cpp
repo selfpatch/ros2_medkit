@@ -609,6 +609,8 @@ class ServedBytesBag {
 
   ServedBytesBag(const ServedBytesBag &) = delete;
   ServedBytesBag & operator=(const ServedBytesBag &) = delete;
+  ServedBytesBag(ServedBytesBag &&) = delete;
+  ServedBytesBag & operator=(ServedBytesBag &&) = delete;
 
   /// Write a storage file of @p bytes and return its name, relative to the bag.
   std::string add_storage_file(const std::string & name, size_t bytes) {
