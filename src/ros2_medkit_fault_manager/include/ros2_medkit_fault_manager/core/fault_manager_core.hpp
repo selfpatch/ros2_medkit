@@ -24,6 +24,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "ros2_medkit_fault_detection/fault_types.hpp"
@@ -260,7 +261,8 @@ class FaultManagerCore {
   ReportOutcome report_locked(const fd::FaultReport & report);
   ClearOutcome clear_locked(const std::string & code, bool skip_correlation_auto_clear);
   ListOutcome list_locked(const ListQuery & query);
-  FaultDetail get_locked(const std::string & code);
+  /// @p rosbag_paths receives (snapshot index, bag path) for each rosbag entry, for sizing after unlock.
+  FaultDetail get_locked(const std::string & code, std::vector<std::pair<size_t, std::string>> & rosbag_paths);
   void run_auto_confirm(int64_t wall_now_ns);
   /// Queues a capture unless @p code is inside its recapture cooldown.
   void capture_on_confirm(const std::string & code);
