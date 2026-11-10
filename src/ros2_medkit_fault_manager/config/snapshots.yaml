@@ -164,6 +164,8 @@ rosbag:
   # Maximum total storage for all bag files in MB (default: 500)
   # Oldest bags are deleted when this limit is exceeded. This is the real disk bound;
   # max_bags_per_fault below only decides how the budget is shared out.
+  # The recording just written is never deleted by this limit, even when it alone
+  # is larger: it is kept and a warning is logged.
   max_total_storage_mb: 500
 
   # Recordings kept per fault code (default: 1, 0 = unlimited)

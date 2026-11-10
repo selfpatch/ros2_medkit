@@ -214,6 +214,14 @@ std::vector<ConfigNotice> FaultManagerConfig::validate() {
       snapshots_rosbag_max_total_storage_mb = 500;
     }
 
+    if (snapshots_rosbag_max_bag_size_mb > snapshots_rosbag_max_total_storage_mb) {
+      logf(sink, LogLevel::kWarn, logger_name,
+           "snapshots.rosbag.max_bag_size_mb (%" PRId64
+           ") is larger than snapshots.rosbag.max_total_storage_mb (%" PRId64
+           "): one storage file may exceed the whole storage limit",
+           snapshots_rosbag_max_bag_size_mb, snapshots_rosbag_max_total_storage_mb);
+    }
+
     if (snapshots_rosbag_max_buffer_mb <= 0) {
       logf(sink, LogLevel::kWarn, logger_name, "snapshots.rosbag.max_buffer_mb must be positive. Using 256MB");
       snapshots_rosbag_max_buffer_mb = 256;

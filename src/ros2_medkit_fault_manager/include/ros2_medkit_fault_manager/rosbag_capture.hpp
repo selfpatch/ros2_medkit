@@ -135,9 +135,28 @@ class RosbagCapture {
   /// A bag shared by a burst of correlated faults is evicted as one unit: every row
   /// referencing it goes together and its bytes are freed once, so the running total
   /// tracks what is really on disk instead of drifting below it.
+  /// @p keep_recording_id, when set, is never evicted: the recording that was just
+  /// stored must not be the one its own quota sweep deletes, even when it alone is
+  /// over @p max_bytes.
   /// @return Paths of the evicted bags, oldest first.
   /// Static + public so the quota arithmetic is testable without a live recording.
-  static std::vector<std::string> evict_bags_over_quota(FaultStorage * storage, size_t max_bytes);
+  static std::vector<std::string> evict_bags_over_quota(FaultStorage * storage, size_t max_bytes,
+                                                        const std::string & keep_recording_id = "");
+
+  /// Suffix of the directory that reserves a bag path while its writer opens.
+  static constexpr const char * kBagPathClaimSuffix = ".claim";
+
+  /// Reserve a bag path under @p base_path that no recording owns. Starts at
+  /// @p timestamp_ms and moves on by 1 ms while the name is taken or reserved, so the
+  /// id format is unchanged. The reservation is released with release_bag_path_claim()
+  /// once the writer has created the directory.
+  /// @return The path, or std::nullopt when @p base_path is unusable or no name is free.
+  /// Static + public so the collision handling is testable without a live recording.
+  static std::optional<std::string> claim_bag_path(const std::string & base_path, const std::string & fault_code,
+                                                   int64_t timestamp_ms);
+
+  /// Drop the reservation claim_bag_path() made for @p bag_path.
+  static void release_bag_path_claim(const std::string & bag_path);
 
   /// Buffered history a flush may claim, in nanoseconds: the age of the oldest message
   /// it wrote, bounded by how long the capture has been running.
@@ -252,14 +271,14 @@ class RosbagCapture {
   /// Drop active_writer_ and remove the partial bag at @p bag_path.
   void discard_active_writer(const std::string & bag_path);
 
-  /// Generate bag file path for a fault
-  std::string generate_bag_path(const std::string & fault_code) const;
+  /// Reserve a free bag path for a fault, see claim_bag_path()
+  std::optional<std::string> generate_bag_path(const std::string & fault_code) const;
 
   /// Calculate total size of a bag directory
   size_t calculate_bag_size(const std::string & bag_path) const;
 
-  /// Enforce storage limits by deleting oldest bags
-  void enforce_storage_limits();
+  /// Enforce storage limits by deleting oldest bags, never @p keep_recording_id
+  void enforce_storage_limits(const std::string & keep_recording_id);
 
   /// Make @p rows durable for the finished bag at @p bag_path, or discard the bag.
   ///

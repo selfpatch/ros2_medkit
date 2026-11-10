@@ -596,12 +596,17 @@ Capture continuous rosbag recordings around fault events.
      - Start recording only when first fault occurs.
    * - ``rosbag.max_bag_size_mb``
      - ``50``
-     - Maximum size per rosbag file (MB).
+     - Maximum size per rosbag file (MB). A recording past it is split into
+       several storage files. A warning is logged at startup when this is larger
+       than ``max_total_storage_mb``.
    * - ``rosbag.max_total_storage_mb``
      - ``500``
      - Maximum total storage for all rosbags (MB). A recording shared by a
        burst of faults counts once towards the total, and eviction removes a
-       whole burst's bag at a time (oldest first).
+       whole burst's bag at a time (oldest first). The recording that was just
+       stored is never evicted by its own sweep. If it alone is larger than the
+       limit it is kept, a warning is logged, and the storage stays over the
+       limit until a newer recording replaces it.
    * - ``rosbag.max_bags_per_fault``
      - ``1``
      - How many recordings one fault code keeps. Past the cap the oldest is
@@ -699,6 +704,12 @@ runs again on the next capture.
 A post-fault-only bag on a quiet or heavily filtered system can contain zero
 messages. It still finalises normally on both ``mcap`` and ``sqlite3``, is listed
 by the bulk-data endpoints and can be downloaded; only its payload is empty.
+
+**Recording names are unique.** A recording directory is named
+``fault_<code>_<milliseconds>``. When that name is already taken, the timestamp is
+moved on by one millisecond until a free name is found, so a new recording never
+opens inside an earlier one's directory, and a capture that fails to open removes
+only the directory it created itself.
 
 **What ``duration_sec`` on a stored bag means.** The value returned by
 ``~/get_rosbag`` and the gateway's bulk-data listing is the span the recording was
