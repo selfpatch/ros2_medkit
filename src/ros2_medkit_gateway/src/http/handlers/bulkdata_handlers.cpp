@@ -17,11 +17,16 @@
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/faults/rosbag_recording.hpp"
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <memory>
 #include <optional>
 #include <set>
@@ -67,25 +72,27 @@ tl::expected<EntityPathInfo, ErrorInfo> parse_path(const http::TypedRequest & re
   return *info;
 }
 
-/// The storage files the bag at @p bag_path recorded, named by its own
-/// ``metadata.yaml`` in ``relative_file_paths``.
-///
-/// This is the bag's own record of what it contains, and it is the same field the
-/// fault manager reads for the same decisions. The same YAML parser underneath,
-/// two decoders: ``rosbag2_storage::MetadataIo`` decodes the whole document into a
-/// ``BagMetadata``, this reads one sequence out of it. The two agree for every
-/// document both decoders accept, which is what keeps the sides describing one
-/// recording alike. The gateway already links yaml-cpp, so this costs no new
-/// dependency, and it does not link rosbag2_storage, which is why the field is
-/// read here directly.
-///
-/// nullopt when the metadata is missing, unreadable, or not the shape rosbag2
-/// writes - all of which mean the same thing to a caller, that the bag will not
-/// say and the directory has to be inspected instead.
-std::optional<std::vector<std::string>> rosbag_relative_file_paths(const std::string & bag_path) {
-  const std::filesystem::path metadata_path = std::filesystem::path(bag_path) / "metadata.yaml";
+/// A regular file that is not a symlink. A link inside a bag could point at any file on the host.
+bool is_plain_file(const std::filesystem::path & path) {
   std::error_code ec;
-  if (!std::filesystem::is_regular_file(metadata_path, ec)) {
+  return std::filesystem::symlink_status(path, ec).type() == std::filesystem::file_type::regular && !ec;
+}
+
+/// @p bag_path normalised, without a trailing slash. The fault manager normalises the same way.
+std::filesystem::path normalized_bag_dir(const std::string & bag_path) {
+  std::filesystem::path bag = std::filesystem::path(bag_path).lexically_normal();
+  if (!bag.has_filename()) {
+    bag = bag.parent_path();
+  }
+  return bag;
+}
+
+/// rosbag2_bagfile_information.relative_file_paths from <bag>/metadata.yaml. nullopt when the
+/// file is missing, a symlink, unreadable, or not that shape. The fault manager reads the field
+/// the same way (core/rosbag_served_size.cpp).
+std::optional<std::vector<std::string>> rosbag_relative_file_paths(const std::string & bag_path) {
+  const std::filesystem::path metadata_path = normalized_bag_dir(bag_path) / "metadata.yaml";
+  if (!is_plain_file(metadata_path)) {
     return std::nullopt;
   }
   try {
@@ -115,26 +122,12 @@ std::optional<std::vector<std::string>> rosbag_relative_file_paths(const std::st
   }
 }
 
-/// The file @p relative_name names inside the bag at @p bag_path, when that is
-/// a name this side will follow: a direct child of the bag directory carrying a
-/// storage extension, which is what rosbag2 writes.
-///
-/// The containment test is the point. ``std::filesystem::path`` concatenation
-/// lets an absolute name replace the directory outright (``bag / "/etc/passwd"``
-/// is ``/etc/passwd``) and a ``..`` name climb out of it, so without this a
-/// metadata.yaml would choose which file on the host the download hands over
-/// and advertises a length for. The extension test keeps the same rule the
-/// directory scan applies to every other candidate.
-///
-/// nullopt when the name is not one of those. Callers treat that exactly as a
-/// bag that named nothing: the resolver scans the directory, the size helper
-/// declines.
+/// @p relative_name inside @p bag_path when it is a direct child with a .db3 or .mcap extension.
+/// An absolute or `..` name would otherwise pick any file on the host. Lexical only; callers
+/// check the file with is_plain_file().
 std::optional<std::filesystem::path> rosbag_named_storage_file(const std::string & bag_path,
                                                                const std::string & relative_name) {
-  std::filesystem::path bag = std::filesystem::path(bag_path).lexically_normal();
-  if (!bag.has_filename()) {
-    bag = bag.parent_path();  // tolerate a trailing slash
-  }
+  const std::filesystem::path bag = normalized_bag_dir(bag_path);
   const std::filesystem::path named = (bag / relative_name).lexically_normal();
   if (named.parent_path() != bag) {
     return std::nullopt;
@@ -170,45 +163,20 @@ std::vector<std::string> BulkDataHandlers::download_media_types() {
 }
 
 std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path) {
-  // Every filesystem call below takes the std::error_code overload, and that is
-  // load-bearing. This runs once per row of a bulk-data
-  // listing. With the throwing overloads one unreadable bag directory (EACCES),
-  // or one removed by quota eviction between the is_directory test and the walk
-  // (ENOENT), threw out of list(), which has no catch anywhere in its chain, and
-  // the request answered 500: a single bag nobody could read took every other
-  // recording of that entity out of the listing with it. Here a bag this process
-  // cannot read is an empty answer, not a failed request.
+  // error_code overloads only: one unreadable or evicted bag must not fail the whole listing.
   std::error_code ec;
 
-  // If it's a regular file, return as-is
   if (std::filesystem::is_regular_file(path, ec)) {
     return path;
   }
-
-  // If it's a directory (rosbag2 directory structure), find the db3/mcap file inside
   if (!std::filesystem::is_directory(path, ec)) {
     return "";
   }
 
-  // Ask the bag first. When its metadata names exactly one storage file and that
-  // file is there, that is the file, and directory order does not get a vote.
-  // Iterating instead returns whichever .db3 or .mcap the directory happens to
-  // yield first, so a stray file beside the recording - a leftover segment, a
-  // copy - can be served and sized in place of the real one, while the fault
-  // manager, which sizes the single file it names (a split falls back to the
-  // stored total), reports the other. Both sides read the same field.
-  //
-  // Several names is a split recording and is deliberately left to the loop
-  // below: the download's choice of segment there is a separate question from
-  // this one. No metadata, unreadable metadata, a name this side will not follow
-  // and a named file that is not on disk all fall through as well, because then
-  // the bag has not answered.
+  // The single file metadata.yaml names wins over directory order. A split is left to the scan.
   if (const auto names = rosbag_relative_file_paths(path); names && names->size() == 1) {
-    if (const auto named = rosbag_named_storage_file(path, names->front())) {
-      std::error_code named_ec;
-      if (std::filesystem::is_regular_file(*named, named_ec) && !named_ec) {
-        return named->string();
-      }
+    if (const auto named = rosbag_named_storage_file(path, names->front()); named && is_plain_file(*named)) {
+      return named->string();
     }
   }
 
@@ -220,18 +188,16 @@ std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path)
     if (ec) {
       return "";
     }
-    std::error_code entry_ec;
-    if (!it->is_regular_file(entry_ec) || entry_ec) {
+    if (!is_plain_file(it->path())) {
       continue;
     }
-    auto ext = it->path().extension().string();
-    // Look for db3 (sqlite3 format) or mcap files
+    const auto ext = it->path().extension().string();
     if (ext == ".db3" || ext == ".mcap") {
       return it->path().string();
     }
   }
 
-  return "";  // File not found
+  return "";
 }
 
 std::vector<std::string> BulkDataHandlers::get_source_filters(const EntityInfo & entity) const {
@@ -253,59 +219,24 @@ std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path) {
     return std::nullopt;
   }
 
-  std::error_code path_ec;
-  const bool is_storage_file = std::filesystem::is_regular_file(bag_path, path_ec) && !path_ec;
-
-  // Only a recording held in a single storage file has a size the download can
-  // be measured by. Past the configured maximum bag size rosbag2 splits a
-  // recording across several files and the download route hands over one of
-  // them, so no single file is "the" transfer, and the fault manager reports the
-  // recording's total for that shape. On nullopt the descriptor keeps the row's
-  // figure, which since the fault manager began sending served bytes IS that
-  // answer: the storage file for a whole recording, the directory total for a
-  // split one.
-  //
-  // Which file a single-file recording is held in comes from the bag's own
-  // metadata, and the size follows that file and no other. A named file that is
-  // absent leaves no answer here, the shape the fault manager answers with the
-  // stored total for. The resolver falls through to directory order there so the
-  // download still has something to hand over; that fallback does not make a
-  // stray file the recording's size.
-  //
-  // A bag_path that is itself a regular file IS the one storage file, and asking
-  // its metadata is meaningless because a file has no metadata.yaml beside it
-  // under that name. The path can be one: the resolver accepts a bare file and
-  // the download serves it, so the count gate sits behind the is_storage_file
-  // test - in front of it, every such row would be declined here and listed at
-  // zero.
-  std::optional<std::vector<std::string>> names;
-  if (!is_storage_file) {
-    names = rosbag_relative_file_paths(bag_path);
+  std::error_code ec;
+  std::filesystem::path served;
+  if (std::filesystem::is_regular_file(bag_path, ec)) {
+    served = bag_path;
+  } else {
+    // A split (several names) has no single served file; the row's figure stands.
+    const auto names = rosbag_relative_file_paths(bag_path);
     if (!names || names->size() != 1) {
       return std::nullopt;
     }
-  }
-
-  // The same two steps `download()` performs, in the same order and through the
-  // same resolver, so the size a client is promised cannot drift from the size
-  // it is sent. Changing which file a recording resolves to changes both.
-  const std::string resolved = BulkDataHandlers::resolve_rosbag_file_path(bag_path);
-  if (resolved.empty()) {
-    return std::nullopt;
-  }
-
-  // The measurement stands only when the file resolved IS the file the bag
-  // named, through the same containment rule the resolver applied, so the two
-  // cannot disagree about which names are followable.
-  if (!is_storage_file) {
     const auto named = rosbag_named_storage_file(bag_path, names->front());
-    if (!named || std::filesystem::path(resolved).lexically_normal() != *named) {
+    if (!named || !is_plain_file(*named)) {
       return std::nullopt;
     }
+    served = *named;
   }
 
-  std::error_code ec;
-  const auto size = std::filesystem::file_size(resolved, ec);
+  const auto size = std::filesystem::file_size(served, ec);
   if (ec) {
     return std::nullopt;
   }
@@ -398,15 +329,7 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     // Default to sqlite3 (the historical FaultManager default) when a bag predates
     // the persisted format field; the per-bag metadata normally carries the real one.
     entry.format = row.value("format", "sqlite3");
-    // What the download route will actually send, measured here on the file it
-    // resolves. The row's figure is the fault manager's own answer to the same
-    // question: the storage file for a recording held in one file, the bag
-    // directory's total for one split across several, and the total again for a
-    // bag whose metadata it could not read. Measuring locally is what keeps the
-    // listing and the download from drifting apart on this host. Falling back to
-    // the row is what keeps a recording this process cannot see - a peer's bag,
-    // an unreadable directory, a split - described by the side that can. A zero in
-    // its place would describe the recording as empty.
+    // Measured on the served file; the row's own figure when there is no single one.
     entry.size_bytes = rosbag_served_bytes(row.value("file_path", "")).value_or(row.value("size_bytes", uint64_t{0}));
     entry.duration_sec = row.value("duration_sec", 0.0);
     entry.created_at_ns = created_at_ns;
@@ -713,19 +636,8 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     // URL is not the segment the client sent.
     filename = rosbag_result.data.value("recording_id", bulk_data_id) + "." + format;
 
-    // Rosbag2 emits a directory layout - resolve the inner db3/mcap file. Only
-    // that file is served, and metadata.yaml stays on the gateway host.
-    //
-    // For a recording whose metadata names its single storage file and that file
-    // is present, which is the normal case, the listing resolved this same path
-    // through detail::rosbag_served_bytes and the Content-Length below is the
-    // number it advertised. When the bag names no file this side will follow -
-    // no metadata, a split, a name that escapes the directory, a named file that
-    // is gone - the descriptor carries the total the fault manager stored while
-    // this route still hands over whatever the directory holds, so the two
-    // deliberately differ and the descriptor size exceeding Content-Length is how
-    // a client can tell the transfer is not the whole recording. See the size
-    // rule in docs/api/rest.rst.
+    // Only the storage file is served, not metadata.yaml. When the listing size differs from
+    // Content-Length, see "One recording, one size" in docs/api/rest.rst.
     actual_path = resolve_rosbag_file_path(file_path);
   } else {
     // === Non-rosbag categories: served via BulkDataStore ===
@@ -750,13 +662,22 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, "Failed to read bulk-data file"));
   }
 
-  // Verify the resolved file is a readable regular file and grab its size for
-  // Content-Length; if either check fails we surface the legacy 500.
-  std::error_code ec;
-  auto file_size = std::filesystem::file_size(actual_path, ec);
-  if (ec) {
+  // One descriptor serves every range, so the bytes cannot change between the check and the read.
+  // O_NOFOLLOW refuses a file swapped for a symlink after resolving; O_NONBLOCK keeps a FIFO from
+  // blocking the open, and fstat then rejects it.
+  const int fd = ::open(actual_path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  if (fd < 0) {
     return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, "Failed to read bulk-data file"));
   }
+  const std::shared_ptr<int> file(new int(fd), [](const int * owned) {
+    ::close(*owned);
+    delete owned;
+  });
+  struct stat file_stat {};
+  if (::fstat(*file, &file_stat) != 0 || !S_ISREG(file_stat.st_mode)) {
+    return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, "Failed to read bulk-data file"));
+  }
+  const auto file_size = static_cast<uint64_t>(file_stat.st_size);
 
   // Sanitise the filename for the Content-Disposition header. The framework
   // emits `attachment; filename="<sanitised>"`; embedded quotes are mapped to
@@ -768,33 +689,27 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
   resp.content_type = mimetype;
   resp.filename = safe_name;
   resp.supports_ranges = true;
-  resp.total_size = static_cast<uint64_t>(file_size);
+  resp.total_size = file_size;
   // 64 KB chunks, matching the legacy `stream_file_to_response` block size.
   static constexpr std::size_t kChunkSize = 64 * 1024;
-  // Capture file path by value into the provider closure. cpp-httplib invokes
-  // the provider on a worker thread for each range, so each call re-opens the
-  // file rather than holding a long-lived ifstream that would race the next
-  // request on the same handler instance.
-  resp.provider = [path = actual_path](uint64_t offset, uint64_t length, httplib::DataSink & sink) -> bool {
-    std::ifstream file(path, std::ios::binary);
-    if (!file.is_open()) {
-      return false;
-    }
-    file.seekg(static_cast<std::streamoff>(offset));
-    if (!file.good()) {
-      return false;
-    }
+  // cpp-httplib calls the provider on worker threads, once per range. pread keeps no file offset,
+  // so concurrent calls on the shared descriptor are safe.
+  resp.provider = [file](uint64_t offset, uint64_t length, httplib::DataSink & sink) -> bool {
     uint64_t remaining = length;
+    uint64_t position = offset;
     std::vector<char> buf(std::min<uint64_t>(remaining, kChunkSize));
-    while (remaining > 0 && file.good()) {
-      auto to_read = static_cast<std::size_t>(std::min<uint64_t>(remaining, kChunkSize));
-      file.read(buf.data(), static_cast<std::streamsize>(to_read));
-      auto bytes_read = static_cast<std::size_t>(file.gcount());
-      if (bytes_read == 0) {
+    while (remaining > 0) {
+      const auto to_read = static_cast<std::size_t>(std::min<uint64_t>(remaining, kChunkSize));
+      const ssize_t bytes_read = ::pread(*file, buf.data(), to_read, static_cast<off_t>(position));
+      if (bytes_read < 0 && errno == EINTR) {
+        continue;
+      }
+      if (bytes_read <= 0) {
         break;
       }
-      sink.write(buf.data(), bytes_read);
-      remaining -= bytes_read;
+      sink.write(buf.data(), static_cast<std::size_t>(bytes_read));
+      remaining -= static_cast<uint64_t>(bytes_read);
+      position += static_cast<uint64_t>(bytes_read);
     }
     return remaining == 0;
   };

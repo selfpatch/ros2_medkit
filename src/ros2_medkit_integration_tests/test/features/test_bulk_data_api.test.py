@@ -23,6 +23,10 @@ are in scenario tests, not here.
 
 """
 
+import atexit
+import os
+import shutil
+import tempfile
 import unittest
 
 import launch_testing
@@ -33,11 +37,16 @@ from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
+# The fault manager writes bag directories here, so a test can reach the files of a recording.
+ROSBAG_DIR = tempfile.mkdtemp(prefix='medkit_bulk_data_rosbags_')
+atexit.register(shutil.rmtree, ROSBAG_DIR, True)
+
 
 def generate_test_description():
     return create_test_launch(
         demo_nodes=['lidar_sensor'],
         fault_manager=True,
+        fault_manager_params={'snapshots.rosbag.storage_path': ROSBAG_DIR},
         lidar_faulty=True,
     )
 
@@ -263,6 +272,82 @@ class TestBulkDataApi(GatewayTestCase):
             int(response.headers['Content-Length']), len(body),
             'Content-Length disagrees with the body it described',
         )
+
+    def test_bulk_data_symlinked_storage_file_is_not_followed(self):
+        """A storage file replaced by a symlink to a host file is not sized or served.
+
+        The link keeps the name metadata.yaml gives and points outside the bag.
+        The listing and the fault's snapshot entry must report the stored total,
+        and the download must not send the link target.
+
+        @verifies REQ_INTEROP_073
+        """
+        listing_endpoint = '/apps/lidar_sensor/bulk-data/rosbags'
+        data = self.poll_endpoint_until(
+            listing_endpoint,
+            lambda d: d if d.get('items') else None,
+            timeout=10.0,
+            interval=1.0,
+        )
+        descriptor = data['items'][0]
+        recording_id = descriptor['id']
+        fault_code = descriptor['x-medkit']['fault_codes'][0]
+
+        bag_dir = os.path.join(ROSBAG_DIR, recording_id)
+        storage_names = [
+            n for n in os.listdir(bag_dir) if n.endswith(('.mcap', '.db3'))
+        ]
+        self.assertEqual(len(storage_names), 1, f'Expected one storage file in {bag_dir}')
+        storage_file = os.path.join(bag_dir, storage_names[0])
+        stored_total = sum(
+            os.path.getsize(os.path.join(bag_dir, n)) for n in os.listdir(bag_dir)
+        )
+
+        def listed_size():
+            items = self.get_json(listing_endpoint)['items']
+            return next(i['size'] for i in items if i['id'] == recording_id)
+
+        def fault_snapshot_size():
+            detail = self.get_json(f'/apps/lidar_sensor/faults/{fault_code}')
+            return next(
+                s['size_bytes']
+                for s in detail['environment_data']['snapshots']
+                if s.get('type') == 'rosbag'
+                and s['bulk_data_uri'].endswith(f'/{recording_id}')
+            )
+
+        # Control: the intact bag is sized by its storage file on both paths.
+        served = os.path.getsize(storage_file)
+        self.assertEqual(listed_size(), served)
+        self.assertEqual(fault_snapshot_size(), served)
+
+        outside_dir = tempfile.mkdtemp(prefix='medkit_bulk_data_outside_')
+        target = os.path.join(outside_dir, 'host_file' + os.path.splitext(storage_file)[1])
+        target_bytes = b'o' * 12345
+        with open(target, 'wb') as f:
+            f.write(target_bytes)
+        original = os.path.join(outside_dir, 'original')
+        shutil.move(storage_file, original)
+        try:
+            os.symlink(target, storage_file)
+            self.assertEqual(
+                listed_size(), stored_total,
+                'listing did not fall back to the stored total for a symlinked file',
+            )
+            self.assertEqual(
+                fault_snapshot_size(), stored_total,
+                'fault snapshot did not fall back to the stored total for a symlinked file',
+            )
+            response = requests.get(
+                f'{self.BASE_URL}{listing_endpoint}/{recording_id}', timeout=30,
+            )
+            self.assertNotEqual(response.content, target_bytes, 'download served the link target')
+            self.assertEqual(response.status_code, 500, 'bag with no regular storage file')
+        finally:
+            if os.path.lexists(storage_file):
+                os.remove(storage_file)
+            shutil.move(original, storage_file)
+            shutil.rmtree(outside_dir, ignore_errors=True)
 
     def test_bulk_data_download_not_found(self):
         """Bulk-data download returns 404 for invalid UUID.
