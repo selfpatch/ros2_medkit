@@ -355,9 +355,7 @@ TEST_F(RosbagBagDirectoryTest, ServedBytesIsUnknownRatherThanZeroWhenTheBagIsNot
   EXPECT_FALSE(handlers::detail::rosbag_served_bytes((bag_dir_ / "no_such_bag").string()).has_value());
 
   // A directory with no metadata.yaml and no storage file in it. The metadata
-  // gate is what declines here, before the resolver is reached: the bag does not
-  // say how many storage files it holds, so this side will not guess one. The
-  // resolver would also find nothing here, which is not what this case turns on.
+  // gate declines: the bag does not say how many storage files it holds.
   const auto empty_bag = bag_dir_ / "empty_bag";
   std::filesystem::create_directories(empty_bag);
   EXPECT_FALSE(handlers::detail::rosbag_served_bytes(empty_bag.string()).has_value());
@@ -432,7 +430,7 @@ TEST_F(RosbagBagDirectoryTest, TheMetadataNamesTheStorageFileRatherThanDirectory
   // and sizeable in place of the real one for anything that takes whichever file
   // the directory iterator yields first. The fault manager sizes the single file
   // its metadata names, a split falling back to the stored total
-  // (rosbag_capture.cpp, rosbag_served_bytes), so the two sides answer
+  // (core/rosbag_served_size.cpp), so the two sides answer
   // differently for the same directory unless the gateway reads that field too.
   // The bag's own metadata is the tie-break on both sides.
   const auto strays = bag_dir_ / "with_stray";
@@ -725,13 +723,9 @@ TEST_F(UnreadableBagTest, AnUnreadableBagCostsItsOwnRowAndNotTheListing) {
   EXPECT_EQ(descriptors[1].id, "fault_UNREADABLE_1");
   EXPECT_EQ(descriptors[1].size, 4242u) << "the unreadable bag keeps the figure its row carried";
 
-  // These two are the assertions that pin the throwing overloads; the listing
-  // assertion above is defence in depth. Order is why: rosbag_served_bytes reads
-  // the bag's metadata before it resolves any file, and an unreadable bag has no
-  // readable metadata either, so it returns nullopt before the resolver is ever
-  // reached. download() has no such gate in front of
-  // it - it calls the resolver directly - so the resolver's own refusal to throw
-  // is what that route depends on, and it is asserted here directly.
+  // These two pin the throwing overloads. rosbag_served_bytes never calls the
+  // resolver; download() does, so the resolver's own refusal to throw is
+  // asserted here directly.
   EXPECT_NO_THROW({ EXPECT_FALSE(handlers::detail::rosbag_served_bytes(loop_.string()).has_value()); });
   EXPECT_NO_THROW({ EXPECT_EQ(BulkDataHandlers::resolve_rosbag_file_path(loop_.string()), ""); });
 }
