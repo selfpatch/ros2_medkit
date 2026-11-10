@@ -143,6 +143,11 @@ constexpr const char * ERR_X_MEDKIT_ENTITY_MISMATCH = "x-medkit-entity-mismatch"
 /// Vendor-specific: unsupported subscription protocol
 constexpr const char * ERR_X_MEDKIT_UNSUPPORTED_PROTOCOL = "x-medkit-unsupported-protocol";
 
+/// The fault manager answered and holds no recording with the requested id (404).
+/// Sent by the recording manifest and file routes only, and only in that case: any
+/// other 404 from them proves nothing about the recording.
+constexpr const char * ERR_X_MEDKIT_RECORDING_NOT_FOUND = "x-medkit-recording-not-found";
+
 /// SOVD standard: client's lock was broken by another client (409)
 constexpr const char * ERR_LOCK_BROKEN = "lock-broken";
 

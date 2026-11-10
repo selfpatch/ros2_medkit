@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/core/http/handlers/bulkdata_handlers.hpp"
 
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
+#include "ros2_medkit_gateway/core/faults/rosbag_recording.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -160,6 +161,7 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     uint64_t size_bytes{0};
     double duration_sec{0.0};
     int64_t created_at_ns{0};
+    bool manifest{false};
     std::vector<std::string> fault_codes;
   };
   std::vector<RecordingEntry> recordings;
@@ -210,6 +212,7 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     entry.size_bytes = row.value("size_bytes", uint64_t{0});
     entry.duration_sec = row.value("duration_sec", 0.0);
     entry.created_at_ns = created_at_ns;
+    entry.manifest = row.value("manifest", false);
     entry.fault_codes.push_back(fault_code);
     index_by_recording.emplace(recording_id, recordings.size());
     recordings.push_back(std::move(entry));
@@ -233,6 +236,10 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
                                          // Redundant with the descriptor id, kept because
                                          // clients already group on it.
                                          {"recording_id", entry.recording_id}};
+    if (entry.manifest) {
+      // Present only when true: its absence is what a recording without a manifest looks like.
+      (*descriptor.x_medkit)["manifest"] = true;
+    }
     descriptors.push_back(std::move(descriptor));
   }
   return descriptors;
@@ -360,13 +367,19 @@ BulkDataHandlers::list_descriptors(const http::TypedRequest & req) {
       }
     }
 
-    // Collect rosbags across all source filters
+    // Collect rosbags across all source filters. A listing that could not read every
+    // one of them is refused rather than served short: a 200 here is a complete list.
     std::vector<json> all_rosbags;
     for (const auto & source_filter : source_filters) {
       auto rosbags_result = fault_mgr->list_rosbags(source_filter);
-      if (rosbags_result.success && rosbags_result.data.contains("rosbags")) {
-        for (const auto & rosbag : rosbags_result.data["rosbags"]) {
-          all_rosbags.push_back(rosbag);
+      if (!rosbags_result.success) {
+        return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "Recordings could not be listed",
+                                         json{{"details", rosbags_result.error_message}}));
+      }
+      if (rosbags_result.data.contains("rosbags")) {
+        for (auto rosbag : rosbags_result.data["rosbags"]) {
+          rosbag["manifest"] = faults::recording_has_manifest(rosbag.value("file_path", std::string{}));
+          all_rosbags.push_back(std::move(rosbag));
         }
       }
     }

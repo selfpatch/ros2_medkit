@@ -32,11 +32,14 @@
 #include <thread>
 #include <vector>
 
+#include <nlohmann/json.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <yaml-cpp/yaml.h>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rcutils/logging.h"
 #include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
+#include "ros2_medkit_fault_manager/core/recording_manifest.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
@@ -1215,6 +1218,15 @@ class RosbagCaptureIntegrationTest : public RosbagCaptureTest {
     return read_bag_metadata(bag_path).find(topic) != std::string::npos;
   }
 
+  /// A finalised bag's manifest.json, or a null value when it has none.
+  nlohmann::json read_manifest(const std::string & bag_path) const {
+    std::ifstream file(std::filesystem::path(bag_path) / "manifest.json");
+    if (!file.is_open()) {
+      return nullptr;
+    }
+    return nlohmann::json::parse(file, nullptr, false);
+  }
+
   /// Bag directories the capture left under the test storage path.
   size_t count_bag_dirs() const {
     size_t count = 0;
@@ -2362,6 +2374,37 @@ TEST_F(RosbagCaptureIntegrationTest, TheStorageQuotaEngagesOnABoundaryRecording)
   }
 }
 
+TEST_F(RosbagCaptureIntegrationTest, ARecordingWithoutAPostRollCarriesAManifestToo) {
+  // The other finalisation path: no post-fault window, so the bag is closed and
+  // stored inside the confirmation itself.
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_after_sec = 0.0;
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/manifest_immediate_probe");
+  capture.on_fault_confirmed("MANIFEST_IMMEDIATE");
+
+  auto row = storage_->get_rosbag_file("MANIFEST_IMMEDIATE");
+  ASSERT_TRUE(row.has_value());
+  const auto manifest = read_manifest(row->file_path);
+  ASSERT_TRUE(manifest.is_object()) << "a recording closed without a post-roll carries no manifest.json";
+  EXPECT_EQ(manifest["manifest_version"], 1);
+  EXPECT_EQ(manifest["recording_id"], row->recording_id);
+  EXPECT_EQ(manifest["created_at_ns"], row->created_at_ns);
+  ASSERT_EQ(manifest["files"].size(), 1u);
+  const auto file = std::filesystem::path(row->file_path) / manifest["files"][0]["name"].get<std::string>();
+  EXPECT_EQ(manifest["files"][0]["size"], std::filesystem::file_size(file));
+  EXPECT_EQ(manifest["total_bytes"], std::filesystem::file_size(file));
+  EXPECT_EQ(manifest["files"][0]["sha256"],
+            ros2_medkit_fault_manager::core::sha256_file_hex(file.string()).value_or(""));
+
+  // One recording, and no path claim left next to it.
+  EXPECT_EQ(count_bag_dirs(), 1u);
+  capture.stop();
+}
+
 TEST_F(RosbagCaptureIntegrationTest, ARecordingNeverTakesOverAnExistingBagDirectory) {
   // The bag name carries the millisecond the path is generated in, and nothing made
   // that unique. A capture landing on a name an earlier recording owns failed to
@@ -2429,11 +2472,42 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingSplitsAndReportsTheWholeB
 
   size_t data_files = 0;
   for (const auto & entry : std::filesystem::directory_iterator(row->file_path)) {
-    if (entry.is_regular_file() && entry.path().filename() != "metadata.yaml") {
+    const auto name = entry.path().filename();
+    if (entry.is_regular_file() && name != "metadata.yaml" && name != "manifest.json") {
       ++data_files;
     }
   }
   ASSERT_GT(data_files, 1u) << "the recording never split, so the sum over the split is untested";
+
+  // The manifest names every file of the split, in metadata.yaml order, with the
+  // size and sha256 the file has on disk.
+  const auto manifest = read_manifest(row->file_path);
+  ASSERT_TRUE(manifest.is_object()) << "a finalised recording carries no manifest.json";
+  EXPECT_EQ(manifest["recording_id"], row->recording_id);
+  EXPECT_EQ(manifest["format"], "mcap");
+  EXPECT_EQ(manifest["created_at_ns"], row->created_at_ns);
+  ASSERT_EQ(manifest["files"].size(), data_files);
+  const auto metadata = YAML::LoadFile((std::filesystem::path(row->file_path) / "metadata.yaml").string());
+  const auto relative_paths = metadata["rosbag2_bagfile_information"]["relative_file_paths"];
+  ASSERT_EQ(relative_paths.size(), data_files);
+  uint64_t total_bytes = 0;
+  for (size_t i = 0; i < data_files; ++i) {
+    const auto & entry = manifest["files"][i];
+    const std::string name = entry["name"];
+    EXPECT_EQ(name, relative_paths[i].as<std::string>());
+    const auto file = std::filesystem::path(row->file_path) / name;
+    EXPECT_EQ(entry["size"], std::filesystem::file_size(file));
+    EXPECT_EQ(entry["sha256"], ros2_medkit_fault_manager::core::sha256_file_hex(file.string()).value_or(""));
+    total_bytes += entry["size"].get<uint64_t>();
+  }
+  EXPECT_EQ(manifest["total_bytes"], total_bytes);
+
+  // The stored size is the whole directory, manifest included.
+  size_t directory_bytes = 0;
+  for (const auto & entry : std::filesystem::directory_iterator(row->file_path)) {
+    directory_bytes += entry.file_size();
+  }
+  EXPECT_EQ(row->size_bytes, directory_bytes);
   EXPECT_GT(row->size_bytes, 1024u * 1024u) << "the stored size covers one file of the split rather than the bag";
   EXPECT_GT(bag_message_count(row->file_path), 0);
 

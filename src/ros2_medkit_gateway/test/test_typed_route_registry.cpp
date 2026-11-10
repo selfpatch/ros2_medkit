@@ -571,6 +571,35 @@ TEST(TypedRouteRegistry, BinaryDownloadAnswers206WithContentRangeForARangeReques
   EXPECT_EQ(r->get_header_value("Accept-Ranges"), "bytes");
 }
 
+TEST(TypedRouteRegistry, BinaryDownloadErrorIsNotCutByTheRangeOfTheRequest) {
+  // A client resuming a download sends a Range, and the answer may be an error.
+  // cpp-httplib applies the range to any body: the error document came back as a
+  // slice of itself, or as an empty 416 when the offset was past its end, so a
+  // resuming client could not read why the file was refused.
+  RouteRegistry reg;
+  std::function<Result<ros2_medkit_gateway::http::BinaryResponse>(TypedRequest)> h =
+      [](TypedRequest /*req*/) -> Result<ros2_medkit_gateway::http::BinaryResponse> {
+    ros2_medkit_gateway::ErrorInfo err;
+    err.code = "resource-not-found";
+    err.message = "No such file";
+    err.http_status = 404;
+    return tl::unexpected(err);
+  };
+  reg.binary_download("/test/missing", std::move(h), {"application/octet-stream"}).tag("Test").summary("Download");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  for (const char * range : {"bytes=10-", "bytes=100000-", "bytes=0-3"}) {
+    auto r = cli.Get("/api/v1/test/missing", {{"Range", range}});
+    ASSERT_TRUE(r) << range;
+    EXPECT_EQ(r->status, 404) << range;
+    EXPECT_FALSE(r->has_header("Content-Range")) << range;
+    const auto body = nlohmann::json::parse(r->body, nullptr, false);
+    ASSERT_TRUE(body.is_object()) << range << ": " << r->body;
+    EXPECT_EQ(body.value("error_code", ""), "resource-not-found") << range;
+  }
+}
+
 TEST(TypedRouteRegistry, BinaryDownloadDeclaresBothSuccessStatusesAndMarksItself) {
   // Two 2xx codes are only legitimate because the route says why - the document
   // contract test reads `x-medkit-partial-content` to tell this apart from a

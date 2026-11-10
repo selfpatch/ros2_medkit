@@ -158,7 +158,8 @@ rosbag:
   storage_path: ""
 
   # Maximum size per bag file in MB (default: 50)
-  # If a bag exceeds this size, it will be closed even if still recording
+  # A recording past this size is split into several storage files. manifest.json
+  # in the recording directory lists them in order with size and sha256.
   max_bag_size_mb: 50
 
   # Maximum total storage for all bag files in MB (default: 500)

@@ -705,6 +705,16 @@ A post-fault-only bag on a quiet or heavily filtered system can contain zero
 messages. It still finalises normally on both ``mcap`` and ``sqlite3``, is listed
 by the bulk-data endpoints and can be downloaded; only its payload is empty.
 
+**What a closed recording contains.** The recording directory holds the storage
+files rosbag2 wrote, its ``metadata.yaml``, and a ``manifest.json`` the fault
+manager writes once the writer is closed and before the recording is listed. The
+manifest names the storage files in ``metadata.yaml`` order, each with its size
+and sha256, and their total size. It is written to a temporary file and renamed
+into place, and it is never rewritten. Hashing reads every file once, so closing a
+large recording takes that much longer. If the manifest cannot be written, a
+warning is logged and the recording is still listed, without one. Recordings made
+before this feature have no manifest and get none.
+
 **Recording names are unique.** A recording directory is named
 ``fault_<code>_<milliseconds>``. When that name is already taken, the timestamp is
 moved on by one millisecond until a free name is found, so a new recording never

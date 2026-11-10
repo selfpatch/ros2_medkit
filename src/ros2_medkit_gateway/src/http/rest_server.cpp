@@ -700,6 +700,44 @@ void RESTServer::setup_routes() {
     return result;
   };
 
+  // Routes of one rosbag recording, addressed by recording id. Registered for every
+  // entity path the bulk-data download exists on.
+  auto register_recording_routes = [this, &reg, &capitalize](const std::string & entity_path,
+                                                             const std::string & singular) {
+    reg.json_document(
+           entity_path + "/bulk-data/rosbags/{recording_id}/manifest",
+           [this](http::TypedRequest req) -> http::Result<std::string> {
+             return bulkdata_handlers_->recording_manifest(req);
+           },
+           "Recording manifest", handlers::BulkDataHandlers::recording_manifest_schema())
+        .tag("Bulk Data")
+        .requires_role(UserRole::VIEWER)
+        .summary(std::string("Get the manifest of a rosbag recording for ") + singular)
+        .description(
+            "Returns the recording's manifest.json byte for byte: its storage files in order, each "
+            "with size and sha256, and their total size. 404 with vendor code "
+            "x-medkit-recording-not-found only when no recording has this id.")
+        // 503 when the fault manager did not answer.
+        .errors({503})
+        .operation_id(std::string("get") + capitalize(singular) + "RecordingManifest");
+
+    reg.binary_download(entity_path + "/bulk-data/rosbags/{recording_id}/files/{index}",
+                        [this](http::TypedRequest req) -> http::Result<http::BinaryResponse> {
+                          return bulkdata_handlers_->recording_file(req);
+                        },
+                        {"application/octet-stream"})
+        .tag("Bulk Data")
+        .requires_role(UserRole::VIEWER)
+        .summary(std::string("Download one storage file of a rosbag recording for ") + singular)
+        .description(
+            "Downloads storage file `files[index]` of the recording's manifest. Supports Range. 404 "
+            "with vendor code x-medkit-recording-not-found only when no recording has this id.")
+        // 503 when the fault manager did not answer. 416, for a Range outside the
+        // file, is declared on every operation already.
+        .errors({503})
+        .operation_id(std::string("download") + capitalize(singular) + "RecordingFile");
+  };
+
   // === Server endpoints ===
   // PR-403 commit 16: migrated to typed reg.get<T>. The framework auto-fills
   // .response<T>(200, "") from the template parameter, so no manual response
@@ -1310,6 +1348,8 @@ void RESTServer::setup_routes() {
         .requires_role(UserRole::VIEWER)
         .summary(std::string("List bulk-data descriptors for ") + et.singular)
         .description(std::string("Lists downloadable files in a bulk-data category for this ") + et.singular + ".")
+        // 503 when a recordings listing cannot be read in full. A 200 is complete.
+        .errors({503})
         .operation_id(std::string("list") + capitalize(et.singular) + "BulkDataDescriptors");
 
     reg.binary_download(
@@ -1323,6 +1363,8 @@ void RESTServer::setup_routes() {
         .summary(std::string("Download bulk-data file for ") + et.singular)
         .description("Downloads a bulk-data file (binary content).")
         .operation_id(std::string("download") + capitalize(et.singular) + "BulkData");
+
+    register_recording_routes(entity_path, et.singular);
 
     // Upload: only for apps and components (405 for areas and functions)
     std::string et_type_str = et.type;
@@ -2096,6 +2138,7 @@ void RESTServer::setup_routes() {
       .requires_role(UserRole::VIEWER)
       .summary("List bulk-data descriptors for subarea")
       .description("Lists bulk-data descriptors for a subarea.")
+      .errors({503})
       .operation_id("listSubareaBulkDataDescriptors");
 
   reg.binary_download(
@@ -2109,6 +2152,8 @@ void RESTServer::setup_routes() {
       .summary("Download bulk-data file for subarea")
       .description("Downloads a bulk-data file for a subarea.")
       .operation_id("downloadSubareaBulkData");
+
+  register_recording_routes("/areas/{area_id}/subareas/{subarea_id}", "subarea");
 
   // === Nested entities - subcomponents bulk-data ===
   reg.get<dto::BulkDataCategoryList>("/components/{component_id}/subcomponents/{subcomponent_id}/bulk-data",
@@ -2130,6 +2175,7 @@ void RESTServer::setup_routes() {
       .requires_role(UserRole::VIEWER)
       .summary("List bulk-data descriptors for subcomponent")
       .description("Lists bulk-data descriptors for a subcomponent.")
+      .errors({503})
       .operation_id("listSubcomponentBulkDataDescriptors");
 
   reg.binary_download(
@@ -2143,6 +2189,8 @@ void RESTServer::setup_routes() {
       .summary("Download bulk-data file for subcomponent")
       .description("Downloads a bulk-data file for a subcomponent.")
       .operation_id("downloadSubcomponentBulkData");
+
+  register_recording_routes("/components/{component_id}/subcomponents/{subcomponent_id}", "subcomponent");
 
   // === Global faults ===
   //

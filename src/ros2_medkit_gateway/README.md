@@ -69,6 +69,8 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 - `GET /api/v1/{entity}/{id}/bulk-data` - List bulk-data categories (configured, plus `rosbags` when the fault manager serves them)
 - `GET /api/v1/{entity}/{id}/bulk-data/{category}` - List bulk-data items in a category
 - `GET /api/v1/{entity}/{id}/bulk-data/{category}/{item_id}` - Download a bulk-data file
+- `GET /api/v1/{entity}/{id}/bulk-data/rosbags/{recording_id}/manifest` - Manifest of a rosbag recording: its storage files in order, with size and sha256
+- `GET /api/v1/{entity}/{id}/bulk-data/rosbags/{recording_id}/files/{index}` - Download one storage file of a rosbag recording (supports `Range`)
 - `POST /api/v1/{entity}/{id}/bulk-data/{category}` - Upload bulk data (components/apps only)
 - `DELETE /api/v1/{entity}/{id}/bulk-data/{category}/{item_id}` - Delete bulk data (components/apps only)
 

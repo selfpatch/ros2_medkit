@@ -224,6 +224,11 @@ endif()
   medkit_add_gtest(test_fault_audit_log test/test_fault_audit_log.cpp)
   target_link_libraries(test_fault_audit_log fault_manager_lib)
 
+  # Recording manifest (file list, sizes, sha256). Plain C++ core, no ROS node.
+  medkit_add_gtest(test_recording_manifest test/test_recording_manifest.cpp)
+  target_link_libraries(test_recording_manifest fault_manager_core)
+  medkit_test_needs_no_domain(test_recording_manifest)
+
   # Snapshot capture tests
   medkit_add_gtest(test_snapshot_capture test/test_snapshot_capture.cpp)
   target_link_libraries(test_snapshot_capture fault_manager_lib)

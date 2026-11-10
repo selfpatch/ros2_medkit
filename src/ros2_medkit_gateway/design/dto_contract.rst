@@ -100,6 +100,7 @@ erasure, and no separate code-generation step are needed.
            + multipart_upload<T>(path, handler)
            + static_asset(path, handler)
            + docs_endpoint(path, handler)
+           + json_document(path, handler, description, schema)
            + docs_subtree(openapi_path, regex, handler)
        }
 

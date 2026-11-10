@@ -763,6 +763,14 @@ class RouteRegistry {
   RouteEntry & docs_endpoint(const std::string & openapi_path,
                              std::function<http::Result<std::string>(http::TypedRequest)> handler);
 
+  /// Register a GET that serves an already-serialized JSON document byte for
+  /// byte, for a document whose bytes are part of its contract (a file a client
+  /// hashes). A typed `get<T>` would parse and re-serialize it. `description`
+  /// and `schema` are what the 200 publishes.
+  RouteEntry & json_document(const std::string & openapi_path,
+                             std::function<http::Result<std::string>(http::TypedRequest)> handler,
+                             const std::string & description, const nlohmann::json & schema);
+
   /// Register a route whose URI is a cpp-httplib regex the OpenAPI path
   /// grammar cannot express, used for the `<entity-path>/docs` sub-document
   /// whose prefix is any entity or resource path.

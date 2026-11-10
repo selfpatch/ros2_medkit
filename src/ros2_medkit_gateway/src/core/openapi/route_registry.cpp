@@ -642,6 +642,12 @@ RouteRegistry::binary_download(const std::string & openapi_path,
     http::TypedRequest typed_req(req);
     auto outcome = handler(typed_req);
     if (!outcome.has_value()) {
+      // A Range selects part of the file, never part of an error. cpp-httplib applies
+      // req.ranges to whatever body is set: it cut the error document to the requested
+      // bytes, or replaced it with an empty 416 when the offset was past its end. The
+      // same goes for a response a peer already ranged and this gateway only relays.
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+      const_cast<httplib::Request &>(req).ranges.clear();
       write_typed_error(res, outcome.error(), renderer);
       return;
     }
@@ -749,6 +755,13 @@ RouteEntry & RouteRegistry::static_asset(const std::string & openapi_path,
 
 RouteEntry & RouteRegistry::docs_endpoint(const std::string & openapi_path,
                                           std::function<http::Result<std::string>(http::TypedRequest)> handler) {
+  return json_document(openapi_path, std::move(handler), "OpenAPI specification document",
+                       nlohmann::json{{"type", "object"}, {"additionalProperties", true}});
+}
+
+RouteEntry & RouteRegistry::json_document(const std::string & openapi_path,
+                                          std::function<http::Result<std::string>(http::TypedRequest)> handler,
+                                          const std::string & description, const nlohmann::json & schema) {
   auto renderer = std::make_shared<ErrorRenderer>(ErrorRenderer::kSovdGenericError);
   auto gate = std::make_shared<std::optional<RouteGate>>();
   HandlerFn fn = [handler = std::move(handler), renderer, gate](const httplib::Request & req, httplib::Response & res) {
@@ -768,8 +781,7 @@ RouteEntry & RouteRegistry::docs_endpoint(const std::string & openapi_path,
   auto & entry = add_route("get", openapi_path, std::move(fn));
   entry.error_renderer_ = renderer;
   entry.gate_ = gate;
-  entry.response(200, "OpenAPI specification document",
-                 nlohmann::json{{"type", "object"}, {"additionalProperties", true}});
+  entry.response(200, description, schema);
   return entry;
 }
 
