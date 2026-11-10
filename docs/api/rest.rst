@@ -1980,12 +1980,17 @@ route: the answer is always the whole file.
      "recording_id": "fault_LIDAR_DEGRADED_1794246561043",
      "format": "mcap",
      "created_at_ns": 1794246561043000000,
-     "total_bytes": 589315285,
+     "total_bytes": 106611114,
      "files": [
        {
          "name": "fault_LIDAR_DEGRADED_1794246561043_0.mcap",
          "size": 53006926,
          "sha256": "5214ac92d2edc3f9e5fee273b5cfb0c82dae555680973a416502b1f67adb1952"
+       },
+       {
+         "name": "fault_LIDAR_DEGRADED_1794246561043_1.mcap",
+         "size": 53604188,
+         "sha256": "42c8ef7be611792db3347d7722017a1081e5ea53c93d4c72a73fe15057ba9046"
        }
      ]
    }
