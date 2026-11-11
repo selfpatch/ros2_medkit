@@ -2230,11 +2230,24 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingKeepsItsScopeWhileTheOldF
   // The racer is the capture pool and this thread is the executor, the production
   // shape. Only the racer ever confirms B, so no two threads call on_fault_confirmed
   // for the same fault, as the contract requires. Its calls attach while A records
-  // and the first one after the guard drops takes the boundary path.
+  // and the first one after the guard drops takes the boundary path. It stops there:
+  // a later call would open another recording of B once the boundary one closes, and
+  // that one starts from whatever the buffer holds, so it is not the bag under test.
   std::atomic<bool> stop_racer{false};
-  std::thread racer([&capture, &stop_racer]() {
+  const auto boundary_bag_opened = [this]() {
+    for (const auto & entry : std::filesystem::directory_iterator(temp_dir_)) {
+      if (entry.path().filename().string().rfind("fault_SCOPE_RACE_B_", 0) == 0) {
+        return true;
+      }
+    }
+    return false;
+  };
+  std::thread racer([&capture, &stop_racer, &boundary_bag_opened]() {
     while (!stop_racer.load()) {
       capture.on_fault_confirmed("SCOPE_RACE_B");
+      if (boundary_bag_opened()) {
+        return;
+      }
       std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
   });
@@ -2257,6 +2270,13 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingKeepsItsScopeWhileTheOldF
   ASSERT_TRUE(wait_for_row("SCOPE_RACE_B", std::chrono::milliseconds(12000)));
   auto row_b = storage_->get_rosbag_file("SCOPE_RACE_B");
   ASSERT_TRUE(row_b.has_value());
+  size_t b_recordings = 0;
+  for (const auto & entry : std::filesystem::directory_iterator(temp_dir_)) {
+    if (entry.path().filename().string().rfind("fault_SCOPE_RACE_B_", 0) == 0) {
+      ++b_recordings;
+    }
+  }
+  ASSERT_EQ(b_recordings, 1u) << "the row under test may not be B's boundary recording";
   ASSERT_GT(bag_message_count(row_b->file_path), 0) << "B's recording finalised empty, so its scope was never tested";
   EXPECT_TRUE(bag_has_topic(row_b->file_path, "/scope_race_b")) << "B's bag is missing its own faulting node's topic";
   EXPECT_FALSE(bag_has_topic(row_b->file_path, "/scope_race_a"))
