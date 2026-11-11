@@ -822,19 +822,24 @@ TEST(RosbagServedBytesTest, ASingleNamedFileIsSizedEvenWithAStrayFileBesideIt) {
   EXPECT_NE(reported, stored_total);
 }
 
-TEST(RosbagServedBytesTest, ASplitRecordingFallsBackToTheStoredTotal) {
+TEST(RosbagServedBytesTest, ASplitRecordingIsSizedByTheSumOfItsNamedFiles) {
   // Past max_bag_size_mb rosbag2 splits a recording across several storage files.
-  // The download hands over one of them, so no single file is "the" transfer and the
-  // recording's own total is the only number that describes it honestly.
+  // The size is the sum of the files metadata.yaml names, which is the manifest's
+  // total_bytes, without metadata.yaml itself.
   ServedBytesBag bag("split");
   const std::string first = bag.add_storage_file("recording_0.db3", 4096);
   const std::string second = bag.add_storage_file("recording_1.db3", 2048);
   bag.write_metadata({first, second});
   const size_t stored_total = bag.directory_total();
+  ASSERT_GT(stored_total, 4096u + 2048u) << "metadata.yaml has to make the two totals differ";
 
   const size_t reported = ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total);
-  EXPECT_EQ(reported, stored_total);
-  EXPECT_NE(reported, bag.file_size_of(first)) << "picking a segment would advertise a partial recording as whole";
+  EXPECT_EQ(reported, 4096u + 2048u);
+  EXPECT_NE(reported, bag.file_size_of(first)) << "one segment is not the recording";
+
+  // A named file that cannot be measured leaves no sum, so the stored total stands.
+  std::filesystem::remove(std::filesystem::path(bag.path()) / second);
+  EXPECT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), stored_total);
 }
 
 // Fault lifecycle tests

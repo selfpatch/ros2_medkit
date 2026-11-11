@@ -1417,7 +1417,7 @@ std::optional<std::string> RosbagCapture::generate_bag_path(const std::string & 
 }
 
 // Directory total: what the recording costs against max_total_storage_mb and what eviction frees.
-// The API reports the served storage file instead, see core::rosbag_served_bytes().
+// The API reports the named storage files instead, see core::rosbag_served_bytes().
 size_t RosbagCapture::calculate_bag_size(const std::string & bag_path) const {
   size_t total_size = 0;
 
