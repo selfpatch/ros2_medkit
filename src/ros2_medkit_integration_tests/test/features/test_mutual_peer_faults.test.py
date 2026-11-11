@@ -73,6 +73,10 @@ C_DOMAIN_ID = get_test_domain_id(2)
 
 PEER_TIMEOUT_MS = int(2000 * get_time_scale())
 FAULT_CODE = 'LIDAR_RANGE_INVALID'
+# Each gateway's lidar reports from a namespace of its own, so the three faults
+# differ by source. Their timestamps can be equal.
+B_LIDAR_NAMESPACE = '/perception/lidar_b'
+C_LIDAR_NAMESPACE = '/perception/lidar_c'
 NO_FAN_OUT = {'X-Medkit-No-Fan-Out': '1'}
 # Pinned to the gateway's default worker count, and as many concurrent
 # requests as that: enough to tie up every worker A has.
@@ -116,8 +120,10 @@ def generate_test_description():
         period=2.0,
         actions=(
             create_demo_nodes(['lidar_sensor'], lidar_faulty=True)
-            + create_demo_nodes(['lidar_sensor'], lidar_faulty=True, extra_env=b_env)
-            + create_demo_nodes(['lidar_sensor'], lidar_faulty=True, extra_env=c_env)
+            + create_demo_nodes(['lidar_sensor'], lidar_faulty=True, extra_env=b_env,
+                                namespace=B_LIDAR_NAMESPACE)
+            + create_demo_nodes(['lidar_sensor'], lidar_faulty=True, extra_env=c_env,
+                                namespace=C_LIDAR_NAMESPACE)
             + [
                 create_fault_manager_node(rosbag_enabled=False),
                 create_fault_manager_node(rosbag_enabled=False, extra_env=b_env),
@@ -139,8 +145,8 @@ def generate_test_description():
     )
 
 
-def _first_seen(response):
-    return [f.get('first_occurred') for f in response.json().get('items', [])
+def _sources(response):
+    return [tuple(f.get('reporting_sources', [])) for f in response.json().get('items', [])
             if f.get('fault_code') == FAULT_CODE]
 
 
@@ -157,11 +163,11 @@ class TestMutualPeerFaults(GatewayTestCase):
         cls._wait_for_peers_online(A_URL, {'gateway_b'})
         cls._wait_for_peers_online(B_URL, {'gateway_a', 'gateway_c'})
         # Every gateway reports the same fault code, so the faults are told
-        # apart by when each fault manager first saw its own.
-        cls.first_seen = {
+        # apart by the lidar that reported each.
+        cls.source = {
             url: cls._wait_for_local_fault(url) for url in (A_URL, B_URL, C_URL)
         }
-        assert len(set(cls.first_seen.values())) == 3, cls.first_seen
+        assert len(set(cls.source.values())) == 3, cls.source
 
     @staticmethod
     def _wait_for_health(url):
@@ -202,7 +208,7 @@ class TestMutualPeerFaults(GatewayTestCase):
             try:
                 r = requests.get(f'{url}/faults', headers=NO_FAN_OUT, timeout=5)
                 if r.status_code == 200:
-                    seen = _first_seen(r)
+                    seen = _sources(r)
                     if seen:
                         return seen[0]
             except requests.exceptions.RequestException:
@@ -218,8 +224,8 @@ class TestMutualPeerFaults(GatewayTestCase):
         self.assertNotIn('failed_peers', x_medkit, x_medkit)
         self.assertEqual(x_medkit.get('count'), len(body.get('items', [])), x_medkit)
         self.assertEqual(
-            sorted(_first_seen(response)),
-            sorted(self.first_seen[url] for url in gateways),
+            sorted(_sources(response)),
+            sorted(self.source[url] for url in gateways),
             f'expected the faults of {gateways}, one each')
 
     def test_no_fan_out_request_answers_local_faults_only(self):
