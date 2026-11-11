@@ -1837,8 +1837,8 @@ names several storage files. The descriptor ``size`` and the nested
 ``size_bytes`` are then the sum of those files, which is the ``total_bytes`` of
 the recording's manifest and what a client receives when it fetches every file
 through :ref:`the manifest and file routes <rest-rosbag-recording-files>`. The
-download route below hands over one of the files, so ``size`` exceeds its
-``Content-Length``.
+download route below hands over the first of those files, so ``size`` exceeds
+its ``Content-Length``.
 
 Three shapes fall outside these rules, and there the numbers part deliberately:
 
@@ -1869,8 +1869,10 @@ the metadata names any files:
   exceed ``Content-Length``, and ``x-medkit.storage_files`` is omitted. When the
   directory holds no regular storage file, the download answers ``500``.
 
-The download never serves a storage file that is a symbolic link. The storage
-files of a split recording after the first are not addressable over the API.
+The download never serves a storage file that is a symbolic link. A split
+recording with a manifest is fetched file by file through
+:ref:`the manifest and file routes <rest-rosbag-recording-files>`. Without a
+manifest, its storage files after the first are not addressable over the API.
 
 Download Bulk Data
 ~~~~~~~~~~~~~~~~~~
@@ -2044,8 +2046,8 @@ Rosbag Recording Manifest and Files
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 A recording past ``snapshots.rosbag.max_bag_size_mb`` is several storage files,
-and the download route above serves one file. These two routes let a client
-fetch a whole recording and check what it received.
+and the download route above serves the first of them. These two routes let a
+client fetch a whole recording and check what it received.
 
 ``GET /api/v1/{entity-path}/bulk-data/rosbags/{recording_id}/manifest``
 

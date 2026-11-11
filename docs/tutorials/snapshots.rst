@@ -838,11 +838,12 @@ The ``-J`` flag uses the server-provided filename from ``Content-Disposition`` h
 .. _tutorial-split-recording:
 
 **A recording split across several files.** A recording larger than
-``max_bag_size_mb`` is several storage files, and the download above serves one
-of them. The fault manager writes a ``manifest.json`` next to the files when it
-closes the recording. It lists the files in order, with the size and sha256 of
-each. The listing marks such a recording with ``"manifest": true`` in
-``x-medkit``. Fetch the manifest, then each file by its position in it:
+``max_bag_size_mb`` is several storage files, and the download above serves the
+first of them. The fault manager writes a ``manifest.json`` next to the files
+when it closes the recording. It lists the files in order, with the size and
+sha256 of each. In the listing, ``x-medkit.storage_files`` gives the number of
+files, and ``"manifest": true`` says that the recording has a manifest. Fetch the
+manifest, then each file by its position in it:
 
 .. code-block:: bash
 
