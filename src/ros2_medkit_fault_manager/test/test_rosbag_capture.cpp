@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -1142,6 +1143,44 @@ class SlowMetadataStorage : public InMemoryFaultStorage {
   }
 };
 
+/// Storage whose metadata write blocks until the test releases it, standing in for a
+/// disk or a database that is slow while a large recording is stored. It records the
+/// bag path it was handed, so the test can look at the directory while the store waits.
+class GatedMetadataStorage : public InMemoryFaultStorage {
+ public:
+  void store_rosbag_files(const std::vector<ros2_medkit_fault_manager::RosbagFileInfo> & infos) override {
+    {
+      std::unique_lock<std::mutex> lock(gate_mutex);
+      bag_path = infos.empty() ? std::string() : infos.front().file_path;
+      entered = true;
+      gate_cv.notify_all();
+      gate_cv.wait_for(lock, std::chrono::seconds(30), [this]() {
+        return released;
+      });
+    }
+    InMemoryFaultStorage::store_rosbag_files(infos);
+  }
+
+  void release() {
+    std::lock_guard<std::mutex> lock(gate_mutex);
+    released = true;
+    gate_cv.notify_all();
+  }
+
+  bool wait_entered(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(gate_mutex);
+    return gate_cv.wait_for(lock, timeout, [this]() {
+      return entered;
+    });
+  }
+
+  std::mutex gate_mutex;
+  std::condition_variable gate_cv;
+  bool entered = false;
+  bool released = false;
+  std::string bag_path;
+};
+
 class RosbagCaptureIntegrationTest : public RosbagCaptureTest {
  protected:
   void spin_for(std::chrono::milliseconds duration) {
@@ -1337,6 +1376,7 @@ TEST_F(RosbagCaptureIntegrationTest, AcknowledgingDuringThePostRollKeepsAConfigu
   capture.on_fault_cleared("ACK_MID_ROLL");
 
   spin_for(std::chrono::milliseconds(900));  // past the post-roll and the finalize
+  capture.wait_for_stored_recordings();
 
   EXPECT_FALSE(storage.get_rosbag_files("ACK_MID_ROLL").empty())
       << "the post-roll finalize deleted a history on_fault_cleared had decided to keep";
@@ -1393,6 +1433,56 @@ TEST_F(RosbagCaptureIntegrationTest, MultipleFaultsHandled) {
   capture.stop();
 }
 
+// @verifies REQ_INTEROP_088
+TEST_F(RosbagCaptureIntegrationTest, StoringARecordingDoesNotHoldTheExecutor) {
+  // The post-fault timer runs on the executor, the only thread of the fault manager.
+  // Hashing every storage file and storing the rows there held every fault manager
+  // service and the capture subscriptions for as long as the disk and the store took.
+  // The store below waits until it is released, so a store on the executor would hold
+  // the spin below for the whole wait.
+  GatedMetadataStorage gated;
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_sec = 10.0;
+  rosbag_config.duration_after_sec = 0.3;
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), &gated, rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/store_off_executor_probe");
+  capture.on_fault_confirmed("STORE_OFF_EXECUTOR");
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  auto longest_spin = std::chrono::steady_clock::duration::zero();
+  while (!gated.wait_entered(std::chrono::milliseconds(0)) && std::chrono::steady_clock::now() < deadline) {
+    const auto before = std::chrono::steady_clock::now();
+    spin_some_once(node_);
+    longest_spin = std::max(longest_spin, std::chrono::steady_clock::now() - before);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(gated.wait_entered(std::chrono::seconds(5))) << "the recording never reached the store";
+  // The timer has fired and the store is waiting now. The executor must still run.
+  const auto before = std::chrono::steady_clock::now();
+  spin_some_once(node_);
+  longest_spin = std::max(longest_spin, std::chrono::steady_clock::now() - before);
+  EXPECT_LT(longest_spin, std::chrono::seconds(5)) << "the executor waited on the store";
+
+  // The manifest is written before the row is stored, never after.
+  std::string bag_path;
+  {
+    std::lock_guard<std::mutex> lock(gated.gate_mutex);
+    bag_path = gated.bag_path;
+  }
+  EXPECT_TRUE(read_manifest(bag_path).is_object()) << "the row was being stored before the manifest existed";
+  EXPECT_FALSE(gated.get_rosbag_file("STORE_OFF_EXECUTOR").has_value());
+
+  gated.release();
+  capture.wait_for_stored_recordings();
+  auto row = gated.get_rosbag_file("STORE_OFF_EXECUTOR");
+  ASSERT_TRUE(row.has_value());
+  EXPECT_EQ(row->file_path, bag_path);
+  capture.stop();
+}
+
 TEST_F(RosbagCaptureIntegrationTest, FaultConfirmedDuringPostRollGetsTheSameBag) {
   // Correlated faults arrive in a burst. The one that confirms while the first
   // fault's post-roll is still running used to be skipped outright and ended up
@@ -1411,6 +1501,7 @@ TEST_F(RosbagCaptureIntegrationTest, FaultConfirmedDuringPostRollGetsTheSameBag)
 
   // Let the post-fault timer fire and finalise the recording.
   spin_for(std::chrono::milliseconds(1600));
+  capture.wait_for_stored_recordings();
 
   auto root = storage_->get_rosbag_file("ROOT_CAUSE");
   ASSERT_TRUE(root.has_value()) << "the first fault must produce a bag";
@@ -1435,6 +1526,7 @@ TEST_F(RosbagCaptureIntegrationTest, ClearingOneFaultOfABurstKeepsTheSharedBag) 
   capture.on_fault_confirmed("ROOT_CAUSE");
   capture.on_fault_confirmed("CORRELATED");
   spin_for(std::chrono::milliseconds(1600));
+  capture.wait_for_stored_recordings();
 
   auto root = storage_->get_rosbag_file("ROOT_CAUSE");
   ASSERT_TRUE(root.has_value());
@@ -1562,6 +1654,7 @@ TEST_F(RosbagCaptureIntegrationTest, BurstFullyClearedDuringPostRollDiscardsTheB
 
   // Let the post-roll timer fire with nothing left to register.
   spin_for(std::chrono::milliseconds(1500));
+  capture.wait_for_stored_recordings();
 
   EXPECT_FALSE(storage_->get_rosbag_file("ROOT_CAUSE").has_value());
   EXPECT_FALSE(storage_->get_rosbag_file("CORRELATED").has_value());
@@ -2235,6 +2328,7 @@ TEST_F(RosbagCaptureIntegrationTest, BoundaryFaultClearedDuringItsOwnWindowDisca
   spin_for(std::chrono::milliseconds(200));
   capture.on_fault_cleared("CLEARED_BOUNDARY");
   spin_for(std::chrono::milliseconds(2000));  // past the window, finalise ran
+  capture.wait_for_stored_recordings();
 
   EXPECT_FALSE(storage_->get_rosbag_file("CLEARED_BOUNDARY").has_value());
   EXPECT_EQ(count_bag_dirs(), 0u) << "the bag of a fault cleared inside its own window must be discarded";
@@ -2256,6 +2350,7 @@ TEST_F(RosbagCaptureIntegrationTest, MetadataStoreFailureDiscardsTheBagInsteadOf
   capture.start();
   capture.on_fault_confirmed("STORE_FAILS");  // empty buffer -> post-fault-only
   spin_for(std::chrono::milliseconds(1200));  // past the window, finalise ran
+  capture.wait_for_stored_recordings();
 
   ASSERT_GT(failing_storage.store_attempts, 0u)
       << "the recording never reached the metadata store, so no row and no directory prove nothing";
@@ -2296,6 +2391,7 @@ TEST_F(RosbagCaptureIntegrationTest, AFailingQuotaSweepKeepsTheBagItJustStored) 
   fill_buffer("/sweep_failure_probe");
   capture.on_fault_confirmed("SWEEP_FAILS");
   spin_for(std::chrono::milliseconds(1200));  // past the window, finalise ran
+  capture.wait_for_stored_recordings();
 
   auto row = sweep_failing_storage.get_rosbag_file("SWEEP_FAILS");
   ASSERT_TRUE(row.has_value()) << "the metadata store succeeded, so its row must be there";
@@ -2372,6 +2468,8 @@ TEST_F(RosbagCaptureIntegrationTest, TheStorageQuotaEngagesOnABoundaryRecording)
     capture.on_fault_confirmed("QUOTA_TIGHT");
     ASSERT_TRUE(wait_for_row("QUOTA_TIGHT", std::chrono::milliseconds(8000)))
         << "a recording larger than the quota was deleted by its own sweep";
+    // The sweep runs on the store worker right after the row is stored.
+    capture.wait_for_stored_recordings();
     EXPECT_TRUE(std::filesystem::exists(storage_->get_rosbag_file("QUOTA_TIGHT")->file_path));
 
     EXPECT_FALSE(storage_->get_rosbag_file("QUOTA_ROOMY").has_value())
@@ -2711,6 +2809,7 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultClearedWhileItsBagWasOpeningGetsNoRow
   capture.on_fault_confirmed("CLEARED_WHILE_OPENING");
   storage_->clear_fault("CLEARED_WHILE_OPENING");
   spin_for(std::chrono::milliseconds(1500));
+  capture.wait_for_stored_recordings();
 
   EXPECT_FALSE(storage_->get_rosbag_file("CLEARED_WHILE_OPENING").has_value())
       << "a fault cleared before its recording finalised kept a row nothing will ever remove";

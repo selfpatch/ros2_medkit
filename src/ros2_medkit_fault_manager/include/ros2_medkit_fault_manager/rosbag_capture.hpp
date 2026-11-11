@@ -15,6 +15,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <deque>
 #include <functional>
 #include <map>
@@ -23,6 +24,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -94,8 +96,15 @@ class RosbagCapture {
   /// If lazy_start is false, this is called automatically on construction
   void start();
 
-  /// Stop recording and clean up subscriptions
+  /// Stop recording and clean up subscriptions. Returns once every recording closed
+  /// so far has its manifest and rows (see wait_for_stored_recordings()).
   void stop();
+
+  /// Block until every recording closed so far has been through the store worker:
+  /// its manifest written and its rows stored, or the bag discarded. A post-fault
+  /// recording is closed on the executor thread and stored on the worker, so its
+  /// rows appear shortly after the timer fires, not when it fires.
+  void wait_for_stored_recordings();
 
   /// Check if ring buffer is currently running
   bool is_running() const;
@@ -283,6 +292,28 @@ class RosbagCapture {
   /// Write manifest.json into a closed recording. Logs and carries on when it cannot.
   void write_manifest(const std::string & bag_path, int64_t created_at_ns);
 
+  /// A post-fault recording whose writer is closed, on its way to the store worker.
+  struct ClosedRecording {
+    std::string bag_path;
+    /// Empty when the primary fault was cleared during the post-roll.
+    std::string fault_code;
+    std::set<std::string> attached_fault_codes;
+    double duration_sec{0.0};
+    int64_t created_at_ns{0};
+  };
+
+  /// Hand @p recording to the store worker, starting it the first time.
+  void enqueue_closed_recording(ClosedRecording recording);
+
+  /// The store worker: runs store_closed_recording() for each queued recording,
+  /// until the destructor asks it to stop and the queue is empty.
+  void store_worker_loop();
+
+  /// Write the manifest, measure the bag and store its rows, or discard the bag.
+  /// Hashing reads every storage file, so this never runs on the executor thread.
+  /// Never throws.
+  void store_closed_recording(const ClosedRecording & recording);
+
   /// Make @p rows durable for the finished bag at @p bag_path, or discard the bag.
   ///
   /// Both finalisation paths end here, so a bag that cannot be looked up never
@@ -296,9 +327,9 @@ class RosbagCapture {
   /// would strand the rows just written - unreadable for good, and still charged
   /// against max_total_storage_mb.
   ///
-  /// Never throws. One caller is reached from ~RosbagCapture via stop(), where an
-  /// escaping exception would terminate; the other runs on the capture pool, which
-  /// would swallow it into a log with the bag already orphaned.
+  /// Never throws. One caller runs on the store worker, where an escaping exception
+  /// would terminate; the other runs on the capture pool, which would swallow it
+  /// into a log with the bag already orphaned.
   ///
   /// @return True when the rows are durable.
   bool store_rows_or_discard_bag(const std::vector<RosbagFileInfo> & rows, const std::string & bag_path);
@@ -339,7 +370,7 @@ class RosbagCapture {
   /// Timer callback for post-fault recording
   void post_fault_timer_callback();
 
-  /// Close the in-flight post-fault recording, store its metadata (for the
+  /// Close the in-flight post-fault recording, hand it to the store worker (for the
   /// triggering fault and every fault attached to it) and clear the recording
   /// state. Idempotent - a no-op when no post-roll is running, so the post-fault
   /// timer and stop() can both call it.
@@ -501,6 +532,16 @@ class RosbagCapture {
   /// Topics already subscribed (guards against duplicate subscriptions when the
   /// broad-mode discovery timer re-resolves the topic set).
   std::set<std::string> subscribed_topics_;
+
+  /// Store worker. Owned by the capture and joined in the destructor. The queue is
+  /// FIFO, so the quota sweeps run in the order the recordings closed. It takes no
+  /// other lock of this class, so it adds nothing to the lock order above.
+  std::mutex store_mutex_;
+  std::condition_variable store_cv_;
+  std::deque<ClosedRecording> store_queue_;
+  bool store_busy_{false};
+  bool store_stopping_{false};
+  std::thread store_thread_;
 
   /// True in broad modes ("all"/"auto"/"entity"): the discovery timer keeps
   /// re-resolving for the capture's lifetime so topics whose publishers appear
