@@ -321,6 +321,27 @@ class TestRosbagRecordingManifest(GatewayTestCase):
         self.assertEqual(snapshot.get('size_bytes'), manifest['total_bytes'],
                          'the fault does not report the sum of the storage files')
 
+    def test_02c_the_download_serves_the_first_file_and_counts_them_all(self):
+        """The recording download hands over the first file the manifest lists.
+
+        @verifies REQ_INTEROP_073
+        """
+        self.assertIsNotNone(self.recording_id, 'test_01 must run first')
+        _, manifest = self._manifest()
+        first = manifest['files'][0]
+
+        item = self._listed_recording()
+        self.assertIsNotNone(item, 'the recording is no longer listed')
+        self.assertEqual(item['x-medkit'].get('storage_files'), len(manifest['files']),
+                         'the listing does not count every storage file')
+
+        response = self.get_raw(f'{APP_ENDPOINT}/bulk-data/rosbags/{self.recording_id}',
+                                timeout=30)
+        self.assertEqual(int(response.headers['Content-Length']), first['size'])
+        self.assertEqual(sha256_hex(response.content), first['sha256'],
+                         'the download did not serve the first storage file')
+        self.assertLess(int(response.headers['Content-Length']), item['size'])
+
     def test_03_every_file_downloads_whole_and_verifies(self):
         """Each index serves exactly the file the manifest describes.
 
@@ -501,6 +522,27 @@ class TestRosbagRecordingManifest(GatewayTestCase):
         first, _ = self._manifest()
         second, _ = self._manifest()
         self.assertEqual(sha256_hex(first.content), sha256_hex(second.content))
+
+    def test_11_a_missing_first_file_fails_the_download(self):
+        """Without its first file the download answers 500 and serves no later file.
+
+        @verifies REQ_INTEROP_073
+        """
+        self.assertIsNotNone(self.recording_id, 'test_01 must run first')
+        _, manifest = self._manifest()
+        bag_dir = os.path.join(ROSBAG_STORAGE_PATH, self.recording_id)
+        first = os.path.join(bag_dir, manifest['files'][0]['name'])
+        # The bag keeps a later .mcap, so a directory scan would find one.
+        aside = first + '.aside'
+        os.replace(first, aside)
+        try:
+            self.get_raw(f'{APP_ENDPOINT}/bulk-data/rosbags/{self.recording_id}',
+                         expected_status=500, timeout=30)
+            item = self._listed_recording()
+            self.assertIsNotNone(item, 'the recording is no longer listed')
+            self.assertEqual(item['x-medkit'].get('storage_files'), len(manifest['files']))
+        finally:
+            os.replace(aside, first)
 
 
 @launch_testing.post_shutdown_test()
