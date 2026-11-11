@@ -331,8 +331,15 @@ class RosbagCapture {
   /// would terminate; the other runs on the capture pool, which would swallow it
   /// into a log with the bag already orphaned.
   ///
+  /// Rows of faults the store reports cleared are dropped first (row_still_wanted()),
+  /// and with none left the bag is discarded.
+  ///
   /// @return True when the rows are durable.
-  bool store_rows_or_discard_bag(const std::vector<RosbagFileInfo> & rows, const std::string & bag_path);
+  bool store_rows_or_discard_bag(std::vector<RosbagFileInfo> rows, const std::string & bag_path);
+
+  /// Whether the fault still gets a row: false only under auto_cleanup with no history,
+  /// for a fault the store holds as cleared. Called under clear_rows_mutex_.
+  bool row_still_wanted(const std::string & code);
 
   /// Whether the operator asked this fault code to keep a recording history.
   ///
@@ -538,6 +545,10 @@ class RosbagCapture {
   /// other lock of this class, so it adds nothing to the lock order above.
   std::mutex store_mutex_;
   std::condition_variable store_cv_;
+  /// Orders storing a recording's rows against on_fault_cleared()'s delete: held for
+  /// the cleared check plus the insert, and for the delete. Hashing stays outside it.
+  /// Only storage calls run under it, so it is innermost in the lock order.
+  std::mutex clear_rows_mutex_;
   std::deque<ClosedRecording> store_queue_;
   bool store_busy_{false};
   bool store_stopping_{false};
