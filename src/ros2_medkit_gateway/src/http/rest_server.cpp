@@ -377,7 +377,15 @@ void RESTServer::setup_global_error_handlers() {
 
   // Global error handler - catches HTTP errors like 404 Not Found
   // Only set error content if no content has been set by a handler
-  srv->set_error_handler([](const httplib::Request & /*req*/, httplib::Response & res) {
+  srv->set_error_handler([](const httplib::Request & req, httplib::Response & res) {
+    // A Range selects part of a file, never part of an error. cpp-httplib calls this
+    // handler for every status from 400 up and applies req.ranges right after it, to
+    // whatever body the error carries. That covers the 401, 403 and 429 the
+    // pre-routing handler answers before any route runs: a client resuming a download
+    // with an expired token got an empty 416 instead of the 401.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+    const_cast<httplib::Request &>(req).ranges.clear();
+
     // If the response already has content (from a handler's send_error), don't overwrite it
     if (!res.body.empty()) {
       return;
