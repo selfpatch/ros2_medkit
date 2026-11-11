@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -1480,6 +1481,55 @@ TEST_F(RosbagCaptureIntegrationTest, StoringARecordingDoesNotHoldTheExecutor) {
   auto row = gated.get_rosbag_file("STORE_OFF_EXECUTOR");
   ASSERT_TRUE(row.has_value());
   EXPECT_EQ(row->file_path, bag_path);
+  capture.stop();
+}
+
+TEST_F(RosbagCaptureIntegrationTest, AClearWhileTheRowIsStoredTakesTheRowWithIt) {
+  // The store worker checks that the fault is not cleared, then inserts its row. A clear
+  // landing between the two ran its delete before the insert and left a row, and the
+  // bag, for a cleared fault. Here the store holds the insert while the clear arrives:
+  // the clear's delete has to wait for the insert, and then takes the row.
+  GatedMetadataStorage gated;
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_sec = 10.0;
+  rosbag_config.duration_after_sec = 0.3;
+  rosbag_config.auto_cleanup = true;
+  rosbag_config.max_bags_per_fault = 1;
+  rclcpp::Clock clock;
+  gated.report_fault_event("CLEARED_IN_STORE", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                           "store race", "/node", clock.now().nanoseconds(),
+                           ros2_medkit_fault_manager::DebounceConfig{});
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), &gated, rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/clear_during_store_probe");
+  capture.on_fault_confirmed("CLEARED_IN_STORE");
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!gated.wait_entered(std::chrono::milliseconds(0)) && std::chrono::steady_clock::now() < deadline) {
+    spin_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(gated.wait_entered(std::chrono::seconds(5))) << "the recording never reached the store";
+  std::string bag_path;
+  {
+    std::lock_guard<std::mutex> lock(gated.gate_mutex);
+    bag_path = gated.bag_path;
+  }
+
+  // The worker found the fault not cleared and is inside the insert. The clear marks
+  // the fault in the store, then runs the hook, as FaultManagerCore does.
+  ASSERT_TRUE(gated.clear_fault("CLEARED_IN_STORE"));
+  auto cleared = std::async(std::launch::async, [&capture]() {
+    capture.on_fault_cleared("CLEARED_IN_STORE");
+  });
+  EXPECT_EQ(cleared.wait_for(std::chrono::milliseconds(500)), std::future_status::timeout)
+      << "the clear's delete ran while the row was still being inserted";
+
+  gated.release();
+  cleared.get();
+  capture.wait_for_stored_recordings();
+  EXPECT_TRUE(gated.get_rosbag_files("CLEARED_IN_STORE").empty()) << "a cleared fault kept its row";
+  EXPECT_FALSE(std::filesystem::exists(bag_path)) << "a cleared fault kept its bag";
   capture.stop();
 }
 
