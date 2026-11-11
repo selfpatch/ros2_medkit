@@ -541,7 +541,8 @@ def create_test_launch(
     tuple[LaunchDescription, dict]
         ``(launch_description, context_dict)`` tuple expected by
         ``launch_testing``. ``context_dict`` maps ``'gateway_node'`` to the
-        gateway ``Node`` action.
+        gateway ``Node`` action and, when one is launched,
+        ``'fault_manager_node'`` to the fault manager's.
 
     """
     gateway_node = create_gateway_node(
@@ -554,10 +555,11 @@ def create_test_launch(
         lidar_faulty=lidar_faulty,
     )
 
+    context = {'gateway_node': gateway_node}
     if fault_manager:
-        delayed_actions.append(
-            create_fault_manager_node(extra_params=fault_manager_params)
-        )
+        fault_manager_node = create_fault_manager_node(extra_params=fault_manager_params)
+        delayed_actions.append(fault_manager_node)
+        context['fault_manager_node'] = fault_manager_node
 
     delayed = TimerAction(
         period=demo_delay,
@@ -572,5 +574,5 @@ def create_test_launch(
 
     return (
         launch_description,
-        {'gateway_node': gateway_node},
+        context,
     )
