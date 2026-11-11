@@ -392,10 +392,11 @@ class GatewayTestCase(unittest.TestCase):
         response = requests.get(
             f'{self.BASE_URL}{endpoint}', timeout=timeout, **kwargs
         )
-        # The body is decoded only for the failure message: guessing the charset
-        # of a large binary download takes minutes.
+        # Only the head of the body, as UTF-8: response.text guesses the charset
+        # of a large binary download for minutes.
         if response.status_code != expected_status:
-            self.fail(f'GET {endpoint} returned {response.status_code}: {response.text}')
+            head = response.content[:1024].decode('utf-8', errors='replace')
+            self.fail(f'GET {endpoint} returned {response.status_code}: {head}')
         return response
 
     def put_raw(self, endpoint, data, *, timeout=10, expected_status=200, **kwargs):
