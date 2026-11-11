@@ -854,15 +854,30 @@ each. The listing marks such a recording with ``"manifest": true`` in
      echo "$(jq -r ".files[$i].sha256" manifest.json)  fault_MOTOR_OVERHEAT_1738664999000/$name" | sha256sum -c
    done
 
+The directory now holds the storage files but no ``metadata.yaml``, so ROS 2
+cannot open it as a bag yet. ``ros2 bag reindex`` reads the files and writes
+``metadata.yaml`` again:
+
+.. code-block:: bash
+
+   ros2 bag reindex -s $(jq -r .format manifest.json) fault_MOTOR_OVERHEAT_1738664999000
+   ros2 bag info fault_MOTOR_OVERHEAT_1738664999000
+
 An interrupted file download resumes with ``Range: bytes=<offset>-``. See
 :ref:`rest-rosbag-recording-files` for the manifest fields and the error
 answers.
 
 **3. Play back the rosbag:**
 
+A recording downloaded as one file plays from that file. A split recording
+plays from its directory, once it is reindexed, so every file is played in
+order:
+
 .. code-block:: bash
 
-   ros2 bag play MOTOR_OVERHEAT.mcap
+   ros2 bag play fault_MOTOR_OVERHEAT_1738664999000.mcap
+
+   ros2 bag play fault_MOTOR_OVERHEAT_1738664999000
 
 **Via ROS 2 service (alternative):**
 
