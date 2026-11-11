@@ -287,6 +287,15 @@ TEST(GraphNodeHasEndpoints, NodeTheGraphDoesNotListHasNoneAndAShutDownContextThr
   const auto graph = node->get_node_graph_interface();
 
   EXPECT_FALSE(graph_node_has_endpoints(*graph, "no_such_node", "/no_such_namespace"));
+
+  // The graph lists the node's own endpoints only after its participant announced them.
+  const auto graph_event = graph->get_graph_event();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!graph_node_has_endpoints(*graph, node->get_name(), node->get_namespace()) &&
+         std::chrono::steady_clock::now() < deadline) {
+    graph->wait_for_graph_change(graph_event, std::chrono::milliseconds(100));
+    graph_event->check_and_clear();
+  }
   EXPECT_TRUE(graph_node_has_endpoints(*graph, node->get_name(), node->get_namespace()));
 
   context->shutdown("test");
