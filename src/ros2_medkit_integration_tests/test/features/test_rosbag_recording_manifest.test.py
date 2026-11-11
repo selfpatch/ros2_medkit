@@ -25,6 +25,9 @@ fault manager wrote.
 The fault is the lidar's own range check, driven by its parameters. The split
 comes from a topic this test publishes: the lidar's scan alone stays far below
 1 MB, the smallest split size there is.
+
+The storage quota is 1 MB, below the size of the recording, so the fault
+manager's own sweep runs on it and has to keep it.
 """
 
 import hashlib
@@ -58,6 +61,14 @@ NOT_FOUND_VENDOR_CODE = 'x-medkit-recording-not-found'
 BLOB_TOPIC = '/manifest_probe/blob'
 BLOB_BYTES = 200 * 1024
 BLOB_PERIOD_SEC = 0.05
+# Sent after the capture subscribed and before the fault is raised: 4 MB, which
+# is several storage files of the 1 MB split.
+BLOBS_BEFORE_FAULT = 20
+SUBSCRIBE_TIMEOUT_SEC = 30.0
+
+# Below the size of the recording, so the sweep after the store has to keep it.
+MAX_TOTAL_STORAGE_MB = 1
+ALONE_EXCEEDS_WARNING = 'alone exceeds snapshots.rosbag.max_total_storage_mb'
 
 ROSBAG_STORAGE_PATH = tempfile.mkdtemp(prefix='rosbag_e2e_manifest_')
 
@@ -75,6 +86,7 @@ def generate_test_description():
             'snapshots.rosbag.format': 'mcap',
             'snapshots.rosbag.storage_path': ROSBAG_STORAGE_PATH,
             'snapshots.rosbag.max_bag_size_mb': 1,
+            'snapshots.rosbag.max_total_storage_mb': MAX_TOTAL_STORAGE_MB,
         },
     )
 
@@ -151,23 +163,37 @@ class TestRosbagRecordingManifest(GatewayTestCase):
                 return item
         return None
 
+    def _wait_for_capture_subscription(self):
+        """Wait until the fault manager's capture has subscribed to the blob topic."""
+        deadline = time.monotonic() + SUBSCRIBE_TIMEOUT_SEC
+        while self._blob_pub.get_subscription_count() == 0:
+            if time.monotonic() > deadline:
+                self.fail(f'the capture never subscribed to {BLOB_TOPIC}')
+            rclpy.spin_once(self._node, timeout_sec=0.1)
+
     def _record(self):
         """Record one split recording of the range fault and return its listing item."""
+        self._wait_for_capture_subscription()
         stop = threading.Event()
+        enough_sent = threading.Event()
 
         def publish_blobs():
             message = String()
             message.data = 'x' * BLOB_BYTES
+            sent = 0
             while not stop.is_set():
                 self._blob_pub.publish(message)
-                time.sleep(BLOB_PERIOD_SEC)
+                sent += 1
+                if sent >= BLOBS_BEFORE_FAULT:
+                    enough_sent.set()
+                stop.wait(BLOB_PERIOD_SEC)
 
         publisher = threading.Thread(target=publish_blobs, daemon=True)
         publisher.start()
         try:
-            # The capture finds new topics on a timer. Give it time to subscribe
-            # and to buffer a few megabytes before the fault confirms.
-            time.sleep(4.0)
+            # The buffer holds enough for the recording to split once these are sent.
+            self.assertTrue(enough_sent.wait(timeout=SUBSCRIBE_TIMEOUT_SEC),
+                            'the blob publisher stalled')
             self._break_the_range()
             self.wait_for_fault(APP_ENDPOINT, FAULT_CODE)
 
@@ -202,8 +228,8 @@ class TestRosbagRecordingManifest(GatewayTestCase):
     # Tests
     # ------------------------------------------------------------------
 
-    def test_01_the_listing_advertises_the_manifest(self):
-        """A finalised recording is listed with ``x-medkit.manifest``.
+    def test_01_the_listing_advertises_the_manifest(self, proc_output, fault_manager_node):
+        """A finalised recording is listed with ``x-medkit.manifest`` and survives its quota sweep.
 
         @verifies REQ_INTEROP_072
         """
@@ -211,6 +237,18 @@ class TestRosbagRecordingManifest(GatewayTestCase):
         type(self).recording_id = item['id']
         self.assertIs(item['x-medkit'].get('manifest'), True,
                       f'the listing does not advertise a manifest: {item}')
+        self.assertGreater(item['size'], MAX_TOTAL_STORAGE_MB * 1024 * 1024,
+                           'the recording does not exceed the quota, so the sweep proves nothing')
+
+        # The sweep runs right after the rows are stored. It keeps the recording
+        # and says that it alone is over the quota.
+        proc_output.assertWaitFor(
+            f"Recording '{self.recording_id}' {ALONE_EXCEEDS_WARNING}",
+            process=fault_manager_node, timeout=ROSBAG_TIMEOUT)
+        self.assertIsNotNone(self._listed_recording(),
+                             'the quota sweep deleted the recording it had just stored')
+        self.assertTrue(
+            os.path.isfile(os.path.join(ROSBAG_STORAGE_PATH, self.recording_id, 'manifest.json')))
 
     def test_02_the_manifest_matches_the_files_on_disk(self):
         """Order, sizes and hashes are those of the files the fault manager wrote.
