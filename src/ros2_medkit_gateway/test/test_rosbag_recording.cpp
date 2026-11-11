@@ -33,6 +33,7 @@
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/faults/rosbag_recording.hpp"
 #include "ros2_medkit_gateway/core/gateway_services.hpp"
+#include "ros2_medkit_gateway/core/http/byte_ranges.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/bulkdata_handlers.hpp"
 #include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
@@ -265,48 +266,29 @@ TEST_F(FindRecordingTest, ABurstRecordingIsFoundThroughAnyOfItsFaults) {
   EXPECT_EQ(find("fault_LIDAR_1000", {"/chassis"}).status, RecordingLookupStatus::kNotInEntity);
 }
 
-// === Range header ===
+// === Byte ranges ===
 
 // @verifies REQ_INTEROP_073
-TEST(RecordingRangeTest, RangesInsideTheFileAreAccepted) {
-  EXPECT_TRUE(faults::range_within_file("bytes=0-", 100));
-  EXPECT_TRUE(faults::range_within_file("bytes=99-", 100));
-  EXPECT_TRUE(faults::range_within_file("bytes=0-99", 100));
-  EXPECT_TRUE(faults::range_within_file("bytes=10-10", 100));
-  EXPECT_TRUE(faults::range_within_file("bytes=-1", 100));
-  EXPECT_TRUE(faults::range_within_file("bytes=-500", 100));
-  EXPECT_TRUE(faults::range_within_file("bytes=0-9, 20-29", 100));
-  EXPECT_TRUE(faults::range_within_file("bytes=-", 100));
+TEST(ByteRangesTest, EachRangeIsResolvedAgainstTheFile) {
+  using http::ByteRange;
+  EXPECT_EQ(http::satisfiable_byte_ranges({{0, -1}}, 100), (std::vector<ByteRange>{{0, 99}}));
+  EXPECT_EQ(http::satisfiable_byte_ranges({{99, -1}}, 100), (std::vector<ByteRange>{{99, 99}}));
+  EXPECT_EQ(http::satisfiable_byte_ranges({{0, 100}}, 100), (std::vector<ByteRange>{{0, 99}}));
+  EXPECT_EQ(http::satisfiable_byte_ranges({{50, 1LL << 40}}, 100), (std::vector<ByteRange>{{50, 99}}));
+  EXPECT_EQ(http::satisfiable_byte_ranges({{-1, 1}}, 100), (std::vector<ByteRange>{{99, 99}}));
+  EXPECT_EQ(http::satisfiable_byte_ranges({{-1, 500}}, 100), (std::vector<ByteRange>{{0, 99}}));
+  EXPECT_EQ(http::satisfiable_byte_ranges({{-1, -1}}, 100), (std::vector<ByteRange>{{0, 99}}));
 }
 
 // @verifies REQ_INTEROP_073
-TEST(RecordingRangeTest, AStartAtOrPastTheEndIsRefused) {
-  EXPECT_FALSE(faults::range_within_file("bytes=100-", 100));
-  EXPECT_FALSE(faults::range_within_file("bytes=200000-", 100));
-  EXPECT_FALSE(faults::range_within_file("bytes=100-150", 100));
-  EXPECT_FALSE(faults::range_within_file("bytes=0-", 0));
-}
-
-// @verifies REQ_INTEROP_073
-TEST(RecordingRangeTest, AnEndPastTheFileIsRefused) {
-  EXPECT_FALSE(faults::range_within_file("bytes=0-100", 100));
-  EXPECT_FALSE(faults::range_within_file("bytes=50-99999999999999999999", 100));
-}
-
-// @verifies REQ_INTEROP_073
-TEST(RecordingRangeTest, OneBadRangeRefusesTheWholeHeader) {
-  EXPECT_FALSE(faults::range_within_file("bytes=0-9,100-", 100));
-}
-
-// @verifies REQ_INTEROP_073
-TEST(RecordingRangeTest, WhatIsNotAByteRangeIsRefused) {
-  EXPECT_FALSE(faults::range_within_file("", 100));
-  EXPECT_FALSE(faults::range_within_file("items=0-5", 100));
-  EXPECT_FALSE(faults::range_within_file("bytes=", 100));
-  EXPECT_FALSE(faults::range_within_file("bytes=abc-", 100));
-  EXPECT_FALSE(faults::range_within_file("bytes=5-2", 100));
-  EXPECT_FALSE(faults::range_within_file("bytes=-0", 100));
-  EXPECT_FALSE(faults::range_within_file("bytes=7", 100));
+TEST(ByteRangesTest, OnlyTheRangesThatStartInsideTheFileAreKept) {
+  using http::ByteRange;
+  EXPECT_EQ(http::satisfiable_byte_ranges({{0, 9}, {100, -1}, {90, 200}}, 100),
+            (std::vector<ByteRange>{{0, 9}, {90, 99}}));
+  EXPECT_TRUE(http::satisfiable_byte_ranges({{100, -1}}, 100).empty());
+  EXPECT_TRUE(http::satisfiable_byte_ranges({{100, 150}}, 100).empty());
+  EXPECT_TRUE(http::satisfiable_byte_ranges({{-1, 0}}, 100).empty());
+  EXPECT_TRUE(http::satisfiable_byte_ranges({{0, -1}, {-1, 5}}, 0).empty());
 }
 
 // === Manifest and file addressing ===
@@ -629,19 +611,14 @@ TEST_F(RecordingHandlersTest, AFileIsServedByItsIndex) {
 }
 
 // @verifies REQ_INTEROP_073
-TEST_F(RecordingHandlersTest, ARangeInsideTheFileIsLeftToTheFramework) {
-  const auto req = request("/apps/lidar/bulk-data/rosbags/fault_LIDAR_1000/files/0", "bytes=999-");
-  EXPECT_TRUE(handlers_.recording_file(http::TypedRequest(req)).has_value());
-}
-
-// @verifies REQ_INTEROP_073
-TEST_F(RecordingHandlersTest, ARangeStartingAtOrPastTheEndIs416) {
-  for (const char * range : {"bytes=1000-", "bytes=200000-", "bytes=0-1000"}) {
+TEST_F(RecordingHandlersTest, EveryRangeIsLeftToTheFramework) {
+  // binary_download resolves the Range against total_size for every download route,
+  // so the handler serves the file whatever range was asked for.
+  for (const char * range : {"bytes=999-", "bytes=1000-", "bytes=0-1000", "bytes=-5"}) {
     const auto req = request("/apps/lidar/bulk-data/rosbags/fault_LIDAR_1000/files/0", range);
     const auto response = handlers_.recording_file(http::TypedRequest(req));
-    ASSERT_FALSE(response.has_value()) << range;
-    EXPECT_EQ(response.error().http_status, 416) << range;
-    EXPECT_EQ(response.error().params["size"], first_.size());
+    ASSERT_TRUE(response.has_value()) << range;
+    EXPECT_EQ(response->total_size, first_.size()) << range;
   }
 }
 

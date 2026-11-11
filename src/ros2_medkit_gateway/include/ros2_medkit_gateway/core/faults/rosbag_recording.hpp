@@ -47,11 +47,6 @@ std::optional<std::size_t> parse_recording_file_index(const std::string & text);
 std::optional<std::string> recording_file_path(const std::string & recording_path, const std::string & manifest_text,
                                                std::size_t index);
 
-/// Whether every range of a `Range` header value lies inside a file of @p size bytes.
-/// False for a first byte at or past the end, a last byte past the end, an empty
-/// suffix, and a value that is not a byte range.
-bool range_within_file(const std::string & range_header, uint64_t size);
-
 enum class RecordingLookupStatus {
   /// The recording exists and one of its faults is in the entity's scope.
   kFound,

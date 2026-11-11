@@ -1839,10 +1839,22 @@ and OpenAPI 3.1 has no way to say "bytes" - ``format: binary`` was an OpenAPI
 schema-free media type entry is the accurate description.
 
 **Range requests.** A request carrying a ``Range`` header is answered with
-**206 Partial Content** and a ``Content-Range: bytes <start>-<end>/<total>``
+**206 Partial Content** and a ``Content-Range: bytes <first>-<last>/<total>``
 header instead of ``200``; the body is the requested slice. Several ranges in
 one request are answered as a single ``multipart/byteranges`` body, which is
 declared on the 206 only - the 200 can never carry it.
+
+Ranges follow RFC 9110 section 14.1.2. ``Content-Range`` always carries
+absolute first and last bytes: ``bytes=1000-`` on a file of 8076737 bytes is
+answered with ``bytes 1000-8076736/8076737``, and ``bytes=-500`` with
+``bytes 8076237-8076736/8076737``. A last byte at or past the end means "to
+the end", so a client asking for fixed chunks gets the shorter last chunk as a
+``206``. A range whose first byte is at or past the end is left out of the
+answer. Only when no range is left is the request answered with ``416``, with
+``Content-Range: bytes */<total>`` and ``parameters.size`` set to the file size.
+
+An error answer is never cut by the ``Range``: a ``401`` or a ``404`` to a
+ranged request carries the whole error document.
 
 **Example:**
 
@@ -1859,8 +1871,10 @@ declared on the 206 only - the 200 can never carry it.
 - **200 OK**: File content
 - **206 Partial Content**: The byte range requested via ``Range``, with ``Content-Range``
 - **404 Not Found**: Entity, category, or bulk-data ID not found
-- **416 Range Not Satisfiable**: The ``Range`` header could not be parsed. Not
-  specific to this endpoint - see :ref:`rest-range-rejection`.
+- **416 Range Not Satisfiable**: No range of the ``Range`` header starts inside
+  the file, with ``Content-Range: bytes */<total>``. Also sent when the header
+  could not be parsed, which is not specific to this endpoint - see
+  :ref:`rest-range-rejection`.
 
 Upload Bulk Data
 ~~~~~~~~~~~~~~~~
@@ -2028,11 +2042,10 @@ decimal position in the manifest's ``files``. A file name is not accepted.
 
 **Range requests** work as on the download route. A ``200`` carries
 ``Content-Length`` of the whole file. A ``206`` carries ``Content-Length`` of
-the returned range. For an open-ended request such as ``bytes=1000-`` the
-``Content-Range`` header may leave the end out (``bytes 1000-/8076737``), so a
-client must accept both that form and ``bytes 1000-8076736/8076737``. A range
-must lie inside the file. A first byte at or past the end, or a last byte past
-the end, is answered with ``416``.
+the returned range and an absolute ``Content-Range`` such as
+``bytes 1000-8076736/8076737``. A last byte past the end is read as the end of
+the file. A request is answered with ``416`` only when no range starts inside
+the file, and that answer carries ``Content-Range: bytes */<size>``.
 
 **Response Codes:**
 
@@ -2046,8 +2059,8 @@ the end, is answered with ``416``.
   list or not a number, or a file that is missing on disk or is a symbolic
   link. It says nothing about
   whether the recording exists.
-- **416 Range Not Satisfiable**: the ``Range`` is outside the file.
-  ``parameters.size`` carries the file size.
+- **416 Range Not Satisfiable**: no range starts inside the file.
+  ``Content-Range: bytes */<size>`` and ``parameters.size`` carry the file size.
 - **503 Service Unavailable**: the fault manager did not answer. Try again
   later.
 

@@ -48,15 +48,6 @@ std::string last_path_segment(std::string path) {
   return slash == std::string::npos ? path : path.substr(slash + 1);
 }
 
-tl::expected<void, ErrorInfo> check_range(const http::TypedRequest & req, uint64_t size) {
-  const auto range = req.header("Range");
-  if (range && !faults::range_within_file(*range, size)) {
-    return tl::unexpected(make_error(416, ERR_INVALID_PARAMETER, "Requested range is outside the file",
-                                     json{{"range", *range}, {"size", size}}));
-  }
-  return {};
-}
-
 /// Directory of the recording the request addresses, once the entity may read it.
 tl::expected<std::string, ErrorInfo> resolve_recording(HandlerContext & ctx, const http::TypedRequest & req) {
   auto path_info = parse_entity_path(req.path());
@@ -168,10 +159,6 @@ http::Result<http::BinaryResponse> BulkDataHandlers::recording_file(const http::
     return tl::unexpected(
         make_error(404, ERR_RESOURCE_NOT_FOUND, "No such file in this recording", json{{"index", index_text}}));
   }
-  if (auto range = check_range(req, static_cast<uint64_t>(file_size)); !range) {
-    return tl::unexpected(range.error());
-  }
-
   http::BinaryResponse resp;
   resp.content_type = "application/octet-stream";
   resp.filename = std::filesystem::path(*file_path).filename().string();
