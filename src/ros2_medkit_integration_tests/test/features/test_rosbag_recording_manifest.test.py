@@ -287,6 +287,40 @@ class TestRosbagRecordingManifest(GatewayTestCase):
         self.assertEqual(manifest['total_bytes'], total)
         self.assertNotIn('metadata.yaml', [entry['name'] for entry in files])
 
+    def test_02b_the_listing_and_the_fault_report_the_files_total(self):
+        """A split recording is reported at the sum of its storage files.
+
+        @verifies REQ_INTEROP_072
+        """
+        self.assertIsNotNone(self.recording_id, 'test_01 must run first')
+        _, manifest = self._manifest()
+        bag_dir = os.path.join(ROSBAG_STORAGE_PATH, self.recording_id)
+        directory_total = sum(
+            os.path.getsize(os.path.join(bag_dir, name)) for name in os.listdir(bag_dir)
+            if os.path.isfile(os.path.join(bag_dir, name)))
+        # metadata.yaml and manifest.json make the stored total larger.
+        self.assertGreater(directory_total, manifest['total_bytes'])
+
+        item = self._listed_recording()
+        self.assertIsNotNone(item, 'the recording is no longer listed')
+        self.assertEqual(item['size'], manifest['total_bytes'],
+                         'the listing does not report the sum of the storage files')
+
+        snapshot = self.poll_endpoint_until(
+            f'{APP_ENDPOINT}/faults/{FAULT_CODE}',
+            lambda d: next(
+                (s for s in d.get('environment_data', {}).get('snapshots', [])
+                 if s.get('type') == 'rosbag'
+                 and s.get('bulk_data_uri', '').endswith(f'/rosbags/{self.recording_id}')),
+                None,
+            ),
+            timeout=10.0,
+            interval=0.5,
+        )
+        self.assertIsNotNone(snapshot, 'the fault lists no rosbag snapshot for the recording')
+        self.assertEqual(snapshot.get('size_bytes'), manifest['total_bytes'],
+                         'the fault does not report the sum of the storage files')
+
     def test_03_every_file_downloads_whole_and_verifies(self):
         """Each index serves exactly the file the manifest describes.
 

@@ -1820,18 +1820,23 @@ the bag's ``metadata.yaml`` names exactly one storage file, that name is a direc
 child of the bag directory ending in ``.db3`` or ``.mcap``, and the file is
 present as a regular file, not a symbolic link - the normal case - and that
 number is the storage file. A recording also has a footprint on disk, its stored
-total, which is larger because the directory holds ``metadata.yaml`` as well.
-That figure is what the recording spends against its storage quota and is not
-reported for such a recording.
+total, which is larger because the directory holds ``metadata.yaml`` and
+``manifest.json`` as well. That figure is what the recording spends against its
+storage quota and is not reported for such a recording.
 
-Four shapes fall outside that condition, and there the three numbers part
-deliberately:
+**A split recording.** Past the configured maximum bag size, ``metadata.yaml``
+names several storage files. The descriptor ``size`` and the nested
+``size_bytes`` are then the sum of those files, which is the ``total_bytes`` of
+the recording's manifest and what a client receives when it fetches every file
+through :ref:`the manifest and file routes <rest-rosbag-recording-files>`. The
+download route below hands over one of the files, so ``size`` exceeds its
+``Content-Length``.
 
-- a recording split across several storage files, past the configured maximum
-  bag size;
-- a bag with no ``metadata.yaml``, one that is a symbolic link, or one that
-  cannot be parsed;
-- a bag whose named storage file is absent from the directory;
+Three shapes fall outside these rules, and there the numbers part deliberately:
+
+- a bag with no ``metadata.yaml``, one that is a symbolic link, one that cannot
+  be parsed, or one that names no storage file;
+- a bag where a named storage file is absent from the directory;
 - a name that points outside the bag directory, at anything other than a
   regular file (a symbolic link, a directory), or at a file that is neither
   ``.db3`` nor ``.mcap``. The gateway and the fault manager both decline such a

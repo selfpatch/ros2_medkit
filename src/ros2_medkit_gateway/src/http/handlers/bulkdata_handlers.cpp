@@ -224,7 +224,7 @@ std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path) {
   if (std::filesystem::is_regular_file(bag_path, ec)) {
     served = bag_path;
   } else {
-    // A split (several names) has no single served file; the row's figure stands.
+    // A split has no single served file; the row carries the fault manager's sum of its files.
     const auto names = rosbag_relative_file_paths(bag_path);
     if (!names || names->size() != 1) {
       return std::nullopt;

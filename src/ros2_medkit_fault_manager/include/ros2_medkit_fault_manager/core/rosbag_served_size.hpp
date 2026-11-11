@@ -19,13 +19,15 @@
 
 namespace ros2_medkit_fault_manager::core {
 
-/// Size of the storage file a download of the recording at @p bag_path transfers: the one file
-/// its metadata.yaml names in relative_file_paths.
+/// Size of the recording at @p bag_path as the API reports it: the sum of the storage files its
+/// metadata.yaml names in relative_file_paths. For a split recording that equals the manifest's
+/// total_bytes.
 ///
 /// Returns @p stored_total_bytes (the directory total) when metadata.yaml is missing or not the
-/// rosbag2 shape, names other than exactly one file, or names something other than a regular
-/// .db3 or .mcap file directly inside the bag (no symlinks). The gateway applies the same rule in
-/// bulkdata_handlers.cpp. docs/api/rest.rst, "One recording, one size", states the contract.
+/// rosbag2 shape, names no file, or names something other than a regular .db3 or .mcap file
+/// directly inside the bag (no symlinks). The gateway measures a single-file recording by the same
+/// rule (bulkdata_handlers.cpp) and takes this figure for a split. docs/api/rest.rst, "One
+/// recording, one size", states the contract.
 size_t rosbag_served_bytes(const std::string & bag_path, size_t stored_total_bytes);
 
 }  // namespace ros2_medkit_fault_manager::core

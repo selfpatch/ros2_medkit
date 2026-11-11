@@ -88,24 +88,25 @@ size_t rosbag_served_bytes(const std::string & bag_path, size_t stored_total_byt
     bag = bag.parent_path();  // trailing slash
   }
 
+  // metadata.yaml and the storage files are written once, when the recording closes.
   const auto names = relative_file_paths(bag);
-  if (!names || names->size() != 1) {
+  if (!names || names->empty()) {
     return stored_total_bytes;
   }
-  const auto file = named_storage_file(bag, names->front());
-  if (!file) {
-    return stored_total_bytes;
+  size_t total = 0;
+  for (const auto & name : *names) {
+    const auto file = named_storage_file(bag, name);
+    if (!file || !is_plain_file(*file)) {
+      return stored_total_bytes;
+    }
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(*file, ec);
+    if (ec) {
+      return stored_total_bytes;
+    }
+    total += static_cast<size_t>(size);
   }
-
-  if (!is_plain_file(*file)) {
-    return stored_total_bytes;
-  }
-  std::error_code ec;
-  const auto size = std::filesystem::file_size(*file, ec);
-  if (ec) {
-    return stored_total_bytes;
-  }
-  return static_cast<size_t>(size);
+  return total;
 }
 
 }  // namespace ros2_medkit_fault_manager::core

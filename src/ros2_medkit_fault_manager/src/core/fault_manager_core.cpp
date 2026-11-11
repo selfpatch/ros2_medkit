@@ -733,7 +733,7 @@ FaultDetail FaultManagerCore::get_locked(const std::string & code,
       // The RECORDING, not the fault code: several recordings of one fault would
       // otherwise all carry the same id and collapse into one download.
       rosbag_snapshot.bulk_data_id = rosbag_info.recording_id;
-      // Stored directory total; get() replaces it with the served file's size.
+      // Stored directory total; get() replaces it with the size of the named storage files.
       rosbag_snapshot.size_bytes = rosbag_info.size_bytes;
       rosbag_snapshot.duration_sec = rosbag_info.duration_sec;
       rosbag_snapshot.format = rosbag_info.format;
