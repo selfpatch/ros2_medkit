@@ -305,7 +305,7 @@ class TestRosbagRecordingManifest(GatewayTestCase):
             self.assertEqual(response.content[:5], b'\x89MCAP')
 
     def test_04_a_range_resumes_a_file(self):
-        """Open-ended and closed ranges return the bytes they name.
+        """Open-ended, closed and suffix ranges return the bytes they name.
 
         @verifies REQ_INTEROP_073
         """
@@ -316,9 +316,7 @@ class TestRosbagRecordingManifest(GatewayTestCase):
         resumed = self.get_raw(self._file_url(0), expected_status=206, timeout=30,
                                headers={'Range': 'bytes=1000-'})
         self.assertEqual(int(resumed.headers['Content-Length']), size - 1000)
-        # The end of an open-ended range may be left out of Content-Range.
-        self.assertIn(resumed.headers['Content-Range'],
-                      (f'bytes 1000-/{size}', f'bytes 1000-{size - 1}/{size}'))
+        self.assertEqual(resumed.headers['Content-Range'], f'bytes 1000-{size - 1}/{size}')
         self.assertEqual(resumed.content, whole[1000:])
 
         window = self.get_raw(self._file_url(0), expected_status=206,
@@ -327,21 +325,63 @@ class TestRosbagRecordingManifest(GatewayTestCase):
         self.assertEqual(int(window.headers['Content-Length']), 1000)
         self.assertEqual(window.content, whole[1000:2000])
 
+        suffix = self.get_raw(self._file_url(0), expected_status=206,
+                              headers={'Range': 'bytes=-500'})
+        self.assertEqual(suffix.headers['Content-Range'],
+                         f'bytes {size - 500}-{size - 1}/{size}')
+        self.assertEqual(suffix.content, whole[-500:])
+
         last = self.get_raw(self._file_url(0), expected_status=206,
                             headers={'Range': f'bytes={size - 1}-'})
         self.assertEqual(last.content, whole[-1:])
 
-    def test_05_a_range_outside_the_file_is_416(self):
-        """A start at or past the end is refused, not answered with a broken 206.
+    def test_05_fixed_chunks_read_the_last_file_to_its_end(self):
+        """A last byte past the end is the end of the file, so fixed chunks need no size.
+
+        @verifies REQ_INTEROP_073
+        """
+        _, manifest = self._manifest()
+        index = len(manifest['files']) - 1
+        size = manifest['files'][index]['size']
+        chunk = 1024 * 1024
+        whole = self.get_raw(self._file_url(index), timeout=30).content
+
+        joined = b''
+        first = 0
+        while first < size:
+            part = self.get_raw(self._file_url(index), expected_status=206, timeout=30,
+                                headers={'Range': f'bytes={first}-{first + chunk - 1}'})
+            last = min(first + chunk, size) - 1
+            self.assertEqual(part.headers['Content-Range'], f'bytes {first}-{last}/{size}')
+            self.assertEqual(int(part.headers['Content-Length']), last - first + 1)
+            joined += part.content
+            first += chunk
+        self.assertEqual(joined, whole)
+        self.assertEqual(sha256_hex(joined), manifest['files'][index]['sha256'])
+
+        clamped = self.get_raw(self._file_url(index), expected_status=206,
+                               headers={'Range': f'bytes=0-{size}'})
+        self.assertEqual(clamped.headers['Content-Range'], f'bytes 0-{size - 1}/{size}')
+        self.assertEqual(clamped.content, whole)
+
+    def test_05b_a_range_outside_the_file_is_416(self):
+        """Only a range with no byte inside the file is refused.
 
         @verifies REQ_INTEROP_073
         """
         _, manifest = self._manifest()
         size = manifest['files'][0]['size']
-        for value in (f'bytes={size}-', f'bytes={size + 100000}-', f'bytes=0-{size}'):
+        for value in (f'bytes={size}-', f'bytes={size + 100000}-', f'bytes={size}-{size + 10}'):
             response = self.get_raw(self._file_url(0), expected_status=416,
                                     headers={'Range': value})
+            self.assertEqual(response.headers.get('Content-Range'), f'bytes */{size}', value)
             self.assertEqual(response.json()['parameters']['size'], size, value)
+
+        # One part past the end is left out, the other is served.
+        mixed = self.get_raw(self._file_url(0), expected_status=206,
+                             headers={'Range': f'bytes=0-9,{size}-'})
+        self.assertEqual(mixed.headers['Content-Range'], f'bytes 0-9/{size}')
+        self.assertEqual(len(mixed.content), 10)
 
     def test_06_only_an_index_addresses_a_file(self):
         """An index past the list, a word and a file name are all plain 404s.
@@ -386,6 +426,26 @@ class TestRosbagRecordingManifest(GatewayTestCase):
 
         legacy = self.get_raw(f'{APP_ENDPOINT}/bulk-data/rosbags/{FAULT_CODE}', timeout=30)
         self.assertEqual(legacy.content[:5], b'\x89MCAP')
+
+    def test_08b_the_download_route_resolves_ranges_the_same_way(self):
+        """The one-file download route clamps, refuses and reports ranges like the file route.
+
+        @verifies REQ_INTEROP_073
+        """
+        endpoint = f'{APP_ENDPOINT}/bulk-data/rosbags/{self.recording_id}'
+        whole = self.get_raw(endpoint, timeout=30).content
+        size = len(whole)
+
+        clamped = self.get_raw(endpoint, expected_status=206, timeout=30,
+                               headers={'Range': f'bytes=1000-{size + 1000}'})
+        self.assertEqual(clamped.headers['Content-Range'], f'bytes 1000-{size - 1}/{size}')
+        self.assertEqual(int(clamped.headers['Content-Length']), size - 1000)
+        self.assertEqual(clamped.content, whole[1000:])
+
+        refused = self.get_raw(endpoint, expected_status=416,
+                               headers={'Range': f'bytes={size + 1000}-'})
+        self.assertEqual(refused.headers.get('Content-Range'), f'bytes */{size}')
+        self.assertEqual(refused.json()['parameters']['size'], size)
 
     def test_09_another_entity_does_not_reach_the_recording(self):
         """A recording that exists is never reported as missing.

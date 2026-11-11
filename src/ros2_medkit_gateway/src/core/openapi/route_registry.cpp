@@ -27,6 +27,7 @@
 #include <utility>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/http/byte_ranges.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/detail/forward_response_scope.hpp"
 #include "ros2_medkit_gateway/http/detail/primitives.hpp"
@@ -641,17 +642,47 @@ RouteRegistry::binary_download(const std::string & openapi_path,
     }
     http::TypedRequest typed_req(req);
     auto outcome = handler(typed_req);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+    auto & ranges = const_cast<httplib::Request &>(req).ranges;
     if (!outcome.has_value()) {
-      // A Range selects part of the file, never part of an error. cpp-httplib applies
-      // req.ranges to whatever body is set: it cut the error document to the requested
-      // bytes, or replaced it with an empty 416 when the offset was past its end. The
-      // same goes for a response a peer already ranged and this gateway only relays.
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-      const_cast<httplib::Request &>(req).ranges.clear();
+      if (outcome.error().code == ERR_X_INTERNAL_FORWARDED) {
+        // A response a peer already ranged and this gateway only relays, whatever its
+        // status. cpp-httplib would apply req.ranges to it a second time. A local error
+        // needs nothing here: the global error handler clears the ranges of every 4xx
+        // and 5xx.
+        ranges.clear();
+      }
       write_typed_error(res, outcome.error(), renderer);
       return;
     }
     auto bin = std::make_shared<http::BinaryResponse>(std::move(outcome.value()));
+    if (!bin->supports_ranges) {
+      // The provider cannot seek, so the Range is ignored (RFC 9110 section 14.2) and
+      // the answer is a 200 with the whole body, not a 206 that carries all of it.
+      ranges.clear();
+    } else if (!ranges.empty()) {
+      // cpp-httplib serves req.ranges as given: it computes Content-Length from them and
+      // copies them into Content-Range, so an open end stayed open on the wire and an
+      // end past the file underflowed the length. Resolved against the file here, per
+      // RFC 9110 section 14.1.2, and written back as absolute first-last pairs.
+      std::vector<http::RequestedByteRange> requested(ranges.begin(), ranges.end());
+      const auto satisfiable = http::satisfiable_byte_ranges(requested, bin->total_size);
+      ranges.clear();
+      if (satisfiable.empty()) {
+        ErrorInfo err;
+        err.code = ERR_INVALID_PARAMETER;
+        err.message = "Requested range is outside the file";
+        err.http_status = 416;
+        err.params = nlohmann::json{{"range", req.get_header_value("Range")}, {"size", bin->total_size}};
+        write_typed_error(res, err, renderer);
+        // RFC 9110 section 15.5.17: a resuming client reads the length from here.
+        res.set_header("Content-Range", "bytes */" + std::to_string(bin->total_size));
+        return;
+      }
+      for (const auto & [first, last] : satisfiable) {
+        ranges.emplace_back(static_cast<ssize_t>(first), static_cast<ssize_t>(last));
+      }
+    }
     if (bin->filename.has_value()) {
       res.set_header("Content-Disposition", "attachment; filename=\"" + *bin->filename + "\"");
     }

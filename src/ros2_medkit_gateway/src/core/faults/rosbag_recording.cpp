@@ -46,42 +46,6 @@ std::optional<uint64_t> parse_decimal(std::string_view text) {
   return value;
 }
 
-std::string_view trim(std::string_view text) {
-  while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
-    text.remove_prefix(1);
-  }
-  while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) {
-    text.remove_suffix(1);
-  }
-  return text;
-}
-
-bool range_spec_within_file(std::string_view spec, uint64_t size) {
-  const auto dash = spec.find('-');
-  if (dash == std::string_view::npos) {
-    return false;
-  }
-  const std::string_view first_text = spec.substr(0, dash);
-  const std::string_view last_text = spec.substr(dash + 1);
-  if (first_text.empty()) {
-    // Suffix range: the last N bytes. Bare "-" is how the server library spells "everything".
-    if (last_text.empty()) {
-      return true;
-    }
-    const auto suffix = parse_decimal(last_text);
-    return suffix && *suffix > 0;
-  }
-  const auto first = parse_decimal(first_text);
-  if (!first || *first >= size) {
-    return false;
-  }
-  if (last_text.empty()) {
-    return true;
-  }
-  const auto last = parse_decimal(last_text);
-  return last && *last >= *first && *last < size;
-}
-
 /// A link is not a file of the recording: it is never followed.
 bool is_plain_file(const std::filesystem::path & path) {
   std::error_code ec;
@@ -152,25 +116,6 @@ std::optional<std::string> recording_file_path(const std::string & recording_pat
     return std::nullopt;
   }
   return file_path.string();
-}
-
-bool range_within_file(const std::string & range_header, uint64_t size) {
-  std::string_view value = trim(range_header);
-  constexpr std::string_view kUnit = "bytes=";
-  if (value.substr(0, kUnit.size()) != kUnit) {
-    return false;
-  }
-  value.remove_prefix(kUnit.size());
-  while (true) {
-    const auto comma = value.find(',');
-    if (!range_spec_within_file(trim(value.substr(0, comma)), size)) {
-      return false;
-    }
-    if (comma == std::string_view::npos) {
-      return true;
-    }
-    value.remove_prefix(comma + 1);
-  }
 }
 
 RecordingLookup find_recording(FaultManager & fault_manager, const std::string & recording_id,
