@@ -369,7 +369,7 @@ def create_greenwave_node(
 # ---------------------------------------------------------------------------
 
 def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True,
-                      extra_env=None):
+                      extra_env=None, namespace=None):
     """Create demo node launch actions.
 
     Parameters
@@ -386,6 +386,9 @@ def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True,
         Additional environment variables merged into each node's
         ``additional_env``. Useful for setting ``ROS_DOMAIN_ID`` to
         isolate nodes into a specific DDS domain.
+    namespace : str or None
+        Namespace for every node in ``nodes``, in place of the one in
+        ``DEMO_NODE_REGISTRY``. ``None`` keeps the registry's.
 
     Returns
     -------
@@ -409,13 +412,13 @@ def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True,
     actions = []
 
     for key in nodes:
-        executable, ros_name, namespace = DEMO_NODE_REGISTRY[key]
+        executable, ros_name, registry_namespace = DEMO_NODE_REGISTRY[key]
 
         node_kwargs = {
             'package': 'ros2_medkit_integration_tests',
             'executable': executable,
             'name': ros_name,
-            'namespace': namespace,
+            'namespace': namespace if namespace is not None else registry_namespace,
             'output': 'screen',
             'additional_env': env,
             # Give the node room to flush coverage data at shutdown before
