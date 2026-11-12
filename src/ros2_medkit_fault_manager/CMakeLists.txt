@@ -297,6 +297,12 @@ endif()
   medkit_add_launch_test(test_fault_code_healing_restart
     test/integration/test_fault_code_healing_restart.test.py TIMEOUT 120 LABELS "integration")
 
+  medkit_add_launch_test(test_fault_identity
+    test/integration/test_fault_identity.test.py TIMEOUT 120 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_identity_restart
+    test/integration/test_fault_identity_restart.test.py TIMEOUT 180 LABELS "integration")
+
   # Drives healing with the event counts a one-event-per-transition reporter
   # actually sends: one FAILED per raise, one PASSED per clear. Parametrized over
   # healing_threshold, so the node launches twice, and one case holds a settled

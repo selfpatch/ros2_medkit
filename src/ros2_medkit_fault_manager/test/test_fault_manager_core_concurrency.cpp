@@ -88,12 +88,11 @@ class FixedClock : public core::WallClock {
 /// overlaps with others on every first report of a code.
 class YieldingStorage : public ros2_medkit_fault_manager::InMemoryFaultStorage {
  public:
-  bool report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
+  bool report_fault_event(const ros2_medkit_fault_manager::FaultId & id, fd::ReportKind kind, uint8_t severity,
                           const std::string & description, const std::string & source_id, int64_t timestamp_ns,
                           const ros2_medkit_fault_manager::DebounceConfig & config) override {
     pause();
-    return InMemoryFaultStorage::report_fault_event(fault_code, kind, severity, description, source_id, timestamp_ns,
-                                                    config);
+    return InMemoryFaultStorage::report_fault_event(id, kind, severity, description, source_id, timestamp_ns, config);
   }
   std::optional<fd::FaultRecord> get_fault(const ros2_medkit_fault_manager::FaultId & id) const override {
     auto result = InMemoryFaultStorage::get_fault(id);

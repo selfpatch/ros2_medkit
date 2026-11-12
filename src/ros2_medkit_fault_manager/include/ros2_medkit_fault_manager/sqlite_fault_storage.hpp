@@ -48,16 +48,15 @@ class SqliteFaultStorage : public FaultStorage {
   void set_debounce_config(const DebounceConfig & config) override;
   DebounceConfig get_debounce_config() const override;
 
-  bool report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
-                          const std::string & description, const std::string & source_id, int64_t timestamp_ns,
-                          const DebounceConfig & config) override;
+  bool report_fault_event(const FaultId & id, fd::ReportKind kind, uint8_t severity, const std::string & description,
+                          const std::string & source_id, int64_t timestamp_ns, const DebounceConfig & config) override;
 
-  std::vector<fd::FaultRecord> list_faults(bool filter_by_severity, uint8_t severity,
-                                           const std::vector<std::string> & statuses) const override;
+  std::vector<FaultEntry> list_fault_entries(bool filter_by_severity, uint8_t severity,
+                                             const std::vector<std::string> & statuses) const override;
 
   std::optional<fd::FaultRecord> get_fault(const FaultId & id) const override;
 
-  std::vector<fd::FaultRecord> get_faults_by_code(const std::string & fault_code) const override;
+  std::vector<FaultId> get_ids_by_code(const std::string & fault_code) const override;
 
   bool clear_fault(const FaultId & id) override;
 
@@ -128,40 +127,11 @@ class SqliteFaultStorage : public FaultStorage {
   /// Detected per table by PRAGMA table_info lacking `owner`, which is what makes it safe
   /// to re-run on every open. faults and freeze_frames are REBUILT (their identity is a
   /// PRIMARY KEY, which ALTER TABLE cannot change and CREATE TABLE IF NOT EXISTS would
-  /// silently skip), while snapshots and rosbag_files only gain a column. The fault owner
-  /// comes from the legacy row's first reporting source, empty when none can be read: that
-  /// is the only per-source fact the old schema holds, so a row with several sources folds
-  /// onto its first one rather than inventing per-source counters, statuses and timestamps
-  /// that were never recorded.
-  ///
-  /// It never refuses to finish. A row whose content cannot be read leaves an empty owner
-  /// and a log line, because a migration that aborts on a row takes the whole database with
-  /// it: the rebuild rolls back and the next open reaches the same row again, forever.
+  /// silently skip), while snapshots, rosbag_files and near_misses only gain a column.
+  /// A legacy database holds one record per fault code, fed by every source, so every row
+  /// becomes the shared record of its code and every child row attaches to it. The rows keep
+  /// their reporting_sources as written. All of it runs in one transaction.
   void migrate_faults_add_owner();
-
-  /// Copy every legacy `faults` row into `faults_new`, deriving the owner in C++.
-  ///
-  /// In C++ rather than one INSERT ... SELECT because the derivation must not depend on the
-  /// column being valid JSON, and SQL's json_extract raises rather than returning NULL on
-  /// text it cannot parse. Caller holds the migration transaction.
-  void copy_legacy_fault_rows();
-
-  /// Give every ownerless child row the owner of its fault, where that is unambiguous.
-  ///
-  /// Runs on every open, not only when a column was just added: a child table can be left
-  /// with empty owners by an open interrupted between the faults rebuild and the backfill,
-  /// or by a database whose child table gained the column while faults was still legacy.
-  /// Such a row is invisible to every (code, owner) read, so leaving it is losing evidence.
-  /// A code carrying several owners is NOT resolved - guessing would hand one owner another
-  /// owner's evidence - and the row keeps its empty owner with a log line naming it.
-  void backfill_child_owners();
-
-  /// Whether any child row is waiting for an owner the database can actually prove, so the
-  /// backfill above has work to do. Deliberately the backfill's own condition and not just
-  /// "owner is empty": a row whose code has several owners or none can never be assigned,
-  /// and treating it as pending would re-enter the write transaction on every open forever.
-  /// Tables without the column yet are skipped: the migration adds it.
-  bool has_assignable_child_rows() const;
 
   /// Whether @p table exists, asked of sqlite_master. Used to tell a leftover scratch table
   /// apart from a clean start, which DROP TABLE IF EXISTS on its own cannot report.
@@ -191,29 +161,27 @@ class SqliteFaultStorage : public FaultStorage {
 
   /// report_fault_event body without taking mutex_ or opening a transaction. Caller holds mutex_
   /// and wraps the call, so the fault row and any near-miss row commit together.
-  bool report_fault_event_locked(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
+  bool report_fault_event_locked(const FaultId & id, fd::ReportKind kind, uint8_t severity,
                                  const std::string & description, const std::string & source_id, int64_t timestamp_ns,
                                  const DebounceConfig & config);
 
   /// Append one entry to the near-miss series and evict the oldest entries beyond
   /// max_near_misses_per_fault_. Caller holds mutex_ and has already written the fault row.
-  /// @param fault_code The fault code that nearly confirmed
+  /// @param id The record that nearly confirmed; it scopes the series
   /// @param occurred_at_ns Timestamp of the report
   /// @param debounce_counter Counter value after the report
   /// @param config Debounce config the report was evaluated against
   /// @param severity Severity carried by the report
-  /// @param source_id Reporting source, which is the record's owner and scopes the series
+  /// @param source_id Source that sent the report
   /// @param resulting_status Fault status after the report was applied
-  void record_near_miss_locked(const std::string & fault_code, int64_t occurred_at_ns, int32_t debounce_counter,
+  void record_near_miss_locked(const FaultId & id, int64_t occurred_at_ns, int32_t debounce_counter,
                                const DebounceConfig & config, uint8_t severity, const std::string & source_id,
                                const std::string & resulting_status);
 
   /// Run a plain SQL statement or throw with the SQLite error. Caller holds mutex_.
   void exec_or_throw(const char * sql);
 
-  /// Serialize vector of strings to JSON array string. The faults table keeps
-  /// reporting_sources as the serialized form of owner, so a reader of the raw table
-  /// still sees the field it always saw.
+  /// Serialize vector of strings to JSON array string, the form of faults.reporting_sources.
   static std::string serialize_json_array(const std::vector<std::string> & vec);
 
   std::string db_path_;

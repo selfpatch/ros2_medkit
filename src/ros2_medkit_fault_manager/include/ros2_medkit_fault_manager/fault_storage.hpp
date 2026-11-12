@@ -91,13 +91,20 @@ bool is_near_miss(bool is_failed_event, const std::string & resulting_status);
 /// defaults (-1 / 3). Returns true if the config was already valid.
 bool sanitize_debounce_config(DebounceConfig & config);
 
-/// Identity of one fault record: a fault code plus the reporting source that owns it.
+/// Owner of a record that every reporting source of its fault code shares.
 ///
-/// The owner is the source_id the ReportFault call carried. Two sources reporting one
-/// fault_code are two records, and every piece of per-fault state (status, debounce
-/// counter, occurrence count, timestamps, severity, freeze frame, snapshots, near
-/// misses, rosbag links) belongs to one record. A clear or a heal driven by one owner
-/// never touches another owner's record of the same code.
+/// Reserved: ReportFault refuses it as a source_id, so a shared record can never be
+/// mistaken for the per-source record of a source that happens to be called `*`.
+inline constexpr const char * kSharedOwner = "*";
+
+/// Identity of one fault record: a fault code plus the owner of the record.
+///
+/// FaultManagerCore::record_id_for decides the owner. A code configured `per_source` gives
+/// each reporting source its own record (owner = the report's source_id), any other code has
+/// one record shared by every source (owner = kSharedOwner). Every piece of per-record state
+/// (status, debounce counter, occurrence count, timestamps, severity, freeze frame, snapshots,
+/// near misses, rosbag links) belongs to one record. A clear or a heal of one record never
+/// touches another record of the same code.
 ///
 /// An aggregate on purpose: FaultId{code, owner} is the only way to build one, so no
 /// call site can silently pass a bare code where a record identity is required.
@@ -110,27 +117,25 @@ struct FaultId {
   }
 
   /// Ordered by code first, so the records of one code are contiguous in a map and
-  /// get_faults_by_code is a range scan rather than a full sweep.
+  /// the ids of one code are a range scan rather than a full sweep.
   bool operator<(const FaultId & other) const {
     return std::tie(fault_code, owner) < std::tie(other.fault_code, other.owner);
   }
 };
 
-/// Owner given to a record migrated out of a database that recorded no readable
-/// reporting source.
-///
-/// A migrated record is never left with an empty owner. It would be unreachable
-/// through the source_id every single-record service takes, and it would leave the
-/// child backfill looking for work on every open. The empty owner means one thing
-/// only, a child row (freeze frame, snapshot, rosbag link) not yet assigned to a
-/// record, and keeping that meaning unambiguous is what this constant is for.
-inline constexpr const char * kLegacyOwner = "legacy";
+/// A stored record together with the identity it is stored under.
+struct FaultEntry {
+  FaultId id;
+  fd::FaultRecord record;
+};
 
 /// Internal fault state of one record, stored in memory. Times are wall-clock ns >= 0; 0 means never.
 struct FaultState {
   std::string fault_code;
-  /// Reporting source that owns this record. Half of the record identity.
+  /// Owner of this record. Half of the record identity.
   std::string owner;
+  /// Every source that reported FAILED for this record. One source for a per-source record.
+  std::set<std::string> reporting_sources;
   uint8_t severity{0};
   std::string description;
   int64_t first_occurred_ns{0};
@@ -153,7 +158,7 @@ struct FaultState {
 /// one moment and only mean anything together.
 struct SnapshotData {
   std::string fault_code;
-  std::string owner;  ///< Reporting source that owns the record this reading belongs to
+  std::string owner;  ///< Owner of the record this reading belongs to
   std::string topic;
   std::string message_type;
   std::string data;  ///< JSON-encoded message data
@@ -172,7 +177,7 @@ struct SnapshotData {
 /// (lookup returns nullopt, never an empty {}).
 struct FreezeFrameData {
   std::string fault_code;
-  std::string owner;  ///< Reporting source that owns the record this frame belongs to
+  std::string owner;  ///< Owner of the record this frame belongs to
   std::string data;   ///< Compact JSON object: {"<topic>": <value>, ...}
   int64_t captured_at_ns{0};
 };
@@ -202,16 +207,16 @@ std::string rosbag_recording_id(const std::string & file_path);
 /// long-running appliance keeps the recent series rather than freezing it at boot.
 struct NearMissRecord {
   std::string fault_code;
+  std::string owner;            ///< Owner of the record the series belongs to
   int64_t occurred_at_ns{0};    ///< Timestamp of the report that moved the counter
   int32_t debounce_counter{0};  ///< Counter value AFTER this report
 
-  /// Confirmation threshold the report was evaluated against. The counter it belongs to is
-  /// this record's own, so with per-entity overrides both are the reporting source's and the
-  /// value is the distance to confirmation for the record.
+  /// Confirmation threshold the report was evaluated against: the distance to confirmation of
+  /// the record's counter at that moment.
   int32_t confirmation_threshold{0};
 
   uint8_t severity{0};    ///< Severity carried by the report
-  std::string source_id;  ///< Reporting source, which is the record's owner
+  std::string source_id;  ///< Source that sent the report; one record can hold reports of several
 
   /// Fault status after the report was applied. Never CONFIRMED - that is what makes the report a
   /// near miss. It separates a counter climbing from a resting state (PREFAILED) from one walking
@@ -227,7 +232,7 @@ struct NearMissRecord {
 /// only when its last row goes.
 struct RosbagFileInfo {
   std::string fault_code;
-  std::string owner;         ///< Reporting source that owns the record holding this link
+  std::string owner;         ///< Owner of the record holding this link
   std::string recording_id;  ///< Basename of file_path; shared by every row of a burst
   std::string file_path;
   std::string format;        ///< "sqlite3" or "mcap"
@@ -264,17 +269,18 @@ class FaultStorage {
   virtual DebounceConfig get_debounce_config() const = 0;
 
   /// Report a fault event (FAILED or PASSED)
-  /// @param fault_code Global fault identifier
+  /// @param id The record this event applies to, as FaultManagerCore::record_id_for decided it.
+  ///        The event creates that record when none exists and the event is FAILED.
   /// @param kind Whether the report is a FAILED or a PASSED event
   /// @param severity Fault severity level (only used for FAILED events)
   /// @param description Human-readable description (only used for FAILED events)
-  /// @param source_id Reporting source identifier. Together with fault_code it names the
-  ///        record this event applies to, and it creates that record when none exists.
+  /// @param source_id Source that sent the report. A FAILED event adds it to the record's
+  ///        reporting sources and the near-miss series keeps it per entry.
   /// @param timestamp_ns Wall-clock time of the event, ns (>= 0)
-  /// @param config Debounce configuration to apply for this event (resolved per-entity by the node)
+  /// @param config Debounce configuration to apply for this event (resolved per entity and code by the core)
   /// @return true if this is a new occurrence (new record or reactivated CLEARED record),
   ///         false if an existing active record was updated
-  virtual bool report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
+  virtual bool report_fault_event(const FaultId & id, fd::ReportKind kind, uint8_t severity,
                                   const std::string & description, const std::string & source_id, int64_t timestamp_ns,
                                   const DebounceConfig & config) = 0;
 
@@ -283,26 +289,37 @@ class FaultStorage {
   /// @param severity Severity level to filter (if filter_by_severity is true)
   /// @param statuses List of statuses to include (empty = CONFIRMED only)
   /// @return Vector of matching faults
-  virtual std::vector<fd::FaultRecord> list_faults(bool filter_by_severity, uint8_t severity,
-                                                   const std::vector<std::string> & statuses) const = 0;
+  std::vector<fd::FaultRecord> list_faults(bool filter_by_severity, uint8_t severity,
+                                           const std::vector<std::string> & statuses) const {
+    std::vector<fd::FaultRecord> records;
+    for (auto & entry : list_fault_entries(filter_by_severity, severity, statuses)) {
+      records.push_back(std::move(entry.record));
+    }
+    return records;
+  }
+
+  /// list_faults with the identity each record is stored under.
+  virtual std::vector<FaultEntry> list_fault_entries(bool filter_by_severity, uint8_t severity,
+                                                     const std::vector<std::string> & statuses) const = 0;
 
   /// Get a single fault record
   /// @param id The record to look up
   /// @return The fault if found, nullopt otherwise
   virtual std::optional<fd::FaultRecord> get_fault(const FaultId & id) const = 0;
 
-  /// Every record carrying @p fault_code, one per owning reporting source.
+  /// The identity of every record carrying @p fault_code: one shared record, or one per
+  /// source for a per-source code, or both after the mode of the code changed.
   ///
   /// The resolution step behind an unscoped service call: with exactly one record the
   /// call applies to it, with several it is ambiguous and the owners are the answer.
   /// Returns them ordered by owner, so an ambiguity message is stable.
   /// @param fault_code The fault code to look up
-  /// @return Every record carrying the code, empty when none does
-  virtual std::vector<fd::FaultRecord> get_faults_by_code(const std::string & fault_code) const = 0;
+  /// @return Every record id carrying the code, empty when none does
+  virtual std::vector<FaultId> get_ids_by_code(const std::string & fault_code) const = 0;
 
   /// Clear one fault record (manual acknowledgment). Drops that record's per-topic snapshots.
   /// The freeze-frame and the near-miss series are RETAINED, because they outlive a single fault
-  /// cycle and cannot be reconstructed afterwards. Another owner's record of the same code is
+  /// cycle and cannot be reconstructed afterwards. Another record of the same code is
   /// untouched, snapshots included.
   /// @param id The record to clear
   /// @return true if the record was found and cleared, false if not found
@@ -547,16 +564,15 @@ class InMemoryFaultStorage : public FaultStorage {
   void set_debounce_config(const DebounceConfig & config) override;
   DebounceConfig get_debounce_config() const override;
 
-  bool report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
-                          const std::string & description, const std::string & source_id, int64_t timestamp_ns,
-                          const DebounceConfig & config) override;
+  bool report_fault_event(const FaultId & id, fd::ReportKind kind, uint8_t severity, const std::string & description,
+                          const std::string & source_id, int64_t timestamp_ns, const DebounceConfig & config) override;
 
-  std::vector<fd::FaultRecord> list_faults(bool filter_by_severity, uint8_t severity,
-                                           const std::vector<std::string> & statuses) const override;
+  std::vector<FaultEntry> list_fault_entries(bool filter_by_severity, uint8_t severity,
+                                             const std::vector<std::string> & statuses) const override;
 
   std::optional<fd::FaultRecord> get_fault(const FaultId & id) const override;
 
-  std::vector<fd::FaultRecord> get_faults_by_code(const std::string & fault_code) const override;
+  std::vector<FaultId> get_ids_by_code(const std::string & fault_code) const override;
 
   bool clear_fault(const FaultId & id) override;
 

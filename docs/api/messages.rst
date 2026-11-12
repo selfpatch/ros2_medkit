@@ -17,10 +17,11 @@ Fault.msg
 
 Core fault data model representing one fault record.
 
-A record is identified by the pair (``fault_code``, owning reporting source). The owner is
-the ``source_id`` a ``ReportFault`` call carried. Two sources reporting one ``fault_code``
-are two records, each with its own status, debounce counter, ``occurrence_count``, severity
-and timestamps, and each cleared on its own.
+A record is identified by the pair (``fault_code``, owner). A code listed with
+``per_source: true`` in ``fault_thresholds.yaml`` has one record per reporting source, owned by
+the ``source_id`` of the ``ReportFault`` call. Every other code has one record shared by all
+its sources, owned by the reserved id ``*``. Each record has its own status, debounce counter,
+``occurrence_count``, severity and timestamps, and is cleared on its own.
 
 .. code-block:: text
 
@@ -54,8 +55,8 @@ and timestamps, and each cleared on its own.
    # Current fault status (PREFAILED, PREPASSED, CONFIRMED, HEALED, CLEARED)
    string status
 
-   # The reporting source that owns this record, as a one-element list. Together
-   # with fault_code it identifies the record.
+   # Every source that reported this record: one for a per-source record, all of
+   # them for a shared one.
    string[] reporting_sources
 
 **Severity Constants:**
@@ -153,7 +154,7 @@ MutedFaultInfo.msg
 ~~~~~~~~~~~~~~~~~~
 
 Information about a correlated (muted) symptom record. One entry per muted RECORD:
-a root cause mutes the symptoms of its own reporting source only, so two sources
+a root cause mutes the symptoms of its own record owner only, so two per-source records
 muted on one ``fault_code`` produce two entries carrying that code, told apart by
 ``source_id``.
 
@@ -163,7 +164,7 @@ muted on one ``fault_code`` produce two entries carrying that code, told apart b
    string root_cause_code  # Root cause that triggered muting
    string rule_id          # Correlation rule ID that matched
    uint32 delay_ms         # Time delay from root cause [ms]
-   string source_id        # Reporting source that owns the muted record
+   string source_id        # Owner of the muted record (``*`` for a shared record)
 
 ClusterInfo.msg
 ~~~~~~~~~~~~~~~
@@ -200,7 +201,7 @@ Report a fault event to the FaultManager.
    uint8 severity      # Fault.SEVERITY_* constant (for FAILED events)
    string description  # Human-readable description
    string source_id    # Fully qualified node name (e.g., "/powertrain/temp_sensor").
-                       # Owns the record: (fault_code, source_id) is the record identity.
+                       # Owns the record of a per_source code. "*" is reserved and refused.
 
 **Response:**
 
@@ -234,7 +235,7 @@ Clear/acknowledge one fault record.
 
    string fault_code                # Fault code to clear
    bool   skip_correlation_auto_clear  # Opt out of correlation cascade clear
-   string source_id                 # Reporting source that owns the record
+   string source_id                 # Owner of the record, or a source that reports into it
 
 **Response:**
 
@@ -244,9 +245,10 @@ Clear/acknowledge one fault record.
    string message          # Status message or error description
    string[] auto_cleared_codes  # Symptoms auto-cleared with root cause
 
-``source_id`` names the owner of the record to clear. Leaving it empty is unscoped: the
-call applies only when exactly one record carries the ``fault_code``, and fails otherwise
-with ``success=false`` and a ``message`` beginning ``ambiguous:`` that lists the owners.
+``source_id`` names the owner of the record to clear (``*`` for a shared record). When no
+record has that owner, it names the record that source reports into. Leaving it empty is
+unscoped: the call applies only when exactly one record carries the ``fault_code``, and fails
+otherwise with ``success=false`` and a ``message`` beginning ``ambiguous:`` that lists the owners.
 An ambiguous call clears nothing. ``GetFault``, ``GetSnapshots`` and ``GetRosbag`` carry
 the same field and resolve the same way. On ``GetRosbag`` it scopes the ``fault_code``
 lookup only, and the ``recording_id`` path ignores it.

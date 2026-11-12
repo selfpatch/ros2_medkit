@@ -155,9 +155,9 @@ TEST_F(PgFaultStorageTest, ReportNewFaultEvent) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
-  bool is_new = storage_->report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
-                                             "Motor temperature exceeded threshold", "/powertrain/motor",
-                                             timestamp.nanoseconds(), default_config());
+  bool is_new = storage_->report_fault_event(FaultId{"MOTOR_OVERHEAT", "/powertrain/motor"}, fd::ReportKind::kFailed,
+                                             Fault::SEVERITY_ERROR, "Motor temperature exceeded threshold",
+                                             "/powertrain/motor", timestamp.nanoseconds(), default_config());
 
   EXPECT_TRUE(is_new);
   EXPECT_EQ(storage_->size(), 1u);
@@ -168,8 +168,9 @@ TEST_F(PgFaultStorageTest, PassedEventForNonExistentFaultIgnored) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
-  bool is_new = storage_->report_fault_event("NON_EXISTENT", fd::ReportKind::kPassed, Fault::SEVERITY_ERROR, "Test",
-                                             "/node1", timestamp.nanoseconds(), default_config());
+  bool is_new =
+      storage_->report_fault_event(FaultId{"NON_EXISTENT", "/node1"}, fd::ReportKind::kPassed, Fault::SEVERITY_ERROR,
+                                   "Test", "/node1", timestamp.nanoseconds(), default_config());
 
   EXPECT_FALSE(is_new);
   EXPECT_EQ(storage_->size(), 0u);
@@ -180,20 +181,20 @@ TEST_F(PgFaultStorageTest, SameCodeDifferentSourcesAreSeparateRecords) {
   auto timestamp1 = clock.now();
   auto timestamp2 = clock.now();
 
-  bool first_new =
-      storage_->report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "Initial report",
-                                   "/powertrain/motor1", timestamp1.nanoseconds(), default_config());
+  bool first_new = storage_->report_fault_event(FaultId{"MOTOR_OVERHEAT", "/powertrain/motor1"},
+                                                fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "Initial report",
+                                                "/powertrain/motor1", timestamp1.nanoseconds(), default_config());
 
   // A second source reporting the same code owns a NEW record, not an update of the first.
-  bool second_new =
-      storage_->report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Second report",
-                                   "/powertrain/motor2", timestamp2.nanoseconds(), default_config());
+  bool second_new = storage_->report_fault_event(FaultId{"MOTOR_OVERHEAT", "/powertrain/motor2"},
+                                                 fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Second report",
+                                                 "/powertrain/motor2", timestamp2.nanoseconds(), default_config());
 
   EXPECT_TRUE(first_new);
   EXPECT_TRUE(second_new);
   EXPECT_EQ(storage_->size(), 2u);
 
-  auto by_code = storage_->get_faults_by_code("MOTOR_OVERHEAT");
+  auto by_code = storage_->get_ids_by_code("MOTOR_OVERHEAT");
   ASSERT_EQ(by_code.size(), 2u);
 
   auto first = storage_->get_fault(FaultId{"MOTOR_OVERHEAT", "/powertrain/motor1"});
@@ -215,8 +216,8 @@ TEST_F(PgFaultStorageTest, ContinuouslyActiveFaultDoesNotInflateOccurrenceCount)
   // Simulate a level-triggered poller re-reporting the same still-true condition
   // every cycle (issue #11): occurrence_count must stay at 1, not grow per poll.
   for (int i = 0; i < 25; ++i) {
-    storage_->report_fault_event("TANK_OVERFILL", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "level = 95 > 80",
-                                 "/tank", clock.now().nanoseconds(), default_config());
+    storage_->report_fault_event(FaultId{"TANK_OVERFILL", "/tank"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                                 "level = 95 > 80", "/tank", clock.now().nanoseconds(), default_config());
   }
 
   auto fault = storage_->get_fault(FaultId{"TANK_OVERFILL", "/tank"});
@@ -233,10 +234,10 @@ TEST_F(PgFaultStorageTest, ClearingOneOwnerLeavesTheOtherOwnersRecord) {
   rclcpp::Clock clock;
   const FaultId a{"SHARED_CODE", "/node_a"};
   const FaultId b{"SHARED_CODE", "/node_b"};
-  storage_->report_fault_event("SHARED_CODE", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", a.owner,
-                               clock.now().nanoseconds(), default_config());
-  storage_->report_fault_event("SHARED_CODE", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "b", b.owner,
-                               clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"SHARED_CODE", a.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a",
+                               a.owner, clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"SHARED_CODE", b.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "b",
+                               b.owner, clock.now().nanoseconds(), default_config());
   ASSERT_EQ(storage_->size(), 2u);
 
   EXPECT_TRUE(storage_->clear_fault(a));
@@ -251,15 +252,15 @@ TEST_F(PgFaultStorageTest, RecordsAreDistinctPerOwnerIncludingUnscoped) {
   const FaultId a{"DUP", "/owner_a"};
   const FaultId b{"DUP", "/owner_b"};
   const FaultId unscoped{"DUP", ""};
-  storage_->report_fault_event("DUP", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "a", a.owner,
+  storage_->report_fault_event(FaultId{"DUP", a.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "a", a.owner,
                                clock.now().nanoseconds(), default_config());
-  storage_->report_fault_event("DUP", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "b", b.owner,
+  storage_->report_fault_event(FaultId{"DUP", b.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "b", b.owner,
                                clock.now().nanoseconds(), default_config());
-  storage_->report_fault_event("DUP", fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "u", unscoped.owner,
-                               clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"DUP", unscoped.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "u",
+                               unscoped.owner, clock.now().nanoseconds(), default_config());
 
   EXPECT_EQ(storage_->size(), 3u);
-  EXPECT_EQ(storage_->get_faults_by_code("DUP").size(), 3u);
+  EXPECT_EQ(storage_->get_ids_by_code("DUP").size(), 3u);
   EXPECT_EQ(storage_->get_fault(a)->severity, Fault::SEVERITY_WARN);
   EXPECT_EQ(storage_->get_fault(b)->severity, Fault::SEVERITY_ERROR);
   EXPECT_EQ(storage_->get_fault(unscoped)->severity, Fault::SEVERITY_CRITICAL);
@@ -273,18 +274,18 @@ TEST_F(PgFaultStorageTest, DebounceCountersAreIndependentPerOwner) {
   const FaultId a{"GRIND", "/node_a"};
   const FaultId b{"GRIND", "/node_b"};
 
-  storage_->report_fault_event("GRIND", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", a.owner,
+  storage_->report_fault_event(FaultId{"GRIND", a.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", a.owner,
                                clock.now().nanoseconds(), config);
-  storage_->report_fault_event("GRIND", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", a.owner,
+  storage_->report_fault_event(FaultId{"GRIND", a.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", a.owner,
                                clock.now().nanoseconds(), config);
   EXPECT_EQ(storage_->get_fault(a)->status, Fault::STATUS_PREFAILED);
 
-  storage_->report_fault_event("GRIND", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "b", b.owner,
+  storage_->report_fault_event(FaultId{"GRIND", b.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "b", b.owner,
                                clock.now().nanoseconds(), config);
   EXPECT_EQ(storage_->get_fault(a)->status, Fault::STATUS_PREFAILED);
   EXPECT_EQ(storage_->get_fault(b)->status, Fault::STATUS_PREFAILED);
 
-  storage_->report_fault_event("GRIND", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", a.owner,
+  storage_->report_fault_event(FaultId{"GRIND", a.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", a.owner,
                                clock.now().nanoseconds(), config);
   EXPECT_EQ(storage_->get_fault(a)->status, Fault::STATUS_CONFIRMED);
   EXPECT_EQ(storage_->get_fault(b)->status, Fault::STATUS_PREFAILED);
@@ -296,9 +297,9 @@ TEST_F(PgFaultStorageTest, EvidenceAttachesToOneOwnerAndIsInvisibleUnderAnother)
   rclcpp::Clock clock;
   const FaultId a{"EVID", "/node_a"};
   const FaultId b{"EVID", "/node_b"};
-  storage_->report_fault_event("EVID", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", a.owner,
+  storage_->report_fault_event(FaultId{"EVID", a.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", a.owner,
                                clock.now().nanoseconds(), default_config());
-  storage_->report_fault_event("EVID", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "b", b.owner,
+  storage_->report_fault_event(FaultId{"EVID", b.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "b", b.owner,
                                clock.now().nanoseconds(), default_config());
 
   SnapshotData snap;
@@ -344,8 +345,8 @@ TEST_F(PgFaultStorageTest, ListFaultsDefaultReturnsConfirmedOnly) {
   auto timestamp = clock.now();
 
   // With default threshold=-1, single report confirms immediately
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               timestamp.nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", timestamp.nanoseconds(), default_config());
 
   // Default query should return the CONFIRMED fault
   auto faults = storage_->list_faults(false, 0, {});
@@ -362,8 +363,8 @@ TEST_F(PgFaultStorageTest, ListFaultsWithPrefailedStatus) {
   config.confirmation_threshold = -3;
   storage_->set_debounce_config(config);
 
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               timestamp.nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", timestamp.nanoseconds(), config);
 
   // Query with PREFAILED status
   auto faults = storage_->list_faults(false, 0, {Fault::STATUS_PREFAILED});
@@ -377,10 +378,10 @@ TEST_F(PgFaultStorageTest, ListFaultsFilterBySeverity) {
   auto timestamp = clock.now();
 
   // With default threshold=-1, faults are immediately CONFIRMED
-  storage_->report_fault_event("FAULT_INFO", fd::ReportKind::kFailed, Fault::SEVERITY_INFO, "Info", "/node1",
-                               timestamp.nanoseconds(), default_config());
-  storage_->report_fault_event("FAULT_ERROR", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Error", "/node1",
-                               timestamp.nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_INFO", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_INFO, "Info",
+                               "/node1", timestamp.nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_ERROR", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                               "Error", "/node1", timestamp.nanoseconds(), default_config());
 
   // Filter by ERROR severity (query CONFIRMED since that's the default status now)
   auto faults = storage_->list_faults(true, Fault::SEVERITY_ERROR, {Fault::STATUS_CONFIRMED});
@@ -392,8 +393,8 @@ TEST_F(PgFaultStorageTest, ClearFault) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
-  storage_->report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               timestamp.nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"MOTOR_OVERHEAT", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                               "Test", "/node1", timestamp.nanoseconds(), default_config());
 
   bool cleared = storage_->clear_fault(FaultId{"MOTOR_OVERHEAT", "/node1"});
   EXPECT_TRUE(cleared);
@@ -415,10 +416,10 @@ TEST_F(PgFaultStorageTest, PassedEventDoesNotAdvanceLastOccurred) {
   const rclcpp::Time failed_at(1000, 0, RCL_SYSTEM_TIME);
   const rclcpp::Time passed_at(9000, 0, RCL_SYSTEM_TIME);
 
-  storage_->report_fault_event("FAULT_LO", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               failed_at.nanoseconds(), default_config());
-  storage_->report_fault_event("FAULT_LO", fd::ReportKind::kPassed, 0, "", "/node1", passed_at.nanoseconds(),
-                               default_config());
+  storage_->report_fault_event(FaultId{"FAULT_LO", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", failed_at.nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_LO", "/node1"}, fd::ReportKind::kPassed, 0, "", "/node1",
+                               passed_at.nanoseconds(), default_config());
 
   auto fault = storage_->get_fault(FaultId{"FAULT_LO", "/node1"});
   ASSERT_TRUE(fault.has_value());
@@ -432,8 +433,8 @@ TEST_F(PgFaultStorageTest, GetClearedFaults) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
 
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               timestamp.nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", timestamp.nanoseconds(), default_config());
   storage_->clear_fault(FaultId{"FAULT_1", "/node1"});
 
   // Query cleared faults
@@ -447,8 +448,8 @@ TEST_F(PgFaultStorageTest, InvalidStatusDefaultsToConfirmed) {
   auto timestamp = clock.now();
 
   // With default threshold=-1, fault is immediately CONFIRMED
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               timestamp.nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", timestamp.nanoseconds(), default_config());
 
   // Query with invalid status - defaults to CONFIRMED, which now matches our fault
   auto faults = storage_->list_faults(false, 0, {"INVALID_STATUS"});
@@ -463,10 +464,10 @@ TEST_F(PgFaultStorageTest, PersistenceAcrossRestarts) {
 
   // With default threshold=-1, faults are immediately CONFIRMED
   // Report some faults
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Persistent fault 1",
-                               "/node1", timestamp.nanoseconds(), default_config());
-  storage_->report_fault_event("FAULT_2", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "Persistent fault 2", "/node2",
-                               timestamp.nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                               "Persistent fault 1", "/node1", timestamp.nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_2", "/node2"}, fd::ReportKind::kFailed, Fault::SEVERITY_WARN,
+                               "Persistent fault 2", "/node2", timestamp.nanoseconds(), default_config());
   storage_->clear_fault(FaultId{"FAULT_2", "/node2"});
 
   // Verify initial state
@@ -500,8 +501,8 @@ TEST_F(PgFaultStorageTest, TimestampPrecision) {
   int64_t test_ns = 1735312456123456789LL;  // Specific nanosecond timestamp
   rclcpp::Time timestamp(test_ns, RCL_SYSTEM_TIME);
 
-  storage_->report_fault_event("FAULT_TS", fd::ReportKind::kFailed, Fault::SEVERITY_INFO, "Timestamp test", "/node1",
-                               timestamp.nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_TS", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_INFO,
+                               "Timestamp test", "/node1", timestamp.nanoseconds(), default_config());
 
   auto fault = storage_->get_fault(FaultId{"FAULT_TS", "/node1"});
   ASSERT_TRUE(fault.has_value());
@@ -583,8 +584,8 @@ TEST(PgFaultStorageConnectionTest, CreatesTheSchemaWhenTheDatabaseAppears) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
     while (!stored && std::chrono::steady_clock::now() < deadline) {
       try {
-        storage.report_fault_event("LATE", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "late", "/node",
-                                   clock.now().nanoseconds(), default_config());
+        storage.report_fault_event(FaultId{"LATE", "/node"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "late",
+                                   "/node", clock.now().nanoseconds(), default_config());
         stored = true;
       } catch (const ros2_medkit_fault_manager::FaultStorage::IgnorableConnectionException &) {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
@@ -1166,7 +1167,7 @@ TEST(PgFaultStorageConnectionTest, ALostConnectionIsOpenedAgainWithTheSchema) {
                                    " application_name=" + application + " options='-csearch_path=" + schema + "'"),
                            test_log_sink());
     ASSERT_TRUE(storage.connected());
-    storage.report_fault_event("LOST_A", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", "/node",
+    storage.report_fault_event(FaultId{"LOST_A", "/node"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", "/node",
                                clock.now().nanoseconds(), default_config());
     EXPECT_EQ(storage.size(), 1u);
 
@@ -1179,7 +1180,7 @@ TEST(PgFaultStorageConnectionTest, ALostConnectionIsOpenedAgainWithTheSchema) {
                ntx.quote(application));
     }
     EXPECT_EQ(storage.size(), 0u);
-    storage.report_fault_event("LOST_B", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "b", "/node",
+    storage.report_fault_event(FaultId{"LOST_B", "/node"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "b", "/node",
                                clock.now().nanoseconds(), default_config());
     EXPECT_EQ(storage.size(), 1u);
   }
@@ -1196,12 +1197,12 @@ TEST_F(PgFaultStorageTest, ReportingSourcesJsonHandling) {
   // reporting_sources column, including slashes and an embedded quote.
   const std::vector<std::string> owners = {"/node/path/with/slashes", "/another/node", "/special\"chars"};
   for (const auto & owner : owners) {
-    storage_->report_fault_event("MULTI_SRC", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Multi-source", owner,
-                                 timestamp.nanoseconds(), default_config());
+    storage_->report_fault_event(FaultId{"MULTI_SRC", owner}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                                 "Multi-source", owner, timestamp.nanoseconds(), default_config());
   }
 
   EXPECT_EQ(storage_->size(), owners.size());
-  EXPECT_EQ(storage_->get_faults_by_code("MULTI_SRC").size(), owners.size());
+  EXPECT_EQ(storage_->get_ids_by_code("MULTI_SRC").size(), owners.size());
   for (const auto & owner : owners) {
     auto fault = storage_->get_fault(FaultId{"MULTI_SRC", owner});
     ASSERT_TRUE(fault.has_value()) << owner;
@@ -1248,10 +1249,10 @@ TEST_F(PgFaultStorageTest, FaultStaysPrefailedAboveThreshold) {
   config.confirmation_threshold = -3;
   storage_->set_debounce_config(config);
 
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
 
   auto fault = storage_->get_fault(FaultId{"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
@@ -1267,12 +1268,12 @@ TEST_F(PgFaultStorageTest, FaultConfirmsAtThreshold) {
   config.confirmation_threshold = -3;
   storage_->set_debounce_config(config);
 
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
 
   auto fault = storage_->get_fault(FaultId{"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
@@ -1287,8 +1288,8 @@ TEST_F(PgFaultStorageTest, ImmediateConfirmationWithThresholdZero) {
   storage_->set_debounce_config(config);
 
   // Single report should confirm immediately
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
 
   auto fault = storage_->get_fault(FaultId{"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
@@ -1300,8 +1301,8 @@ TEST_F(PgFaultStorageTest, CriticalSeverityBypassesDebounce) {
   rclcpp::Clock clock;
 
   // CRITICAL severity should confirm immediately
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "Critical test", "/node1",
-                               clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL,
+                               "Critical test", "/node1", clock.now().nanoseconds(), default_config());
 
   auto fault = storage_->get_fault(FaultId{"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
@@ -1315,8 +1316,9 @@ TEST_F(PgFaultStorageTest, ClearedFaultCanBeReactivated) {
   // Report to confirm (with default threshold=-1, single report confirms)
   const FaultId id{"FAULT_1", "/node1"};
   auto first_ts = clock.now();
-  bool is_new = storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Initial",
-                                             "/node1", first_ts.nanoseconds(), default_config());
+  bool is_new =
+      storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                                   "Initial", "/node1", first_ts.nanoseconds(), default_config());
   EXPECT_TRUE(is_new);
 
   auto fault = storage_->get_fault(id);
@@ -1333,8 +1335,8 @@ TEST_F(PgFaultStorageTest, ClearedFaultCanBeReactivated) {
 
   // The SAME owner re-raising after a clear reopens its record as a new cycle.
   rclcpp::Time second_ts(first_ts.nanoseconds() + 1'000'000'000LL);  // +1s
-  is_new = storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Reactivated",
-                                        "/node1", second_ts.nanoseconds(), default_config());
+  is_new = storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                                        "Reactivated", "/node1", second_ts.nanoseconds(), default_config());
   EXPECT_TRUE(is_new);  // Reactivation returns true like a new fault
 
   fault = storage_->get_fault(id);
@@ -1352,14 +1354,14 @@ TEST_F(PgFaultStorageTest, PassedEventForClearedFaultIgnored) {
   rclcpp::Clock clock;
 
   // Report and confirm
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), default_config());
 
   // Clear the fault
   storage_->clear_fault(FaultId{"FAULT_1", "/node1"});
 
   // PASSED event should be ignored for CLEARED fault
-  bool result = storage_->report_fault_event("FAULT_1", fd::ReportKind::kPassed, 0, "", "/node1",
+  bool result = storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kPassed, 0, "", "/node1",
                                              clock.now().nanoseconds(), default_config());
   EXPECT_FALSE(result);
 
@@ -1377,12 +1379,12 @@ TEST_F(PgFaultStorageTest, ClearedFaultReactivationRestartsDebounce) {
   storage_->set_debounce_config(config);
 
   // Report 3 times to confirm
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
 
   auto fault = storage_->get_fault(FaultId{"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
@@ -1392,18 +1394,18 @@ TEST_F(PgFaultStorageTest, ClearedFaultReactivationRestartsDebounce) {
   storage_->clear_fault(FaultId{"FAULT_1", "/node1"});
 
   // Reactivate - should start in PREFAILED with counter=-1
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
 
   fault = storage_->get_fault(FaultId{"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
   EXPECT_EQ(fault->status, Fault::STATUS_PREFAILED);  // Not yet confirmed, needs 2 more FAILED
 
   // Report 2 more times to re-confirm
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
 
   fault = storage_->get_fault(FaultId{"FAULT_1", "/node1"});
   ASSERT_TRUE(fault.has_value());
@@ -1414,12 +1416,12 @@ TEST_F(PgFaultStorageTest, ConfirmationPersistsAfterReopen) {
   rclcpp::Clock clock;
 
   // Report 3 times to confirm
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), default_config());
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), default_config());
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), default_config());
 
   // Close and reopen storage
   storage_.reset();
@@ -1439,15 +1441,15 @@ TEST_F(PgFaultStorageTest, PassedEventIncrementsCounter) {
   config.confirmation_threshold = -3;
 
   // Report 2 FAILED events (counter -2, PREFAILED)
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
 
   // Report 3 PASSED events (counter -2 -> +1)
   for (int i = 0; i < 3; ++i) {
-    storage_->report_fault_event("FAULT_1", fd::ReportKind::kPassed, 0, "", "/node1", clock.now().nanoseconds(),
-                                 config);
+    storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kPassed, 0, "", "/node1",
+                                 clock.now().nanoseconds(), config);
   }
 
   auto fault = storage_->get_fault(FaultId{"FAULT_1", "/node1"});
@@ -1466,14 +1468,14 @@ TEST_F(PgFaultStorageTest, HeartbeatHealClampedAndStatusLatched) {
   config.healing_enabled = true;
   config.healing_threshold = 3;
 
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
   ASSERT_EQ(storage_->get_fault(FaultId{"FAULT_1", "/node1"})->status, Fault::STATUS_CONFIRMED);
 
   // Long heal heartbeat: counter clamps at healing_threshold instead of running off.
   for (int i = 0; i < 100; ++i) {
-    storage_->report_fault_event("FAULT_1", fd::ReportKind::kPassed, 0, "", "/node1", clock.now().nanoseconds(),
-                                 config);
+    storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kPassed, 0, "", "/node1",
+                                 clock.now().nanoseconds(), config);
   }
   auto healed = storage_->get_fault(FaultId{"FAULT_1", "/node1"});
   ASSERT_TRUE(healed.has_value());
@@ -1482,13 +1484,13 @@ TEST_F(PgFaultStorageTest, HeartbeatHealClampedAndStatusLatched) {
   // Re-confirmation is now bounded to (healing_threshold - confirmation_threshold)
   // reports, and the healed status latches until the counter walks all the way down.
   for (int i = 0; i < 3; ++i) {
-    storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                                 clock.now().nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                                 "/node1", clock.now().nanoseconds(), config);
     EXPECT_EQ(storage_->get_fault(FaultId{"FAULT_1", "/node1"})->status, Fault::STATUS_HEALED)
         << "latch broke after " << (i + 1);
   }
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
   auto reconfirmed = storage_->get_fault(FaultId{"FAULT_1", "/node1"});
   ASSERT_TRUE(reconfirmed.has_value());
   EXPECT_EQ(reconfirmed->status, Fault::STATUS_CONFIRMED);
@@ -1503,21 +1505,21 @@ TEST_F(PgFaultStorageTest, ConfirmedFaultSurvivesHealHeartbeat) {
   config.healing_enabled = false;
   config.healing_threshold = 3;  // upper clamp on the counter, even with healing disabled
 
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
   ASSERT_EQ(storage_->get_fault(FaultId{"FAULT_1", "/node1"})->status, Fault::STATUS_CONFIRMED);
 
   for (int i = 0; i < 20; ++i) {
-    storage_->report_fault_event("FAULT_1", fd::ReportKind::kPassed, 0, "", "/node1", clock.now().nanoseconds(),
-                                 config);
+    storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kPassed, 0, "", "/node1",
+                                 clock.now().nanoseconds(), config);
     EXPECT_EQ(storage_->get_fault(FaultId{"FAULT_1", "/node1"})->status, Fault::STATUS_CONFIRMED)
         << "un-confirmed after " << (i + 1);
   }
 
   // The counter is now positive (clamped at +3). One FAILED must keep it CONFIRMED, not flip it to
   // PREPASSED via the `counter > 0` branch - that was the asymmetric-latch bug.
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
   EXPECT_EQ(storage_->get_fault(FaultId{"FAULT_1", "/node1"})->status, Fault::STATUS_CONFIRMED);
 }
 
@@ -1531,16 +1533,17 @@ TEST_F(PgFaultStorageTest, ConfirmedLatchSurvivesFailedAtPositiveCounter) {
   config.critical_immediate_confirm = true;
 
   // CRITICAL confirms immediately at counter -1.
-  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "crit", "/n",
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "crit", "/n",
                                clock.now().nanoseconds(), config);
   ASSERT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_CONFIRMED);
   // PASSED events raise the counter into positive territory; latch keeps it CONFIRMED.
   for (int i = 0; i < 3; ++i) {
-    storage_->report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(),
+                                 config);
   }
   ASSERT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_CONFIRMED);
   // One normal FAILED: counter still positive, must NOT become PREPASSED.
-  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
                                clock.now().nanoseconds(), config);
   EXPECT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_CONFIRMED);
 }
@@ -1553,20 +1556,22 @@ TEST_F(PgFaultStorageTest, HealedLatchSurvivesPassedAtNegativeCounter) {
   config.healing_enabled = true;
   config.healing_threshold = 3;
 
-  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
                                clock.now().nanoseconds(), config);
   for (int i = 0; i < 4; ++i) {  // counter -1 -> +3 -> HEALED
-    storage_->report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(),
+                                 config);
   }
   ASSERT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_HEALED);
   // FAILED events drive the counter negative while HEALED is latched (not yet at confirmation -3).
   for (int i = 0; i < 5; ++i) {  // +3 -> -2
-    storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
+    storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
                                  clock.now().nanoseconds(), config);
     ASSERT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_HEALED) << "latch broke after " << (i + 1);
   }
   // One PASSED: counter goes -2 -> -1, still negative; must stay HEALED, not flip to PREFAILED.
-  storage_->report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(),
+                               config);
   EXPECT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_HEALED);
 }
 
@@ -1578,23 +1583,26 @@ TEST_F(PgFaultStorageTest, CriticalConfirmFromHealedDoesNotHealOnSinglePassed) {
   config.healing_threshold = 3;
   config.critical_immediate_confirm = true;
 
-  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "crit", "/n",
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "crit", "/n",
                                clock.now().nanoseconds(), config);
   for (int i = 0; i < 4; ++i) {  // -1 -> +3 -> HEALED
-    storage_->report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(),
+                                 config);
   }
   ASSERT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_HEALED);
 
   // CRITICAL confirms immediately from HEALED; counter must not stay at +2 where one PASSED heals it.
-  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "crit", "/n",
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "crit", "/n",
                                clock.now().nanoseconds(), config);
   ASSERT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_CONFIRMED);
 
   for (int i = 0; i < 3; ++i) {  // -1 -> +2, still CONFIRMED
-    storage_->report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(),
+                                 config);
     EXPECT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_CONFIRMED);
   }
-  storage_->report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(),
+                               config);
   EXPECT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_HEALED);
 }
 
@@ -1606,7 +1614,7 @@ TEST_F(PgFaultStorageTest, RunawayCounterFromOldRowRecovers) {
   config.confirmation_threshold = -1;
   config.healing_threshold = 3;
 
-  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
                                clock.now().nanoseconds(), config);
   // Simulate the old bug: poke a huge counter directly into the table behind the storage's back.
   exec_raw("UPDATE faults SET debounce_counter = 100000, status = 'PREPASSED'");
@@ -1614,7 +1622,7 @@ TEST_F(PgFaultStorageTest, RunawayCounterFromOldRowRecovers) {
   // The counter is clamped back into range on first touch, so a bounded number of FAILED events
   // re-confirms (healing_threshold - confirmation_threshold = 4), not the ~100000 the runaway implied.
   for (int i = 0; i < 4; ++i) {
-    storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
+    storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
                                  clock.now().nanoseconds(), config);
   }
   EXPECT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_CONFIRMED);
@@ -1626,10 +1634,11 @@ TEST_F(PgFaultStorageTest, ReclassifyHealedAsCleared) {
   config.healing_enabled = true;
   config.healing_threshold = 3;
 
-  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
                                clock.now().nanoseconds(), config);
   for (int i = 0; i < 4; ++i) {
-    storage_->report_fault_event("F", fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(),
+                                 config);
   }
   ASSERT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_HEALED);
 
@@ -1647,10 +1656,11 @@ TEST_F(PgFaultStorageTest, ReclassifyKeepsCodesTheCallerKeepsHealed) {
   config.healing_threshold = 3;
 
   for (const std::string code : {"KEEP", "FLIP"}) {
-    storage_->report_fault_event(code, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
+    storage_->report_fault_event(FaultId{code, "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
                                  clock.now().nanoseconds(), config);
     for (int i = 0; i < 4; ++i) {
-      storage_->report_fault_event(code, fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(), config);
+      storage_->report_fault_event(FaultId{code, "/n"}, fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(),
+                                   config);
     }
     ASSERT_EQ(storage_->get_fault(FaultId{code, "/n"})->status, Fault::STATUS_HEALED);
   }
@@ -1672,13 +1682,13 @@ TEST_F(PgFaultStorageTest, HealingWhenEnabled) {
   storage_->set_debounce_config(config);
 
   // Report 1 FAILED event
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               clock.now().nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", clock.now().nanoseconds(), config);
 
   // Report 4 PASSED events (counter = -1 + 4 = +3, reaches healing threshold)
   for (int i = 0; i < 4; ++i) {
-    storage_->report_fault_event("FAULT_1", fd::ReportKind::kPassed, 0, "", "/node1", clock.now().nanoseconds(),
-                                 config);
+    storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kPassed, 0, "", "/node1",
+                                 clock.now().nanoseconds(), config);
   }
 
   auto fault = storage_->get_fault(FaultId{"FAULT_1", "/node1"});
@@ -1694,8 +1704,8 @@ TEST_F(PgFaultStorageTest, TimeBasedConfirmationWhenEnabled) {
   storage_->set_debounce_config(config);
 
   auto now = clock.now();
-  storage_->report_fault_event("FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               now.nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"FAULT_1", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", now.nanoseconds(), config);
 
   // Check before timeout - should not confirm
   auto before_timeout = rclcpp::Time(now.nanoseconds() + static_cast<int64_t>(5e9));
@@ -1722,10 +1732,10 @@ TEST_F(PgFaultStorageTest, TimeBasedConfirmationConfirmsOnlyReturnedFaults) {
   storage_->set_debounce_config(config);
 
   auto now = clock.now();
-  storage_->report_fault_event("TIMED", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               now.nanoseconds(), config);
-  storage_->report_fault_event("NO_FAILURE_TIME", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test", "/node1",
-                               now.nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"TIMED", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Test",
+                               "/node1", now.nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"NO_FAILURE_TIME", "/node1"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                               "Test", "/node1", now.nanoseconds(), config);
   // A PREFAILED row without a failure time is not eligible.
   exec_raw("UPDATE faults SET last_failed_ns = 0 WHERE fault_code = 'NO_FAILURE_TIME'");
 
@@ -1743,15 +1753,15 @@ TEST_F(PgFaultStorageTest, ConfirmedAtRecordedOnImmediateConfirmation) {
   rclcpp::Clock clock;
   auto t = clock.now();
   // Default config confirms on the first FAILED event.
-  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n", t.nanoseconds(),
-                               default_config());
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
+                               t.nanoseconds(), default_config());
   EXPECT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_CONFIRMED);
   EXPECT_EQ(read_confirmed_at("F"), t.nanoseconds());
 
   // A later FAILED on an already-confirmed fault must NOT move the timestamp.
   auto t2 = rclcpp::Time(t.nanoseconds() + static_cast<int64_t>(5e9));
-  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n", t2.nanoseconds(),
-                               default_config());
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
+                               t2.nanoseconds(), default_config());
   EXPECT_EQ(read_confirmed_at("F"), t.nanoseconds());
 }
 
@@ -1761,14 +1771,14 @@ TEST_F(PgFaultStorageTest, ConfirmedAtRecordedOnDebouncedConfirmation) {
   config.confirmation_threshold = -2;  // second FAILED event confirms
 
   auto t1 = clock.now();
-  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n", t1.nanoseconds(),
-                               config);
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
+                               t1.nanoseconds(), config);
   EXPECT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_PREFAILED);
   EXPECT_EQ(read_confirmed_at("F"), 0) << "not confirmed yet: no confirmation timestamp";
 
   auto t2 = rclcpp::Time(t1.nanoseconds() + static_cast<int64_t>(1e9));
-  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n", t2.nanoseconds(),
-                               config);
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
+                               t2.nanoseconds(), config);
   EXPECT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_CONFIRMED);
   EXPECT_EQ(read_confirmed_at("F"), t2.nanoseconds());
 }
@@ -1781,8 +1791,8 @@ TEST_F(PgFaultStorageTest, ConfirmedAtRecordedOnTimeBasedConfirmation) {
   storage_->set_debounce_config(config);
 
   auto now = clock.now();
-  storage_->report_fault_event("F", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n", now.nanoseconds(),
-                               config);
+  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
+                               now.nanoseconds(), config);
 
   auto after_timeout = rclcpp::Time(now.nanoseconds() + static_cast<int64_t>(15e9));
   auto confirmed = storage_->check_time_based_confirmation(after_timeout.nanoseconds());
@@ -1802,8 +1812,8 @@ TEST_F(PgFaultStorageTest, ConfirmedAtDefaultsToZeroForExternallyInsertedRow) {
 
   rclcpp::Clock clock;
   auto t = clock.now();
-  storage_->report_fault_event("NEW", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n", t.nanoseconds(),
-                               default_config());
+  storage_->report_fault_event(FaultId{"NEW", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
+                               t.nanoseconds(), default_config());
   EXPECT_EQ(read_confirmed_at("NEW"), t.nanoseconds());
 }
 
@@ -1923,8 +1933,8 @@ TEST_F(PgFaultStorageTest, StoreAndRetrieveSnapshot) {
 
   // First, create a fault to associate the snapshot with
   rclcpp::Clock clock;
-  storage_->report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Motor overheated",
-                               "/motor_node", clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"MOTOR_OVERHEAT", "/motor_node"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                               "Motor overheated", "/motor_node", clock.now().nanoseconds(), default_config());
 
   // Store a snapshot
   SnapshotData snapshot;
@@ -1952,8 +1962,8 @@ TEST_F(PgFaultStorageTest, MultipleSnapshotsForSameFault) {
   using ros2_medkit_fault_manager::SnapshotData;
 
   rclcpp::Clock clock;
-  storage_->report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Motor overheated",
-                               "/motor_node", clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"MOTOR_OVERHEAT", "/motor_node"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                               "Motor overheated", "/motor_node", clock.now().nanoseconds(), default_config());
 
   // Store multiple snapshots for the same fault
   SnapshotData snapshot1;
@@ -1982,8 +1992,8 @@ TEST_F(PgFaultStorageTest, FilterSnapshotsByTopic) {
   using ros2_medkit_fault_manager::SnapshotData;
 
   rclcpp::Clock clock;
-  storage_->report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Motor overheated",
-                               "/motor_node", clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"MOTOR_OVERHEAT", "/motor_node"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                               "Motor overheated", "/motor_node", clock.now().nanoseconds(), default_config());
 
   SnapshotData snapshot1;
   snapshot1.fault_code = "MOTOR_OVERHEAT";
@@ -2020,7 +2030,7 @@ TEST_F(PgFaultStorageTest, ClearFaultDeletesAssociatedSnapshots) {
   rclcpp::Clock clock;
 
   // Create a fault using report_fault_event
-  storage_->report_fault_event("SNAPSHOT_CLEAR_TEST", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+  storage_->report_fault_event(FaultId{"SNAPSHOT_CLEAR_TEST", ""}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
                                "Test fault for snapshot cleanup", "", clock.now().nanoseconds(), default_config());
 
   // Store snapshots for this fault
@@ -2059,7 +2069,7 @@ TEST_F(PgFaultStorageTest, ClearFaultKeepsSnapshotsWhenEvidenceIsRetained) {
   using ros2_medkit_fault_manager::SnapshotData;
 
   rclcpp::Clock clock;
-  storage_->report_fault_event("KEEP", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "keep", "",
+  storage_->report_fault_event(FaultId{"KEEP", ""}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "keep", "",
                                clock.now().nanoseconds(), default_config());
   storage_->set_retain_snapshots_on_clear(true);
   EXPECT_TRUE(storage_->retains_snapshots_on_clear());
@@ -2085,8 +2095,8 @@ TEST_F(PgFaultStorageTest, StoreAndRetrieveFreezeFrame) {
   using ros2_medkit_fault_manager::FreezeFrameData;
   rclcpp::Clock clock;
 
-  storage_->report_fault_event("PLC_PRESSURE_HIGH", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Pressure high", "",
-                               clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"PLC_PRESSURE_HIGH", ""}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                               "Pressure high", "", clock.now().nanoseconds(), default_config());
 
   FreezeFrameData frame;
   frame.fault_code = "PLC_PRESSURE_HIGH";
@@ -2135,8 +2145,8 @@ TEST_F(PgFaultStorageTest, FreezeFrameSurvivesClearFault) {
   using ros2_medkit_fault_manager::SnapshotData;
   rclcpp::Clock clock;
 
-  storage_->report_fault_event("PLC_PRESSURE_HIGH", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Pressure high", "",
-                               clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"PLC_PRESSURE_HIGH", ""}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                               "Pressure high", "", clock.now().nanoseconds(), default_config());
 
   // A per-topic snapshot (removed on clear) plus a freeze-frame (retained on clear).
   SnapshotData snapshot;
@@ -2190,13 +2200,14 @@ TEST_F(PgFaultStorageTest, ListRosbagsForEntityFiltersCorrectly) {
   rclcpp::Clock clock;
 
   // Create fault with reporting source for entity
-  storage_->report_fault_event("ENTITY_FAULT_1", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Fault from entity",
-                               "/powertrain/motor", clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"ENTITY_FAULT_1", "/powertrain/motor"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_ERROR, "Fault from entity", "/powertrain/motor",
+                               clock.now().nanoseconds(), default_config());
 
   // Create another fault with different reporting source
-  storage_->report_fault_event("ENTITY_FAULT_2", fd::ReportKind::kFailed, Fault::SEVERITY_WARN,
-                               "Fault from other entity", "/chassis/brake", clock.now().nanoseconds(),
-                               default_config());
+  storage_->report_fault_event(FaultId{"ENTITY_FAULT_2", "/chassis/brake"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_WARN, "Fault from other entity", "/chassis/brake",
+                               clock.now().nanoseconds(), default_config());
 
   // Store rosbags for both faults
   RosbagFileInfo info1;
@@ -2476,8 +2487,8 @@ TEST_F(PgFaultStorageTest, SnapshotCapKeepsTheNewestCaptureWholeAndDropsTheOldes
   using ros2_medkit_fault_manager::SnapshotData;
 
   rclcpp::Clock clock;
-  storage_->report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "Motor overheated",
-                               "/motor_node", clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"MOTOR_OVERHEAT", "/motor_node"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR,
+                               "Motor overheated", "/motor_node", clock.now().nanoseconds(), default_config());
 
   // Two topics per capture, room for two captures.
   storage_->set_max_snapshots_per_fault(4);
@@ -2527,8 +2538,8 @@ TEST_F(PgFaultStorageTest, ACaptureLargerThanTheCapIsKeptWholeRatherThanTorn) {
   using ros2_medkit_fault_manager::SnapshotData;
 
   rclcpp::Clock clock;
-  storage_->report_fault_event("WIDE", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "many topics", "/n",
-                               clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"WIDE", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "many topics",
+                               "/n", clock.now().nanoseconds(), default_config());
   storage_->set_max_snapshots_per_fault(2);
 
   std::vector<SnapshotData> rows;
@@ -2554,8 +2565,8 @@ TEST_F(PgFaultStorageTest, SnapshotLimitZeroMeansUnlimited) {
   using ros2_medkit_fault_manager::SnapshotData;
 
   rclcpp::Clock clock;
-  storage_->report_fault_event("FAULT_A", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "desc", "/node",
-                               clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_A", "/node"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "desc",
+                               "/node", clock.now().nanoseconds(), default_config());
 
   // Default (0) = unlimited
   storage_->set_max_snapshots_per_fault(0);
@@ -2578,10 +2589,10 @@ TEST_F(PgFaultStorageTest, SnapshotLimitPerFaultNotGlobal) {
   using ros2_medkit_fault_manager::SnapshotData;
 
   rclcpp::Clock clock;
-  storage_->report_fault_event("FAULT_A", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "desc", "/node",
-                               clock.now().nanoseconds(), default_config());
-  storage_->report_fault_event("FAULT_B", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "desc", "/node",
-                               clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_A", "/node"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "desc",
+                               "/node", clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"FAULT_B", "/node"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "desc",
+                               "/node", clock.now().nanoseconds(), default_config());
 
   storage_->set_max_snapshots_per_fault(1);
 
@@ -2627,8 +2638,9 @@ TEST_F(PgFaultStorageTest, NearMissSeriesIsAppendedNotOverwritten) {
   const auto config = four_strike_config();
 
   for (int i = 0; i < 3; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
   }
 
   auto fault = storage_->get_fault(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
@@ -2652,8 +2664,9 @@ TEST_F(PgFaultStorageTest, ConfirmingReportIsNotANearMiss) {
   const auto config = four_strike_config();
 
   for (int i = 0; i < 4; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
   }
 
   auto fault = storage_->get_fault(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
@@ -2668,8 +2681,9 @@ TEST_F(PgFaultStorageTest, NearMissSeriesSurvivesClearFault) {
   const auto config = four_strike_config();
 
   for (int i = 0; i < 4; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
   }
   ASSERT_EQ(storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 3u);
 
@@ -2685,14 +2699,16 @@ TEST_F(PgFaultStorageTest, NearMissSeriesContinuesAcrossReactivation) {
   const auto config = four_strike_config();
 
   for (int i = 0; i < 4; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
   }
   ASSERT_TRUE(storage_->clear_fault(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}));
 
   // A new outage cycle starts: the reactivating report resets the counter to -1 without confirming.
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN,
-                               "pressure dipping again", "/hydraulics/pump", nth_report_time(10).nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_WARN, "pressure dipping again", "/hydraulics/pump",
+                               nth_report_time(10).nanoseconds(), config);
 
   auto series = storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 4u) << "the series must span fault cycles, one entry per occurrence";
@@ -2704,8 +2720,9 @@ TEST_F(PgFaultStorageTest, NearMissSeriesSurvivesReopen) {
   const auto config = four_strike_config();
 
   for (int i = 0; i < 3; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
   }
   ASSERT_TRUE(storage_->clear_fault(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}));
 
@@ -2722,14 +2739,15 @@ TEST_F(PgFaultStorageTest, PassedReportIsNotANearMiss) {
   const auto config = four_strike_config();
 
   for (int i = 0; i < 2; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
   }
   ASSERT_EQ(storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 2u);
 
   // A PASSED report moves the counter in the healing direction: the fault receding, not nearing.
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kPassed, Fault::SEVERITY_WARN, "",
-                               "/hydraulics/pump", nth_report_time(2).nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kPassed,
+                               Fault::SEVERITY_WARN, "", "/hydraulics/pump", nth_report_time(2).nanoseconds(), config);
 
   EXPECT_EQ(storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 2u);
 }
@@ -2738,8 +2756,9 @@ TEST_F(PgFaultStorageTest, CriticalImmediateConfirmIsNotANearMiss) {
   DebounceConfig config = four_strike_config();
   config.critical_immediate_confirm = true;
 
-  storage_->report_fault_event("BATTERY_THERMAL_RUNAWAY", fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL,
-                               "cell over temperature", "/power/bms", nth_report_time(0).nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"BATTERY_THERMAL_RUNAWAY", "/power/bms"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_CRITICAL, "cell over temperature", "/power/bms",
+                               nth_report_time(0).nanoseconds(), config);
 
   auto fault = storage_->get_fault(FaultId{"BATTERY_THERMAL_RUNAWAY", "/power/bms"});
   ASSERT_TRUE(fault.has_value());
@@ -2752,8 +2771,9 @@ TEST_F(PgFaultStorageTest, ImmediateConfirmThresholdRecordsNoNearMiss) {
   // so a fault under this config never has a near miss to record.
   const auto config = default_config();
 
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "pressure lost",
-                               "/hydraulics/pump", nth_report_time(0).nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_ERROR, "pressure lost", "/hydraulics/pump",
+                               nth_report_time(0).nanoseconds(), config);
 
   auto fault = storage_->get_fault(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_TRUE(fault.has_value());
@@ -2766,21 +2786,24 @@ TEST_F(PgFaultStorageTest, FailedReportUnderHealedLatchIsNearMiss) {
   config.healing_enabled = true;
   config.healing_threshold = 1;
 
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                               "/hydraulics/pump", nth_report_time(0).nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                               nth_report_time(0).nanoseconds(), config);
   ASSERT_EQ(storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 1u);
 
   for (int i = 1; i <= 2; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kPassed, Fault::SEVERITY_WARN, "",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kPassed,
+                                 Fault::SEVERITY_WARN, "", "/hydraulics/pump", nth_report_time(i).nanoseconds(),
+                                 config);
   }
   auto healed = storage_->get_fault(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_TRUE(healed.has_value());
   ASSERT_EQ(healed->status, Fault::STATUS_HEALED) << "test setup: the fault must be latched HEALED";
 
   // The latch keeps the status at HEALED, but the counter moved toward confirmation: a near miss.
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                               "/hydraulics/pump", nth_report_time(3).nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                               nth_report_time(3).nanoseconds(), config);
 
   auto series = storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 2u);
@@ -2793,8 +2816,9 @@ TEST_F(PgFaultStorageTest, NearMissSeriesBoundedKeepingNewest) {
   storage_->set_max_near_misses_per_fault(3);
 
   for (int i = 0; i < 5; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
   }
 
   auto series = storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
@@ -2811,8 +2835,9 @@ TEST_F(PgFaultStorageTest, NearMissBoundOfOneKeepsLatestOnly) {
   storage_->set_max_near_misses_per_fault(1);
 
   for (int i = 0; i < 4; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
   }
 
   auto series = storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
@@ -2826,10 +2851,12 @@ TEST_F(PgFaultStorageTest, NearMissBoundIsPerFaultCode) {
   storage_->set_max_near_misses_per_fault(2);
 
   for (int i = 0; i < 3; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
-    storage_->report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "temperature rising",
-                                 "/powertrain/motor", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"MOTOR_OVERHEAT", "/powertrain/motor"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "temperature rising", "/powertrain/motor",
+                                 nth_report_time(i).nanoseconds(), config);
   }
 
   EXPECT_EQ(storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 2u);
@@ -2842,8 +2869,9 @@ TEST_F(PgFaultStorageTest, NearMissBoundZeroIsUnlimited) {
   storage_->set_max_near_misses_per_fault(0);
 
   for (int i = 0; i < 150; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
   }
 
   EXPECT_EQ(storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 150u);
@@ -2856,11 +2884,13 @@ TEST_F(PgFaultStorageTest, NearMissSeriesSurvivesHealedReclassification) {
   config.healing_enabled = true;
   config.healing_threshold = 1;
 
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                               "/hydraulics/pump", nth_report_time(0).nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                               nth_report_time(0).nanoseconds(), config);
   for (int i = 1; i <= 2; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kPassed, Fault::SEVERITY_WARN, "",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kPassed,
+                                 Fault::SEVERITY_WARN, "", "/hydraulics/pump", nth_report_time(i).nanoseconds(),
+                                 config);
   }
   auto healed = storage_->get_fault(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_TRUE(healed.has_value());
@@ -2880,12 +2910,14 @@ TEST_F(PgFaultStorageTest, NearMissSeriesUsesArrivalOrderNotTimestamps) {
   storage_->set_max_near_misses_per_fault(2);
 
   for (int i = 0; i < 2; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(10 + i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(10 + i).nanoseconds(), config);
   }
   // Arrives third, but carries the earliest timestamp of the three.
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                               "/hydraulics/pump", nth_report_time(0).nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                               nth_report_time(0).nanoseconds(), config);
 
   auto series = storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 2u);
@@ -2902,13 +2934,14 @@ TEST_F(PgFaultStorageTest, NearMissEntriesDescribeTheirOwnReport) {
   const FaultId backup{"PUMP_PRESSURE_LOW", "/hydraulics/backup_pump"};
 
   DebounceConfig first = four_strike_config();
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                               pump.owner, nth_report_time(0).nanoseconds(), first);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", pump.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_WARN,
+                               "pressure dipping", pump.owner, nth_report_time(0).nanoseconds(), first);
 
   DebounceConfig second = four_strike_config();
   second.confirmation_threshold = -8;
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "pressure dipping",
-                               backup.owner, nth_report_time(1).nanoseconds(), second);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", backup.owner}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_ERROR, "pressure dipping", backup.owner,
+                               nth_report_time(1).nanoseconds(), second);
 
   // Two sources of one code own separate records, so each near-miss series holds only its
   // owner's reports and is not visible under the other owner.
@@ -2929,15 +2962,17 @@ TEST_F(PgFaultStorageTest, NearMissSeriesContinuesAfterReopen) {
   const auto config = four_strike_config();
 
   for (int i = 0; i < 2; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
   }
 
   storage_.reset();
   storage_ = std::make_unique<PgFaultStorage>(conn_info_, test_log_sink());
 
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                               "/hydraulics/pump", nth_report_time(2).nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                               nth_report_time(2).nanoseconds(), config);
 
   auto series = storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_EQ(series.size(), 3u) << "a restart must extend the series, not restart or reorder it";
@@ -2956,10 +2991,12 @@ TEST_F(PgFaultStorageTest, ApplyingSmallerBoundTrimsExistingSeries) {
   storage_->set_max_near_misses_per_fault(0);
 
   for (int i = 0; i < 5; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
-    storage_->report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "temperature rising",
-                                 "/powertrain/motor", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"MOTOR_OVERHEAT", "/powertrain/motor"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "temperature rising", "/powertrain/motor",
+                                 nth_report_time(i).nanoseconds(), config);
   }
   ASSERT_EQ(storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 5u);
 
@@ -2979,8 +3016,9 @@ TEST_F(PgFaultStorageTest, ApplyingUnlimitedBoundKeepsExistingSeries) {
   storage_->set_max_near_misses_per_fault(4);
 
   for (int i = 0; i < 4; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
   }
 
   storage_->set_max_near_misses_per_fault(0);
@@ -2995,15 +3033,17 @@ TEST_F(PgFaultStorageTest, UnlimitedBoundSpeltAsSizeMaxKeepsTheSeries) {
   config.confirmation_threshold = -20;
 
   for (int i = 0; i < 3; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
   }
 
   EXPECT_EQ(storage_->set_max_near_misses_per_fault(std::numeric_limits<size_t>::max()), 0u);
   EXPECT_EQ(storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 3u);
 
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                               "/hydraulics/pump", nth_report_time(3).nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                               nth_report_time(3).nanoseconds(), config);
   EXPECT_EQ(storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}).size(), 4u);
 }
 
@@ -3013,10 +3053,12 @@ TEST_F(PgFaultStorageTest, ApplyingBoundReportsHowManyEntriesItDropped) {
   storage_->set_max_near_misses_per_fault(0);
 
   for (int i = 0; i < 5; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
-    storage_->report_fault_event("MOTOR_OVERHEAT", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "temperature rising",
-                                 "/powertrain/motor", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"MOTOR_OVERHEAT", "/powertrain/motor"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "temperature rising", "/powertrain/motor",
+                                 nth_report_time(i).nanoseconds(), config);
   }
 
   // Two codes, five entries each, bound of 2: three dropped per code.
@@ -3027,8 +3069,9 @@ TEST_F(PgFaultStorageTest, ApplyingBoundReportsHowManyEntriesItDropped) {
 
 TEST_F(PgFaultStorageTest, PassedReportOnUnknownFaultWritesNothing) {
   // A heal heartbeat for a fault that does not exist must stay a read: it writes no row.
-  EXPECT_FALSE(storage_->report_fault_event("NEVER_REPORTED", fd::ReportKind::kPassed, Fault::SEVERITY_WARN, "",
-                                            "/test_node", nth_report_time(0).nanoseconds(), default_config()));
+  EXPECT_FALSE(storage_->report_fault_event(FaultId{"NEVER_REPORTED", "/test_node"}, fd::ReportKind::kPassed,
+                                            Fault::SEVERITY_WARN, "", "/test_node", nth_report_time(0).nanoseconds(),
+                                            default_config()));
   EXPECT_EQ(storage_->size(), 0u);
   EXPECT_TRUE(storage_->get_near_misses(FaultId{"NEVER_REPORTED", "/test_node"}).empty());
 }
@@ -3042,11 +3085,13 @@ TEST_F(PgFaultStorageTest, NearMissSeparatesApproachFromRampBackIntoAFault) {
   config.healing_threshold = 2;
 
   // An approach that recedes: counter moves, nothing is latched.
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                               "/hydraulics/pump", nth_report_time(0).nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                               nth_report_time(0).nanoseconds(), config);
   for (int i = 1; i <= 3; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kPassed, Fault::SEVERITY_WARN, "",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kPassed,
+                                 Fault::SEVERITY_WARN, "", "/hydraulics/pump", nth_report_time(i).nanoseconds(),
+                                 config);
   }
   auto healed = storage_->get_fault(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_TRUE(healed.has_value());
@@ -3056,8 +3101,9 @@ TEST_F(PgFaultStorageTest, NearMissSeparatesApproachFromRampBackIntoAFault) {
   // From the healing threshold (+2) it takes six FAILED reports to reach the confirmation
   // threshold (-4).
   for (int i = 4; i <= 9; ++i) {
-    storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                                 "/hydraulics/pump", nth_report_time(i).nanoseconds(), config);
+    storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                                 Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                                 nth_report_time(i).nanoseconds(), config);
   }
   auto confirmed = storage_->get_fault(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   ASSERT_TRUE(confirmed.has_value());
@@ -3079,8 +3125,9 @@ TEST_F(PgFaultStorageTest, NearMissSeparatesApproachFromRampBackIntoAFault) {
 
 TEST_F(PgFaultStorageTest, NearMissResultingStatusSurvivesReopen) {
   const auto config = four_strike_config();
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "pressure dipping",
-                               "/hydraulics/pump", nth_report_time(0).nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_WARN, "pressure dipping", "/hydraulics/pump",
+                               nth_report_time(0).nanoseconds(), config);
 
   storage_.reset();
   storage_ = std::make_unique<PgFaultStorage>(conn_info_, test_log_sink());
@@ -3119,12 +3166,12 @@ static void drive_to_healed(ros2_medkit_fault_manager::FaultStorage & storage, c
   config.healing_enabled = true;
   config.healing_threshold = 1;
 
-  storage.report_fault_event(fault_code, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "fault", "",
+  storage.report_fault_event(FaultId{fault_code, ""}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "fault", "",
                              nth_report_time(0).nanoseconds(), config);
   store_snapshots_for(storage, fault_code, 2);
   // Two PASSED reports: the first only lifts the counter to 0, which the CONFIRMED latch holds.
   for (int i = 1; i <= 2; ++i) {
-    storage.report_fault_event(fault_code, fd::ReportKind::kPassed, Fault::SEVERITY_ERROR, "", "",
+    storage.report_fault_event(FaultId{fault_code, ""}, fd::ReportKind::kPassed, Fault::SEVERITY_ERROR, "", "",
                                nth_report_time(i).nanoseconds(), config);
   }
 }
@@ -3153,31 +3200,31 @@ TEST_F(PgFaultStorageTest, SnapshotsDroppedByHealedReclassificationByDefault) {
 
 // --- Record identity: the same per-record contract as the SQLite backend ---
 
-TEST_F(PgFaultStorageTest, GetFaultsByCodeReturnsEveryOwnerAndGetFaultExactlyOne) {
+TEST_F(PgFaultStorageTest, GetIdsByCodeReturnsEveryOwnerAndGetFaultExactlyOne) {
   rclcpp::Clock clock;
-  storage_->report_fault_event("SHARED", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", "/owner_b",
-                               clock.now().nanoseconds(), default_config());
-  storage_->report_fault_event("SHARED", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", "/owner_a",
-                               clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"SHARED", "/owner_b"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a",
+                               "/owner_b", clock.now().nanoseconds(), default_config());
+  storage_->report_fault_event(FaultId{"SHARED", "/owner_a"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a",
+                               "/owner_a", clock.now().nanoseconds(), default_config());
 
-  const auto shared = storage_->get_faults_by_code("SHARED");
+  const auto shared = storage_->get_ids_by_code("SHARED");
   ASSERT_EQ(shared.size(), 2u);
-  ASSERT_EQ(shared[0].reporting_sources.size(), 1u);
-  ASSERT_EQ(shared[1].reporting_sources.size(), 1u);
-  EXPECT_EQ(shared[0].reporting_sources.front(), "/owner_a") << "ordered by owner, like the other backends";
-  EXPECT_EQ(shared[1].reporting_sources.front(), "/owner_b");
+  EXPECT_EQ(shared[0].owner, "/owner_a") << "ordered by owner, like the other backends";
+  EXPECT_EQ(shared[1].owner, "/owner_b");
 
-  EXPECT_TRUE(storage_->get_faults_by_code("NEVER_REPORTED").empty());
+  EXPECT_TRUE(storage_->get_ids_by_code("NEVER_REPORTED").empty());
   ASSERT_TRUE(storage_->get_fault(FaultId{"SHARED", "/owner_a"}).has_value());
   EXPECT_FALSE(storage_->get_fault(FaultId{"SHARED", "/nobody"}).has_value());
 }
 
 TEST_F(PgFaultStorageTest, NearMissSeriesIsPerRecord) {
   const auto config = four_strike_config();
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "dip",
-                               "/hydraulics/pump", nth_report_time(0).nanoseconds(), config);
-  storage_->report_fault_event("PUMP_PRESSURE_LOW", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "dip",
-                               "/hydraulics/backup_pump", nth_report_time(1).nanoseconds(), config);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_WARN, "dip", "/hydraulics/pump", nth_report_time(0).nanoseconds(),
+                               config);
+  storage_->report_fault_event(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/backup_pump"}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_ERROR, "dip", "/hydraulics/backup_pump",
+                               nth_report_time(1).nanoseconds(), config);
 
   const auto pump = storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/pump"});
   const auto backup = storage_->get_near_misses(FaultId{"PUMP_PRESSURE_LOW", "/hydraulics/backup_pump"});
@@ -3197,17 +3244,17 @@ TEST_F(PgFaultStorageTest, ACriticalRecordConfirmsOnAnyFailedReportAndAnotherOwn
   const FaultId a{"CRIT", "/a"};
   const FaultId b{"CRIT", "/b"};
 
-  storage_->report_fault_event("CRIT", fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "", a.owner,
+  storage_->report_fault_event(FaultId{"CRIT", a.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "", a.owner,
                                clock.now().nanoseconds(), config);
   ASSERT_TRUE(storage_->clear_fault(a));
 
-  EXPECT_TRUE(storage_->report_fault_event("CRIT", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "", a.owner,
-                                           clock.now().nanoseconds(), config))
+  EXPECT_TRUE(storage_->report_fault_event(FaultId{"CRIT", a.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "",
+                                           a.owner, clock.now().nanoseconds(), config))
       << "a report on a CLEARED record is an occurrence";
   EXPECT_EQ(storage_->get_fault(a)->severity, Fault::SEVERITY_CRITICAL) << "the record keeps its highest severity";
   EXPECT_EQ(storage_->get_fault(a)->status, Fault::STATUS_CONFIRMED) << "the stored severity decides, not the report's";
 
-  storage_->report_fault_event("CRIT", fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "", b.owner,
+  storage_->report_fault_event(FaultId{"CRIT", b.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "", b.owner,
                                clock.now().nanoseconds(), config);
   EXPECT_EQ(storage_->get_fault(b)->severity, Fault::SEVERITY_WARN) << "severity is per record";
   EXPECT_EQ(storage_->get_fault(b)->status, Fault::STATUS_PREFAILED) << "another owner's CRITICAL confirms nothing";
@@ -3225,8 +3272,10 @@ TEST_F(PgFaultStorageTest, HealingAndTimeBasedConfirmationActOnOneRecord) {
   const FaultId b{"TWO", "/b"};
 
   const int64_t t0 = 1'000'000'000'000LL;
-  storage_->report_fault_event("TWO", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "", a.owner, t0, config);
-  storage_->report_fault_event("TWO", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "", b.owner, t0 + 1, config);
+  storage_->report_fault_event(FaultId{"TWO", a.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "", a.owner, t0,
+                               config);
+  storage_->report_fault_event(FaultId{"TWO", b.owner}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "", b.owner,
+                               t0 + 1, config);
 
   const auto swept = storage_->check_time_based_confirmation(t0 + 10'000'000'000LL);
   ASSERT_EQ(swept.size(), 2u);
@@ -3236,7 +3285,7 @@ TEST_F(PgFaultStorageTest, HealingAndTimeBasedConfirmationActOnOneRecord) {
 
   // Heal a only: its counter moves, b's does not.
   for (int i = 0; i < 4; ++i) {
-    storage_->report_fault_event("TWO", fd::ReportKind::kPassed, 0, "", a.owner, t0 + 20 + i, config);
+    storage_->report_fault_event(FaultId{"TWO", a.owner}, fd::ReportKind::kPassed, 0, "", a.owner, t0 + 20 + i, config);
   }
   EXPECT_EQ(storage_->get_fault(a)->status, Fault::STATUS_HEALED);
   EXPECT_EQ(storage_->get_fault(b)->status, Fault::STATUS_CONFIRMED);
@@ -3274,19 +3323,26 @@ constexpr const char * kLegacyPgSchema = R"(
 
 }  // namespace
 
+// Every record of a table written when a fault code was one record, fed by every source, becomes the
+// shared record of its code, and every child row attaches to it.
 TEST_F(PgFaultStorageTest, ATableWrittenByThePreviousLayoutIsMigratedInPlace) {
   storage_.reset();
   exec_raw("DROP TABLE faults, snapshots, freeze_frames, near_misses, rosbag_files");
   exec_raw(kLegacyPgSchema);
   exec_raw(R"(
-    -- Two sources on one legacy row: nothing in the old layout splits it, so it folds onto its FIRST source.
+    CREATE TABLE near_misses (
+      id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY, fault_code TEXT NOT NULL,
+      occurred_at_ns BIGINT NOT NULL, debounce_counter INTEGER NOT NULL, confirmation_threshold INTEGER NOT NULL,
+      severity INTEGER NOT NULL, source_id TEXT NOT NULL, resulting_status TEXT NOT NULL DEFAULT '');
+    CREATE INDEX idx_near_misses_fault_code ON near_misses(fault_code, id);
     INSERT INTO faults VALUES ('SHARED', 2, 'shared', 1, 1, 1, 'CONFIRMED', '["/owner_a","/owner_b"]', -1, 1, 0, 5);
     INSERT INTO faults VALUES ('SOLO', 1, 'solo', 2, 2, 1, 'PREFAILED', '["/owner_c"]', -1, 2, 0, 99);
-    INSERT INTO faults VALUES ('NOSOURCE', 1, 'none', 3, 3, 1, 'CONFIRMED', '[]', -1, 3, 0, 0);
     INSERT INTO freeze_frames VALUES ('SHARED', '{"/t":1}', 7);
-    INSERT INTO freeze_frames VALUES ('GONE', '{"/t":2}', 8);
     INSERT INTO snapshots (fault_code, topic, message_type, data, captured_at_ns)
       VALUES ('SHARED', '/t', 'std_msgs/msg/Float64', '{}', 9);
+    INSERT INTO near_misses (fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, severity,
+                             source_id, resulting_status)
+      VALUES ('SHARED', 5, -1, -3, 2, '/owner_a', 'PREFAILED'), ('SHARED', 6, -2, -3, 2, '/owner_b', 'PREFAILED');
     INSERT INTO rosbag_files (fault_code, file_path, format, duration_sec, size_bytes, created_at_ns)
       VALUES ('SHARED', '/bags/fault_SHARED_1', 'mcap', 5.0, 1024, 11);
   )");
@@ -3310,77 +3366,88 @@ TEST_F(PgFaultStorageTest, ATableWrittenByThePreviousLayoutIsMigratedInPlace) {
             std::string::npos)
       << "the rosbag unique index must widen with the identity";
 
-  // owner is the FIRST legacy reporting source, and reporting_sources is rewritten to it.
-  EXPECT_EQ(scalar("SELECT owner FROM faults WHERE fault_code = 'SHARED'"), "/owner_a");
-  EXPECT_EQ(scalar("SELECT reporting_sources FROM faults WHERE fault_code = 'SHARED'"), "[\"/owner_a\"]");
-  EXPECT_EQ(scalar("SELECT owner FROM faults WHERE fault_code = 'NOSOURCE'"), ros2_medkit_fault_manager::kLegacyOwner);
+  // Every row is the shared record of its code and keeps its reporting_sources as written.
+  EXPECT_EQ(scalar("SELECT COUNT(*) FROM faults WHERE owner = '*'"), "2");
+  EXPECT_EQ(scalar("SELECT reporting_sources FROM faults WHERE fault_code = 'SHARED'"), "[\"/owner_a\",\"/owner_b\"]");
   EXPECT_EQ(scalar("SELECT confirmed_at_ns FROM faults WHERE fault_code = 'SOLO'"), "0")
       << "a pending record has no confirmation time";
   EXPECT_EQ(scalar("SELECT confirmed_at_ns FROM faults WHERE fault_code = 'SHARED'"), "5");
 
-  const FaultId shared{"SHARED", "/owner_a"};
+  const FaultId shared{"SHARED", ros2_medkit_fault_manager::kSharedOwner};
   auto migrated = storage_->get_fault(shared);
   ASSERT_TRUE(migrated.has_value());
   EXPECT_EQ(migrated->status, Fault::STATUS_CONFIRMED);
-  EXPECT_FALSE(storage_->get_fault(FaultId{"SHARED", "/owner_b"}).has_value());
-  EXPECT_TRUE(storage_->get_fault(FaultId{"SOLO", "/owner_c"}).has_value());
+  EXPECT_EQ(migrated->reporting_sources, (std::vector<std::string>{"/owner_a", "/owner_b"}));
+  EXPECT_EQ(storage_->get_ids_by_code("SHARED").size(), 1u);
+  EXPECT_TRUE(storage_->get_fault(FaultId{"SOLO", "*"}).has_value());
 
-  // The child rows learned which record they belong to; evidence of a code no record carries stays unassigned.
+  // Every child row attached to the shared record, none lost.
   ASSERT_TRUE(storage_->get_freeze_frame(shared).has_value());
   EXPECT_EQ(storage_->get_freeze_frame(shared)->captured_at_ns, 7);
   ASSERT_EQ(storage_->get_snapshots(shared).size(), 1u);
-  EXPECT_EQ(storage_->get_snapshots(shared).front().owner, "/owner_a");
+  EXPECT_EQ(storage_->get_snapshots(shared).front().owner, "*");
   ASSERT_TRUE(storage_->get_rosbag_file(shared).has_value());
-  EXPECT_EQ(storage_->get_rosbag_file(shared)->owner, "/owner_a");
-  EXPECT_EQ(scalar("SELECT COUNT(*) FROM freeze_frames WHERE fault_code = 'GONE' AND owner = ''"), "1");
+  EXPECT_EQ(storage_->get_rosbag_file(shared)->owner, "*");
+  const auto near_misses = storage_->get_near_misses(shared);
+  ASSERT_EQ(near_misses.size(), 2u) << "the near misses of both sources belong to the one shared record";
+  EXPECT_EQ(near_misses[0].source_id, "/owner_a");
+  EXPECT_EQ(near_misses[1].source_id, "/owner_b");
+  EXPECT_EQ(scalar("SELECT COUNT(*) FROM near_misses n WHERE NOT EXISTS "
+                   "(SELECT 1 FROM faults f WHERE f.fault_code = n.fault_code AND f.owner = n.owner)"),
+            "0");
 
-  // After the migration a second owner can hold the same code, which the old key refused.
+  // The migrated record behaves as any shared record: another source joins it.
   rclcpp::Clock clock;
-  EXPECT_TRUE(storage_->report_fault_event("SHARED", fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "b", "/owner_b",
-                                           clock.now().nanoseconds(), default_config()));
-  EXPECT_EQ(storage_->get_faults_by_code("SHARED").size(), 2u);
+  EXPECT_FALSE(storage_->report_fault_event(shared, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "c", "/owner_c",
+                                            clock.now().nanoseconds(), default_config()));
+  EXPECT_EQ(storage_->get_fault(shared)->reporting_sources,
+            (std::vector<std::string>{"/owner_a", "/owner_b", "/owner_c"}));
 
   // Re-opening a migrated database changes nothing.
   storage_.reset();
   storage_ = std::make_unique<PgFaultStorage>(conn_info_, test_log_sink());
-  EXPECT_EQ(storage_->size(), 4u);
-  EXPECT_EQ(scalar("SELECT owner FROM faults WHERE fault_code = 'SHARED' AND status = 'CONFIRMED' "
-                   "ORDER BY owner LIMIT 1"),
-            "/owner_a");
+  EXPECT_EQ(storage_->size(), 2u);
+  EXPECT_EQ(scalar("SELECT COUNT(*) FROM faults WHERE owner = '*'"), "2");
   ASSERT_TRUE(storage_->get_freeze_frame(shared).has_value());
+  EXPECT_EQ(storage_->get_near_misses(shared).size(), 2u);
 }
 
-TEST_F(PgFaultStorageTest, ChildRowsOfASharedCodeAreNotGivenAnArbitraryOwner) {
-  storage_.reset();
-  exec_raw("DROP TABLE faults, snapshots, freeze_frames, near_misses, rosbag_files");
-  // faults already keyed by owner with TWO owners of one code, snapshots still without the column.
-  exec_raw(R"(
-    CREATE TABLE faults (
-      fault_code TEXT NOT NULL, severity INTEGER NOT NULL, description TEXT NOT NULL,
-      first_occurred_ns BIGINT NOT NULL, last_occurred_ns BIGINT NOT NULL, occurrence_count BIGINT NOT NULL,
-      status TEXT NOT NULL, reporting_sources TEXT NOT NULL, debounce_counter INTEGER NOT NULL DEFAULT 0,
-      last_failed_ns BIGINT NOT NULL DEFAULT 0, last_passed_ns BIGINT NOT NULL DEFAULT 0,
-      confirmed_at_ns BIGINT NOT NULL DEFAULT 0, owner TEXT NOT NULL DEFAULT '');
-    CREATE UNIQUE INDEX idx_faults_code_owner ON faults(fault_code, owner);
-    INSERT INTO faults VALUES ('SHARED', 2, 'a', 1, 1, 1, 'CONFIRMED', '["/owner_a"]', -1, 1, 0, 0, '/owner_a');
-    INSERT INTO faults VALUES ('SHARED', 2, 'b', 1, 1, 1, 'CONFIRMED', '["/owner_b"]', -1, 1, 0, 0, '/owner_b');
-    CREATE TABLE snapshots (
-      id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY, fault_code TEXT NOT NULL, topic TEXT NOT NULL,
-      message_type TEXT NOT NULL, data TEXT NOT NULL, captured_at_ns BIGINT NOT NULL,
-      capture_id BIGINT NOT NULL DEFAULT 0);
-    INSERT INTO snapshots (fault_code, topic, message_type, data, captured_at_ns)
-      VALUES ('SHARED', '/t', 'std_msgs/msg/Float64', '{}', 9);
-  )");
+// One record shared by every source of a code: one debounce counter, every source listed.
+TEST_F(PgFaultStorageTest, ASharedRecordHasOneCounterAndListsEverySource) {
+  rclcpp::Clock clock;
+  const FaultId shared{"ONE_COUNTER", ros2_medkit_fault_manager::kSharedOwner};
+  auto config = default_config();
+  config.confirmation_threshold = -3;
 
-  ASSERT_NO_THROW(storage_ = std::make_unique<PgFaultStorage>(conn_info_, test_log_sink()));
+  EXPECT_TRUE(storage_->report_fault_event(shared, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "a", "/src_a",
+                                           clock.now().nanoseconds(), config));
+  EXPECT_FALSE(storage_->report_fault_event(shared, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "b", "/src_b",
+                                            clock.now().nanoseconds(), config));
+  EXPECT_EQ(storage_->get_fault(shared)->status, Fault::STATUS_PREFAILED);
+  EXPECT_FALSE(storage_->report_fault_event(shared, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "c", "/src_c",
+                                            clock.now().nanoseconds(), config));
 
-  EXPECT_TRUE(storage_->get_snapshots(FaultId{"SHARED", "/owner_a"}).empty())
-      << "A must not be handed unproven evidence";
-  EXPECT_TRUE(storage_->get_snapshots(FaultId{"SHARED", "/owner_b"}).empty()) << "and neither must B";
-  auto conn = raw_connection();
-  pqxx::nontransaction tx(*conn);
-  EXPECT_EQ(tx.exec("SELECT COUNT(*) FROM snapshots WHERE owner = ''")[0][0].as<int>(), 1)
-      << "the row is kept, unassigned";
+  EXPECT_EQ(storage_->size(), 1u);
+  auto record = storage_->get_fault(shared);
+  ASSERT_TRUE(record.has_value());
+  EXPECT_EQ(record->status, Fault::STATUS_CONFIRMED) << "three sources, one counter";
+  EXPECT_EQ(record->reporting_sources, (std::vector<std::string>{"/src_a", "/src_b", "/src_c"}));
+  EXPECT_EQ(record->occurrence_count, 1u);
+  ASSERT_EQ(storage_->list_faults(false, 0, {}).size(), 1u);
+  EXPECT_EQ(storage_->list_fault_entries(false, 0, {}).front().id, shared);
+
+  // The sources of the record are the entities that own its recordings.
+  RosbagFileInfo link;
+  link.fault_code = shared.fault_code;
+  link.owner = shared.owner;
+  link.file_path = "/bags/fault_ONE_COUNTER_1";
+  link.format = "mcap";
+  link.created_at_ns = 1;
+  storage_->store_rosbag_file(link);
+  for (const char * entity : {"/src_a", "/src_b", "/src_c"}) {
+    EXPECT_EQ(storage_->list_rosbags_for_entity(entity).size(), 1u) << entity;
+  }
+  EXPECT_TRUE(storage_->list_rosbags_for_entity("/src_d").empty());
 }
 
 int main(int argc, char ** argv) {

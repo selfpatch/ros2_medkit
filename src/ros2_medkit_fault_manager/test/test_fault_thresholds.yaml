@@ -13,6 +13,7 @@ SHARED.JAM:
   healing_threshold: 8
 
 # Pins only the confirmation direction. The healing fields still come from
-# whichever entity reported.
+# whichever entity reported, so this code is only half settled - and the node
+# still says so.
 SHARED.PARTIAL:
   confirmation_threshold: -2
