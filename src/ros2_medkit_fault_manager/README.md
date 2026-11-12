@@ -59,15 +59,20 @@ to that record, the near misses of every source included. `confirmed_at_ns` is c
 except on a PREFAILED or PREPASSED row, where it becomes 0 (see Storage Backends below). All of it
 runs in one transaction.
 
-The rebuild is one way. A fault manager from an earlier release opened on a migrated store aborts on
-the first report of a fault code the store does not hold yet (`NOT NULL constraint failed:
-faults.owner`). If a rollback may be needed, keep a copy of `faults.db` from before the upgrade and
-restore that copy instead of pointing the earlier release at the migrated file.
+The rebuild is one way, and opening a migrated store with an earlier release is unsupported. That
+release runs its own startup cleanup on the file before it serves a request: it deletes the
+`rosbag_files` rows that two owners of one code share, so recording links are lost without a
+message, and it aborts on the first report of a fault code the store does not hold yet (`NOT NULL
+constraint failed: faults.owner`). There is no guard in the code. A copy of `faults.db` taken before
+the upgrade is the only way back: restore it instead of pointing the earlier release at the migrated
+file.
 
 A PostgreSQL database written by an earlier release is migrated in place on the first connection, by
 the same rules: the primary keys on the fault code become unique indexes over `(fault_code, owner)`
 and every row becomes the shared record of its code. It runs in one transaction, so a failure leaves
-the tables as they were.
+the tables as they were. This migration is one way too: an earlier release pointed at the migrated
+database is unsupported, and a copy of the database taken before the upgrade (`pg_dump`) is the only
+way back.
 
 The table names `faults_new` and `freeze_frames_new` are reserved for the rebuild. Anything found
 under those names is debris from a rebuild that did not finish and is dropped on open, with a
