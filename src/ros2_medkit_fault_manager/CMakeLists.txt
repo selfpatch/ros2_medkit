@@ -303,6 +303,9 @@ endif()
   medkit_add_launch_test(test_fault_correlation_owners
     test/integration/test_fault_correlation_owners.test.py TIMEOUT 120 LABELS "integration")
 
+  medkit_add_launch_test(test_fault_audit_rows
+    test/integration/test_fault_audit_rows.test.py TIMEOUT 180 LABELS "integration")
+
   medkit_add_launch_test(test_fault_identity_restart
     test/integration/test_fault_identity_restart.test.py TIMEOUT 180 LABELS "integration")
 

@@ -101,7 +101,7 @@ class FaultManagerNode : public rclcpp::Node {
   /// service handlers use. Throws when audit_log.fail_closed is set and the append
   /// fails; otherwise observe audit_dropped_writes()/audit_healthy().
   void audit_transition_for_test(const char * transition, const fd::FaultRecord & fault) {
-    audit_transition(transition, fault, "test", 0);
+    audit_transition(transition, fault, FaultId{fault.fault_code, kSharedOwner}, "test", 0);
   }
 
   /// Get the storage type being used
@@ -184,10 +184,11 @@ class FaultManagerNode : public rclcpp::Node {
   /// Append a fault state-transition to the audit log through the core.
   /// @param transition One of the kTransition* constants.
   /// @param fault The fault state at the time of the transition.
-  /// @param source_id The reporting source that drove the transition.
+  /// @param id The record that moved.
+  /// @param source_id The report's source, or the kAuditSource* mechanism for an automatic transition.
   /// @param occurred_at_ns Wall-clock timestamp of the transition.
-  void audit_transition(const char * transition, const fd::FaultRecord & fault, const std::string & source_id,
-                        int64_t occurred_at_ns);
+  void audit_transition(const char * transition, const fd::FaultRecord & fault, const FaultId & id,
+                        const std::string & source_id, int64_t occurred_at_ns);
 
   core::FaultManagerConfig config_;  ///< Validated startup configuration
   std::string storage_type_;
