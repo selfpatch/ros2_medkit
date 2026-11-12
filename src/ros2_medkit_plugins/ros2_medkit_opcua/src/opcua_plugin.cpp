@@ -1338,7 +1338,7 @@ void OpcuaPlugin::on_alarm_change(const std::string & entity_id,
     if (clear_origin_for_signal(signal.fault_code) == ClearOrigin::LinkState) {
       owe_comms_lost_decision();
     } else {
-      send_clear_fault(signal.fault_code, ClearOrigin::DeviceAlarm);
+      send_clear_fault(signal.fault_code, entity_id, ClearOrigin::DeviceAlarm);
     }
   }
 }
@@ -1522,7 +1522,7 @@ void OpcuaPlugin::on_event_alarm(const AlarmEventDelivery & delivery) {
       // this IS a resolution at the source and the correlation engine may act on
       // it. DeviceAlarm is also the default, spelled out here because this is
       // the one call site where the cascade is deliberately kept.
-      send_clear_fault(delivery.fault_code, ClearOrigin::DeviceAlarm);
+      send_clear_fault(delivery.fault_code, delivery.entity_id, ClearOrigin::DeviceAlarm);
       break;
     case AlarmAction::NoOp:
       break;
@@ -1563,21 +1563,23 @@ void OpcuaPlugin::send_report_fault(const std::string & entity_id, const std::st
 }
 
 ros2_medkit_msgs::srv::ClearFault::Request OpcuaPlugin::make_clear_fault_request(const std::string & fault_code,
+                                                                                 const std::string & source_id,
                                                                                  bool skip_correlation_auto_clear) {
   ros2_medkit_msgs::srv::ClearFault::Request request;
   request.fault_code = fault_code;
+  request.source_id = source_id;
   request.skip_correlation_auto_clear = skip_correlation_auto_clear;
   return request;
 }
 
-void OpcuaPlugin::send_clear_fault(const std::string & fault_code, ClearOrigin origin) {
+void OpcuaPlugin::send_clear_fault(const std::string & fault_code, const std::string & source_id, ClearOrigin origin) {
   if (!fault_clients_->clear) {
     log_warn("ClearFault service client not available");
     return;
   }
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::ClearFault::Request>(
-      make_clear_fault_request(fault_code, clear_skips_correlation(origin)));
+      make_clear_fault_request(fault_code, source_id, clear_skips_correlation(origin)));
 
   send_or_buffer({PendingFaultDispatch::Kind::Clear, fault_code, clear_is_link_state(origin), [this, request]() {
                     fault_clients_->clear->async_send_request(request);
@@ -1645,7 +1647,7 @@ void OpcuaPlugin::apply_comms_lost_answer(bool found, const std::vector<std::str
   // anything, so a correlation rule naming PLC_COMMS_LOST as a root cause must
   // not cascade-clear the symptoms the outage produced.
   log_info(std::string("OPC-UA connection established, clearing this bridge's ") + kCommsLostFaultCode);
-  send_clear_fault(kCommsLostFaultCode, ClearOrigin::LinkState);
+  send_clear_fault(kCommsLostFaultCode, node_map_.component_id(), ClearOrigin::LinkState);
 }
 
 void OpcuaPlugin::drive_comms_lost_decision() {
@@ -1737,6 +1739,9 @@ void OpcuaPlugin::drive_comms_lost_decision() {
   std::weak_ptr<CommsLostProbeState> weak_state = comms_lost_probe_state_;
   auto request = std::make_shared<ros2_medkit_msgs::srv::GetFault::Request>();
   request->fault_code = kCommsLostFaultCode;
+  // The record this bridge reports it under, so a second source that raised the code does not make the
+  // probe ambiguous.
+  request->source_id = node_map_.component_id();
   // rclcpp selects the response-callback overload of async_send_request only for
   // a callable whose parameter list is exactly (SharedFuture); a const reference
   // parameter matches no overload. The future is therefore taken by value.
@@ -3304,7 +3309,7 @@ tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> OpcuaPlugin::clear_f
   // apps in other entities, and a plugin-owned entity must not be the hole in
   // that rule: the request goes through this provider instead, so the same flag
   // has to be set here.
-  send_clear_fault(fault_code, ClearOrigin::ScopedOperator);
+  send_clear_fault(fault_code, entity_id, ClearOrigin::ScopedOperator);
   return dto::FaultClearResult{
       nlohmann::json{{"status", "cleared"}, {"fault_code", fault_code}, {"entity_id", entity_id}}};
 }

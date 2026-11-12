@@ -25,6 +25,9 @@ the opcua plugin, and reads the fault over HTTP. A real outage raises the fault.
   * foreign stand-in: a fault another endpoint's gateway raised stays.
   * late nameplate: a fault raised under the nameplate id stays while the device
     serves no nameplate, and is cleared when a later read names the device.
+  * per-source record: PLC_COMMS_LOST configured with one record per source and
+    a second source that reported it. The restored link clears this gateway's own
+    record and leaves the other source's alone.
   * binding directory: a binding file whose directory cannot be looked up is
     reported, and the plugin stays connected. Once at start, and once on the
     poll thread when a rescan adopts a PLC that came up later.
@@ -228,11 +231,17 @@ class Run:
         self.server_logs.append(log)
         return proc, port
 
-    def start_fault_manager(self, name):
+    def start_fault_manager(self, name, per_source_codes=()):
         """Start fault_manager_node with memory storage."""
         log = self.workdir / f'{name}_fault_manager.log'
+        args = ['-p', 'storage_type:=memory']
+        if per_source_codes:
+            thresholds = self.workdir / f'{name}_fault_thresholds.yaml'
+            thresholds.write_text(''.join(f'{code}:\n  per_source: true\n'
+                                          for code in per_source_codes))
+            args += ['-p', f'fault_thresholds.config_file:={thresholds}']
         proc = self._start(['ros2', 'run', 'ros2_medkit_fault_manager', 'fault_manager_node',
-                            '--ros-args', '-p', 'storage_type:=memory'], log, env=self.env)
+                            '--ros-args', *args], log, env=self.env)
         # Logged at the end of the constructor, after the services exist.
         if not wait_log(log, 'FaultManager node started (', 30) or proc.poll() is not None:
             raise AssertionError(f'fault_manager_node did not start (rc={proc.poll()}):\n'
@@ -378,6 +387,106 @@ def scenario_late_nameplate(run):
                   'after the device named itself')
 
 
+# Talks to the fault manager as a second source: reports a fault, lists the records.
+FAULT_MANAGER_CLIENT = """
+import json
+import sys
+
+import rclpy
+from ros2_medkit_msgs.msg import Fault
+from ros2_medkit_msgs.srv import ListFaults, ReportFault
+
+rclpy.init()
+node = rclpy.create_node('comms_lost_test_client')
+
+
+def call(client, request):
+    future = client.call_async(request)
+    rclpy.spin_until_future_complete(node, future, timeout_sec=10.0)
+    return future.result()
+
+
+if sys.argv[1] == 'report':
+    client = node.create_client(ReportFault, '/fault_manager/report_fault')
+    client.wait_for_service(timeout_sec=10.0)
+    request = ReportFault.Request()
+    request.fault_code = sys.argv[2]
+    request.event_type = ReportFault.Request.EVENT_FAILED
+    request.severity = Fault.SEVERITY_ERROR
+    request.description = 'second source'
+    request.source_id = sys.argv[3]
+    print(json.dumps({'accepted': call(client, request).accepted}))
+else:
+    client = node.create_client(ListFaults, '/fault_manager/list_faults')
+    client.wait_for_service(timeout_sec=10.0)
+    request = ListFaults.Request()
+    request.statuses = ['PREFAILED', 'PREPASSED', 'CONFIRMED', 'HEALED', 'CLEARED']
+    print(json.dumps([{'code': f.fault_code, 'status': f.status,
+                       'sources': list(f.reporting_sources)}
+                      for f in call(client, request).faults]))
+node.destroy_node()
+rclpy.shutdown()
+"""
+
+
+def fault_manager_client(run, *args):
+    """Run the fault manager client script on the scenario's ROS domain and return its JSON."""
+    result = subprocess.run([sys.executable, '-c', FAULT_MANAGER_CLIENT, *args], env=run.env,
+                            capture_output=True, text=True, timeout=60 * SCALE)
+    if result.returncode != 0:
+        raise AssertionError(f'fault manager client {args} failed:\n{result.stderr}')
+    return json.loads(result.stdout)
+
+
+def comms_lost_records(run):
+    """Return {first reporting source: status} of every PLC_COMMS_LOST record."""
+    return {f['sources'][0]: f['status'] for f in fault_manager_client(run, 'list')
+            if f['code'] == COMMS_LOST and f['sources']}
+
+
+def wait_records(run, accept, deadline):
+    """Poll a scaled deadline until accept(records) holds. Return the last records."""
+    end = time.monotonic() + deadline * SCALE
+    records = {}
+    while time.monotonic() < end:
+        records = comms_lost_records(run)
+        if accept(records):
+            return records
+        time.sleep(0.3)
+    return records
+
+
+def scenario_per_source_record(run):
+    other = '/other_plc'
+    run.start_fault_manager('persrc', per_source_codes=[COMMS_LOST])
+    named, port = run.start_server('persrc_named')
+    endpoint = f'opc.tcp://127.0.0.1:{port}'
+    gateway = run.start_gateway('persrc', endpoint=endpoint)
+    if not wait_log(gateway.log, 'Connected to OPC-UA server', 30):
+        raise AssertionError('the gateway never connected:\n' + tail(gateway))
+
+    # A second source holds a record of the same code before the outage.
+    if not fault_manager_client(run, 'report', COMMS_LOST, other)['accepted']:
+        raise AssertionError('the second source was refused')
+
+    run.stop(named)
+    records = wait_records(
+        run, lambda r: len(r) == 2 and all(s == 'CONFIRMED' for s in r.values()), 60)
+    if len(records) != 2 or any(s != 'CONFIRMED' for s in records.values()):
+        raise AssertionError(f'the outage was never reported as its own record: {records}\n'
+                             + tail(gateway))
+    own = next(source for source in records if source != other)
+
+    # The same device comes back on its port: the link is restored.
+    run.start_server('persrc_back', port=port)
+    records = wait_records(run, lambda r: r.get(own) == 'CLEARED', 60)
+    if records.get(own) != 'CLEARED':
+        raise AssertionError('the restored link did not clear this gateway record: '
+                             f'{records}\n' + tail(gateway))
+    if records.get(other) != 'CONFIRMED':
+        raise AssertionError(f"the other source's record was cleared too: {records}")
+
+
 def start_discovering_gateway(run, name):
     """Start a config-less gateway whose binding file sits under a symlink loop."""
     loop_a = run.workdir / 'loop_a'
@@ -440,6 +549,7 @@ SCENARIOS = [
     ('pinned stand-in', scenario_pinned_stand_in),
     ('foreign stand-in', scenario_foreign_stand_in),
     ('late nameplate', scenario_late_nameplate),
+    ('per-source record', scenario_per_source_record),
     ('binding directory at start', scenario_binding_directory_at_start),
     ('binding directory on reconnect', scenario_binding_directory_on_reconnect),
 ]

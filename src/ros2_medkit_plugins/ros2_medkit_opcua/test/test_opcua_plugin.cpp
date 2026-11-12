@@ -1903,13 +1903,15 @@ TEST(CommsLostProbeDue, AllFourConditionsHold) {
   EXPECT_FALSE(OpcuaPlugin::comms_lost_probe_due(true, true, false, false)) << "the store cannot be asked";
 }
 
-TEST(MakeClearFaultRequest, CarriesTheSkipFlagAndCodeVerbatim) {
-  const auto skipping = OpcuaPlugin::make_clear_fault_request(kCommsLostFaultCode, true);
+TEST(MakeClearFaultRequest, CarriesTheSkipFlagCodeAndSourceVerbatim) {
+  const auto skipping = OpcuaPlugin::make_clear_fault_request(kCommsLostFaultCode, "plc_component", true);
   EXPECT_EQ(skipping.fault_code, kCommsLostFaultCode);
+  EXPECT_EQ(skipping.source_id, "plc_component");
   EXPECT_TRUE(skipping.skip_correlation_auto_clear);
 
-  const auto cascading = OpcuaPlugin::make_clear_fault_request("PLC_TANK_HIGH", false);
+  const auto cascading = OpcuaPlugin::make_clear_fault_request("PLC_TANK_HIGH", "tank", false);
   EXPECT_EQ(cascading.fault_code, "PLC_TANK_HIGH");
+  EXPECT_EQ(cascading.source_id, "tank");
   EXPECT_FALSE(cascading.skip_correlation_auto_clear);
 }
 
@@ -2780,6 +2782,7 @@ nodes:
   std::lock_guard<std::mutex> lock(received_mutex);
   ASSERT_FALSE(received.empty()) << "the scoped DELETE never reached the fault manager";
   EXPECT_EQ(received.front().fault_code, "PLC_TANK_HIGH");
+  EXPECT_EQ(received.front().source_id, "tank") << "the clear names the entity the route addressed";
   EXPECT_TRUE(received.front().skip_correlation_auto_clear)
       << "a per-entity DELETE served by the plugin cascade-cleared correlated symptoms";
 }
