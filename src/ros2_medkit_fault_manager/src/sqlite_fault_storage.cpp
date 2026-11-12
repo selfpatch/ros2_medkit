@@ -992,10 +992,11 @@ bool SqliteFaultStorage::report_fault_event_locked(const FaultId & id, fd::Repor
       // Decrement towards confirmation, clamped to the thresholds.
       debounce_counter = clamp_debounce_counter(debounce_counter - 1, config);
 
-      // A CRITICAL record bypasses debounce and the HEALED latch. The stored severity decides, not the
-      // report's. Otherwise the shared state machine decides (with hysteresis).
+      // CRITICAL bypasses debounce and the HEALED latch. A per-source record decides on its stored severity,
+      // a shared record on the report's. Otherwise the shared state machine decides (with hysteresis).
       std::string new_status;
-      if (config.critical_immediate_confirm && new_severity == fd::severity::kCritical) {
+      if (config.critical_immediate_confirm &&
+          (id.owner == kSharedOwner ? severity : new_severity) == fd::severity::kCritical) {
         debounce_counter = std::min(debounce_counter, -1);
         new_status = fd::fault_status::kConfirmed;
       } else {

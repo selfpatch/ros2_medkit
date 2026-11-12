@@ -283,7 +283,8 @@ class FaultManagerCore {
   void run_auto_confirm(int64_t wall_now_ns);
   /// Queues a capture unless @p id is inside its recapture cooldown.
   void capture_on_confirm(const FaultId & id);
-  /// Warns once per (code, source, severity) when a FAILED report disagrees with the stored severity.
+  /// Warns once per (code, source, severity) when a FAILED report disagrees with the stored severity of a
+  /// per-source record.
   void warn_severity_mismatch(const fd::FaultReport & report, uint8_t stored_severity);
 
   struct DebouncePolicyWitness {

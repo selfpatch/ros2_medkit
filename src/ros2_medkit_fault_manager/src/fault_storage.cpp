@@ -119,6 +119,7 @@ bool InMemoryFaultStorage::report_fault_event(const FaultId & id, fd::ReportKind
   std::lock_guard<std::mutex> lock(mutex_);
 
   const bool is_failed = (kind == fd::ReportKind::kFailed);
+  const bool shared = id.owner == kSharedOwner;
 
   auto it = faults_.find(id);
   if (it == faults_.end()) {
@@ -181,8 +182,8 @@ bool InMemoryFaultStorage::report_fault_event(const FaultId & id, fd::ReportKind
     if (!description.empty()) {
       state.description = description;
     }
-    // Immediate confirmation reads the stored severity: a CRITICAL record confirms on any FAILED report.
-    if (config.critical_immediate_confirm && state.severity == fd::severity::kCritical) {
+    // A per-source record confirms on its stored severity, a shared record on the report's own.
+    if (config.critical_immediate_confirm && (shared ? severity : state.severity) == fd::severity::kCritical) {
       state.status = fd::fault_status::kConfirmed;
     } else {
       update_status(state, config);
@@ -230,8 +231,8 @@ bool InMemoryFaultStorage::report_fault_event(const FaultId & id, fd::ReportKind
       state.description = description;
     }
 
-    // Immediate confirmation reads the stored severity, so it also overrides the HEALED latch.
-    if (config.critical_immediate_confirm && state.severity == fd::severity::kCritical) {
+    // Same rule as on reactivation; it also overrides the HEALED latch.
+    if (config.critical_immediate_confirm && (shared ? severity : state.severity) == fd::severity::kCritical) {
       state.debounce_counter = std::min(state.debounce_counter, -1);
       state.status = fd::fault_status::kConfirmed;
       return false;

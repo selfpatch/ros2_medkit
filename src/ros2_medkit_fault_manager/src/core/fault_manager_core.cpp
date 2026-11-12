@@ -436,7 +436,8 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
 
   outcome.accepted = true;
 
-  if (fault_before && failed && report.severity != fault_before->severity) {
+  // Only a per-source record confirms on its stored severity, so only there a lower report needs explaining.
+  if (fault_before && failed && id.owner != kSharedOwner && report.severity != fault_before->severity) {
     warn_severity_mismatch(report, fault_before->severity);
   }
 
