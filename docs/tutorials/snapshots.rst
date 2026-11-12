@@ -124,6 +124,8 @@ Configure snapshot capture via fault manager parameters:
      - ``60.0``
      - Minimum seconds between snapshot captures for the same fault record.
        Prevents snapshot storms when a fault is reported repeatedly. Set to 0 to disable.
+       Per-source records of one code that confirm inside the cooldown share one capture of
+       the code's topics: it is sampled once and every record lists it under its own owner.
    * - ``snapshots.max_per_fault``
      - ``10``
      - Maximum number of snapshot rows stored per fault record. One confirmation

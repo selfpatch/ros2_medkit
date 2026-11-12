@@ -13,7 +13,9 @@
 // limitations under the License.
 
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
+#include <algorithm>
 #include <atomic>
+#include <iterator>
 
 #include <rclcpp/generic_subscription.hpp>
 #include <rclcpp/serialization.hpp>
@@ -146,6 +148,77 @@ bool SnapshotCapture::seed_capture_seq() {
   return true;
 }
 
+bool SnapshotCapture::groups_by_code(const FaultId & id) const {
+  if (id.owner == kSharedOwner || config_.recapture_cooldown_sec <= 0.0) {
+    return false;
+  }
+  bool explicit_match = false;
+  return !resolve_topics(id.fault_code, explicit_match).empty();
+}
+
+void SnapshotCapture::prune_groups_locked(std::chrono::steady_clock::time_point now) {
+  const auto cooldown = std::chrono::duration<double>(config_.recapture_cooldown_sec);
+  for (auto it = groups_.begin(); it != groups_.end();) {
+    if (now - it->second.started >= cooldown) {
+      it = groups_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+SnapshotCapture::Admission SnapshotCapture::admit(const FaultId & id) {
+  if (!config_.enabled || !groups_by_code(id)) {
+    return Admission::kEnqueue;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  std::unique_lock<std::mutex> lock(groups_mutex_);
+  prune_groups_locked(now);
+  auto it = groups_.find(id.fault_code);
+  if (it == groups_.end()) {
+    CaptureGroup group;
+    group.owners.insert(id.owner);
+    group.started = now;
+    groups_.emplace(id.fault_code, std::move(group));
+    return Admission::kEnqueue;
+  }
+  CaptureGroup & group = it->second;
+  const bool is_new = group.owners.insert(id.owner).second;
+  switch (group.state) {
+    case CaptureGroup::State::kQueued:
+      // No worker has started yet. The record queues a job of its own, so that a capture evicted from
+      // the queue still runs for it.
+      return Admission::kEnqueue;
+    case CaptureGroup::State::kRunning:
+      return Admission::kJoined;
+    case CaptureGroup::State::kDone:
+      if (!is_new) {
+        // The record confirms again (it was acknowledged since): it needs a capture of its own.
+        groups_.erase(it);
+        CaptureGroup fresh;
+        fresh.owners.insert(id.owner);
+        fresh.started = now;
+        groups_.emplace(id.fault_code, std::move(fresh));
+        return Admission::kEnqueue;
+      }
+      persist_capture(id, group.rows, group.freeze_frame, group.captured_count, false, group.capture_id);
+      return Admission::kJoined;
+  }
+  return Admission::kEnqueue;
+}
+
+void SnapshotCapture::withdraw(const FaultId & id) {
+  std::lock_guard<std::mutex> lock(groups_mutex_);
+  auto it = groups_.find(id.fault_code);
+  if (it == groups_.end() || it->second.state != CaptureGroup::State::kQueued) {
+    return;
+  }
+  it->second.owners.erase(id.owner);
+  if (it->second.owners.empty()) {
+    groups_.erase(it);
+  }
+}
+
 void SnapshotCapture::capture(const FaultId & id) {
   const std::string & fault_code = id.fault_code;
   if (!config_.enabled) {
@@ -180,6 +253,34 @@ void SnapshotCapture::capture(const FaultId & id) {
     return;
   }
 
+  // Per-source records of one code share one capture: the first worker to start samples, and the
+  // record of any other worker is written by it, or from what it sampled.
+  const bool grouped = groups_by_code(id);
+  if (grouped) {
+    std::lock_guard<std::mutex> lock(groups_mutex_);
+    prune_groups_locked(std::chrono::steady_clock::now());
+    auto it = groups_.find(fault_code);
+    if (it == groups_.end()) {
+      CaptureGroup group;
+      group.owners.insert(id.owner);
+      group.state = CaptureGroup::State::kRunning;
+      group.started = std::chrono::steady_clock::now();
+      groups_.emplace(fault_code, std::move(group));
+    } else {
+      CaptureGroup & group = it->second;
+      const bool is_new = group.owners.insert(id.owner).second;
+      if (group.state != CaptureGroup::State::kQueued) {
+        if (is_new && group.state == CaptureGroup::State::kDone) {
+          persist_capture(id, group.rows, group.freeze_frame, group.captured_count, false, group.capture_id);
+        }
+        RCLCPP_DEBUG(node_->get_logger(), "Fault '%s' (source %s) shares the capture of its code", fault_code.c_str(),
+                     id.owner.c_str());
+        return;
+      }
+      group.state = CaptureGroup::State::kRunning;
+    }
+  }
+
   RCLCPP_INFO(node_->get_logger(), "Capturing snapshots for fault '%s' (%zu topics%s)", fault_code.c_str(),
               topics.size(), entity_scoped ? ", entity-default" : "");
 
@@ -209,10 +310,55 @@ void SnapshotCapture::capture(const FaultId & id) {
   RCLCPP_INFO(node_->get_logger(), "Captured %zu/%zu snapshots for fault '%s'", captured_count, topics.size(),
               fault_code.c_str());
 
+  if (!grouped) {
+    persist_capture(id, std::move(rows), freeze_frame, captured_count, entity_scoped, capture_id);
+    return;
+  }
+
+  // Write for every record that joined while this ran, then for those that join while it writes.
+  std::set<std::string> written;
+  for (;;) {
+    std::set<std::string> todo;
+    {
+      std::lock_guard<std::mutex> lock(groups_mutex_);
+      auto it = groups_.find(fault_code);
+      if (it == groups_.end()) {
+        // The group aged out while this ran: only the record of this worker is left to write.
+        if (written.count(id.owner) == 0) {
+          todo.insert(id.owner);
+        }
+      } else {
+        std::set_difference(it->second.owners.begin(), it->second.owners.end(), written.begin(), written.end(),
+                            std::inserter(todo, todo.end()));
+      }
+      if (todo.empty()) {
+        if (it != groups_.end()) {
+          it->second.state = CaptureGroup::State::kDone;
+          it->second.rows = rows;
+          it->second.freeze_frame = freeze_frame;
+          it->second.captured_count = captured_count;
+          it->second.capture_id = capture_id;
+        }
+        return;
+      }
+    }
+    for (const auto & owner : todo) {
+      persist_capture(FaultId{fault_code, owner}, rows, freeze_frame, captured_count, false, capture_id);
+      written.insert(owner);
+    }
+  }
+}
+
+void SnapshotCapture::persist_capture(const FaultId & id, std::vector<SnapshotData> rows,
+                                      const nlohmann::json & freeze_frame, size_t captured_count, bool entity_scoped,
+                                      int64_t capture_id) {
+  const std::string & fault_code = id.fault_code;
+
   // One write for the whole capture. Storing topic by topic let the per-fault cap
   // reject the tail of a capture, leaving a freeze frame with holes and nothing
   // saying which values were dropped.
   for (auto & row : rows) {
+    row.owner = id.owner;
     row.capture_id = capture_id;
   }
 
