@@ -151,6 +151,30 @@ class PgFaultStorageTest : public ::testing::Test {
   std::unique_ptr<PgFaultStorage> storage_;
 };
 
+// The per-record trims and reads of snapshots and near misses filter on (fault_code, owner): the
+// indexes behind them exist, and a store that lacks them gets them when it is opened.
+TEST_F(PgFaultStorageTest, RecordIndexesExist) {
+  const auto index_definition = [this](const std::string & name) {
+    auto conn = raw_connection();
+    pqxx::nontransaction tx(*conn);
+    const auto rows = tx.exec(
+        "SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND "
+        "indexname = $1",
+        pqxx::params{name});
+    return rows.empty() ? std::string() : rows[0][0].as<std::string>();
+  };
+
+  EXPECT_NE(index_definition("idx_snapshots_record").find("(fault_code, owner, capture_id)"), std::string::npos);
+  EXPECT_NE(index_definition("idx_near_misses_record").find("(fault_code, owner, id)"), std::string::npos);
+
+  storage_.reset();
+  exec_raw("DROP INDEX idx_snapshots_record; DROP INDEX idx_near_misses_record");
+  EXPECT_TRUE(index_definition("idx_snapshots_record").empty()) << "the fixture must start without them";
+  storage_ = std::make_unique<PgFaultStorage>(conn_info_, test_log_sink());
+  EXPECT_NE(index_definition("idx_snapshots_record").find("(fault_code, owner, capture_id)"), std::string::npos);
+  EXPECT_NE(index_definition("idx_near_misses_record").find("(fault_code, owner, id)"), std::string::npos);
+}
+
 TEST_F(PgFaultStorageTest, ReportNewFaultEvent) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
