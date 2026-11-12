@@ -213,6 +213,14 @@ if(POSTGRES_SUPPORT)
   medkit_add_gtest(test_postgres_storage test/test_postgres_storage.cpp)
   target_link_libraries(test_postgres_storage fault_manager_lib)
   medkit_target_dependencies(test_postgres_storage rclcpp ros2_medkit_msgs)
+
+  # SQL runner for the launch test that migrates a PostgreSQL database through the node.
+  add_executable(pg_exec test/pg_exec.cpp)
+  target_link_libraries(pg_exec fault_manager_lib)
+  install(TARGETS pg_exec DESTINATION lib/${PROJECT_NAME})
+
+  medkit_add_launch_test(test_fault_postgres_migration
+    test/integration/test_fault_postgres_migration.test.py TIMEOUT 180 LABELS "integration")
 endif()
 
   # Rosbag retention parity: every assertion runs against both storage backends.
