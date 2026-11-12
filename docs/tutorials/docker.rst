@@ -20,7 +20,20 @@ Docker deployment is useful for:
 Pre-built Images
 ----------------
 
-Pre-built images are published to GitHub Container Registry on every push to main.
+Pre-built images are published to GitHub Container Registry on every push to main
+and on every release tag. Each image is multi-arch (``linux/amd64`` and ``linux/arm64``).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Trigger
+     - Image Tags
+   * - Push/merge to ``main``
+     - ``latest``, ``sha-<commit>``
+   * - Release tag ``1.2.3``
+     - ``1.2.3``, ``1.2``, ``sha-<commit>``
+
 Images are available for all supported ROS 2 distributions:
 
 .. list-table::

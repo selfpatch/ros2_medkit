@@ -87,11 +87,8 @@ jobs:
                   platforms: ${{ matrix.platform }}
                   build-args: ROS_DISTRO=${{ matrix.ros_distro }}
                   labels: ${{ steps.meta.outputs.labels }}
-                  # Separate cache scope per distro+arch so jobs do not evict each other.
-                  # mode=min: six scopes at mode=max overrun the 10 GB Actions cache
-                  # quota and evict the ccache entries the PR build jobs depend on.
-                  cache-from: type=gha,scope=${{ matrix.ros_distro }}-${{ env.PLATFORM_PAIR }}
-                  cache-to: type=gha,mode=min,scope=${{ matrix.ros_distro }}-${{ env.PLATFORM_PAIR }}
+                  # No gha cache: it almost never hits here, and its blobs evict
+                  # the ccache entries the PR build jobs depend on.
                   # Push each arch by digest; the merge job creates and tags the manifest list.
                   outputs: type=image,name=${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }},push-by-digest=true,name-canonical=true,push=true
 
@@ -138,7 +135,9 @@ jobs:
     # Merge the per-arch digests of each ROS distro into one multi-arch manifest
     # list and tag it. One merge job per distro (matrix), each pulling only its
     # own digests-<distro>-* artifacts.
+    # !cancelled(): one failed build job must not block the other distros.
     merge:
+        if: ${{ !cancelled() }}
         runs-on: ubuntu-latest
         needs:
             - build
@@ -187,6 +186,9 @@ jobs:
             - name: Create multi-arch manifest list
               working-directory: /tmp/digests
               run: |
+                  # Both arches or no tag: never publish a single-arch image.
+                  n=$(find . -maxdepth 1 -type f | wc -l)
+                  [ "$n" -eq 2 ] || { echo "expected 2 digests, found $n" >&2; exit 1; }
                   docker buildx imagetools create \
                     $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
                     $(printf '${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}@sha256:%s ' *)
