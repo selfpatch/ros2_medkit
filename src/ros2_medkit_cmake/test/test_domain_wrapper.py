@@ -128,6 +128,18 @@ def assert_killed_participant_left_nothing(before, seen_file):
     assert not left, f'shared memory of a killed participant outlived its test: {left}'
 
 
+def publish_domain(marker):
+    """Child code that writes ROS_DOMAIN_ID to marker by a rename.
+
+    The test polls for the marker to exist, so it must never exist empty.
+    """
+    staged = f'{marker}.part'
+    return (
+        f"pathlib.Path({staged!r}).write_text(os.environ['ROS_DOMAIN_ID']); "
+        f'os.replace({staged!r}, {str(marker)!r}); '
+    )
+
+
 def wait_until(predicate, timeout, interval=0.05):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -178,7 +190,7 @@ def test_the_domain_stays_locked_for_as_long_as_the_command_runs(tmp_path):
     release = tmp_path / 'release'
     child = (
         'import os, pathlib, time; '
-        f"pathlib.Path({str(started)!r}).write_text(os.environ['ROS_DOMAIN_ID']); "
+        f'{publish_domain(started)}'
         '[time.sleep(0.05) for _ in iter('
         f'lambda: not os.path.exists({str(release)!r}), False)]'
     )
@@ -202,7 +214,7 @@ def test_a_wrapper_killed_with_sigkill_frees_its_domain(tmp_path):
     started = tmp_path / 'started'
     child = (
         'import os, pathlib, time; '
-        f"pathlib.Path({str(started)!r}).write_text(os.environ['ROS_DOMAIN_ID']); "
+        f'{publish_domain(started)}'
         'time.sleep(600)'
     )
     proc = subprocess.Popen(
@@ -319,7 +331,7 @@ def test_more_holders_than_free_domains_wait_and_are_served_as_domains_free_up(t
                 started.append(marker)
                 child = (
                     'import os, pathlib, time; '
-                    f"pathlib.Path({str(marker)!r}).write_text(os.environ['ROS_DOMAIN_ID']); "
+                    f'{publish_domain(marker)}'
                     '[time.sleep(0.05) for _ in iter('
                     f'lambda: not os.path.exists({str(release)!r}), False)]'
                 )
@@ -415,7 +427,9 @@ def test_more_wrappers_than_the_band_has_domains(tmp_path):
             band.release()  # hand all six to the allocator
             for marker in markers:
                 script = (
-                    f'printf %s "$ROS_DOMAIN_ID" > "{marker}"; '
+                    # Renamed into place: the test polls for the file to exist.
+                    f'printf %s "$ROS_DOMAIN_ID" > "{marker}.part" && '
+                    f'mv "{marker}.part" "{marker}"; '
                     f'while [ ! -e "{release}" ]; do sleep 0.1; done'
                 )
                 procs.append(
@@ -479,7 +493,7 @@ def test_many_concurrent_wrappers_all_get_distinct_domains(tmp_path):
             for marker in markers:
                 child = (
                     'import os, pathlib, time; '
-                    f"pathlib.Path({str(marker)!r}).write_text(os.environ['ROS_DOMAIN_ID']); "
+                    f'{publish_domain(marker)}'
                     '[time.sleep(0.05) for _ in iter('
                     f'lambda: not os.path.exists({str(release)!r}), False)]'
                 )
