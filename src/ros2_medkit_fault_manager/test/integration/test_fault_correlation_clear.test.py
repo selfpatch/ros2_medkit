@@ -14,12 +14,14 @@
 # limitations under the License.
 
 """
-The relations of a root cause across its clear, through a real fault manager.
+The relations of a root cause across its re-reports and its clear, through a real fault manager.
 
-A root cleared with skip_correlation_auto_clear leaves its symptoms standing and unmuted,
-and stops muting later reports.
+  * a root cleared with skip_correlation_auto_clear leaves its symptoms standing and unmuted,
+    and stops muting later reports;
+  * a root reported again while active keeps the symptoms it already muted, so its clear
+    cascades to all of them.
 
-The scenario runs on a default (shared) code and on a per_source code whose root and symptom
+Each scenario runs on a default (shared) code and on a per_source code whose root and symptom
 come from different nodes.
 """
 
@@ -41,7 +43,7 @@ ALL_STATUSES = [
     Fault.STATUS_PREFAILED, Fault.STATUS_PREPASSED, Fault.STATUS_CONFIRMED,
     Fault.STATUS_HEALED, Fault.STATUS_CLEARED,
 ]
-KINDS = ('P7',)
+KINDS = ('P7', 'P8')
 MODES = ('SH', 'PS')
 
 THRESHOLDS = ''.join(
@@ -181,11 +183,29 @@ class TestCorrelationClear(unittest.TestCase):
         self.assertNotIn(symptom, self._muted())
         self.assertIn(symptom, self._visible())
 
+    def _re_reported_root_keeps_its_symptoms(self, mode):
+        root, symptom = f'CL_P8_{mode}_ROOT', f'CL_P8_{mode}_SYM'
+        root_owner, sym_owner, root_source, sym_source = self._scenario_sources(mode)
+        self._report(root, root_source)
+        self._report(symptom, sym_source)
+        self.assertIn(symptom, self._muted())
+        self._report(root, root_source)
+
+        response = self._clear(root, root_owner, skip=False)
+        self.assertIn(symptom, list(response.auto_cleared_codes))
+        self.assertEqual(self._status(symptom, sym_owner), Fault.STATUS_CLEARED)
+
     def test_p7_default_code_skip_clear_ends_the_relations(self):
         self._skip_clear_ends_the_relations('SH')
 
     def test_p7_per_source_code_skip_clear_ends_the_relations(self):
         self._skip_clear_ends_the_relations('PS')
+
+    def test_p8_default_code_re_reported_root_keeps_its_symptoms(self):
+        self._re_reported_root_keeps_its_symptoms('SH')
+
+    def test_p8_per_source_code_re_reported_root_keeps_its_symptoms(self):
+        self._re_reported_root_keeps_its_symptoms('PS')
 
 
 @launch_testing.post_shutdown_test()

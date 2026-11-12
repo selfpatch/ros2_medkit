@@ -67,8 +67,8 @@ ProcessFaultResult CorrelationEngine::process_fault(const FaultId & id, const st
         prc.window_ms = rule.window_ms;
         pending_root_causes_.push_back(prc);
 
-        // Initialize symptom list
-        root_to_symptoms_[id] = {};
+        // A root that is already active keeps the symptoms it muted: a re-report only renews its window.
+        root_to_symptoms_.try_emplace(id);
         break;
       }
     }
