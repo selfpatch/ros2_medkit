@@ -633,6 +633,14 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
 
         self.assertEqual(responses[owners[0]].file_path, responses[owners[1]].file_path,
                          'records of one burst must share a single recording')
+
+        # Two records carry the code, so an unscoped call is refused and returns no recording.
+        request = GetRosbag.Request()
+        request.fault_code = code
+        unscoped = self._call_service(self.get_rosbag_client, request)
+        self.assertFalse(unscoped.success)
+        self.assertTrue(unscoped.error_message.startswith('ambiguous:'), unscoped.error_message)
+        self.assertEqual(unscoped.file_path, '')
         for response in responses.values():
             self.assertEqual(list(response.fault_codes), [code, code])
             self.assertEqual(sorted(response.owners), owners)
