@@ -60,6 +60,12 @@ on any open that finds a row it can actually assign, not only on the open that a
 a store left half-migrated by an interrupted run is healed the next time it is opened, while a row
 nothing can resolve is left alone instead of being retried forever.
 
+A PostgreSQL database written by an earlier release is migrated in place on the first connection,
+by the same rules: the owner is the first legacy `reporting_sources` entry (`legacy` when none is
+readable), the primary keys on the fault code become unique indexes over `(fault_code, owner)`, and
+evidence rows are assigned only where their code has exactly one owner. It runs in one transaction,
+so a failure leaves the tables as they were.
+
 The table names `faults_new` and `freeze_frames_new` are reserved for the rebuild. Anything found
 under those names is debris from a rebuild that did not finish and is dropped on open, with a
 warning naming the table.

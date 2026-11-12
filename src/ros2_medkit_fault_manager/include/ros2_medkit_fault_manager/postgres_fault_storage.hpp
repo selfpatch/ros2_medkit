@@ -69,15 +69,17 @@ class PgFaultStorage : public FaultStorage {
   std::vector<fd::FaultRecord> list_faults(bool filter_by_severity, uint8_t severity,
                                            const std::vector<std::string> & statuses) const override;
 
-  std::optional<fd::FaultRecord> get_fault(const std::string & fault_code) const override;
+  std::optional<fd::FaultRecord> get_fault(const FaultId & id) const override;
 
-  bool clear_fault(const std::string & fault_code) override;
+  std::vector<fd::FaultRecord> get_faults_by_code(const std::string & fault_code) const override;
+
+  bool clear_fault(const FaultId & id) override;
 
   size_t size() const override;
 
-  bool contains(const std::string & fault_code) const override;
+  bool contains(const FaultId & id) const override;
 
-  std::vector<std::string> check_time_based_confirmation(int64_t now_ns) override;
+  std::vector<FaultId> check_time_based_confirmation(int64_t now_ns) override;
 
   void set_max_snapshots_per_fault(size_t max_count) override;
   void set_retain_snapshots_on_clear(bool retain) override;
@@ -87,28 +89,27 @@ class PgFaultStorage : public FaultStorage {
 
   void store_snapshot(const SnapshotData & snapshot) override;
   void store_snapshots(const std::vector<SnapshotData> & snapshots) override;
-  std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
-                                          const std::string & topic_filter = "") const override;
+  std::vector<SnapshotData> get_snapshots(const FaultId & id, const std::string & topic_filter = "") const override;
   int64_t get_max_capture_id() const override;
 
   void store_freeze_frame(const FreezeFrameData & frame) override;
-  std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) const override;
+  std::optional<FreezeFrameData> get_freeze_frame(const FaultId & id) const override;
   size_t set_max_near_misses_per_fault(size_t max_count) override;
-  std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) const override;
+  std::vector<NearMissRecord> get_near_misses(const FaultId & id) const override;
 
   void store_rosbag_file(const RosbagFileInfo & info) override;
   void store_rosbag_files(const std::vector<RosbagFileInfo> & infos) override;
-  std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
-  std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) const override;
+  std::optional<RosbagFileInfo> get_rosbag_file(const FaultId & id) const override;
+  std::vector<RosbagFileInfo> get_rosbag_files(const FaultId & id) const override;
   std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) const override;
-  bool delete_rosbag_file(const std::string & fault_code) override;
+  bool delete_rosbag_file(const FaultId & id) override;
   size_t delete_rosbag_recording(const std::string & recording_id) override;
-  size_t delete_rosbag_files(const std::vector<std::string> & fault_codes) override;
+  size_t delete_rosbag_files(const std::vector<FaultId> & ids) override;
   size_t get_total_rosbag_storage_bytes() const override;
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
   std::vector<fd::FaultRecord> get_all_faults() const override;
-  std::vector<std::string> reclassify_healed_as_cleared(const KeepHealedFn & keep_healed = {}) override;
+  std::vector<FaultId> reclassify_healed_as_cleared(const KeepHealedFn & keep_healed = {}) override;
 
   /// Get the connection info string used to initialize the database
   const std::string & conn_info() const {
@@ -136,6 +137,25 @@ class PgFaultStorage : public FaultStorage {
 
   /// Create the tables and indexes that do not exist yet, in @p tx, and check the columns of existing ones.
   void create_schema(pqxx::work & tx) const;
+
+  /// Bring tables written before records were keyed by (fault_code, owner) to the current layout, in @p tx.
+  /// Does nothing on a fresh database or one already migrated.
+  void migrate_to_owner_identity(pqxx::work & tx) const;
+
+  /// Whether @p table exists in the current schema.
+  bool table_exists(pqxx::work & tx, const char * table) const;
+
+  /// Whether @p table has @p column in the current schema.
+  bool table_has_column(pqxx::work & tx, const char * table, const char * column) const;
+
+  /// Drop the PRIMARY KEY of @p table, whatever it is named.
+  void drop_primary_key(pqxx::work & tx, const char * table) const;
+
+  /// Whether a child row with an empty owner belongs to a code that has exactly one owner.
+  bool has_assignable_child_rows(pqxx::work & tx) const;
+
+  /// Give child rows with an empty owner the owner of their code, where the code has exactly one.
+  void backfill_child_owners(pqxx::work & tx) const;
 
   /// @p text with every copy of the known password replaced by "***".
   std::string redact(std::string text) const;
