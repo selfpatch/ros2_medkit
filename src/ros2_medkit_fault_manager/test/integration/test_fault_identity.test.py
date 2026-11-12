@@ -24,6 +24,7 @@ reserved id '*', which no reporter may use.
 
 import os
 import tempfile
+import time
 import unittest
 
 from launch import LaunchDescription
@@ -33,7 +34,8 @@ import launch_testing.asserts
 import launch_testing.markers
 import rclpy
 from rclpy.node import Node
-from ros2_medkit_msgs.msg import Fault
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from ros2_medkit_msgs.msg import Fault, FaultEvent
 from ros2_medkit_msgs.srv import ClearFault, GetFault, ListFaults, ReportFault
 
 TIMEOUT_SEC = 30.0
@@ -57,6 +59,11 @@ ID.PER:
 ID.PER_LIST:
   per_source: true
   confirmation_threshold: -1
+ID.CRIT_SHARED:
+  confirmation_threshold: -3
+ID.CRIT_PER:
+  per_source: true
+  confirmation_threshold: -3
 """
 
 THRESHOLDS_FILE = tempfile.NamedTemporaryFile(
@@ -98,8 +105,16 @@ class TestFaultIdentity(unittest.TestCase):
         cls.list_client = cls.node.create_client(ListFaults, '/fault_manager/list_faults')
         cls.get_client = cls.node.create_client(GetFault, '/fault_manager/get_fault')
         cls.clear_client = cls.node.create_client(ClearFault, '/fault_manager/clear_fault')
+        cls.events = []
+        cls.event_sub = cls.node.create_subscription(
+            FaultEvent, '/fault_manager/events', cls.events.append,
+            QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE))
         for client in (cls.report_client, cls.list_client, cls.get_client, cls.clear_client):
             assert client.wait_for_service(timeout_sec=TIMEOUT_SEC)
+        deadline = time.monotonic() + TIMEOUT_SEC
+        while cls.event_sub.get_publisher_count() == 0 and time.monotonic() < deadline:
+            rclpy.spin_once(cls.node, timeout_sec=0.1)
+        assert cls.event_sub.get_publisher_count() > 0
 
     @classmethod
     def tearDownClass(cls):
@@ -112,11 +127,12 @@ class TestFaultIdentity(unittest.TestCase):
         self.assertTrue(future.done(), 'service call timed out')
         return future.result()
 
-    def _report(self, code, source, event_type=ReportFault.Request.EVENT_FAILED):
+    def _report(self, code, source, event_type=ReportFault.Request.EVENT_FAILED,
+                severity=Fault.SEVERITY_ERROR):
         request = ReportFault.Request()
         request.fault_code = code
         request.event_type = event_type
-        request.severity = Fault.SEVERITY_ERROR
+        request.severity = severity
         request.description = f'{code} from {source}'
         request.source_id = source
         return self._call(self.report_client, request).accepted
@@ -222,6 +238,51 @@ class TestFaultIdentity(unittest.TestCase):
             self.assertTrue(self._report('ID.PER_LIST', source))
         self.assertEqual(len(self._records('ID.PLAIN_LIST')), 1)
         self.assertEqual(len(self._records('ID.PER_LIST')), 3)
+
+    def _confirmed_events(self, code):
+        return [e for e in self.events
+                if e.fault.fault_code == code and e.event_type == FaultEvent.EVENT_CONFIRMED]
+
+    def _wait_for_confirmed_event(self, code):
+        deadline = time.monotonic() + TIMEOUT_SEC
+        while time.monotonic() < deadline and not self._confirmed_events(code):
+            rclpy.spin_once(self.node, timeout_sec=0.1)
+        self.assertTrue(self._confirmed_events(code), f'no fault_confirmed event for {code}')
+
+    def _critical_clear_warn(self, code, first_source, second_source):
+        """CRITICAL, clear the record, then a WARN: the sequence that tells the two rules apart."""
+        self.assertTrue(self._report(code, first_source, severity=Fault.SEVERITY_CRITICAL))
+        self._wait_for_confirmed_event(code)
+        cleared = self._clear(code)
+        self.assertTrue(cleared.success, cleared.message)
+        self.assertTrue(self._report(code, second_source, severity=Fault.SEVERITY_WARN))
+        # The events arrive in order, so once a marker's confirmation is here, any event the WARN
+        # report produced is too.
+        marker = f'{code}.MARKER'
+        self.assertTrue(self._report(marker, '/crit/marker', severity=Fault.SEVERITY_CRITICAL))
+        self._wait_for_confirmed_event(marker)
+
+    def test_a_shared_record_confirms_on_the_severity_of_the_report(self):
+        """CRITICAL from /a, clear, WARN from /b on a default code stays pending."""
+        code = 'ID.CRIT_SHARED'
+        self._critical_clear_warn(code, '/crit/a', '/crit/b')
+        record = self._get(code).fault
+        self.assertEqual(record.status, Fault.STATUS_PREFAILED)
+        self.assertEqual(record.occurrence_count, 2)
+        request = ListFaults.Request()
+        listed = self._call(self.list_client, request).faults
+        self.assertEqual([f for f in listed if f.fault_code == code], [])
+        self.assertEqual(len(self._confirmed_events(code)), 1)
+
+    def test_a_per_source_record_confirms_on_its_stored_severity(self):
+        """CRITICAL from /a, clear, WARN from /a on a per_source code confirms at once."""
+        code = 'ID.CRIT_PER'
+        self._critical_clear_warn(code, '/crit/a', '/crit/a')
+        record = self._get(code).fault
+        self.assertEqual(record.status, Fault.STATUS_CONFIRMED)
+        self.assertEqual(record.severity, Fault.SEVERITY_CRITICAL)
+        self.assertEqual(record.occurrence_count, 2)
+        self.assertEqual(len(self._confirmed_events(code)), 2)
 
     def test_the_shared_owner_is_not_a_source_id(self):
         """A report claiming the reserved owner is refused and creates nothing."""
