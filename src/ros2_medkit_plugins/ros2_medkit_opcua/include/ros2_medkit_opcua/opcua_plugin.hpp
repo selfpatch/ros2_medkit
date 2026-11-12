@@ -993,6 +993,16 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // on the wire, so one further decision follows any that had a raise behind
   // it. Set on the poll thread, taken on the poll thread.
   std::atomic<bool> comms_lost_raise_since_decision_{false};
+
+  // The entity id this process last reported PLC_COMMS_LOST under, empty once that fault was cleared.
+  // The component can be renamed while the fault stands, and a per-source record belongs to the id it
+  // was reported under, so the probe and the clear use this id and not the current one.
+  mutable std::mutex comms_lost_entity_mutex_;
+  std::string comms_lost_entity_id_;
+
+  // The id the probe and the clear of PLC_COMMS_LOST name: the one it was reported under, else the
+  // current component id.
+  std::string comms_lost_entity_id() const;
   // How long a probe may stay outstanding (kDefaultFaultServiceTimeout unless
   // ``fault_service_timeout_ms`` says otherwise).
   std::chrono::milliseconds fault_service_timeout_{kDefaultFaultServiceTimeout};
