@@ -227,8 +227,10 @@ class FaultManagerCore {
 
   /// Appends one audit event. No-op when the log is off, or when only confirmations are logged and
   /// this is not one. Throws when audit_log.fail_closed is set and the append fails.
-  void record_transition(const char * transition, const fd::FaultRecord & fault, const std::string & source_id,
-                         int64_t occurred_at_ns);
+  /// @param id The record that moved: its owner is written to the row unless the record is shared.
+  /// @param source_id The report's source, or the kAuditSource* mechanism for an automatic transition.
+  void record_transition(const char * transition, const fd::FaultRecord & fault, const FaultId & id,
+                         const std::string & source_id, int64_t occurred_at_ns);
 
   /// Runs the periodic jobs that are due at @p wall_now_ns (ns since the epoch): time-based
   /// auto-confirmation every kAutoConfirmPeriodSec and correlation cleanup every
@@ -300,8 +302,8 @@ class FaultManagerCore {
   /// policies. A per-source record has one source and never warns.
   void warn_on_conflicting_debounce_policy(const FaultId & id, const std::string & source_id,
                                            const DebounceConfig & resolved);
-  void audit_transition(const char * transition, const fd::FaultRecord & fault, const std::string & source_id,
-                        int64_t occurred_at_ns);
+  void audit_transition(const char * transition, const fd::FaultRecord & fault, const FaultId & id,
+                        const std::string & source_id, int64_t occurred_at_ns);
   void publish_event(const char * event_type, const fd::FaultRecord & fault,
                      const std::vector<std::string> & auto_cleared_codes = {});
 

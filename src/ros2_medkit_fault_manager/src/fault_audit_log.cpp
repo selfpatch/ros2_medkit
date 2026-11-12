@@ -215,6 +215,10 @@ std::string FaultAuditLog::canonicalize(int64_t seq, const AuditEvent & event) {
   out += json_encode(event.source_id);
   out += ",\"description\":";
   out += json_encode(event.description);
+  if (!event.owner.empty()) {
+    out += ",\"owner\":";
+    out += json_encode(event.owner);
+  }
   out += "}";
   return out;
 }
@@ -233,11 +237,23 @@ void FaultAuditLog::initialize_schema() {
       source_id TEXT NOT NULL,
       description TEXT NOT NULL,
       prev_hash TEXT NOT NULL,
-      record_hash TEXT NOT NULL
+      record_hash TEXT NOT NULL,
+      owner TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_audit_log_fault_code ON audit_log(fault_code);
   )",
                 "create audit_log table");
+
+  // A log created before the owner column existed gets it empty, which is what its rows hash as.
+  bool has_owner_column = false;
+  {
+    Stmt columns(db_.get(), "SELECT 1 FROM pragma_table_info('audit_log') WHERE name = 'owner'");
+    has_owner_column = columns.step() == SQLITE_ROW;
+  }
+  if (!has_owner_column) {
+    exec_or_throw(db_.get(), "ALTER TABLE audit_log ADD COLUMN owner TEXT NOT NULL DEFAULT ''",
+                  "add audit_log owner column");
+  }
 
   // Single-row persisted chain head, so the chain resumes across restarts.
   exec_or_throw(db_.get(),
@@ -384,7 +400,7 @@ int64_t FaultAuditLog::append(const AuditEvent & event) {
   try {
     Stmt insert(db_.get(),
                 "INSERT INTO audit_log (seq, occurred_at_ns, fault_code, transition, severity, status, "
-                "source_id, description, prev_hash, record_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                "source_id, description, prev_hash, record_hash, owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     insert.bind_int64(1, new_seq);
     insert.bind_int64(2, event.occurred_at_ns);
     insert.bind_text(3, event.fault_code);
@@ -395,6 +411,7 @@ int64_t FaultAuditLog::append(const AuditEvent & event) {
     insert.bind_text(8, event.description);
     insert.bind_text(9, prev_hash);
     insert.bind_text(10, record_hash);
+    insert.bind_text(11, event.owner);
     if (insert.step() != SQLITE_DONE) {
       throw std::runtime_error(std::string("audit: failed to insert record: ") + sqlite3_errmsg(db_.get()));
     }
@@ -509,7 +526,7 @@ std::vector<AuditRecord> FaultAuditLog::read(int64_t limit, int64_t after_seq) c
 
   std::string sql =
       "SELECT seq, occurred_at_ns, fault_code, transition, severity, status, source_id, description, "
-      "prev_hash, record_hash FROM audit_log WHERE seq > ? ORDER BY seq ASC";
+      "prev_hash, record_hash, owner FROM audit_log WHERE seq > ? ORDER BY seq ASC";
   if (limit > 0) {
     sql += " LIMIT ?";
   }
@@ -533,6 +550,7 @@ std::vector<AuditRecord> FaultAuditLog::read(int64_t limit, int64_t after_seq) c
     rec.event.description = stmt.column_text(7);
     rec.prev_hash = stmt.column_text(8);
     rec.record_hash = stmt.column_text(9);
+    rec.event.owner = stmt.column_text(10);
     result.push_back(std::move(rec));
   }
   return result;
@@ -565,7 +583,7 @@ AuditVerifyResult FaultAuditLog::verify() const {
   // Walk every retained row oldest-first, recomputing each link.
   Stmt stmt(db_.get(),
             "SELECT seq, occurred_at_ns, fault_code, transition, severity, status, source_id, description, "
-            "prev_hash, record_hash FROM audit_log ORDER BY seq ASC");
+            "prev_hash, record_hash, owner FROM audit_log ORDER BY seq ASC");
 
   bool first = true;
   int64_t expected_seq = 0;
@@ -583,6 +601,7 @@ AuditVerifyResult FaultAuditLog::verify() const {
     rec.event.description = stmt.column_text(7);
     rec.prev_hash = stmt.column_text(8);
     rec.record_hash = stmt.column_text(9);
+    rec.event.owner = stmt.column_text(10);
 
     if (first) {
       first = false;
