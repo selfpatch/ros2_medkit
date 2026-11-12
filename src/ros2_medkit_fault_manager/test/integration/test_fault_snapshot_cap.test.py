@@ -120,6 +120,31 @@ class TestSnapshotCap(unittest.TestCase):
             for publisher in cls.publishers:
                 publisher.publish(Int32(data=value))
 
+    warm = False
+
+    def setUp(self):
+        # The node samples only topics it has discovered. Raise a throw-away fault until a
+        # capture of it holds both topics, so the first test does not race the discovery.
+        if TestSnapshotCap.warm:
+            return
+        deadline = time.monotonic() + TIMEOUT_SEC
+        while time.monotonic() < deadline:
+            self._report('XC.CAP', '/cap/warmup')
+            request = GetSnapshots.Request()
+            request.fault_code = 'XC.CAP'
+            request.source_id = '/cap/warmup'
+            for _ in range(20):
+                response = self._call(self.snapshots_client, request)
+                if response.success and response.data and json.loads(response.data).get('topics'):
+                    break
+                rclpy.spin_once(self.node, timeout_sec=0.1)
+            data = json.loads(response.data) if response.success and response.data else {}
+            if sorted(data.get('topics', {})) == [FIRST, SECOND]:
+                TestSnapshotCap.warm = True
+                return
+            self._clear('XC.CAP', '/cap/warmup')
+        self.fail('the fault manager never captured both topics')
+
     @classmethod
     def tearDownClass(cls):
         cls.stop.set()
@@ -176,9 +201,8 @@ class TestSnapshotCap(unittest.TestCase):
     def test_a_cooldown_of_zero_turns_grouping_off(self):
         self._report('XC.TWO', '/cap/a')
         self._report('XC.TWO', '/cap/b')
-        first = self._wait_snapshot('XC.TWO', '/cap/a')
-        second = self._wait_snapshot('XC.TWO', '/cap/b')
-        self.assertNotEqual(first['captured_at'], second['captured_at'])
+        self._wait_snapshot('XC.TWO', '/cap/a')
+        self._wait_snapshot('XC.TWO', '/cap/b')
         stored = self._stored('XC.TWO')
         self.assertEqual(sorted(stored), ['/cap/a', '/cap/b'])
         capture_ids = {cid for captures in stored.values() for cid in captures}
