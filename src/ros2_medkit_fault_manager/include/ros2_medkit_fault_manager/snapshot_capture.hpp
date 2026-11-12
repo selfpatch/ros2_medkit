@@ -198,11 +198,16 @@ class SnapshotCapture {
   ///
   /// Per-source records of one code confirming inside the recapture cooldown share ONE capture of the
   /// code's topics, and every one of them gets the rows and the freeze frame written under its own
-  /// owner. Only a code whose topics are resolved by code qualifies: the entity-default topics depend
-  /// on the owner. A shared record, a disabled cooldown or an unconfigured code is always kEnqueue.
+  /// owner. A code has at most one queued job for its group: a record joining a queued or running
+  /// capture queues nothing. A record that confirms again while its old capture still runs gets a
+  /// capture of its own, taken after that confirmation. Only a code whose topics are resolved by code
+  /// qualifies: the entity-default topics depend on the owner. A shared record, a disabled cooldown
+  /// or an unconfigured code is always kEnqueue.
   Admission admit(const FaultId & id);
 
-  /// Undo admit() for a record whose capture could not be queued.
+  /// The queued capture job of @p id did not run (the queue refused or evicted it). When it was the
+  /// job of a group that has not started, the group's capture is lost for every member and the group
+  /// goes, so that a later confirmation starts a new one.
   void withdraw(const FaultId & id);
 
   /// Get current configuration
@@ -239,7 +244,10 @@ class SnapshotCapture {
   struct CaptureGroup {
     enum class State { kQueued, kRunning, kDone };
     State state{State::kQueued};
+    std::string primary;           ///< Owner whose job is queued for the group
     std::set<std::string> owners;  ///< Records the capture is written for
+    /// Records that confirmed again while the group ran: each takes a capture of its own.
+    std::set<std::string> solo;
     std::chrono::steady_clock::time_point started;
     /// What the capture sampled, kept while the cooldown runs so a record confirming after it
     /// finished gets the same rows.
@@ -249,7 +257,8 @@ class SnapshotCapture {
     int64_t capture_id{0};
   };
 
-  /// Drop groups older than the cooldown. Caller holds groups_mutex_.
+  /// Drop finished groups older than the cooldown. A queued or running group stays until its capture
+  /// completes. Caller holds groups_mutex_.
   void prune_groups_locked(std::chrono::steady_clock::time_point now);
 
   /// Whether @p id takes part in grouping: a per-source record of a code with by-code topics.

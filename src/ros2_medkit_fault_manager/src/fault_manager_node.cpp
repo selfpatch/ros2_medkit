@@ -305,6 +305,9 @@ core::CaptureResult FaultManagerNode::enqueue_capture(const FaultId & id) {
     case EnqueueResult::kAccepted:
       return {core::CaptureEnqueue::kAccepted, {}};
     case EnqueueResult::kEvictedOldest:
+      if (snapshot_capture_ && outcome.evicted_id) {
+        snapshot_capture_->withdraw(*outcome.evicted_id);
+      }
       RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 2000,
                            "Capture queue full (drop_oldest): evicted pending '%s' for '%s' "
                            "(pool=%d, queue=%d, total_dropped=%llu)",
