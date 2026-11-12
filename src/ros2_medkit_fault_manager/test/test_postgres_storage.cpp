@@ -1557,19 +1557,22 @@ TEST_F(PgFaultStorageTest, ConfirmedLatchSurvivesFailedAtPositiveCounter) {
   config.critical_immediate_confirm = true;
 
   // CRITICAL confirms immediately at counter -1.
-  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "crit", "/n",
-                               clock.now().nanoseconds(), config);
-  ASSERT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_CONFIRMED);
+  storage_->report_fault_event(FaultId{"F", ros2_medkit_fault_manager::kSharedOwner}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_CRITICAL, "crit", "/n", clock.now().nanoseconds(), config);
+  ASSERT_EQ(storage_->get_fault(FaultId{"F", ros2_medkit_fault_manager::kSharedOwner})->status,
+            Fault::STATUS_CONFIRMED);
   // PASSED events raise the counter into positive territory; latch keeps it CONFIRMED.
   for (int i = 0; i < 3; ++i) {
-    storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kPassed, 0, "", "/n", clock.now().nanoseconds(),
-                                 config);
+    storage_->report_fault_event(FaultId{"F", ros2_medkit_fault_manager::kSharedOwner}, fd::ReportKind::kPassed, 0, "",
+                                 "/n", clock.now().nanoseconds(), config);
   }
-  ASSERT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_CONFIRMED);
+  ASSERT_EQ(storage_->get_fault(FaultId{"F", ros2_medkit_fault_manager::kSharedOwner})->status,
+            Fault::STATUS_CONFIRMED);
   // One normal FAILED: counter still positive, must NOT become PREPASSED.
-  storage_->report_fault_event(FaultId{"F", "/n"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "e", "/n",
-                               clock.now().nanoseconds(), config);
-  EXPECT_EQ(storage_->get_fault(FaultId{"F", "/n"})->status, Fault::STATUS_CONFIRMED);
+  storage_->report_fault_event(FaultId{"F", ros2_medkit_fault_manager::kSharedOwner}, fd::ReportKind::kFailed,
+                               Fault::SEVERITY_ERROR, "e", "/n", clock.now().nanoseconds(), config);
+  EXPECT_EQ(storage_->get_fault(FaultId{"F", ros2_medkit_fault_manager::kSharedOwner})->status,
+            Fault::STATUS_CONFIRMED);
 }
 
 // A HEALED fault with a negative counter stays HEALED on PASSED (opposite direction of the bug above).
