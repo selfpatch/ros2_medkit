@@ -675,7 +675,9 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
 
   // Apply the gate to an answer the store gave and send the clear it permits.
   // Poll thread only.
-  void apply_comms_lost_answer(bool found, const std::vector<std::string> & reporting_sources);
+  // ``clear_source`` is the id the probe that found the record was sent under.
+  void apply_comms_lost_answer(bool found, const std::vector<std::string> & reporting_sources,
+                               const std::string & clear_source);
 
   // The ids a fault reported by THIS process can carry: the component id being
   // served, every placeholder this process assigned, and the NodeMap default.
@@ -993,6 +995,11 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // on the wire, so one further decision follows any that had a raise behind
   // it. Set on the poll thread, taken on the poll thread.
   std::atomic<bool> comms_lost_raise_since_decision_{false};
+  // Ids this process reports under that the current decision has not probed yet, and the id the
+  // outstanding probe was sent under. A per-source record belongs to the id it was raised under, which
+  // after a restart is not the one the plugin remembers. Poll thread only.
+  std::vector<std::string> comms_lost_untried_ids_;
+  std::string comms_lost_probe_id_;
 
   // The entity id this process last reported PLC_COMMS_LOST under, empty once that fault was cleared.
   // The component can be renamed while the fault stands, and a per-source record belongs to the id it

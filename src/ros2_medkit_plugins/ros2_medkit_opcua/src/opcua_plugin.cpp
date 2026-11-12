@@ -1626,7 +1626,8 @@ void OpcuaPlugin::owe_comms_lost_decision() {
   comms_lost_decision_owed_.store(true);
 }
 
-void OpcuaPlugin::apply_comms_lost_answer(bool found, const std::vector<std::string> & reporting_sources) {
+void OpcuaPlugin::apply_comms_lost_answer(bool found, const std::vector<std::string> & reporting_sources,
+                                          const std::string & clear_source) {
   if (!found) {
     // No row, so nothing to clear and nothing standing to report.
     return;
@@ -1649,7 +1650,7 @@ void OpcuaPlugin::apply_comms_lost_answer(bool found, const std::vector<std::str
   // anything, so a correlation rule naming PLC_COMMS_LOST as a root cause must
   // not cascade-clear the symptoms the outage produced.
   log_info(std::string("OPC-UA connection established, clearing this bridge's ") + kCommsLostFaultCode);
-  send_clear_fault(kCommsLostFaultCode, comms_lost_entity_id(), ClearOrigin::LinkState);
+  send_clear_fault(kCommsLostFaultCode, clear_source, ClearOrigin::LinkState);
   std::lock_guard<std::mutex> lock(comms_lost_entity_mutex_);
   comms_lost_entity_id_.clear();
 }
@@ -1695,11 +1696,19 @@ void OpcuaPlugin::drive_comms_lost_decision() {
       // the store from before an outage that has since been reported. It is
       // dropped and the decision is taken again on this session.
       comms_lost_decision_owed_.store(true);
+      comms_lost_untried_ids_.clear();
       RCLCPP_DEBUG(opcua_plugin_logger(), "%s answer belongs to an earlier session; asking again on this one",
                    kCommsLostFaultCode);
       return;
     }
-    apply_comms_lost_answer(found, sources);
+    if (!found && !comms_lost_untried_ids_.empty()) {
+      // No record under that id. A per-source record belongs to the id it was raised under, so ask
+      // under the next id this process reports under before concluding there is nothing to clear.
+      comms_lost_decision_owed_.store(true);
+      return;
+    }
+    comms_lost_untried_ids_.clear();
+    apply_comms_lost_answer(found, sources, comms_lost_probe_id_);
     // The store may have answered from before a ReportFault this process had
     // already sent, so a decision with a raise behind it earns one more.
     if (comms_lost_raise_since_decision_.exchange(false)) {
@@ -1726,6 +1735,7 @@ void OpcuaPlugin::drive_comms_lost_decision() {
       }
       comms_lost_probe_in_flight_ = false;
       comms_lost_decision_owed_.store(true);
+      comms_lost_untried_ids_.clear();
       log_warn(std::string("fault store did not answer within ") + std::to_string(fault_service_timeout_.count()) +
                " ms; the " + kCommsLostFaultCode + " decision stays owed");
     }
@@ -1743,6 +1753,19 @@ void OpcuaPlugin::drive_comms_lost_decision() {
     return;
   }
 
+  // The id this probe asks under: the next untried one, else the one the fault is reported under
+  // now, with every other id this process reports under queued behind it.
+  if (!comms_lost_untried_ids_.empty()) {
+    comms_lost_probe_id_ = comms_lost_untried_ids_.back();
+    comms_lost_untried_ids_.pop_back();
+  } else {
+    comms_lost_probe_id_ = comms_lost_entity_id();
+    std::unordered_set<std::string> others = reporting_ids_of_this_process();
+    others.erase(comms_lost_probe_id_);
+    comms_lost_untried_ids_.assign(others.begin(), others.end());
+    std::sort(comms_lost_untried_ids_.begin(), comms_lost_untried_ids_.end());
+  }
+
   uint64_t generation = 0;
   {
     std::lock_guard<std::mutex> lock(comms_lost_probe_state_->mutex);
@@ -1755,7 +1778,7 @@ void OpcuaPlugin::drive_comms_lost_decision() {
   request->fault_code = kCommsLostFaultCode;
   // The record this bridge reports it under, so a second source that raised the code does not make the
   // probe ambiguous.
-  request->source_id = comms_lost_entity_id();
+  request->source_id = comms_lost_probe_id_;
   // rclcpp selects the response-callback overload of async_send_request only for
   // a callable whose parameter list is exactly (SharedFuture); a const reference
   // parameter matches no overload. The future is therefore taken by value.
@@ -1796,6 +1819,7 @@ void OpcuaPlugin::drive_comms_lost_decision() {
     // the poll thread has no catch of its own and a lost owe is a fault left
     // standing for good.
     comms_lost_decision_owed_.store(true);
+    comms_lost_untried_ids_.clear();
     RCLCPP_WARN(opcua_plugin_logger(), "fault store request failed to go out (%s); the %s decision stays owed",
                 e.what(), kCommsLostFaultCode);
   }
