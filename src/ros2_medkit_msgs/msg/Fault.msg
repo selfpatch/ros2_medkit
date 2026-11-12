@@ -14,11 +14,11 @@
 #
 # Fault.msg - Core fault data model for ros2_medkit fault management system.
 #
-# A Fault is one fault record, identified by the pair (fault_code, reporting source).
-# The reporting source is the source_id a ReportFault call carried, and it is the
-# owner of the record. Two sources reporting one fault_code are two records, each
-# with its own status, debounce counter, occurrence_count, severity and timestamps,
-# and each cleared on its own. reporting_sources holds the one owner.
+# A Fault is one fault record, identified by the pair (fault_code, owner). A code listed
+# with per_source: true in fault_thresholds.yaml has one record per reporting source,
+# owned by the source_id of the ReportFault call. Every other code has one record shared
+# by all its sources, owned by the reserved id "*". Each record has its own status,
+# debounce counter, occurrence_count, severity and timestamps, and is cleared on its own.
 #
 # Debounce model (AUTOSAR DEM-style):
 # - FAILED events decrement internal counter (towards confirmation)
@@ -26,7 +26,7 @@
 # - Status reflects the current debounce state
 
 # Global fault identifier (e.g., "MOTOR_OVERHEAT", "SENSOR_FAILURE_001").
-# Half of the record identity: the other half is the owning reporting source.
+# Half of the record identity: the other half is the owner.
 string fault_code
 
 # Fault severity level (use SEVERITY_* constants)
@@ -56,9 +56,9 @@ uint32 occurrence_count
 # Current fault status (use STATUS_* constants)
 string status
 
-# The reporting source that owns this record, as a one-element list. Together with
-# fault_code it identifies the record. Services that act on a single record take
-# this value as their source_id request field.
+# Every source that reported this record: one for a per-source record, all of them for a
+# shared one. Services that act on a single record take a source_id request field naming
+# the owner, or any source listed here.
 string[] reporting_sources
 
 # Severity level constants

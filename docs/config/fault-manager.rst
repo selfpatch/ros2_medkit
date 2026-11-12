@@ -1,8 +1,9 @@
 Fault Manager Configuration
 ===========================
 
-The ``ros2_medkit_fault_manager`` node keeps and manages one fault record per
-(``fault_code``, reporting source) pair.
+The ``ros2_medkit_fault_manager`` node aggregates and manages faults from multiple sources.
+By default one fault code is one record, shared by all the sources that report it. A code
+can be switched to one record per reporting source, see `Record Identity per Fault Code`_.
 This page documents all configuration parameters.
 
 .. contents:: Table of Contents
@@ -63,11 +64,12 @@ A build without the option stops at startup when ``storage_type`` is ``postgres`
   Give each fault manager its own database, or its own schema with
   ``options=-csearch_path=<schema>`` in the connection string.
 - Tables written before records were keyed by owner (one row per fault code) are migrated in place
-  on the first connection: ``owner`` is added to ``faults``, ``freeze_frames``, ``snapshots`` and
-  ``rosbag_files``, the primary keys on the fault code are replaced by unique indexes that include
-  it, and each row takes the first entry of its ``reporting_sources``. The same rules as for
-  SQLite apply, see the package README. The migration runs in one transaction. Keep a copy of the
-  database first: an earlier release cannot use the migrated tables.
+  on the first connection: ``owner`` is added to ``faults``, ``freeze_frames``, ``snapshots``,
+  ``near_misses`` and ``rosbag_files``, the primary keys on the fault code are replaced by unique
+  indexes that include it, and every existing row becomes the shared record of its code (owner
+  ``*``), keeping its ``reporting_sources``. The same rules as for SQLite apply, see the package
+  README. The migration runs in one transaction. Keep a copy of the database first: an earlier
+  release cannot use the migrated tables.
 - The audit log stays a local SQLite file, see ``audit_log.database_path``.
 - The node never logs ``database_url``. It logs host, port, database and user, or the service
   name. Error text from the server is logged and returned with the password from ``database_url``
@@ -172,16 +174,16 @@ The fault manager uses AUTOSAR DEM-style debounce filtering to prevent fault fla
    Faults with ``SEVERITY_CRITICAL`` always bypass debounce regardless of this setting.
    The bypass (``critical_immediate_confirm`` in the debounce config, on by default and not a ROS
    parameter) reads the **stored** severity of the fault record, not the severity of the report.
-   A record keeps the highest severity its source ever reported, across occurrences, so after a
-   CRITICAL occurrence is cleared, one WARN report from the same source confirms the next
-   occurrence at once, and the record shows CRITICAL. The same holds for a FAILED report on a
-   HEALED CRITICAL record: the latch does not hold it back. Another source's record of the same
-   code has its own severity and is not affected.
+   A record keeps the highest severity ever reported for it, across occurrences, so after a
+   CRITICAL occurrence is cleared, one WARN report confirms the next occurrence at once, and
+   the record shows CRITICAL. The same holds for a FAILED report on a HEALED CRITICAL record: the
+   latch does not hold it back. Another record of the same code (a ``per_source`` code has one per
+   source) has its own severity and is not affected.
 
 .. note::
 
    A FAILED report whose severity differs from the stored severity of its record is logged as a
-   warning naming the code, both severities and the source. One source should report one code
+   warning naming the code, both severities and the source. A source should report one code
    with one severity, so the warning points at a misconfigured reporter. It is logged once per
    code, source and reported severity until the node restarts, so a reporter that repeats the
    report at a high rate produces one line.
@@ -222,18 +224,20 @@ CONFIRMED - the fault nearly happened. PASSED reports move the counter in the he
 (the fault receding) and are not near misses.
 
 The fault manager appends one entry per near miss to the series of the fault record it moved (one
-series per fault code and reporting source), holding the timestamp, the counter value after the
-report, the confirmation threshold, the severity the report carried (not the stored severity of the
-record), the reporting source and the fault status the report left behind.
+series per record: per fault code, or per fault code and reporting source for a ``per_source``
+code), holding the timestamp, the counter value after the report, the confirmation threshold, the
+severity the report carried (not the stored severity of the record), the reporting source and the
+fault status the report left behind.
 
 The status matters when reading the series. The HEALED latch holds the status all the way from the
 healing threshold down to the confirmation threshold, so reports on the way back into a fault that
 does confirm are also near misses by the definition above. Entries recording ``PREFAILED`` are
 approaches from a resting state; entries recording ``HEALED`` are a counter walking back down under
-the latch. The recorded confirmation threshold and the counter both belong to the record's own
-reporting source, so with per-entity thresholds each entry still reads as the record's distance to
-confirmation. The series is **retained when the fault is cleared**, because acknowledging one
-fault cycle must not erase how often that record approached confirmation across cycles.
+the latch. The recorded confirmation threshold belongs to the reporting source, while the counter
+is shared by all sources of a shared record, so with per-entity thresholds it is not on its own the
+distance to confirmation (a ``per_source`` record has one source, and it is). The series is
+**retained when the fault is cleared**, because acknowledging one fault cycle must not erase how
+often that record approached confirmation across cycles.
 
 .. code-block:: yaml
 
@@ -316,8 +320,8 @@ threshold overrides:
 
 - The ``source_id`` is the identifier passed in ``ReportFault`` service requests, typically the
   fully qualified name of the reporting ROS 2 node (e.g., ``/sensors/lidar/front_node``).
-  It also owns the record it creates, so you can inspect actual ``source_id`` values in the
-  one-element ``reporting_sources`` field of existing faults via ``GET /api/v1/faults``.
+  You can inspect actual ``source_id`` values in the ``reporting_sources`` field of existing
+  faults via ``GET /api/v1/faults``.
 - The ``source_id`` from ``ReportFault`` requests is matched against configured prefixes.
 - The **longest matching prefix** wins. For example, ``/sensors/lidar/front`` matches
   ``/sensors/lidar`` over ``/sensors``.
@@ -327,11 +331,13 @@ threshold overrides:
 
 .. note::
 
-   When multiple entities report the same ``fault_code``, each of them owns its own
-   record and each event applies the thresholds resolved from that event's
-   ``source_id``. The debounce counter belongs to the same record, so an entity's
-   configured band governs exactly the counter its own reports move: one entity's
-   reports can neither confirm nor heal another entity's fault.
+   When multiple entities report the same ``fault_code``, each event applies the
+   thresholds resolved from that event's ``source_id``. This means the debounce
+   behavior follows the reporting entity, not the fault. The debounce counter,
+   however, belongs to the record, and the record of a code is shared by all its
+   sources unless the code is ``per_source``, so the two entities share one counter
+   under two policies - see `Per-Fault-Code Thresholds`_ for what that does and how to
+   settle it. The node warns when it happens.
 
    ``auto_confirm_after_sec`` is global-only and cannot be overridden per-entity.
    Critical faults skip debounce and confirm on their first occurrence; that is
@@ -341,18 +347,18 @@ Per-Fault-Code Thresholds
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Per-entity thresholds are the right tool when you know which subsystems are noisy but not
-which codes they will emit. They have one limit: the override is chosen per ``source_id``, so
-two entities reporting one code debounce it under two different policies, each on its own
-record's counter:
+which codes they will emit. They have one limit: the debounce counter is kept per record, and
+a code's record is shared by all its sources, while the override is chosen per ``source_id``.
+Two entities reporting one code therefore share a counter and debounce it under two policies,
+and the report that happens to arrive decides the transition:
 
 .. code-block:: text
 
-   motor  (confirmation_threshold=-5) reports OVERHEAT -> motor's record: counter=-1, PREFAILED
-   lidar  (confirmation_threshold=-1) reports OVERHEAT -> lidar's record: counter=-1, CONFIRMED
+   motor  (confirmation_threshold=-5) reports OVERHEAT -> counter=-1, PREFAILED
+   lidar  (confirmation_threshold=-1) reports OVERHEAT -> counter=-1, CONFIRMED
 
-When the policy should follow the code and not the reporter, per-fault_code thresholds are
-the layer that does it: they are matched on the code itself, so they resolve the same
-whoever reports.
+The motor's policy was bypassed. Per-fault_code thresholds are the layer that removes
+that: they are matched on the code itself, so they resolve the same whoever reports.
 
 .. code-block:: yaml
 
@@ -363,7 +369,7 @@ whoever reports.
          config_file: "/etc/ros2_medkit/fault_thresholds.yaml"
 
 The file is a map of fault codes to threshold overrides, the same three fields an entity
-override carries:
+override carries, plus ``per_source`` (see `Record Identity per Fault Code`_):
 
 .. code-block:: yaml
 
@@ -401,14 +407,78 @@ override carries:
 - Like the entity file, this one is loaded once at node startup. Changes require a restart.
 - At startup, a HEALED fault is reclassified to CLEARED when its code has healing disabled.
   The code's entry in this file decides, and the global ``healing_enabled`` applies when the
-  entry does not set it. Entity overrides are not used here: the pass runs before any source
-  has reported, so it has no ``source_id`` to match a prefix against.
+  entry does not set it. Entity overrides are not used here, because a stored fault belongs
+  to its code and can have several sources.
 
 .. note::
 
    An override that names only some fields settles only those. If ``MOTOR_OVERHEAT`` pins
    ``confirmation_threshold`` but not ``healing_threshold``, the healing direction still
-   follows whichever entity reported. Pin all three fields to settle a code completely.
+   follows whichever entity reported, and the node still reports the conflict below. Pin
+   all three fields to settle a code completely.
+
+**When one code is debounced two ways**
+
+The node resolves the policy for every report, and warns the first time two sources resolve
+different policies for the shared record of one code:
+
+.. code-block:: text
+
+   [WARN] Fault code 'OVERHEAT' is debounced two ways: '/powertrain/motor/left' resolves
+   confirmation=-5 healing_enabled=false healing=10, '/sensors/lidar/front' resolves
+   confirmation=-1 healing_enabled=true healing=1. The debounce counter belongs to the shared
+   record of the fault code, so whichever source reports decides the transition and the other
+   policy is bypassed. Pin confirmation_threshold, healing_enabled and healing_threshold for
+   this code in fault_thresholds.config_file, or set per_source: true there to give each source
+   its own record.
+
+The warning names both sources and both resolved policies, and is emitted **once per fault
+code** for the life of the node, so a busy reporter does not turn it into a log storm. It
+is a diagnostic, not an error: the configuration is legal and the fault is still debounced,
+just not under a policy an operator chose. Giving the code an entry in
+``fault_thresholds.config_file`` that pins all three fields, or ``per_source: true``, ends it.
+A ``per_source`` code has one source per record and never warns.
+
+Record Identity per Fault Code
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A fault record is identified by the pair (``fault_code``, owner). By default a code has **one record
+shared by all its reporting sources**: a FAILED from any source moves the one debounce counter, a
+PASSED from any source moves it back, ``reporting_sources`` lists every source that reported, and a
+clear ends the whole record. The shared record is owned by the reserved id ``*``.
+
+``per_source: true`` on a code's entry in ``fault_thresholds.config_file`` gives each reporting
+source **its own record** of that code, owned by the ``source_id`` of its reports. Each record has its
+own status, debounce counter, ``occurrence_count``, severity, snapshots, near-miss series and
+recordings, and is cleared and healed on its own.
+
+.. code-block:: yaml
+
+   # fault_thresholds.yaml
+   BATTERY_LOW:
+     per_source: true            # one record per reporting source
+     confirmation_threshold: -3
+
+   ESTOP:
+     confirmation_threshold: -1  # per_source absent: one record shared by all sources
+
+- ``per_source`` is a YAML boolean, ``true`` or ``false``. Absent means ``false``, and so does a code
+  with no entry. Any other value (``yes``, ``3``) rejects the whole file with an error, the same as
+  any other malformed value in it. Entity overrides do not carry the key.
+- ``ReportFault`` refuses ``*`` as a ``source_id``, because it names the shared record.
+- The services that act on one record (``ClearFault``, ``GetFault``, ``GetSnapshots``,
+  ``GetRosbag``) take a ``source_id``. It names the record it owns (``*`` for the shared one). When no
+  record has that owner, it names the record that source reports into, so a client that knows only a
+  reporting source still reaches the shared record of a default code. An empty ``source_id`` applies
+  when exactly one record carries the code, and is refused as ``ambiguous:`` when several do.
+- A record belongs to an entity when the entity is one of its ``reporting_sources``.
+- The file is read at startup. When a code is switched between the two modes, the records already
+  stored keep the identity they were written with, and new reports go to the configured one. The
+  node logs one warning per code that holds active records of the other identity, naming the
+  code, its configured mode and the owners found. Nothing stored is rewritten.
+- A database written when every code was one record opens with each row as the shared record of its
+  code, keeping its ``reporting_sources``, with its snapshots, freeze frame, recordings and near
+  misses attached to it.
 
 Snapshot Configuration
 ----------------------

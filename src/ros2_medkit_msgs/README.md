@@ -6,7 +6,7 @@ ROS 2 message and service definitions for the ros2_medkit fault management syste
 
 This package provides the interface definitions used by the fault management components:
 
-- **FaultManager** (`ros2_medkit_fault_manager`) - Central fault record store and lifecycle management
+- **FaultManager** (`ros2_medkit_fault_manager`) - Central fault aggregation and lifecycle management
 - **FaultReporter** (`ros2_medkit_fault_reporter`) - Client library for fault reporting
 - **Gateway** (`ros2_medkit_gateway`) - REST API endpoints for fault access
 
@@ -16,13 +16,16 @@ This package provides the interface definitions used by the fault management com
 
 Core fault data model representing one fault record with AUTOSAR DEM-style debounce filtering.
 
-A record is identified by the pair (`fault_code`, owning reporting source). The owner is the
-`source_id` a `ReportFault` call carried. Two sources reporting one `fault_code` are two records,
-each with its own status, debounce counter, `occurrence_count`, severity and timestamps, and each
-cleared on its own. The services that act on a single record (`ClearFault`, `GetFault`,
-`GetSnapshots`, `GetRosbag`) carry a `source_id` request field naming the owner. An empty
-`source_id` is unscoped: the call applies only when exactly one record carries the `fault_code`,
-and fails as ambiguous when several do.
+A record is identified by the pair (`fault_code`, owner). A code listed with `per_source: true`
+in `fault_thresholds.yaml` has one record per reporting source, owned by the `source_id` of the
+`ReportFault` call. Every other code has one record shared by all its sources, owned by the
+reserved id `*`, which `ReportFault` refuses as a `source_id`. Each record has its own status,
+debounce counter, `occurrence_count`, severity and timestamps, and is cleared on its own. The
+services that act on a single record (`ClearFault`, `GetFault`, `GetSnapshots`, `GetRosbag`) carry
+a `source_id` request field. It names the owner (`*` for a shared record). A reporting source that
+owns no record reaches the record it reports into. An empty `source_id` is unscoped: the call
+applies only when exactly one record carries the `fault_code`, and fails as ambiguous when
+several do.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -34,7 +37,7 @@ and fails as ambiguous when several do.
 | `last_passed` | builtin_interfaces/Time | When fault last reported PASSED (zero = never) |
 | `occurrence_count` | uint32 | Times this fault has occurred, counted on edges (first FAILED, then each FAILED that arrives while CLEARED). Repeats within one occurrence do not increment it |
 | `status` | string | Current status (see STATUS_* constants) |
-| `reporting_sources` | string[] | The reporting source that owns this record, as a one-element list |
+| `reporting_sources` | string[] | Every source that reported this record: one for a per-source record, all of them for a shared one |
 
 **Severity Levels:**
 | Constant | Value | Description |
@@ -136,7 +139,7 @@ Clear/acknowledge one fault record. Cleared records are retained and queryable w
 | Field | Type | Description |
 |-------|------|-------------|
 | `fault_code` | string | The fault code to clear |
-| `source_id` | string | Reporting source that owns the record. Empty means unscoped: the call applies only when exactly one record carries the `fault_code`, otherwise it fails with a message beginning `ambiguous:` and clears nothing |
+| `source_id` | string | Owner of the record (`*` for a shared record), or a source that reports into it. Empty means unscoped: the call applies only when exactly one record carries the `fault_code`, otherwise it fails with a message beginning `ambiguous:` and clears nothing |
 | `skip_correlation_auto_clear` | bool | When `true`, only the requested fault_code is cleared; symptom faults that the correlation engine would normally auto-clear via `auto_clear_with_root` rules are left untouched. Default `false` (cascade clear). The gateway sets this to `true` on per-entity `DELETE /{entity-path}/faults/{fault_code}` so that an operator with access to one entity cannot cascade-clear correlated symptoms reported by apps in other entities. |
 
 **Response:**

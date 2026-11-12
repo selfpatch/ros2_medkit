@@ -15,8 +15,10 @@
 
 """Integration tests for ros2_medkit_fault_manager services."""
 
+import atexit
 import json
 import os
+import tempfile
 import threading
 import time
 import unittest
@@ -72,6 +74,13 @@ def get_coverage_env():
 
 def generate_test_description():
     """Generate launch description with fault_manager node."""
+    # One code gets a record per source, for the scoped-clear test. Every other code is shared.
+    per_source_codes = tempfile.NamedTemporaryFile(
+        'w', suffix='.yaml', prefix='per_source_codes_', delete=False)
+    per_source_codes.write('TEST_SCOPED_CLEAR:\n  per_source: true\n')
+    per_source_codes.close()
+    atexit.register(os.unlink, per_source_codes.name)
+
     # Get path to test snapshot config
     pkg_share = get_package_share_directory('ros2_medkit_fault_manager')
     snapshot_config = os.path.join(pkg_share, 'test', 'test_snapshots.yaml')
@@ -96,6 +105,7 @@ def generate_test_description():
             'snapshots.capture_queue_depth': 2,
             'snapshots.capture_queue_full_policy': 'reject_newest',
             'correlation.config_file': correlation_config,  # Enable correlation
+            'fault_thresholds.config_file': per_source_codes.name,
         }],
         # Give the node room to flush coverage data at shutdown before SIGKILL.
         sigterm_timeout='30',
@@ -322,8 +332,8 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self.assertIn('empty', response.message.lower())
         print(f'Clear empty code response: {response.message}')
 
-    def test_10_two_sources_are_two_records(self):
-        """Two sources reporting one fault_code own two independent records."""
+    def test_10_report_updates_existing_fault(self):
+        """Test that reporting same fault_code updates existing fault."""
         fault_code = 'TEST_FAULT_UPDATE'
 
         # Report first time
@@ -337,17 +347,18 @@ class TestFaultManagerIntegration(unittest.TestCase):
         response1 = self._call_service(self.report_fault_client, request1)
         self.assertTrue(response1.accepted)
 
-        # Report second time from a different source, at a higher severity
+        # Report second time from different source
         request2 = ReportFault.Request()
         request2.fault_code = fault_code
         request2.event_type = ReportFault.Request.EVENT_FAILED
-        request2.severity = Fault.SEVERITY_ERROR
+        request2.severity = Fault.SEVERITY_ERROR  # Higher severity
         request2.description = 'Second report'
         request2.source_id = '/node2'
 
         response2 = self._call_service(self.report_fault_client, request2)
         self.assertTrue(response2.accepted)
 
+        # Verify fault was updated
         get_request = ListFaults.Request()
         get_request.filter_by_severity = False
         get_request.severity = 0
@@ -355,37 +366,34 @@ class TestFaultManagerIntegration(unittest.TestCase):
 
         get_response = self._call_service(self.list_faults_client, get_request)
 
-        by_owner = {}
+        updated_fault = None
         for f in get_response.faults:
             if f.fault_code == fault_code:
-                self.assertEqual(len(f.reporting_sources), 1)
-                by_owner[f.reporting_sources[0]] = f
+                updated_fault = f
+                break
 
-        self.assertEqual(sorted(by_owner), ['/node1', '/node2'])
-        # Severity is the record's own maximum, so one source reporting ERROR does
-        # not escalate the other source's record.
-        self.assertEqual(by_owner['/node1'].severity, Fault.SEVERITY_WARN)
-        self.assertEqual(by_owner['/node2'].severity, Fault.SEVERITY_ERROR)
-        self.assertEqual(by_owner['/node1'].description, 'First report')
-        self.assertEqual(by_owner['/node2'].description, 'Second report')
-        # Each record counts its own occurrences.
-        self.assertEqual(by_owner['/node1'].occurrence_count, 1)
-        self.assertEqual(by_owner['/node2'].occurrence_count, 1)
-        print(f'Two records for {fault_code}: owners={sorted(by_owner)}')
+        self.assertIsNotNone(updated_fault)
+        self.assertEqual(updated_fault.severity, Fault.SEVERITY_ERROR)
+        # Edge-counting: a re-report of a still-active fault is the same
+        # continuous occurrence, so the count stays at 1 (it only increments
+        # on reactivation after CLEARED).
+        self.assertEqual(updated_fault.occurrence_count, 1)
+        self.assertEqual(len(updated_fault.reporting_sources), 2)
+        print(f'Updated fault: occurrence_count={updated_fault.occurrence_count}, '
+              f'sources={updated_fault.reporting_sources}')
 
     def test_11_confirmation_workflow(self):
         """Test fault auto-confirms after reaching threshold (default=-3)."""
         fault_code = 'TEST_FAULT_CONFIRM'
 
-        # Report 3 times from ONE source: the debounce counter belongs to that
-        # source's record, so depth is what one reporter has said.
+        # Report fault 3 times (default threshold)
         for i in range(3):
             request = ReportFault.Request()
             request.fault_code = fault_code
             request.event_type = ReportFault.Request.EVENT_FAILED
             request.severity = Fault.SEVERITY_ERROR
             request.description = f'Report {i + 1}'
-            request.source_id = '/node1'
+            request.source_id = f'/node{i + 1}'
             self._call_service(self.report_fault_client, request)
 
         # Query CONFIRMED faults (should include our fault now)
@@ -446,22 +454,19 @@ class TestFaultManagerIntegration(unittest.TestCase):
         print('PREFAILED query found the fault as expected')
 
     def test_13_multi_source_confirmation(self):
-        """Each source reporting one fault_code confirms its own record."""
+        """Test fault confirms when multiple sources report same fault."""
         fault_code = 'TEST_FAULT_MULTI_SRC'
 
-        # Each of 3 sources reports enough times to confirm its OWN record. Under a
-        # shared counter three single reports confirmed one fault between them. Now
-        # each reporter has to reach its own threshold.
+        # Report from 3 different sources
         sources = ['/sensor1', '/sensor2', '/sensor3']
         for source in sources:
-            for _ in range(3):  # launch threshold is -3
-                request = ReportFault.Request()
-                request.fault_code = fault_code
-                request.event_type = ReportFault.Request.EVENT_FAILED
-                request.severity = Fault.SEVERITY_ERROR
-                request.description = 'Multi-source fault'
-                request.source_id = source
-                self._call_service(self.report_fault_client, request)
+            request = ReportFault.Request()
+            request.fault_code = fault_code
+            request.event_type = ReportFault.Request.EVENT_FAILED
+            request.severity = Fault.SEVERITY_ERROR
+            request.description = 'Multi-source fault'
+            request.source_id = source
+            self._call_service(self.report_fault_client, request)
 
         # Query and verify
         get_request = ListFaults.Request()
@@ -471,17 +476,14 @@ class TestFaultManagerIntegration(unittest.TestCase):
 
         response = self._call_service(self.list_faults_client, get_request)
 
-        matching = [f for f in response.faults if f.fault_code == fault_code]
-        self.assertEqual(len(matching), 3)
-        owners = []
-        for fault in matching:
-            self.assertEqual(fault.status, Fault.STATUS_CONFIRMED)
-            self.assertEqual(len(fault.reporting_sources), 1)
-            # Edge-counting is per record: one raise edge each.
-            self.assertEqual(fault.occurrence_count, 1)
-            owners.append(fault.reporting_sources[0])
-        self.assertEqual(sorted(owners), sorted(sources))
-        print(f'Three records confirmed: owners={sorted(owners)}')
+        fault = next((f for f in response.faults if f.fault_code == fault_code), None)
+        self.assertIsNotNone(fault)
+        self.assertEqual(fault.status, Fault.STATUS_CONFIRMED)
+        self.assertEqual(len(fault.reporting_sources), 3)
+        # Edge-counting: three sources reporting the same active fault are one
+        # continuous occurrence; the count tracks raise edges, not reports.
+        self.assertEqual(fault.occurrence_count, 1)
+        print(f'Multi-source fault confirmed: sources={fault.reporting_sources}')
 
     def test_14_critical_severity_immediate_confirmation(self):
         """Test CRITICAL severity bypasses debounce and confirms immediately."""
@@ -514,14 +516,14 @@ class TestFaultManagerIntegration(unittest.TestCase):
         """Test PASSED events increment debounce counter towards healing."""
         fault_code = 'TEST_FAULT_PASSED'
 
-        # Report 2 FAILED events from one source (its counter = -2)
+        # Report 2 FAILED events (counter = -2)
         for i in range(2):
             request = ReportFault.Request()
             request.fault_code = fault_code
             request.event_type = ReportFault.Request.EVENT_FAILED
             request.severity = Fault.SEVERITY_ERROR
             request.description = f'Failed report {i + 1}'
-            request.source_id = '/node1'
+            request.source_id = f'/node{i + 1}'
             self._call_service(self.report_fault_client, request)
 
         # Verify fault is PREFAILED
@@ -542,9 +544,7 @@ class TestFaultManagerIntegration(unittest.TestCase):
             request.event_type = ReportFault.Request.EVENT_PASSED
             request.severity = 0  # Ignored for PASSED
             request.description = ''  # Ignored for PASSED
-            # The same source: a PASSED moves the counter of the record its own
-            # source owns, and a source that owns no record has nothing to heal.
-            request.source_id = '/node1'
+            request.source_id = '/test_node'
             self._call_service(self.report_fault_client, request)
 
         # Verify fault is PREPASSED (counter > 0)
@@ -811,9 +811,7 @@ class TestFaultManagerIntegration(unittest.TestCase):
             request.event_type = ReportFault.Request.EVENT_FAILED
             request.severity = Fault.SEVERITY_CRITICAL
             request.description = f'Symptom: {symptom}'
-            # Same owner as the root cause: correlation relates records of one owner,
-            # so a root cause only explains faults its own reporter raised.
-            request.source_id = '/estop_node'
+            request.source_id = '/motor_node'
 
             response = self._call_service(self.report_fault_client, request)
             self.assertTrue(response.accepted)
@@ -849,10 +847,9 @@ class TestFaultManagerIntegration(unittest.TestCase):
         When ESTOP_001 is cleared, all its correlated symptoms should
         also be cleared (auto_clear_with_root=true).
         """
-        # Clear the root cause record
+        # Clear the root cause
         clear_request = ClearFault.Request()
         clear_request.fault_code = 'ESTOP_001'
-        clear_request.source_id = '/estop_node'
 
         clear_response = self._call_service(self.clear_fault_client, clear_request)
 
@@ -878,57 +875,6 @@ class TestFaultManagerIntegration(unittest.TestCase):
                            if m.root_cause_code == 'ESTOP_001']
         self.assertEqual(len(remaining_muted), 0)
         print('All symptoms auto-cleared with root cause')
-
-    def test_23b_auto_clear_stays_inside_one_owner(self):
-        """A root cause auto-clears only its own reporter's symptom record."""
-        # Two owners raise the same root cause and the same symptom.
-        for owner in ['/cascade_a', '/cascade_b']:
-            for code in ['ESTOP_001', 'MOTOR_COMM_CASCADE']:
-                request = ReportFault.Request()
-                request.fault_code = code
-                request.event_type = ReportFault.Request.EVENT_FAILED
-                request.severity = Fault.SEVERITY_CRITICAL
-                request.description = f'{code} from {owner}'
-                request.source_id = owner
-                self.assertTrue(self._call_service(self.report_fault_client, request).accepted)
-
-        clear_request = ClearFault.Request()
-        clear_request.fault_code = 'ESTOP_001'
-        clear_request.source_id = '/cascade_a'
-        clear_response = self._call_service(self.clear_fault_client, clear_request)
-        self.assertTrue(clear_response.success)
-        self.assertIn('MOTOR_COMM_CASCADE', clear_response.auto_cleared_codes)
-
-        # B's identical symptom is untouched: it is muted by B's own root cause,
-        # which nobody cleared.
-        get_request = ListFaults.Request()
-        get_request.filter_by_severity = False
-        get_request.statuses = [Fault.STATUS_CONFIRMED]
-        get_request.include_muted = True
-        faults = self._call_service(self.list_faults_client, get_request).faults
-
-        symptom_owners = sorted(f.reporting_sources[0] for f in faults
-                                if f.fault_code == 'MOTOR_COMM_CASCADE')
-        self.assertEqual(symptom_owners, ['/cascade_b'])
-
-        # include_muted left at its default on purpose: muting is per record, so the
-        # default query hides B's muted record alone and keeps A's cleared record,
-        # which carries the same code.
-        cleared_request = ListFaults.Request()
-        cleared_request.statuses = [Fault.STATUS_CLEARED]
-        cleared = [f for f in self._call_service(self.list_faults_client, cleared_request).faults
-                   if f.fault_code == 'MOTOR_COMM_CASCADE']
-        self.assertEqual([f.reporting_sources[0] for f in cleared], ['/cascade_a'])
-
-        # The same default query still hides the record that IS muted: B's symptom is
-        # CONFIRMED under B's own root cause and must not appear.
-        default_request = ListFaults.Request()
-        default_request.statuses = [Fault.STATUS_CONFIRMED]
-        default_confirmed = [f for f in
-                             self._call_service(self.list_faults_client, default_request).faults
-                             if f.fault_code == 'MOTOR_COMM_CASCADE']
-        self.assertEqual(default_confirmed, [])
-        print('Auto-clear cascade stayed inside one owner')
 
     def test_24_correlation_auto_cluster(self):
         """
@@ -1012,24 +958,23 @@ class TestFaultManagerIntegration(unittest.TestCase):
         response = self._call_service(self.report_fault_client, request)
         self.assertTrue(response.accepted)
 
-        # Clear that owner's record
+        # Clear the fault
         clear_request = ClearFault.Request()
         clear_request.fault_code = fault_code
-        clear_request.source_id = '/node1'
         clear_response = self._call_service(self.clear_fault_client, clear_request)
         self.assertTrue(clear_response.success)
 
-        # The same owner reports again - reactivates its own record
+        # Report again - should reactivate
         request = ReportFault.Request()
         request.fault_code = fault_code
         request.event_type = ReportFault.Request.EVENT_FAILED
         request.severity = Fault.SEVERITY_CRITICAL
         request.description = 'Reactivated'
-        request.source_id = '/node1'
+        request.source_id = '/node2'
         response = self._call_service(self.report_fault_client, request)
         self.assertTrue(response.accepted)
 
-        # Verify the record is CONFIRMED again, on its second occurrence
+        # Verify fault is CONFIRMED again
         get_request = ListFaults.Request()
         get_request.statuses = [Fault.STATUS_CONFIRMED]
         get_response = self._call_service(self.list_faults_client, get_request)
@@ -1038,8 +983,8 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self.assertIsNotNone(fault)
         self.assertEqual(fault.status, Fault.STATUS_CONFIRMED)
         self.assertEqual(fault.occurrence_count, 2)
-        self.assertEqual(fault.reporting_sources, ['/node1'])
-        print(f'Cleared record reactivated: occurrence_count={fault.occurrence_count}')
+        self.assertEqual(len(fault.reporting_sources), 2)
+        print(f'Cleared fault reactivated: occurrence_count={fault.occurrence_count}')
 
     def test_26b_scoped_clear_leaves_the_other_owners_record(self):
         """A scoped clear takes one record, an unscoped clear of two is refused."""

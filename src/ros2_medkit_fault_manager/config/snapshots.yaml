@@ -8,12 +8,13 @@
 #   2. patterns - regex pattern match on fault code
 #   3. default_topics - fallback for all other faults
 #   4. entity-default - zero-config fallback when nothing above matches:
-#      the owning reporting source node's own published topics are captured
+#      the reporting source node's own published topics are captured
 #      (parameter snapshots.entity_default, on by default)
 #
 # Resolution is by fault CODE: this file says what a code means, not who reported
-# it. What is written belongs to the RECORD, so two sources reporting one code
-# capture the same topics into two separate freeze frames.
+# it. What is written belongs to the RECORD, so two per_source records of one code
+# (fault_thresholds.config_file) capture the same topics into two separate freeze
+# frames.
 #
 # A fault code listed in fault_specific (or matched by a pattern) with an
 # EMPTY topic list is an explicit per-fault opt-out: nothing is captured and
@@ -109,7 +110,7 @@ rosbag:
   # Options:
   #   "entity"   - DEFAULT. Subscribe broadly for pre-roll, but on fault confirmation
   #                write only the faulting source node's topics (+ /tf, /tf_static),
-  #                resolved from the record's owning reporting source. Useful black box with
+  #                resolved from the record's reporting sources. Useful black box with
   #                zero per-topic config. Falls back to the full buffer if the source
   #                cannot be resolved to a live node.
   #   "config"   - Use same topics as JSON snapshots (from this config file)

@@ -76,11 +76,6 @@ const char * severity_name(uint8_t severity) {
   }
 }
 
-/// The owner a stored record names, empty when it names none.
-std::string owner_of(const fd::FaultRecord & record) {
-  return record.reporting_sources.empty() ? std::string() : record.reporting_sources.front();
-}
-
 std::string extract_topic_name(const std::string & topic_path) {
   auto pos = topic_path.rfind('/');
   if (pos != std::string::npos && pos < topic_path.length() - 1) {
@@ -184,7 +179,14 @@ std::optional<FaultId> FaultManagerCore::resolve_target_locked(const std::string
 
   try {
     if (!source_id.empty()) {
+      // The record the id owns, which is how a shared record (owner `*`) is addressed. Otherwise the
+      // record this source reports into, so a client that only knows a reporting source reaches the
+      // shared record of a default code.
       FaultId id{fault_code, source_id};
+      if (storage_->contains(id)) {
+        return id;
+      }
+      id = record_id_for(fault_code, source_id);
       if (!storage_->contains(id)) {
         error = "Fault not found: " + fault_code + " (source " + source_id + ")";
         return std::nullopt;
@@ -193,9 +195,9 @@ std::optional<FaultId> FaultManagerCore::resolve_target_locked(const std::string
     }
 
     // Unscoped. One record: the call means that record. Several: refuse rather than
-    // pick, because acting on an arbitrary owner's record is the failure this identity
-    // change exists to remove, and the caller cannot tell which one it got.
-    const auto candidates = storage_->get_faults_by_code(fault_code);
+    // pick, because acting on an arbitrary record is the failure the per-source choice
+    // exists to avoid, and the caller cannot tell which one it got.
+    const auto candidates = storage_->get_ids_by_code(fault_code);
     if (candidates.empty()) {
       error = "Fault not found: " + fault_code;
       return std::nullopt;
@@ -206,18 +208,25 @@ std::optional<FaultId> FaultManagerCore::resolve_target_locked(const std::string
         if (!owners.empty()) {
           owners += ", ";
         }
-        owners += owner_of(candidate);
+        owners += candidate.owner;
       }
-      error = "ambiguous: " + fault_code + " is reported by " + std::to_string(candidates.size()) + " sources (" +
+      error = "ambiguous: " + fault_code + " has " + std::to_string(candidates.size()) + " records, owned by (" +
               owners + "). Set source_id to pick one.";
       return std::nullopt;
     }
-    return FaultId{fault_code, owner_of(candidates.front())};
+    return candidates.front();
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     logf(log_, LogLevel::kWarn, config_.logger_name, "Failed to connect with the fault storage server: %s", e.what());
     error = storage_unavailable(e);
     return std::nullopt;
   }
+}
+
+FaultId FaultManagerCore::record_id_for(const std::string & fault_code, const std::string & source_id) const {
+  if (fault_code_resolver_ && fault_code_resolver_->per_source(fault_code)) {
+    return FaultId{fault_code, source_id};
+  }
+  return FaultId{fault_code, kSharedOwner};
 }
 
 std::vector<fd::FaultRecord> FaultManagerCore::list_for_entity(const std::string & entity_id) {
@@ -389,13 +398,17 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
     return reject("source_id cannot be empty");
   }
 
+  if (report.source_id == kSharedOwner) {
+    logf(log_, LogLevel::kWarn, logger, "ReportFault rejected: source_id '%s' is reserved", kSharedOwner);
+    return reject(std::string("source_id '") + kSharedOwner + "' is reserved");
+  }
+
   const auto connection_lost = [&](const FaultStorage::IgnorableConnectionException & e) {
     logf(log_, LogLevel::kWarn, logger, "Failed to connect with the fault storage server: %s", e.what());
   };
 
-  // The record this report addresses. The source_id owns it, so a report from a second source of the
-  // same code creates a second record instead of merging.
-  const FaultId id{report.fault_code, report.source_id};
+  // The record this report goes into: the source's own for a per_source code, else the code's shared one.
+  const FaultId id = record_id_for(report.fault_code, report.source_id);
 
   // Get status before update (if the record exists)
   std::optional<fd::FaultRecord> fault_before;
@@ -408,15 +421,14 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
   std::string status_before = fault_before ? fault_before->status : "";
 
   // Resolve the debounce config: global, then the entity override matching
-  // source_id, then the fault code's own override. The record and the config share
-  // an owner, so the resolved band always governs the counter it is applied to.
+  // source_id, then the fault code's own override.
   auto resolved_config = resolve_config(report.source_id, report.fault_code);
 
   const int64_t event_time_ns = clock_.now_ns();
   bool is_new = false;
   try {
-    is_new = storage_->report_fault_event(report.fault_code, report.kind, report.severity, report.description,
-                                          report.source_id, event_time_ns, resolved_config);
+    is_new = storage_->report_fault_event(id, report.kind, report.severity, report.description, report.source_id,
+                                          event_time_ns, resolved_config);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     connection_lost(e);
     return outcome;
@@ -438,6 +450,10 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
   }
 
   if (fault_after) {
+    // Only for records the store holds: a PASSED for an unknown record writes nothing, so it must
+    // not add an entry here either (the diagnostic bridge sends PASSED for every OK status).
+    warn_on_conflicting_debounce_policy(id, report.source_id, resolved_config);
+
     // Process through correlation engine (if enabled). Only FAILED events correlate.
     bool should_mute = false;
     if (correlation_ && failed) {
@@ -479,8 +495,7 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
       }
       just_confirmed = true;
     } else if (!is_new && fault_after->status == fd::fault_status::kConfirmed) {
-      // Record was already CONFIRMED, data updated (last_occurred, severity). Not
-      // reporting_sources: it names the one owner and never grows. Not
+      // Record was already CONFIRMED, data updated (last_occurred, severity, reporting_sources). Not
       // occurrence_count: a re-report inside one occurrence does not touch it.
       if (!should_mute) {
         publish_event(fd::fault_event_type::kUpdated, *fault_after);
@@ -666,8 +681,9 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, const std:
 ListOutcome FaultManagerCore::list_locked(const ListQuery & query) {
   const std::string & logger = config_.logger_name;
   ListOutcome outcome;
+  std::vector<FaultEntry> entries;
   try {
-    outcome.faults = storage_->list_faults(query.filter_by_severity, query.severity, query.statuses);
+    entries = storage_->list_fault_entries(query.filter_by_severity, query.severity, query.statuses);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     logf(log_, LogLevel::kWarn, logger, "Failed to connect with the fault storage server: %s", e.what());
     return outcome;
@@ -692,15 +708,13 @@ ListOutcome FaultManagerCore::list_locked(const ListQuery & query) {
         outcome.muted_faults.push_back(info);
       }
     } else {
-      // Hide the muted RECORDS, never every record of a muted code. A root cause mutes the symptoms of
-      // its own owner, so another owner's record of that same code was never suppressed and hiding it
-      // would drop a live fault from the default view.
-      auto & faults = outcome.faults;
-      faults.erase(std::remove_if(faults.begin(), faults.end(),
-                                  [this](const fd::FaultRecord & fault) {
-                                    return correlation_->is_muted(FaultId{fault.fault_code, owner_of(fault)});
-                                  }),
-                   faults.end());
+      // Hide the muted RECORDS, never every record of a muted code: a record the engine never muted
+      // stays in the default view.
+      entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                   [this](const FaultEntry & entry) {
+                                     return correlation_->is_muted(entry.id);
+                                   }),
+                    entries.end());
     }
 
     if (query.include_clusters) {
@@ -723,6 +737,11 @@ ListOutcome FaultManagerCore::list_locked(const ListQuery & query) {
         outcome.clusters.push_back(info);
       }
     }
+  }
+
+  outcome.faults.reserve(entries.size());
+  for (auto & entry : entries) {
+    outcome.faults.push_back(std::move(entry.record));
   }
 
   logf(log_, LogLevel::kDebug, logger, "ListFaults returned %zu faults (muted=%u, clusters=%u)", outcome.faults.size(),
@@ -870,10 +889,35 @@ void FaultManagerCore::warn_severity_mismatch(const fd::FaultReport & report, ui
   }
   logf(log_, LogLevel::kWarn, config_.logger_name,
        "Fault '%s' reported with severity %s by '%s', but its record is stored as %s. A record has one "
-       "severity and keeps the highest its source ever reported. Check the reporter's configuration. Logged "
+       "severity and keeps the highest ever reported. Check the reporter's configuration. Logged "
        "once per code, source and severity until restart.",
        report.fault_code.c_str(), severity_name(report.severity), report.source_id.c_str(),
        severity_name(stored_severity));
+}
+
+void FaultManagerCore::warn_on_conflicting_debounce_policy(const FaultId & id, const std::string & source_id,
+                                                           const DebounceConfig & resolved) {
+  if (id.owner != kSharedOwner) {
+    return;
+  }
+  auto [it, inserted] =
+      debounce_policy_witness_.try_emplace(id.fault_code, DebouncePolicyWitness{resolved, source_id, false});
+  if (inserted || it->second.warned || debounce_policy_equal(it->second.config, resolved)) {
+    return;
+  }
+
+  // One counter, two policies: the report that arrives decides the transition, so the other
+  // source's debounce policy is bypassed for as long as both report this code.
+  it->second.warned = true;
+  logf(log_, LogLevel::kWarn, config_.logger_name,
+       "Fault code '%s' is debounced two ways: '%s' resolves confirmation=%d healing_enabled=%s healing=%d, "
+       "'%s' resolves confirmation=%d healing_enabled=%s healing=%d. The debounce counter belongs to the shared "
+       "record of the fault code, so whichever source reports decides the transition and the other policy is "
+       "bypassed. Pin confirmation_threshold, healing_enabled and healing_threshold for this code in "
+       "fault_thresholds.config_file, or set per_source: true there to give each source its own record.",
+       id.fault_code.c_str(), it->second.source_id.c_str(), it->second.config.confirmation_threshold,
+       it->second.config.healing_enabled ? "true" : "false", it->second.config.healing_threshold, source_id.c_str(),
+       resolved.confirmation_threshold, resolved.healing_enabled ? "true" : "false", resolved.healing_threshold);
 }
 
 void FaultManagerCore::audit_transition(const char * transition, const fd::FaultRecord & fault,

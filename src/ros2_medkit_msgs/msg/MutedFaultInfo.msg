@@ -18,9 +18,9 @@
 # as events) but still stored. This message provides information about
 # muted records when queried with include_muted=true.
 #
-# One entry per muted RECORD. A root cause mutes the symptoms of its own
-# reporting source only, so two sources muted on one fault_code produce two
-# entries carrying that code, told apart by source_id.
+# One entry per muted RECORD. A root cause mutes the symptoms of its own record owner
+# only, so two per-source records muted on one fault_code produce two entries carrying
+# that code, told apart by source_id.
 
 # The fault code of the muted symptom
 string fault_code
@@ -34,7 +34,7 @@ string rule_id
 # Time delay from root cause to this symptom [ms]
 uint32 delay_ms
 
-# Reporting source that owns the muted record (the source_id used in ReportFault).
-# Together with fault_code it identifies the one record this entry describes, and
-# it is the value the single-record services take to address it.
+# Owner of the muted record: the reporting source for a per_source code, "*" for the
+# shared record. Together with fault_code it identifies the one record this entry
+# describes, and it is the value the single-record services take to address it.
 string source_id

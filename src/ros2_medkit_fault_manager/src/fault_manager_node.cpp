@@ -123,13 +123,12 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
 
   // Runs after the override files are loaded, so a code with its own healing_enabled: true keeps
   // its HEALED status. Each flipped fault is audited, or the audit log's verify() would not see it.
-  core::reclassify_stale_healed(
-      *storage_, core_->fault_code_resolver(), core_->global_debounce(), core_->audit_log() != nullptr, log_sink_,
-      config_.logger_name, [this](const fd::FaultRecord & fault, int64_t reclassified_at_ns) {
-        audit_transition(kTransitionCleared, fault,
-                         fault.reporting_sources.empty() ? std::string() : fault.reporting_sources.front(),
-                         reclassified_at_ns);
-      });
+  core::reclassify_stale_healed(*storage_, core_->fault_code_resolver(), core_->global_debounce(),
+                                core_->audit_log() != nullptr, log_sink_, config_.logger_name,
+                                [this](const FaultId & id, const fd::FaultRecord & fault, int64_t reclassified_at_ns) {
+                                  audit_transition(kTransitionCleared, fault, id.owner, reclassified_at_ns);
+                                });
+  core::warn_on_identity_mode_mismatch(*storage_, core_->fault_code_resolver(), log_sink_, config_.logger_name);
 
   // Create service servers
   report_fault_srv_ = create_service<ros2_medkit_msgs::srv::ReportFault>(

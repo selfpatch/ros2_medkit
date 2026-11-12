@@ -12,8 +12,8 @@ fault_manager:
 
     # Near-miss series: one appended entry per FAILED report that moved the
     # debounce counter without confirming. Retained across clear_fault, bounded
-    # per record - one (fault_code, reporting source) pair - oldest evicted
-    # first. 0 = unlimited (grows with the reporting rate).
+    # per record, oldest evicted first. 0 = unlimited (grows with the
+    # reporting rate).
     # near_miss.max_per_fault: 200
 
     # Healing OFF by default: a recovery signal (e.g. action SUCCEEDED) does not

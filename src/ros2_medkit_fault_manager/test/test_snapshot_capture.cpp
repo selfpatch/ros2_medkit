@@ -527,9 +527,9 @@ class EntityDefaultCaptureTest : public SnapshotCaptureTest {
   /// Store a CONFIRMED fault whose reporting source is this test node.
   void store_fault_from_this_node(const std::string & fault_code) {
     ros2_medkit_fault_manager::DebounceConfig debounce;  // threshold -1: first FAILED confirms
-    storage_->report_fault_event(fault_code, fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
-                                 "test fault", node_->get_fully_qualified_name(), rclcpp::Clock().now().nanoseconds(),
-                                 debounce);
+    storage_->report_fault_event(ros2_medkit_fault_manager::FaultId{fault_code, node_->get_fully_qualified_name()},
+                                 fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "test fault",
+                                 node_->get_fully_qualified_name(), rclcpp::Clock().now().nanoseconds(), debounce);
   }
 
   /// The record this node owns: the entity-default scope is resolved from the owner.
@@ -678,8 +678,9 @@ TEST_F(EntityDefaultCaptureTest, UnresolvableSourceWritesNoRow) {
 
   // Plugin-style bare entity id: not a live node, resolves to no topics.
   ros2_medkit_fault_manager::DebounceConfig debounce;
-  storage_->report_fault_event("PLC_FAULT", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
-                               "plc fault", "plc_app", rclcpp::Clock().now().nanoseconds(), debounce);
+  storage_->report_fault_event(ros2_medkit_fault_manager::FaultId{"PLC_FAULT", "plc_app"}, fd::ReportKind::kFailed,
+                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "plc fault", "plc_app",
+                               rclcpp::Clock().now().nanoseconds(), debounce);
 
   capture.capture({"PLC_FAULT", "plc_app"});
 
@@ -700,8 +701,9 @@ TEST_F(EntityDefaultCaptureTest, BarePluginIdNeverMatchesSameNamedNode) {
   SnapshotCapture capture(node_.get(), storage_.get(), config);
 
   ros2_medkit_fault_manager::DebounceConfig debounce;
-  storage_->report_fault_event("BARE_ID_FAULT", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
-                               "plugin fault", node_->get_name(), rclcpp::Clock().now().nanoseconds(), debounce);
+  storage_->report_fault_event(ros2_medkit_fault_manager::FaultId{"BARE_ID_FAULT", node_->get_name()},
+                               fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "plugin fault",
+                               node_->get_name(), rclcpp::Clock().now().nanoseconds(), debounce);
 
   ScopedPublisherThread pub_thread([&pub](std::atomic<bool> & stop) {
     while (!stop.load()) {
@@ -733,8 +735,9 @@ void await_publisher(const std::shared_ptr<rclcpp::Node> & node, const std::stri
 /// Put the fault in the store as CONFIRMED, the way a real confirmation would.
 void confirm_fault(ros2_medkit_fault_manager::FaultStorage * storage, const std::string & code) {
   rclcpp::Clock clock;
-  storage->report_fault_event(code, fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "test",
-                              "/node", clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
+  storage->report_fault_event(ros2_medkit_fault_manager::FaultId{code, "/node"}, fd::ReportKind::kFailed,
+                              ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "test", "/node", clock.now().nanoseconds(),
+                              ros2_medkit_fault_manager::DebounceConfig{});
 }
 
 }  // namespace

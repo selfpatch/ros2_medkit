@@ -50,6 +50,11 @@ constexpr const char * kDefaultKeepalivesIdle = "5";
 /// Time after a failed connection round before the next one. Requests in between fail at once.
 constexpr std::chrono::seconds kReconnectBackoff{5};
 
+/// Columns every fault read selects; PgFaultStorage::read_fault_row decodes them.
+constexpr const char * kFaultColumns =
+    "fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count, status, "
+    "reporting_sources, last_passed_ns, owner";
+
 /// Parsed connection options by keyword, or nullopt when libpq rejects the string.
 std::optional<std::map<std::string, std::string>> parse_conn_info(const std::string & conn_info) {
   char * err = nullptr;
@@ -329,52 +334,6 @@ void PgFaultStorage::drop_primary_key(pqxx::work & tx, const char * table) const
   }
 }
 
-bool PgFaultStorage::has_assignable_child_rows(pqxx::work & tx) const {
-  if (!table_exists(tx, "faults") || !table_has_column(tx, "faults", "owner")) {
-    return false;
-  }
-  for (const char * table : {"freeze_frames", "snapshots", "rosbag_files"}) {
-    if (!table_exists(tx, table) || !table_has_column(tx, table, "owner")) {
-      continue;  // the column arrives with the migration, which then fills it
-    }
-    // The same condition the backfill's UPDATE applies, so "is there work" and "what the work
-    // does" cannot disagree.
-    const std::string sql = std::string("SELECT 1 FROM ") + table +
-                            " t WHERE t.owner = '' AND (SELECT COUNT(DISTINCT f.owner) FROM faults f "
-                            "WHERE f.fault_code = t.fault_code) = 1 LIMIT 1";
-    if (!execute(tx, sql).empty()) {
-      return true;
-    }
-  }
-  return false;
-}
-
-void PgFaultStorage::backfill_child_owners(pqxx::work & tx) const {
-  for (const char * table : {"freeze_frames", "snapshots", "rosbag_files"}) {
-    if (!table_exists(tx, table) || !table_has_column(tx, table, "owner")) {
-      continue;
-    }
-
-    // Correlated on the child row's own fault_code and applied only where that code has exactly
-    // ONE owner, so a code with two owners never hands one owner's evidence to the other.
-    execute(tx, std::string("UPDATE ") + table +
-                    " SET owner = (SELECT MIN(f.owner) FROM faults f WHERE f.fault_code = " + table +
-                    ".fault_code) WHERE owner = '' AND (SELECT COUNT(DISTINCT f.owner) FROM faults f WHERE "
-                    "f.fault_code = " +
-                    table + ".fault_code) = 1");
-
-    // What is left is evidence for a code no fault row carries any more, or for a code several
-    // owners share. Neither can be assigned without guessing, so it is named and kept.
-    const auto leftover = execute(tx, std::string("SELECT fault_code, COUNT(*) AS n FROM ") + table +
-                                          " WHERE owner = '' GROUP BY fault_code");
-    for (const auto & r : leftover) {
-      core::logf(log_sink_, core::LogLevel::kWarn, "postgres_fault_storage",
-                 "%s: %lld row(s) for fault '%s' keep an empty owner, the code has no single owner to assign them to",
-                 table, static_cast<long long>(r["n"].as<int64_t>()), r["fault_code"].as<std::string>().c_str());
-    }
-  }
-}
-
 void PgFaultStorage::migrate_to_owner_identity(pqxx::work & tx) const {
   // Probed per table: a table that does not exist yet is built in the new layout by create_schema.
   const auto needs_owner = [&](const char * table) {
@@ -384,62 +343,57 @@ void PgFaultStorage::migrate_to_owner_identity(pqxx::work & tx) const {
   const bool freeze_frames_needs_owner = needs_owner("freeze_frames");
   const bool snapshots_needs_owner = needs_owner("snapshots");
   const bool rosbag_files_needs_owner = needs_owner("rosbag_files");
+  const bool near_misses_needs_owner = needs_owner("near_misses");
 
   if (!faults_needs_owner && !freeze_frames_needs_owner && !snapshots_needs_owner && !rosbag_files_needs_owner &&
-      !has_assignable_child_rows(tx)) {
-    return;  // fresh database, or fully migrated - safe to re-run on every connection
+      !near_misses_needs_owner) {
+    return;  // fresh database, or already migrated - safe to re-run on every connection
   }
+
+  // Every row of a legacy table is a shared record: the old layout held one row per fault code,
+  // fed by every source. The row keeps its reporting_sources as written, and every child row
+  // attaches to that shared record.
+  const std::string shared = kSharedOwner;
 
   if (faults_needs_owner) {
     drop_primary_key(tx, "faults");
+    // A pending row carries a confirmation time from the occurrence before a reactivation.
     execute(tx, "ALTER TABLE faults ADD COLUMN owner TEXT NOT NULL DEFAULT ''");
-
-    // The owner is the first reporting source the row recorded. reporting_sources is rewritten to
-    // that one owner, as every write keeps it afterwards.
-    const auto rows = execute(tx, "SELECT fault_code, reporting_sources, status, confirmed_at_ns FROM faults");
-    for (const auto & r : rows) {
-      const std::string fault_code = r["fault_code"].as<std::string>();
-      const auto sources = parse_json_array(r["reporting_sources"].as<std::string>());
-      const std::string owner =
-          (sources.empty() || sources.front().empty()) ? std::string(kLegacyOwner) : sources.front();
-      if (owner == kLegacyOwner) {
-        core::logf(log_sink_, core::LogLevel::kWarn, "postgres_fault_storage",
-                   "Fault '%s' carried no readable reporting source, migrated under owner '%s'", fault_code.c_str(),
-                   kLegacyOwner);
-      }
-      // A pending row carries a confirmation time from the occurrence before a reactivation.
-      const std::string status = r["status"].as<std::string>();
-      const bool pending = status == fd::fault_status::kPrefailed || status == fd::fault_status::kPrepassed;
-      execute(tx, "UPDATE faults SET owner = $1, reporting_sources = $2, confirmed_at_ns = $3 WHERE fault_code = $4",
-              owner, serialize_json_array({owner}), pending ? int64_t{0} : r["confirmed_at_ns"].as<int64_t>(),
-              fault_code);
-    }
+    execute(tx,
+            "UPDATE faults SET owner = $1, confirmed_at_ns = CASE WHEN status IN ('PREFAILED', 'PREPASSED') "
+            "THEN 0 ELSE confirmed_at_ns END",
+            shared);
   }
-
   if (freeze_frames_needs_owner) {
     drop_primary_key(tx, "freeze_frames");
     execute(tx, "ALTER TABLE freeze_frames ADD COLUMN owner TEXT NOT NULL DEFAULT ''");
+    execute(tx, "UPDATE freeze_frames SET owner = $1", shared);
   }
   if (snapshots_needs_owner) {
     execute(tx, "ALTER TABLE snapshots ADD COLUMN owner TEXT NOT NULL DEFAULT ''");
+    execute(tx, "UPDATE snapshots SET owner = $1", shared);
   }
   if (rosbag_files_needs_owner) {
     execute(tx, "ALTER TABLE rosbag_files ADD COLUMN owner TEXT NOT NULL DEFAULT ''");
+    execute(tx, "UPDATE rosbag_files SET owner = $1", shared);
     // CREATE INDEX IF NOT EXISTS in create_schema keeps an index that exists, so the two indexes
     // that carry fault_code are dropped to be rebuilt with owner.
     execute(tx, "DROP INDEX IF EXISTS idx_rosbag_files_fault_path");
     execute(tx, "DROP INDEX IF EXISTS idx_rosbag_files_fault_created");
   }
-
-  backfill_child_owners(tx);
+  if (near_misses_needs_owner) {
+    execute(tx, "ALTER TABLE near_misses ADD COLUMN owner TEXT NOT NULL DEFAULT ''");
+    execute(tx, "UPDATE near_misses SET owner = $1", shared);
+  }
 }
 
 void PgFaultStorage::create_schema(pqxx::work & tx) const {
   migrate_to_owner_identity(tx);
 
-  // A row is one fault RECORD, identified by (fault_code, owner). owner is the reporting
-  // source; reporting_sources keeps it serialised so a raw-table reader still sees the
-  // field it always saw. Uniqueness through the index below, the same shape as SQLite.
+  // A row is one fault RECORD, identified by (fault_code, owner). owner is the shared owner
+  // for a code every source feeds, or the source_id for a per_source code; reporting_sources
+  // lists every source that reported the record. Uniqueness through the index below, the
+  // same shape as SQLite.
   execute(tx, R"(
       CREATE TABLE IF NOT EXISTS faults (
         fault_code TEXT NOT NULL,
@@ -488,12 +442,14 @@ void PgFaultStorage::create_schema(pqxx::work & tx) const {
   // Create near_misses table: append-only series of FAILED reports that moved the debounce
   // counter without confirming the fault. One row per qualifying report, never updated in
   // place, and NOT removed on clear_fault - acknowledging a fault cycle must not erase how
-  // often that code approached confirmation. Bounded per fault code by the caller-supplied
-  // limit, evicting the oldest rows first.
+  // often that code approached confirmation. A row belongs to the record named by
+  // (fault_code, owner) and keeps the source_id that reported it. Bounded per record by the
+  // caller-supplied limit, evicting the oldest rows first.
   execute(tx, R"(
       CREATE TABLE IF NOT EXISTS near_misses (
         id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
         fault_code TEXT NOT NULL,
+        owner TEXT NOT NULL DEFAULT '',
         occurred_at_ns BIGINT NOT NULL,
         debounce_counter INTEGER NOT NULL,
         confirmation_threshold INTEGER NOT NULL,
@@ -501,7 +457,8 @@ void PgFaultStorage::create_schema(pqxx::work & tx) const {
         source_id TEXT NOT NULL,
         resulting_status TEXT NOT NULL DEFAULT ''
       );
-      CREATE INDEX IF NOT EXISTS idx_near_misses_fault_code ON near_misses(fault_code, id);
+      DROP INDEX IF EXISTS idx_near_misses_fault_code;
+      CREATE INDEX IF NOT EXISTS idx_near_misses_record ON near_misses(fault_code, owner, id);
     )");
 
   // Create rosbag_files table. One row = one LINK (a fault claiming a recording):
@@ -534,7 +491,7 @@ void PgFaultStorage::create_schema(pqxx::work & tx) const {
         FROM faults LIMIT 0;
       SELECT id, fault_code, owner, topic, message_type, data, captured_at_ns, capture_id FROM snapshots LIMIT 0;
       SELECT fault_code, owner, data, captured_at_ns FROM freeze_frames LIMIT 0;
-      SELECT id, fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, severity, source_id,
+      SELECT id, fault_code, owner, occurred_at_ns, debounce_counter, confirmation_threshold, severity, source_id,
              resulting_status
         FROM near_misses LIMIT 0;
       SELECT id, fault_code, owner, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns
@@ -676,7 +633,21 @@ std::string PgFaultStorage::serialize_json_array(const std::vector<std::string> 
   return oss.str();
 }
 
-bool PgFaultStorage::report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
+fd::FaultRecord PgFaultStorage::read_fault_row(const pqxx::row & r) const {
+  fd::FaultRecord fault;
+  fault.fault_code = r["fault_code"].as<std::string>();
+  fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
+  fault.description = r["description"].as<std::string>();
+  fault.first_occurred_ns = r["first_occurred_ns"].as<int64_t>();
+  fault.last_occurred_ns = r["last_occurred_ns"].as<int64_t>();
+  fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
+  fault.status = r["status"].as<std::string>();
+  fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
+  fault.last_passed_ns = r["last_passed_ns"].as<int64_t>();
+  return fault;
+}
+
+bool PgFaultStorage::report_fault_event(const FaultId & id, fd::ReportKind kind, uint8_t severity,
                                         const std::string & description, const std::string & source_id,
                                         int64_t timestamp_ns, const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -687,28 +658,29 @@ bool PgFaultStorage::report_fault_event(const std::string & fault_code, fd::Repo
   // advance it a second time and the near miss it retried for would still be
   // missing from the series. run_in_transaction commits both rows together.
   return run_in_transaction("report_fault_event", [&](pqxx::work & tx) {
-    return report_fault_event_locked(fault_code, kind, severity, description, source_id, timestamp_ns, config, tx);
+    return report_fault_event_locked(id, kind, severity, description, source_id, timestamp_ns, config, tx);
   });
 }
 
-bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
+bool PgFaultStorage::report_fault_event_locked(const FaultId & id, fd::ReportKind kind, uint8_t severity,
                                                const std::string & description, const std::string & source_id,
                                                int64_t timestamp_ns, const DebounceConfig & config, pqxx::work & tx) {
   const bool is_failed = (kind == fd::ReportKind::kFailed);
+  const std::string & fault_code = id.fault_code;
 
   // No row lock needed: mutex_ serializes every call on this connection, and one database belongs to exactly one
   // fault manager.
-  // Check if the record exists. The report is addressed to (fault_code, source_id):
-  // another source's record of the same code is a different row and is not touched.
+  // Check if the record exists. Another record of the same code is a different row and is not touched.
   auto res = execute(tx,
-                     "SELECT severity, occurrence_count, status, debounce_counter, confirmed_at_ns, "
-                     "first_occurred_ns FROM faults WHERE fault_code = $1 AND owner = $2",
-                     fault_code, source_id);
+                     "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter, "
+                     "confirmed_at_ns, first_occurred_ns FROM faults WHERE fault_code = $1 AND owner = $2",
+                     fault_code, id.owner);
 
   if (!res.empty()) {
     // Record exists - update it
     int existing_severity = res[0]["severity"].as<int>();
     int64_t existing_count = res[0]["occurrence_count"].as<int64_t>();
+    std::string sources_json = res[0]["reporting_sources"].as<std::string>();
     std::string current_status = res[0]["status"].as<std::string>();
     int32_t debounce_counter = res[0]["debounce_counter"].as<int32_t>();
     int64_t confirmed_at_ns = res[0]["confirmed_at_ns"].as<int64_t>();
@@ -738,8 +710,13 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, f
 
     if (is_failed) {
       // FAILED event
-      // Escalate severity if new severity is higher. Per record: a CRITICAL from one
-      // owner does not escalate another owner's record of the same code.
+      // Parse existing sources and add new one
+      std::vector<std::string> sources = parse_json_array(sources_json);
+      std::set<std::string> sources_set(sources.begin(), sources.end());
+      sources_set.insert(source_id);
+      sources.assign(sources_set.begin(), sources_set.end());
+
+      // Escalate severity if new severity is higher
       int new_severity = std::max(existing_severity, static_cast<int>(severity));
 
       // Increment count with saturation - only on a genuine new occurrence (reactivation
@@ -770,27 +747,24 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, f
         confirmed_at_ns = timestamp_ns;
       }
 
-      // reporting_sources is not touched: it is the one owner, fixed at insert, and this
-      // row is already that owner's.
       if (description.empty()) {
         execute(tx,
                 "UPDATE faults SET severity = $1, last_occurred_ns = $2, last_failed_ns = $3, occurrence_count = $4, "
-                "status = $5, debounce_counter = $6, confirmed_at_ns = $7, "
-                "first_occurred_ns = $8 WHERE fault_code = $9 AND owner = $10",
-                new_severity, timestamp_ns, timestamp_ns, new_count, new_status, debounce_counter, confirmed_at_ns,
-                first_occurred_ns, fault_code, source_id);
+                "reporting_sources = $5, status = $6, debounce_counter = $7, confirmed_at_ns = $8, "
+                "first_occurred_ns = $9 WHERE fault_code = $10 AND owner = $11",
+                new_severity, timestamp_ns, timestamp_ns, new_count, serialize_json_array(sources), new_status,
+                debounce_counter, confirmed_at_ns, first_occurred_ns, fault_code, id.owner);
       } else {
         execute(tx,
                 "UPDATE faults SET severity = $1, description = $2, last_occurred_ns = $3, last_failed_ns = $4, "
-                "occurrence_count = $5, status = $6, debounce_counter = $7, "
-                "confirmed_at_ns = $8, first_occurred_ns = $9 WHERE fault_code = $10 AND owner = $11",
-                new_severity, description, timestamp_ns, timestamp_ns, new_count, new_status, debounce_counter,
-                confirmed_at_ns, first_occurred_ns, fault_code, source_id);
+                "occurrence_count = $5, reporting_sources = $6, status = $7, debounce_counter = $8, "
+                "confirmed_at_ns = $9, first_occurred_ns = $10 WHERE fault_code = $11 AND owner = $12",
+                new_severity, description, timestamp_ns, timestamp_ns, new_count, serialize_json_array(sources),
+                new_status, debounce_counter, confirmed_at_ns, first_occurred_ns, fault_code, id.owner);
       }
 
       if (is_near_miss(true, new_status)) {
-        record_near_miss_locked(fault_code, timestamp_ns, debounce_counter, config, severity, source_id, new_status,
-                                tx);
+        record_near_miss_locked(id, timestamp_ns, debounce_counter, config, severity, source_id, new_status, tx);
       }
     } else {
       // PASSED event - increment towards healing, clamped to the thresholds.
@@ -804,15 +778,15 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, f
       execute(tx,
               "UPDATE faults SET last_passed_ns = $1, status = $2, debounce_counter = $3 "
               "WHERE fault_code = $4 AND owner = $5",
-              timestamp_ns, new_status, debounce_counter, fault_code, source_id);
+              timestamp_ns, new_status, debounce_counter, fault_code, id.owner);
     }
 
     return is_reactivation;  // Reactivation treated as new occurrence for event publishing
   }
 
-  // New fault - only create for FAILED events
+  // New record - only create one for FAILED events
   if (!is_failed) {
-    return false;  // PASSED event for non-existent fault is ignored
+    return false;  // PASSED event for non-existent record is ignored
   }
 
   // Determine initial status based on debounce logic (shared with the in-memory backend).
@@ -832,17 +806,17 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, f
       "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
       fault_code, static_cast<int>(severity), description, timestamp_ns, timestamp_ns, 1 /* occurrence_count = 1 */,
       initial_status, serialize_json_array({source_id}), initial_counter, timestamp_ns, 0,
-      confirmed_now ? timestamp_ns : 0, source_id);
+      confirmed_now ? timestamp_ns : 0, id.owner);
 
   if (is_near_miss(true, initial_status)) {
-    record_near_miss_locked(fault_code, timestamp_ns, initial_counter, config, severity, source_id, initial_status, tx);
+    record_near_miss_locked(id, timestamp_ns, initial_counter, config, severity, source_id, initial_status, tx);
   }
 
   return true;  // New fault created
 }
 
-std::vector<fd::FaultRecord> PgFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
-                                                         const std::vector<std::string> & statuses) const {
+std::vector<FaultEntry> PgFaultStorage::list_fault_entries(bool filter_by_severity, uint8_t severity,
+                                                           const std::vector<std::string> & statuses) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Determine which statuses to include
@@ -863,30 +837,19 @@ std::vector<fd::FaultRecord> PgFaultStorage::list_faults(bool filter_by_severity
   const std::vector<std::string> status_filter_vector(status_filter.begin(), status_filter.end());
 
   // Build query
-  std::string sql =
-      "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count, status, "
-      "reporting_sources, last_passed_ns FROM faults WHERE status = ANY($1) ";
+  std::string sql = std::string("SELECT ") + kFaultColumns + " FROM faults WHERE status = ANY($1) ";
   if (filter_by_severity) {
     sql += " AND severity = $2";
   }
 
-  return run_in_transaction("list_faults", [&](pqxx::work & tx) {
+  return run_in_transaction("list_fault_entries", [&](pqxx::work & tx) {
     auto res = filter_by_severity ? execute(tx, sql, status_filter_vector, static_cast<int>(severity))
                                   : execute(tx, sql, status_filter_vector);
 
-    std::vector<fd::FaultRecord> result;
+    std::vector<FaultEntry> result;
     for (const auto & r : res) {
-      fd::FaultRecord fault;
-      fault.fault_code = r["fault_code"].as<std::string>();
-      fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
-      fault.description = r["description"].as<std::string>();
-      fault.first_occurred_ns = r["first_occurred_ns"].as<int64_t>();
-      fault.last_occurred_ns = r["last_occurred_ns"].as<int64_t>();
-      fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
-      fault.status = r["status"].as<std::string>();
-      fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
-      fault.last_passed_ns = r["last_passed_ns"].as<int64_t>();
-      result.push_back(fault);
+      result.push_back(
+          FaultEntry{FaultId{r["fault_code"].as<std::string>(), r["owner"].as<std::string>()}, read_fault_row(r)});
     }
     return result;
   });
@@ -896,51 +859,23 @@ std::optional<fd::FaultRecord> PgFaultStorage::get_fault(const FaultId & id) con
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("get_fault", [&](pqxx::work & tx) -> std::optional<fd::FaultRecord> {
-    auto res = execute(tx,
-                       "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
-                       "occurrence_count, status, reporting_sources, last_passed_ns FROM faults "
-                       "WHERE fault_code = $1 AND owner = $2",
+    auto res = execute(tx, std::string("SELECT ") + kFaultColumns + " FROM faults WHERE fault_code = $1 AND owner = $2",
                        id.fault_code, id.owner);
     if (res.empty()) {
       return std::nullopt;
     }
-    auto r = res[0];
-    fd::FaultRecord fault;
-    fault.fault_code = r["fault_code"].as<std::string>();
-    fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
-    fault.description = r["description"].as<std::string>();
-    fault.first_occurred_ns = r["first_occurred_ns"].as<int64_t>();
-    fault.last_occurred_ns = r["last_occurred_ns"].as<int64_t>();
-    fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
-    fault.status = r["status"].as<std::string>();
-    fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
-    fault.last_passed_ns = r["last_passed_ns"].as<int64_t>();
-    return fault;
+    return read_fault_row(res[0]);
   });
 }
 
-std::vector<fd::FaultRecord> PgFaultStorage::get_faults_by_code(const std::string & fault_code) const {
+std::vector<FaultId> PgFaultStorage::get_ids_by_code(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  return run_in_transaction("get_faults_by_code", [&](pqxx::work & tx) {
-    auto res = execute(tx,
-                       "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
-                       "occurrence_count, status, reporting_sources, last_passed_ns FROM faults "
-                       "WHERE fault_code = $1 ORDER BY owner ASC",
-                       fault_code);
-    std::vector<fd::FaultRecord> result;
+  return run_in_transaction("get_ids_by_code", [&](pqxx::work & tx) {
+    auto res = execute(tx, "SELECT owner FROM faults WHERE fault_code = $1 ORDER BY owner ASC", fault_code);
+    std::vector<FaultId> result;
     for (const auto & r : res) {
-      fd::FaultRecord fault;
-      fault.fault_code = r["fault_code"].as<std::string>();
-      fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
-      fault.description = r["description"].as<std::string>();
-      fault.first_occurred_ns = r["first_occurred_ns"].as<int64_t>();
-      fault.last_occurred_ns = r["last_occurred_ns"].as<int64_t>();
-      fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
-      fault.status = r["status"].as<std::string>();
-      fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
-      fault.last_passed_ns = r["last_passed_ns"].as<int64_t>();
-      result.push_back(std::move(fault));
+      result.push_back(FaultId{fault_code, r["owner"].as<std::string>()});
     }
     return result;
   });
@@ -1215,7 +1150,7 @@ size_t PgFaultStorage::set_max_near_misses_per_fault(size_t max_count) {
     auto res = execute(tx,
                        "DELETE FROM near_misses WHERE id IN ("
                        "SELECT id FROM (SELECT id, ROW_NUMBER() OVER "
-                       "(PARTITION BY fault_code, source_id ORDER BY id DESC) AS rn FROM near_misses) AS ranked "
+                       "(PARTITION BY fault_code, owner ORDER BY id DESC) AS rn FROM near_misses) AS ranked "
                        "WHERE rn > $1)",
                        static_cast<int64_t>(max_count));
     // Returned rather than logged: the storage layer has no logger, and a bound applied by mistake
@@ -1224,15 +1159,15 @@ size_t PgFaultStorage::set_max_near_misses_per_fault(size_t max_count) {
   });
 }
 
-void PgFaultStorage::record_near_miss_locked(const std::string & fault_code, int64_t occurred_at_ns,
-                                             int32_t debounce_counter, const DebounceConfig & config, uint8_t severity,
+void PgFaultStorage::record_near_miss_locked(const FaultId & id, int64_t occurred_at_ns, int32_t debounce_counter,
+                                             const DebounceConfig & config, uint8_t severity,
                                              const std::string & source_id, const std::string & resulting_status,
                                              pqxx::work & tx) {
   execute(tx,
-          "INSERT INTO near_misses (fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, severity, "
-          "source_id, resulting_status) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-          fault_code, occurred_at_ns, debounce_counter, config.confirmation_threshold, static_cast<int>(severity),
-          source_id, resulting_status);
+          "INSERT INTO near_misses (fault_code, owner, occurred_at_ns, debounce_counter, confirmation_threshold, "
+          "severity, source_id, resulting_status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+          id.fault_code, id.owner, occurred_at_ns, debounce_counter, config.confirmation_threshold,
+          static_cast<int>(severity), source_id, resulting_status);
 
   if (max_near_misses_per_fault_ == 0 ||
       max_near_misses_per_fault_ > static_cast<size_t>(std::numeric_limits<int64_t>::max())) {
@@ -1248,27 +1183,26 @@ void PgFaultStorage::record_near_miss_locked(const std::string & fault_code, int
   // by timestamp would then drop the row that was just appended and make the two backends, which
   // append in arrival order, disagree on the same input.
   execute(tx,
-          "DELETE FROM near_misses WHERE fault_code = $1 AND source_id = $2 AND id NOT IN "
-          "(SELECT id FROM near_misses WHERE fault_code = $1 AND source_id = $2 ORDER BY id DESC LIMIT $3)",
-          fault_code, source_id, static_cast<int64_t>(max_near_misses_per_fault_));
+          "DELETE FROM near_misses WHERE fault_code = $1 AND owner = $2 AND id NOT IN "
+          "(SELECT id FROM near_misses WHERE fault_code = $1 AND owner = $2 ORDER BY id DESC LIMIT $3)",
+          id.fault_code, id.owner, static_cast<int64_t>(max_near_misses_per_fault_));
 }
 
 std::vector<NearMissRecord> PgFaultStorage::get_near_misses(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("get_near_misses", [&](pqxx::work & tx) {
-    // source_id already IS the owner on this table, so the series only needs the extra
-    // predicate, not a new column.
     auto res = execute(tx,
-                       "SELECT fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, "
+                       "SELECT fault_code, owner, occurred_at_ns, debounce_counter, confirmation_threshold, "
                        "severity, source_id, resulting_status FROM near_misses "
-                       "WHERE fault_code = $1 AND source_id = $2 ORDER BY id ASC",
+                       "WHERE fault_code = $1 AND owner = $2 ORDER BY id ASC",
                        id.fault_code, id.owner);
 
     std::vector<NearMissRecord> result;
     for (const auto & r : res) {
       NearMissRecord record;
       record.fault_code = r["fault_code"].as<std::string>();
+      record.owner = r["owner"].as<std::string>();
       record.occurred_at_ns = r["occurred_at_ns"].as<int64_t>();
       record.debounce_counter = r["debounce_counter"].as<int32_t>();
       record.confirmation_threshold = r["confirmation_threshold"].as<int32_t>();
@@ -1610,16 +1544,14 @@ std::vector<RosbagFileInfo> PgFaultStorage::list_rosbags_for_entity(const std::s
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("list_rosbags_for_entity", [&](pqxx::work & tx) {
-    // The row carries its record's owner, so the entity match is an equality on the row
-    // and the json scan over reporting_sources is gone. The join to faults stays as the
-    // existence check it always was: a row whose record is gone is not served.
+    // The rows whose record lists the entity among its reporting sources.
     auto res =
         execute(tx,
                 "SELECT r.fault_code, r.owner, r.recording_id, r.file_path, r.format, r.duration_sec, r.size_bytes, "
                 "r.created_at_ns "
                 "FROM rosbag_files r "
                 "JOIN faults f ON r.fault_code = f.fault_code AND r.owner = f.owner "
-                "WHERE r.owner = $1 "
+                "JOIN jsonb_array_elements_text(f.reporting_sources::jsonb) AS j(value) ON j.value = $1 "
                 "ORDER BY r.created_at_ns DESC, r.id DESC",
                 entity_fqn);
 
@@ -1635,23 +1567,11 @@ std::vector<fd::FaultRecord> PgFaultStorage::get_all_faults() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("get_all_faults", [&](pqxx::work & tx) {
-    auto res = execute(tx,
-                       "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
-                       "occurrence_count, status, reporting_sources, last_passed_ns FROM faults");
+    auto res = execute(tx, std::string("SELECT ") + kFaultColumns + " FROM faults");
 
     std::vector<fd::FaultRecord> result;
     for (const auto & r : res) {
-      fd::FaultRecord fault;
-      fault.fault_code = r["fault_code"].as<std::string>();
-      fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
-      fault.description = r["description"].as<std::string>();
-      fault.first_occurred_ns = r["first_occurred_ns"].as<int64_t>();
-      fault.last_occurred_ns = r["last_occurred_ns"].as<int64_t>();
-      fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
-      fault.status = r["status"].as<std::string>();
-      fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
-      fault.last_passed_ns = r["last_passed_ns"].as<int64_t>();
-      result.push_back(fault);
+      result.push_back(read_fault_row(r));
     }
     return result;
   });

@@ -187,13 +187,13 @@ Main Components
 3. **InMemoryFaultStorage** - Thread-safe in-memory implementation of FaultStorage
    - Uses ``std::map`` keyed by ``FaultId`` for O(log n) lookups, ordered by code first
    - Protected by ``std::mutex`` for concurrent service request handling
-   - Keeps one record per reporting source, filtered and cleared independently
+   - Keeps one record per ``FaultId``: one record shared by every source of a code, or one per source for a code configured ``per_source``
    - Implements severity escalation per record (higher severity overwrites lower, across occurrences too)
-   - Tracks occurrence counts per record
+   - Tracks occurrence counts and all reporting sources per record
 
 4. **FaultState** - Internal representation of one fault record
    - Maps directly to ``ros2_medkit_msgs::msg::Fault`` via ``to_msg()``
-   - Carries its owner and emits it as the single entry of reporting_sources
+   - Carries its owner and uses ``std::set`` for reporting_sources to ensure uniqueness
    - Tracks first and last occurrence timestamps
    - Manages fault status lifecycle with debounce (PREFAILED -> CONFIRMED -> CLEARED)
 
@@ -247,12 +247,13 @@ Services
 
 Reports a new fault or updates an existing one.
 
-- **Input validation**: fault_code and source_id cannot be empty, event_type must be valid
+- **Input validation**: fault_code and source_id cannot be empty, source_id cannot be the reserved ``*``, event_type must be valid
 - **Event types**: FAILED (fault detected) or PASSED (fault condition cleared)
 - **Debounce**: FAILED events decrement counter, PASSED events increment counter
-- **Record identity**: (fault_code, source_id). The same fault_code from different sources
-  creates one record per source, each debounced, cleared and healed on its own
-- **Severity escalation**: A record's severity is updated if its own owner reports a higher one
+- **Record identity**: ``FaultManagerCore::record_id_for`` decides it. A code configured ``per_source``
+  has one record per source_id, any other code one record shared by all its sources (owner ``*``,
+  which ``ReportFault`` refuses as a source_id). Each record is debounced, cleared and healed on its own
+- **Severity escalation**: A record's severity is updated if a higher one is reported for it
 - **Severity mismatch**: A FAILED report whose severity differs from the stored severity of its
   record is logged as a warning, once per code, source and reported severity until restart
 - **Returns**: ``accepted=true`` if event was processed
@@ -288,25 +289,30 @@ callbacks may execute on different threads.
 Fault Records
 ~~~~~~~~~~~~~
 
-A fault record is identified by the pair ``(fault_code, source_id)``, where the
-``source_id`` is the one the ``ReportFault`` call carried. That source is the record's
-owner. Repeated reports from one source update that source's record. A report from a
-source that owns no record for the code opens a new one. This provides:
+A fault record is identified by the pair ``(fault_code, owner)``. A code listed with
+``per_source: true`` in ``fault_thresholds.config_file`` has one record per reporting source,
+owned by the ``source_id`` of its reports. Every other code has one record shared by all its
+sources, owned by the reserved id ``*``. Reports are routed to a record by one function,
+``record_id_for``, and the storage backends receive the decided identity. This provides:
 
-- **Deduplication**: Prevents fault flooding from one source's repeated reports
-- **Source attribution**: Each record names the one source that owns it
+- **Deduplication**: Prevents fault flooding from repeated reports
+- **Source tracking**: A record lists every source that reported it
 - **Occurrence counting**: Tracks how many times a record was raised
 
-Keeping the records apart is what makes the per-source state mean anything: the debounce
-counter, the status, the severity, the occurrence count and the timestamps all belong to
-one reporter, so one reporter recovering cannot walk another reporter's fault back from
-confirmation, and one reporter's CRITICAL cannot escalate another's record.
+A per-source record keeps the per-reporter state apart: the debounce counter, the status, the
+severity, the occurrence count and the timestamps all belong to one reporter, so one reporter
+recovering cannot walk another reporter's fault back from confirmation, and one reporter's CRITICAL
+cannot escalate another's record. A shared record has one counter fed by every source.
+
+A request that names a ``source_id`` addresses the record it owns, else the record that source
+reports into. Stored records keep the identity they were written with when a code is switched
+between the two modes; the node logs a warning per code at startup.
 
 Severity Escalation
 ~~~~~~~~~~~~~~~~~~~
 
-When a record is re-reported by its owner with a higher severity, the stored severity is
-updated. This ensures the record reflects the worst-case condition its own reporter saw.
+When a record is re-reported with a higher severity, the stored severity is updated. This
+ensures the record reflects the worst-case condition reported for it.
 Severity levels are ordered:
 ``INFO(0) < WARN(1) < ERROR(2) < CRITICAL(3)``.
 
@@ -325,8 +331,7 @@ is the conservative choice.
 - **Mismatch warning**: when a FAILED report carries another severity than the one stored for its
   record, the node logs the code, both severities and the source. A set of
   ``(fault_code, source_id, severity)`` keys limits it to one line per key for the process
-  lifetime, so the log volume does not follow the report rate. The source owns the record, so the
-  set holds at most four keys per record the storage already keeps.
+  lifetime, so the log volume does not follow the report rate.
 
 Status Lifecycle (Debounce Model)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

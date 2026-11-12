@@ -4,67 +4,70 @@ Central fault manager node for the ros2_medkit fault management system.
 
 ## Overview
 
-The FaultManager node provides a central point for fault record keeping and lifecycle management.
-It receives fault reports from multiple sources, keeps one record per `(fault_code, reporting
-source)` pair, and provides query and clearing interfaces.
+The FaultManager node provides a central point for fault aggregation and lifecycle management.
+It receives fault reports from multiple sources, keeps them as fault records, and provides query
+and clearing interfaces.
 
-A record is identified by its `fault_code` and by the `source_id` the `ReportFault` call carried.
-That source is the record's **owner**. Two sources reporting one `fault_code` are two records, each
-with its own status, debounce counter, occurrence count, severity, timestamps, freeze frame,
-snapshots, near-miss series and rosbag links. A clear or an auto-heal driven by one owner never
-touches another owner's record. The services that act on a single record (`~/clear_fault`,
-`~/get_fault`, `~/get_snapshots`, `~/get_rosbag`) carry a `source_id` request field naming the
-owner. Leaving it empty is unscoped and applies only when exactly one record carries the
-`fault_code`, otherwise the call fails with a message beginning `ambiguous:` that lists the
-owners and changes nothing.
+A record is identified by its `fault_code` and an **owner**. By default a code has **one record
+shared by all its reporting sources**, owned by the reserved id `*`: a FAILED from any source moves
+its one debounce counter, a PASSED from any source moves it back, `reporting_sources` lists every
+source that reported it, and a clear ends the whole record. A code listed with `per_source: true` in
+`fault_thresholds.config_file` instead has **one record per reporting source**, owned by the
+`source_id` of its reports. Each record has its own status, debounce counter, occurrence count,
+severity, timestamps, freeze frame, snapshots, near-miss series and rosbag links, and is cleared and
+healed on its own. `ReportFault` refuses `*` as a `source_id`.
+
+The services that act on a single record (`~/clear_fault`, `~/get_fault`, `~/get_snapshots`,
+`~/get_rosbag`) carry a `source_id` request field. It names the record it owns (`*` for a shared
+one). When no record has that owner, it names the record that source reports into, so a client that
+knows only a reporting source still reaches the shared record of a default code. Leaving it empty is
+unscoped and applies only when exactly one record carries the `fault_code`, otherwise the call fails
+with a message beginning `ambiguous:` that lists the owners and changes nothing.
+
+### Identity per fault code
+
+```yaml
+# fault_thresholds.config_file
+BATTERY_LOW:
+  per_source: true            # one record per reporting source
+  confirmation_threshold: -3
+
+ESTOP:
+  confirmation_threshold: -1  # per_source absent: one record shared by all sources
+```
+
+`per_source` is a YAML boolean and defaults to `false`; a code with no entry is shared too. Any other
+value (`yes`, `3`) rejects the whole file with an error, like every other malformed value in it.
+Entity overrides do not carry the key. The file is read at startup.
+
+Switching a code between the two modes keeps the records already stored as they were written, and
+sends new reports to the configured identity. For each code that holds active records of the other
+identity the node logs one warning at startup, naming the code, its configured mode and the owners
+found. Nothing stored is rewritten.
+
+A code reported by several sources and debounced under several policies (per-entity thresholds) has
+one counter, so the node warns once per code when two sources resolve different policies for the
+shared record. Set `per_source: true` or pin the policy in `fault_thresholds.config_file` to end it.
 
 ### Upgrading a database written before the owner column
 
-A SQLite store written by an earlier release is keyed by the bare `fault_code` and is rebuilt on
-the first open. The owner of each migrated record is the first entry of that row's legacy
-`reporting_sources` value. A row that listed several sources folds onto its first one, because the
-old schema recorded no per-source counter, status or timestamps to split it by, and inventing them
-would put numbers in the store that no report ever produced. `confirmed_at_ns` is copied as it was,
-except on a PREFAILED or PREPASSED row, where it becomes 0 (see Storage Backends below).
+A SQLite store written by an earlier release is keyed by the bare `fault_code` and is rebuilt on the
+first open. That store holds one record per code, fed by every source, which is exactly what a
+default code is now, so every row becomes the shared record of its code (owner `*`) and keeps its
+`reporting_sources` as written. Its freeze frame, snapshots, recording links and near misses attach
+to that record, the near misses of every source included. `confirmed_at_ns` is copied as it was,
+except on a PREFAILED or PREPASSED row, where it becomes 0 (see Storage Backends below). All of it
+runs in one transaction.
 
-The rebuild is one way. A fault manager from an earlier release opened on a migrated store aborts
-on the first report of a fault code the store does not hold yet
-(`NOT NULL constraint failed: faults.owner`), and on a fault code two sources share it writes one
-source's data into the other source's row. If a rollback may be needed, keep a copy of `faults.db`
-from before the upgrade and restore that copy instead of pointing the earlier release at the
-migrated file.
+The rebuild is one way. A fault manager from an earlier release opened on a migrated store aborts on
+the first report of a fault code the store does not hold yet (`NOT NULL constraint failed:
+faults.owner`). If a rollback may be needed, keep a copy of `faults.db` from before the upgrade and
+restore that copy instead of pointing the earlier release at the migrated file.
 
-The recovery reads that column as text rather than requiring it to be valid JSON, because earlier
-builds escaped only the quote, the backslash and `\b \f \n \r \t`, so a `source_id` carrying any
-other control byte was written as text no JSON parser accepts. The mapping is exact:
-
-| stored `reporting_sources` | migrated owner |
-|---|---|
-| empty | `legacy` |
-| `sensor_a` (a bare word, not an array) | `sensor_a` |
-| `[]` | `legacy` |
-| `["a<0x01>b"]` | `a<0x01>b` (the control byte is kept) |
-| anything that is neither a JSON array nor a bare word (an object wrapper, a value behind a byte-order mark) | `legacy` |
-
-A migrated record never carries an empty owner. Where no source can be read the record gets the
-synthetic owner `legacy` and one warning names it, so it stays addressable through `source_id` like
-any other record: `ClearFault` and `GetFault` take `legacy` and act on it alone, and it appears
-under that name in an `ambiguous:` refusal. New rows are always written as valid JSON, control
-bytes escaped as `\u00XX`.
-
-The empty owner therefore means exactly one thing: an evidence row (freeze frame, snapshot, rosbag
-link) not yet assigned to a record. Such a row takes the owner of its fault code when that code has
-exactly one owner. When it has several, or none, the row keeps the empty owner and is named in a
-warning rather than handed to an owner the database cannot prove it belongs to. That backfill runs
-on any open that finds a row it can actually assign, not only on the open that adds the column, so
-a store left half-migrated by an interrupted run is healed the next time it is opened, while a row
-nothing can resolve is left alone instead of being retried forever.
-
-A PostgreSQL database written by an earlier release is migrated in place on the first connection,
-by the same rules: the owner is the first legacy `reporting_sources` entry (`legacy` when none is
-readable), the primary keys on the fault code become unique indexes over `(fault_code, owner)`, and
-evidence rows are assigned only where their code has exactly one owner. It runs in one transaction,
-so a failure leaves the tables as they were.
+A PostgreSQL database written by an earlier release is migrated in place on the first connection, by
+the same rules: the primary keys on the fault code become unique indexes over `(fault_code, owner)`
+and every row becomes the shared record of its code. It runs in one transaction, so a failure leaves
+the tables as they were.
 
 The table names `faults_new` and `freeze_frames_new` are reserved for the rebuild. Anything found
 under those names is debris from a rebuild that did not finish and is dropped on open, with a
@@ -108,11 +111,11 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 
 ## Features
 
-- **Per-source records**: Same `fault_code` from different sources creates one record per source,
-  each filtered, cleared and healed on its own
+- **Multi-source aggregation**: Same `fault_code` from different sources creates a single fault,
+  unless the code is configured `per_source`, which gives each source its own record
 - **Occurrence tracking**: Counts outages, not reports - the count starts at one and rises only
-  when a cleared record is raised again by its own owner
-- **Severity escalation**: A record has one severity, the highest its owner has reported, kept
+  when a cleared fault is raised again - and tracks all reporting sources
+- **Severity escalation**: A record has one severity, the highest ever reported for it, kept
   within an occurrence and across occurrences. A report with a different severity is logged (see
   [Severity](#severity))
 - **Persistent storage**: SQLite (default) or PostgreSQL backend ensures faults survive node restarts
@@ -142,7 +145,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 
 Snapshots capture topic data when faults are confirmed for post-mortem debugging.
 
-Each confirm also writes a **freeze-frame**: a single compact JSON object mapping every captured topic to its value at confirmation time, keyed by the record. Which topics are captured is decided by the fault CODE (`fault_specific` and `patterns` are configuration about what a code means), while what is written belongs to the record, so two owners confirming one code capture the same topics into two separate frames. It differs from per-topic snapshots in two ways: snapshots are deleted when the record is cleared, while the freeze-frame is retained across `clear_fault` (once the snapshots are gone, `~/get_fault` serves the retained frame so the confirmed-state record stays available after acknowledgement), and a re-confirm that captures nothing (e.g. source publishers down) never overwrites an existing non-empty frame. A fault code with no configured capture set gets no freeze-frame row. A configured capture that samples nothing on its first run records an empty `{}` frame. Freeze-frame storage is bounded by the number of distinct records (one row per record, replaced in place) and rows are never evicted.
+Each confirm also writes a **freeze-frame**: a single compact JSON object mapping every captured topic to its value at confirmation time, keyed by the record. Which topics are captured is decided by the fault CODE (`fault_specific` and `patterns` are configuration about what a code means), while what is written belongs to the record, so two `per_source` records of one code capture the same topics into two separate frames. It differs from per-topic snapshots in two ways: snapshots are deleted when the record is cleared, while the freeze-frame is retained across `clear_fault` (once the snapshots are gone, `~/get_fault` serves the retained frame so the confirmed-state record stays available after acknowledgement), and a re-confirm that captures nothing (e.g. source publishers down) never overwrites an existing non-empty frame. A fault code with no configured capture set gets no freeze-frame row. A configured capture that samples nothing on its first run records an empty `{}` frame. Freeze-frame storage is bounded by the number of distinct records (one row per record, replaced in place) and rows are never evicted.
 
 Under a fault storm, captures are bounded by a worker pool (`capture_pool_size`) draining a bounded queue (`capture_queue_depth`); excess captures are dropped per `capture_queue_full_policy` and logged (throttled). The pool is shared and is created when snapshots **or** rosbag is enabled, so these parameters bound both. `capture_pool_size` parallelizes freeze-frame snapshot capture only - rosbag stays single-writer regardless of pool size, and correlated faults confirming inside one post-roll window share a single recording.
 
@@ -224,12 +227,12 @@ A wrong configuration stops the node at startup with exit code 1: a connection s
 
 ## Severity
 
-A record has one severity. The stored severity is the highest any FAILED report from its owner has
+A record has one severity. The stored severity is the highest any FAILED report for it has
 carried, within an occurrence and across occurrences: `~/clear_fault` ends an occurrence but does
 not lower the severity, and the SQLite store keeps it across restarts. Two reports of one code from
 one source with different severities mean a misconfigured reporter, and keeping the maximum is the
-conservative reading. Another source's record of the same code keeps its own severity: a CRITICAL
-from one owner neither escalates nor confirms another owner's record.
+conservative reading. Another record of the same code (a `per_source` code has one per source) keeps
+its own severity: a CRITICAL report for one record neither escalates nor confirms another.
 
 What each surface carries:
 
@@ -279,9 +282,13 @@ counter walking back down under the latch. Without the field the two cannot be t
 rows written before the field existed.
 
 With per-entity thresholds the recorded `confirmation_threshold` is the one belonging to the
-**reporting source**. The counter it describes is that source's own record, so the pair is the
-distance to confirmation for the record. The counter is no longer shared between sources of one
-fault code: each source's reports move only its own record.
+**reporting source**, while the debounce counter is shared by every source of a shared record. It
+is therefore not by itself the distance to confirmation for the record as a whole. An entry in
+`fault_thresholds.config_file` that sets `confirmation_threshold` makes the two agree again: it
+resolves the same for every source, so the recorded threshold is the record's own. An entry with
+only healing fields keeps the per-source threshold. A `per_source` record has one source, so its
+recorded threshold is already the record's own. The node warns once per code when two sources resolve different
+policies for the shared record.
 
 Entries are kept and evicted in **arrival order**, not by their timestamps. Reporters carry their
 own clocks, so a report can arrive carrying a timestamp behind one already stored; ordering the
@@ -298,9 +305,9 @@ retained snapshots, because it records the most recent confirmation while the sn
 to earlier ones. `~/get_snapshots` returns one entry per topic and serves the newest capture of
 that topic, whichever storage backend is in use.
 
-The bound is **per record, not per database**. Fault codes are unbounded in cardinality and so is
-the set of reporting sources, so a reporter emitting a stream of distinct codes still grows the
-table. The bound caps what any single record costs, not the total.
+The bound is **per record, not per database**. Fault codes are unbounded in cardinality (and so is
+the set of reporting sources of a `per_source` code), so a reporter emitting a stream of distinct
+codes still grows the table. The bound caps what any single record costs, not the total.
 
 Retention is **bounded per record** by `near_miss.max_per_fault` (default 200), evicting the
 **oldest** entries first. That is the same direction as `snapshots.max_per_fault` and the rosbag
@@ -315,7 +322,7 @@ storage API or the database file.
 
 ## Advanced: Tamper-Evident Audit Log
 
-An optional append-only, hash-chained audit log records every fault state transition (`occurred`, `confirmed`, `healed`, `cleared`) so the fault history is independently verifiable. Auto-recovery (a record reaching the healing threshold via PASSED events) is recorded as a distinct `healed` row, so the record's END is in the timeline and is not confused with a manual `cleared`. Every row's `source` is the record's owner, the automatic transitions included: the `transition` column already says what moved the row, and with several owners per fault code the source has to answer whose record moved. The manager has no acknowledge action separate from clearing, so `~/clear_fault` is recorded as `cleared` (clear == ack), and there is no `ack` kind. The log also records its own lifecycle with `logging_activated` / `logging_deactivated` markers at start and stop. Every row records the record's stored severity at the transition (see [Severity](#severity)). It is **off by default** because it adds a write and storage cost per transition.
+An optional append-only, hash-chained audit log records every fault state transition (`occurred`, `confirmed`, `healed`, `cleared`) so the fault history is independently verifiable. Auto-recovery (a record reaching the healing threshold via PASSED events) is recorded as a distinct `healed` row, so the record's END is in the timeline and is not confused with a manual `cleared`. The `source` of a row a report drove (`occurred`, `confirmed`) is the reporting source. The automatic and clear transitions name the owner of the record that moved, which for a code shared by all its sources is `*`. The manager has no acknowledge action separate from clearing, so `~/clear_fault` is recorded as `cleared` (clear == ack), and there is no `ack` kind. The log also records its own lifecycle with `logging_activated` / `logging_deactivated` markers at start and stop. Every row records the record's stored severity at the transition (see [Severity](#severity)). It is **off by default** because it adds a write and storage cost per transition.
 
 Each transition appends one immutable row holding `record_hash = sha256(prev_hash + canonical(event))` (OpenSSL EVP SHA-256), the `prev_hash` it links to, and a monotonic `seq`. The hash is computed once at insert and never recomputed. A persisted chain head lets the chain resume across restarts. The log is stored in its own SQLite database (separate from the fault store) and is treated as append-only: the manager only ever inserts rows, and `BEFORE UPDATE` / `BEFORE DELETE` triggers reject out-of-band edits (the guarded rotation prune excepted).
 
@@ -472,7 +479,7 @@ Event types: `0` = EVENT_FAILED, `1` = EVENT_PASSED
 
 A FAILED report on a record whose stored severity is CRITICAL confirms it at once, regardless of
 threshold and of the HEALED latch. The stored severity decides, not the report: after a CRITICAL
-occurrence is cleared, one WARN report from the same source confirms the next occurrence, which
+occurrence is cleared, one WARN report for the same record confirms the next occurrence, which
 shows CRITICAL. This holds under a per-entity threshold override too.
 
 ## Advanced: Fault Correlation
@@ -570,7 +577,8 @@ Response includes:
 - `cluster_count`: Number of active fault clusters
 - `muted_faults[]`: Details of muted records (when `include_muted=true`), one entry per muted
   record. Muting is per record, so a symptom muted under one owner's root cause never hides
-  another owner's record of the same code, and each entry names its owner in `source_id`.
+  another owner's record of the same code, and each entry names its owner in `source_id` (`*` for a
+  shared record).
 - `clusters[]`: Details of active clusters (when `include_clusters=true`)
 
 ### REST API (via Gateway)
@@ -594,7 +602,7 @@ Response fields:
       "root_cause_code": "ESTOP_001",
       "rule_id": "estop_cascade",
       "delay_ms": 50,
-      "source_id": "/powertrain/motor_controller"
+      "source_id": "*"
     }
   ],
   "clusters": [

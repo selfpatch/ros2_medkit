@@ -62,16 +62,15 @@ class PgFaultStorage : public FaultStorage {
   void set_debounce_config(const DebounceConfig & config) override;
   DebounceConfig get_debounce_config() const override;
 
-  bool report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
-                          const std::string & description, const std::string & source_id, int64_t timestamp_ns,
-                          const DebounceConfig & config) override;
+  bool report_fault_event(const FaultId & id, fd::ReportKind kind, uint8_t severity, const std::string & description,
+                          const std::string & source_id, int64_t timestamp_ns, const DebounceConfig & config) override;
 
-  std::vector<fd::FaultRecord> list_faults(bool filter_by_severity, uint8_t severity,
-                                           const std::vector<std::string> & statuses) const override;
+  std::vector<FaultEntry> list_fault_entries(bool filter_by_severity, uint8_t severity,
+                                             const std::vector<std::string> & statuses) const override;
 
   std::optional<fd::FaultRecord> get_fault(const FaultId & id) const override;
 
-  std::vector<fd::FaultRecord> get_faults_by_code(const std::string & fault_code) const override;
+  std::vector<FaultId> get_ids_by_code(const std::string & fault_code) const override;
 
   bool clear_fault(const FaultId & id) override;
 
@@ -139,7 +138,8 @@ class PgFaultStorage : public FaultStorage {
   void create_schema(pqxx::work & tx) const;
 
   /// Bring tables written before records were keyed by (fault_code, owner) to the current layout, in @p tx.
-  /// Does nothing on a fresh database or one already migrated.
+  /// Each legacy row becomes the shared record of its code, with every child row attached to it. Does nothing
+  /// on a fresh database or one already migrated.
   void migrate_to_owner_identity(pqxx::work & tx) const;
 
   /// Whether @p table exists in the current schema.
@@ -150,12 +150,6 @@ class PgFaultStorage : public FaultStorage {
 
   /// Drop the PRIMARY KEY of @p table, whatever it is named.
   void drop_primary_key(pqxx::work & tx, const char * table) const;
-
-  /// Whether a child row with an empty owner belongs to a code that has exactly one owner.
-  bool has_assignable_child_rows(pqxx::work & tx) const;
-
-  /// Give child rows with an empty owner the owner of their code, where the code has exactly one.
-  void backfill_child_owners(pqxx::work & tx) const;
 
   /// @p text with every copy of the known password replaced by "***".
   std::string redact(std::string text) const;
@@ -172,23 +166,26 @@ class PgFaultStorage : public FaultStorage {
 
   /// report_fault_event body without taking mutex_ or opening a transaction. Caller holds mutex_
   /// and supplies the transaction, so the fault row and any near-miss row commit together.
-  bool report_fault_event_locked(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
+  bool report_fault_event_locked(const FaultId & id, fd::ReportKind kind, uint8_t severity,
                                  const std::string & description, const std::string & source_id, int64_t timestamp_ns,
                                  const DebounceConfig & config, pqxx::work & tx);
 
   /// Append one entry to the near-miss series and evict the oldest entries beyond
   /// max_near_misses_per_fault_. Caller holds mutex_ and has already written the fault row.
-  /// @param fault_code The fault code that nearly confirmed
+  /// @param id The record that nearly confirmed; it scopes the series
   /// @param occurred_at_ns Timestamp of the report
   /// @param debounce_counter Counter value after the report
   /// @param config Debounce config the report was evaluated against
   /// @param severity Severity carried by the report
-  /// @param source_id Reporting source
+  /// @param source_id Source that sent the report
   /// @param resulting_status Fault status after the report was applied
   /// @param tx Transaction the fault row was written in
-  void record_near_miss_locked(const std::string & fault_code, int64_t occurred_at_ns, int32_t debounce_counter,
+  void record_near_miss_locked(const FaultId & id, int64_t occurred_at_ns, int32_t debounce_counter,
                                const DebounceConfig & config, uint8_t severity, const std::string & source_id,
                                const std::string & resulting_status, pqxx::work & tx);
+
+  /// One row selected with kFaultColumns, as a record.
+  fd::FaultRecord read_fault_row(const pqxx::row & r) const;
 
   /// Deserialize JSON array string from PostgreSQL TEXT/JSONB field
   std::vector<std::string> parse_json_array(const std::string & json_str) const;

@@ -26,6 +26,7 @@
 #include <set>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -202,16 +203,23 @@ class FaultManagerCore {
 
   ReportOutcome report(const fd::FaultReport & report);
   /// Clears one record. An empty @p source_id addresses the only record of @p code and is refused as
-  /// ambiguous when several owners hold it; a set one addresses exactly that owner's record.
+  /// ambiguous when several records hold it. A set one addresses the record owned by that id, and
+  /// otherwise the record that source reports into (see resolve_target).
   ClearOutcome clear(const std::string & code, const std::string & source_id, bool skip_correlation_auto_clear);
   ListOutcome list(const ListQuery & query);
   FaultDetail get(const std::string & code, const std::string & source_id);
 
   /// Resolves the record a single-record request addresses, under the core mutex. Empty @p source_id
-  /// picks the only record of @p fault_code; several records make it ambiguous. On failure returns
-  /// nullopt and sets @p error.
+  /// picks the only record of @p fault_code; several records make it ambiguous. A set one names the
+  /// record it owns (`*` names the shared one); when no record has that owner, it names the record
+  /// record_id_for gives that source. On failure returns nullopt and sets @p error.
   std::optional<FaultId> resolve_target(const std::string & fault_code, const std::string & source_id,
                                         std::string & error);
+  /// The record a report from @p source_id for @p fault_code goes into: one record per source when
+  /// the code is configured per_source, else the one record shared by every source. The only place
+  /// that builds a record identity from a (code, source) pair.
+  FaultId record_id_for(const std::string & fault_code, const std::string & source_id) const;
+
   /// Throws FaultStorage::IgnorableConnectionException when the storage is unreachable.
   std::vector<fd::FaultRecord> list_for_entity(const std::string & entity_id);
 
@@ -278,7 +286,17 @@ class FaultManagerCore {
   /// Warns once per (code, source, severity) when a FAILED report disagrees with the stored severity.
   void warn_severity_mismatch(const fd::FaultReport & report, uint8_t stored_severity);
 
+  struct DebouncePolicyWitness {
+    DebounceConfig config;
+    std::string source_id;
+    bool warned{false};
+  };
+
   DebounceConfig resolve_config(const std::string & source_id, const std::string & fault_code) const;
+  /// Warns once per code when two sources feeding the shared record of @p id resolve different debounce
+  /// policies. A per-source record has one source and never warns.
+  void warn_on_conflicting_debounce_policy(const FaultId & id, const std::string & source_id,
+                                           const DebounceConfig & resolved);
   void audit_transition(const char * transition, const fd::FaultRecord & fault, const std::string & source_id,
                         int64_t occurred_at_ns);
   void publish_event(const char * event_type, const fd::FaultRecord & fault,
@@ -300,6 +318,7 @@ class FaultManagerCore {
 
   std::mutex mutex_;
   std::set<std::tuple<std::string, std::string, uint8_t>> severity_mismatch_logged_;
+  std::unordered_map<std::string, DebouncePolicyWitness> debounce_policy_witness_;
   /// Next due time of each tick job, ns since the epoch.
   int64_t auto_confirm_due_ns_{0};
   int64_t cleanup_due_ns_{0};

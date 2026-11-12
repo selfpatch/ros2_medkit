@@ -40,6 +40,9 @@ struct FaultCodeDebounceOverride {
   std::optional<int32_t> confirmation_threshold;
   std::optional<bool> healing_enabled;
   std::optional<int32_t> healing_threshold;
+  /// Whether each reporting source of the code gets its own record. Unset means false: one record
+  /// per code, shared by every source. Entity overrides do not carry it.
+  bool per_source{false};
 };
 
 /// Resolves per-entity debounce thresholds using longest-prefix matching.
@@ -75,11 +78,12 @@ class EntityThresholdResolver {
 
 /// Resolves per-fault_code debounce thresholds by exact match on the fault code.
 ///
-/// The debounce counter lives on the fault code while an entity override is
-/// selected by the reporting source, so two entities reporting one code debounce
-/// it under two policies. A fault-code override is the layer that removes that:
-/// it resolves the same whoever reports, and is applied on top of whatever the
-/// entity layer produced.
+/// A code reported by several sources has one record and one debounce counter, while
+/// an entity override is selected by the reporting source, so two entities reporting
+/// one code debounce it under two policies. A fault-code override is the layer that
+/// removes that: it resolves the same whoever reports, and is applied on top of
+/// whatever the entity layer produced. The same entry carries the per-code choice
+/// between one shared record and one record per source.
 class FaultCodeThresholdResolver {
  public:
   FaultCodeThresholdResolver() = default;
@@ -94,12 +98,16 @@ class FaultCodeThresholdResolver {
   /// them. A code with no override returns `base` unchanged.
   DebounceConfig resolve(const std::string & fault_code, const DebounceConfig & base) const;
 
+  /// Whether @p fault_code is configured `per_source`. A code with no entry is not.
+  bool per_source(const std::string & fault_code) const;
+
   /// Number of configured fault-code entries.
   size_t size() const;
 
   /// Load fault-code threshold overrides from a YAML file.
   /// Returns an empty vector on parse error (logs warning through @p sink).
-  /// YAML format: map of fault code -> {confirmation_threshold, healing_enabled, healing_threshold}
+  /// YAML format: map of fault code -> {confirmation_threshold, healing_enabled, healing_threshold, per_source}.
+  /// per_source must be the YAML boolean true or false; any other value rejects the whole file.
   static std::vector<FaultCodeDebounceOverride> load_from_yaml(const std::string & path, core::LogSink & sink);
 
  private:

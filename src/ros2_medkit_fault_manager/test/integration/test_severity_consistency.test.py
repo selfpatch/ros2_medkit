@@ -18,8 +18,8 @@ Severity contract of a fault record through a real fault manager on SQLite.
 
 The database starts as one written before records had an owner, so the first
 start migrates it. The fault manager is then restarted twice on it. Every
-record here has one owner. A record keeps the highest severity its owner ever
-reported. A report on a CRITICAL record confirms it. A reactivated occurrence,
+record here is the shared record of its code. A record keeps the highest
+severity ever reported for it. A report on a CRITICAL record confirms it. A reactivated occurrence,
 migrated or not, has no confirmation time until it confirms. A report whose
 severity differs from the stored one is logged once per process.
 """
@@ -46,6 +46,7 @@ DB_DIR = tempfile.mkdtemp(prefix='medkit_severity_')
 DB_PATH = os.path.join(DB_DIR, 'faults.db')
 EVENT_TOPIC = '/fault_manager/events'
 SOURCE = '/robot/reporter'
+SHARED_OWNER = '*'
 ALL_STATUSES = [
     Fault.STATUS_PREFAILED, Fault.STATUS_PREPASSED, Fault.STATUS_CONFIRMED,
     Fault.STATUS_HEALED, Fault.STATUS_CLEARED,
@@ -132,6 +133,7 @@ class TestSeverityConsistency(unittest.TestCase):
         assert cls.list_client.wait_for_service(timeout_sec=TIMEOUT_SEC)
         assert cls.clear_client.wait_for_service(timeout_sec=TIMEOUT_SEC)
         cls.primes = 0
+        cls.markers = 0
 
     @classmethod
     def tearDownClass(cls):
@@ -187,7 +189,7 @@ class TestSeverityConsistency(unittest.TestCase):
         with sqlite3.connect(DB_PATH, timeout=10.0) as db:
             row = db.execute(
                 'SELECT confirmed_at_ns FROM faults WHERE fault_code = ? AND owner = ?',
-                (code, SOURCE)).fetchone()
+                (code, SHARED_OWNER)).fetchone()
         self.assertIsNotNone(row, f'{code} has no row in the database')
         return row[0]
 
@@ -235,17 +237,26 @@ class TestSeverityConsistency(unittest.TestCase):
                     return
         self.fail('the restarted fault manager never answered list_faults')
 
-    def _mismatch_lines(self, proc_output, expected):
-        """Count SEV_CRIT mismatch warnings once ``expected`` arrived, or at the timeout."""
-        def count():
-            text = ''.join(io.text.decode(errors='replace') for io in proc_output)
-            return text.count(MISMATCH_LINE)
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and count() < expected:
-            time.sleep(0.2)
-        # Anything logged late would show here as more than expected.
-        time.sleep(0.5)
-        return count()
+    def _mismatch_lines(self, proc_output):
+        """
+        Count the SEV_CRIT mismatch warnings logged so far.
+
+        A marker code mismatches once, after everything reported before it. The output is one
+        ordered stream, so once the marker's line has arrived every earlier line has too.
+        """
+        type(self).markers += 1
+        marker = f'SEV_MARK_{self.markers}'
+        self._report(marker, Fault.SEVERITY_CRITICAL)
+        self._report(marker, Fault.SEVERITY_WARN)
+        marker_line = f"Fault '{marker}' reported with severity WARN"
+
+        def text():
+            return ''.join(io.text.decode(errors='replace') for io in proc_output)
+        deadline = time.monotonic() + TIMEOUT_SEC
+        while time.monotonic() < deadline and marker_line not in text():
+            time.sleep(0.1)
+        self.assertIn(marker_line, text(), 'the marker mismatch was never logged')
+        return text().count(MISMATCH_LINE)
 
     def test_severity_contract_across_restarts(self, fault_manager_node, proc_output):
         self._prime_events()
@@ -324,7 +335,7 @@ class TestSeverityConsistency(unittest.TestCase):
             self.assertEqual(self._confirmed_at('CONF_AT'), 0)
 
         with self.subTest(case='mismatch logged once in this process'):
-            self.assertEqual(self._mismatch_lines(proc_output, 1), 1)
+            self.assertEqual(self._mismatch_lines(proc_output), 1)
 
         self._restart(fault_manager_node)
 
@@ -354,7 +365,7 @@ class TestSeverityConsistency(unittest.TestCase):
         for _ in range(10):
             self._report('SEV_CRIT', Fault.SEVERITY_WARN)
         with self.subTest(case='the bound restarts with the process'):
-            self.assertEqual(self._mismatch_lines(proc_output, 2), 2)
+            self.assertEqual(self._mismatch_lines(proc_output), 2)
 
 
 @launch_testing.post_shutdown_test()

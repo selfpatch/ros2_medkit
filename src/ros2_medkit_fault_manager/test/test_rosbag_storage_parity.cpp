@@ -449,8 +449,9 @@ class SnapshotRetentionParityTest : public ::testing::Test {
 
   void confirm(const std::string & code) {
     rclcpp::Clock clock;
-    storage_->report_fault_event(code, fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "parity",
-                                 kOwner, clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
+    storage_->report_fault_event(FaultId{code, kOwner}, fd::ReportKind::kFailed,
+                                 ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "parity", kOwner,
+                                 clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
   }
 
   std::filesystem::path dir_;
