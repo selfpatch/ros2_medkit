@@ -368,8 +368,10 @@ void FaultManagerNode::handle_list_faults(
     info.rule_name = cluster.rule_name;
     info.label = cluster.label;
     info.representative_code = cluster.representative_code;
+    info.representative_owner = cluster.representative_owner;
     info.representative_severity = cluster.representative_severity;
     info.fault_codes = cluster.fault_codes;
+    info.fault_owners = cluster.fault_owners;
     info.count = cluster.count;
     info.first_at = ros2::ns_to_time_msg(cluster.first_at_ns);
     info.last_at = ros2::ns_to_time_msg(cluster.last_at_ns);

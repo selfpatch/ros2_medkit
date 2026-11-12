@@ -143,8 +143,10 @@ struct ClusterSummary {
   std::string rule_name;
   std::string label;
   std::string representative_code;
+  std::string representative_owner;
   std::string representative_severity;
   std::vector<std::string> fault_codes;
+  std::vector<std::string> fault_owners;  ///< Parallel to fault_codes
   uint32_t count{0};
   int64_t first_at_ns{0};
   int64_t last_at_ns{0};

@@ -495,6 +495,10 @@ subsequent matching symptom faults within a time window are correlated and optio
 **Auto-Cluster**: Automatically groups related faults that match a pattern within a time window.
 Useful for detecting "storms" of related faults (e.g., communication errors).
 
+Rules match by fault code across reporting nodes: a root cause reported by one node mutes and
+auto-clears the matching symptoms of any other node, and a cluster collects the matching faults of
+every node. The relations hold records, so a clear acts on exactly the records the root cause muted.
+
 ### Configuration
 
 Enable correlation by providing a YAML configuration file:
@@ -576,10 +580,12 @@ Response includes:
 - `muted_count`: Number of muted symptom faults
 - `cluster_count`: Number of active fault clusters
 - `muted_faults[]`: Details of muted records (when `include_muted=true`), one entry per muted
-  record. Muting is per record, so a symptom muted under one owner's root cause never hides
-  another owner's record of the same code, and each entry names its owner in `source_id` (`*` for a
-  shared record).
-- `clusters[]`: Details of active clusters (when `include_clusters=true`)
+  record. Muting is per record: it hides that record, not every record of the code, and each entry
+  names its owner in `source_id` (`*` for a shared record).
+- `clusters[]`: Details of active clusters (when `include_clusters=true`). A member is a record:
+  `fault_owners[i]` is the owner of `fault_codes[i]`, and `(representative_code,
+  representative_owner)` names the representative. Pass the owner as `source_id` to GetFault and
+  ClearFault.
 
 ### REST API (via Gateway)
 

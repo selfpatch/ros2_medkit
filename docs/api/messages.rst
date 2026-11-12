@@ -154,7 +154,7 @@ MutedFaultInfo.msg
 ~~~~~~~~~~~~~~~~~~
 
 Information about a correlated (muted) symptom record. One entry per muted RECORD:
-a root cause mutes the symptoms of its own record owner only, so two per-source records
+a root cause mutes the matching symptom records of every owner, so two per-source records
 muted on one ``fault_code`` produce two entries carrying that code, told apart by
 ``source_id``.
 
@@ -183,6 +183,12 @@ Auto-detected fault cluster information.
    uint32 count                   # Number of faults
    builtin_interfaces/Time first_at  # First fault timestamp
    builtin_interfaces/Time last_at   # Last fault timestamp
+   string[] fault_owners          # Owner of each member, parallel to fault_codes
+   string representative_owner    # Owner of the representative record
+
+A cluster holds the matching records of every owner, so a member is the record
+``(fault_codes[i], fault_owners[i])``. Pass the owner as ``source_id`` to the
+single-record services. The owner of a shared record is ``*``.
 
 Services
 --------

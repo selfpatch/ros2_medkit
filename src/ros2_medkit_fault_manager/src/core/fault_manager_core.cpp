@@ -473,9 +473,9 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
         logf(log_, LogLevel::kDebug, logger, "Fault %s added to cluster %s", report.fault_code.c_str(),
              correlation_result.cluster_id.c_str());
         // Log retroactively muted faults when cluster becomes active
-        if (!correlation_result.retroactive_mute_codes.empty()) {
+        if (!correlation_result.retroactive_mute_ids.empty()) {
           logf(log_, LogLevel::kDebug, logger, "Cluster %s activated: retroactively muting %zu faults",
-               correlation_result.cluster_id.c_str(), correlation_result.retroactive_mute_codes.size());
+               correlation_result.cluster_id.c_str(), correlation_result.retroactive_mute_ids.size());
         }
       }
     }
@@ -595,8 +595,8 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, const std:
     return outcome;
   }
 
-  // Then the correlation engine (to get the auto-clear list). Symptoms come back as
-  // records of the same owner, so a cascade never crosses an owner boundary.
+  // Then the correlation engine (to get the auto-clear list). Symptoms come back as the
+  // exact records the root cause muted.
   // `skip_correlation_auto_clear` lets the caller opt out of cascade-clearing
   // correlated symptom faults. Per-entity DELETE routes set it to true
   // so they cannot reach across entity boundaries via the correlation graph.
@@ -728,8 +728,10 @@ ListOutcome FaultManagerCore::list_locked(const ListQuery & query) {
         info.rule_name = cluster.rule_name;
         info.label = cluster.label;
         info.representative_code = cluster.representative_code;
+        info.representative_owner = cluster.representative_owner;
         info.representative_severity = cluster.representative_severity;
         info.fault_codes = cluster.fault_codes;
+        info.fault_owners = cluster.fault_owners;
         info.count = static_cast<uint32_t>(cluster.fault_codes.size());
         info.first_at_ns =
             std::chrono::duration_cast<std::chrono::nanoseconds>(cluster.first_at.time_since_epoch()).count();

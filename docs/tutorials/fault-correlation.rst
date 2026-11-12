@@ -120,6 +120,14 @@ How It Works
    fm --> src: [SENSOR_003]\nclusters: [{id: "sensor_storm_1",\n  fault_codes: [001,002,003,004],\n  representative: "SENSOR_003"}]
    @enduml
 
+**Rules match by fault code across reporting nodes.** A root cause reported by one
+node mutes, and with ``auto_clear_with_root`` auto-clears, the matching symptoms
+reported by any other node inside the window. An auto-cluster collects the matching
+faults of every node. The relations hold fault records, not codes: for a code
+configured with ``per_source: true`` each reporting node has its own record, and the
+cascade clears exactly the records the root cause muted. For any other code there is
+one shared record, and that record is what is muted or cleared.
+
 Quick Start
 -----------
 

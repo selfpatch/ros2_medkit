@@ -117,6 +117,10 @@ struct FaultId {
     return fault_code == other.fault_code && owner == other.owner;
   }
 
+  bool operator!=(const FaultId & other) const {
+    return !(*this == other);
+  }
+
   /// Ordered by code first, so the records of one code are contiguous in a map and
   /// the ids of one code are a range scan rather than a full sweep.
   bool operator<(const FaultId & other) const {

@@ -2275,30 +2275,36 @@ correlation:
   rclcpp::Client<ListFaults>::SharedPtr list_faults_client_;
 };
 
-// Muting belongs to a RECORD, so the default listing hides the muted record alone.
-// Owner A's symptom is suppressed by A's own root cause. Owner B reported the same
-// code with no root cause of its own, so B's record was never muted and a listing
-// that drops it hides a live CRITICAL fault from the default view.
+// Muting belongs to a RECORD, so the default listing hides the muted record alone. A root cause
+// of owner A mutes the symptom record of owner B too. Owner C reported the same code before any
+// root cause was active, so C's record was never muted and a listing that drops it would hide a
+// live CRITICAL fault from the default view.
 TEST_F(MutedFaultListingTest, DefaultListingHidesTheMutedRecordNotTheCode) {
+  ASSERT_TRUE(call_report_fault("SYMPTOM_SPEED", Fault::SEVERITY_CRITICAL, "/owner_c"));
   ASSERT_TRUE(call_report_fault("ROOT_CAUSE", Fault::SEVERITY_CRITICAL, "/owner_a"));
   ASSERT_TRUE(call_report_fault("SYMPTOM_SPEED", Fault::SEVERITY_CRITICAL, "/owner_a"));
   ASSERT_TRUE(call_report_fault("SYMPTOM_SPEED", Fault::SEVERITY_CRITICAL, "/owner_b"));
 
   auto visible = call_list_faults(false);
   ASSERT_TRUE(visible.has_value());
-  EXPECT_EQ(visible->muted_count, 1u) << "only A's symptom record is muted";
-  EXPECT_EQ(owners_of(*visible, "SYMPTOM_SPEED"), std::vector<std::string>{"/owner_b"});
+  EXPECT_EQ(visible->muted_count, 2u) << "the symptom records of A and B are muted";
+  EXPECT_EQ(owners_of(*visible, "SYMPTOM_SPEED"), std::vector<std::string>{"/owner_c"});
   // The root cause itself is never muted, so the listing is not simply empty.
   EXPECT_EQ(owners_of(*visible, "ROOT_CAUSE"), std::vector<std::string>{"/owner_a"});
 
   auto everything = call_list_faults(true);
   ASSERT_TRUE(everything.has_value());
-  EXPECT_EQ(owners_of(*everything, "SYMPTOM_SPEED"), (std::vector<std::string>{"/owner_a", "/owner_b"}));
+  EXPECT_EQ(owners_of(*everything, "SYMPTOM_SPEED"), (std::vector<std::string>{"/owner_a", "/owner_b", "/owner_c"}));
   // One entry per muted RECORD, naming both halves of its identity.
-  ASSERT_EQ(everything->muted_faults.size(), 1u);
-  EXPECT_EQ(everything->muted_faults.front().fault_code, "SYMPTOM_SPEED");
-  EXPECT_EQ(everything->muted_faults.front().root_cause_code, "ROOT_CAUSE");
-  EXPECT_EQ(everything->muted_faults.front().source_id, "/owner_a");
+  ASSERT_EQ(everything->muted_faults.size(), 2u);
+  std::vector<std::string> muted_owners;
+  for (const auto & muted : everything->muted_faults) {
+    EXPECT_EQ(muted.fault_code, "SYMPTOM_SPEED");
+    EXPECT_EQ(muted.root_cause_code, "ROOT_CAUSE");
+    muted_owners.push_back(muted.source_id);
+  }
+  std::sort(muted_owners.begin(), muted_owners.end());
+  EXPECT_EQ(muted_owners, (std::vector<std::string>{"/owner_a", "/owner_b"}));
 }
 
 // Two owners muted on one code are two entries of that code. Without the owner on the
