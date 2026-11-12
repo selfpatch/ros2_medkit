@@ -22,8 +22,7 @@ namespace ros2_medkit_gateway {
 
 namespace fd = ros2_medkit::fault_detection;
 
-TriggerFaultFeed::TriggerFaultFeed(FaultEventSource & source, ResourceChangeNotifier & notifier,
-                                   NodeToEntityFn resolver)
+TriggerFaultFeed::TriggerFaultFeed(FaultEventSource & source, ResourceChangeNotifier & notifier, FaultOwnerFn resolver)
   : notifier_(notifier)
   , resolver_(std::move(resolver))
   , subscription_(source.subscribe([this](const fd::FaultEventRecord & event) {
@@ -35,29 +34,23 @@ TriggerFaultFeed::~TriggerFaultFeed() {
   subscription_.reset();
 }
 
-void TriggerFaultFeed::set_node_to_entity_resolver(NodeToEntityFn resolver) {
+void TriggerFaultFeed::set_fault_owner_resolver(FaultOwnerFn resolver) {
   resolver_ = std::move(resolver);
 }
 
 void TriggerFaultFeed::on_event(const fd::FaultEventRecord & event) {
+  // A record without an owner is in no entity's scope.
+  if (event.fault.reporting_sources.empty() || event.fault.reporting_sources.front().empty()) {
+    return;
+  }
+  const auto & owner = event.fault.reporting_sources.front();
+
   nlohmann::json fault_json = fault_record_to_json(event.fault);
   fault_json["event_type"] = event.event_type;
 
-  // The resolver maps a source to a manifest entity id. Without a mapping the last path segment is the entity id.
   std::string entity_id;
-  if (!event.fault.reporting_sources.empty()) {
-    const auto & source = event.fault.reporting_sources[0];
-    if (resolver_) {
-      entity_id = resolver_(source);
-    }
-    if (entity_id.empty()) {
-      const auto last_slash = source.rfind('/');
-      entity_id = (last_slash != std::string::npos) ? source.substr(last_slash + 1) : source;
-    }
-  }
-  // No entity: a catch-all match would be unintended.
-  if (entity_id.empty()) {
-    return;
+  if (resolver_) {
+    entity_id = resolver_(owner);
   }
 
   // Both fault_cleared and a heal remove the fault from the active set. The payload "status" tells them apart.

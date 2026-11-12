@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <ctime>
 #include <iomanip>
 #include <sstream>
@@ -89,6 +90,19 @@ std::string LogManager::normalize_fqn(const std::string & fqn) {
     return fqn.substr(1);
   }
   return fqn;
+}
+
+bool LogManager::logger_matches(const std::string & logger_name, const std::string & node_fqn, bool prefix_match) {
+  // Logger names use '.' (e.g. "powertrain.engine.temp_sensor"), entity FQNs
+  // use '/'. Both forms match.
+  const std::string norm = normalize_fqn(node_fqn);
+  std::string norm_dot = norm;
+  std::replace(norm_dot.begin(), norm_dot.end(), '/', '.');
+  if (logger_name == norm || logger_name == norm_dot) {
+    return true;
+  }
+  // A prefix covers only whole segments: "ns/" or "ns.".
+  return prefix_match && (logger_name.rfind(norm + "/", 0) == 0 || logger_name.rfind(norm_dot + ".", 0) == 0);
 }
 
 json LogManager::entry_to_json(const LogEntry & e) {
@@ -185,6 +199,7 @@ void LogManager::on_log_entry(const LogEntry & source_entry) {
     }
   }
 
+  bool buffered = false;
   if (!suppress_buffer) {
     std::lock_guard<std::mutex> lock(buffers_mutex_);
     // Cap the number of distinct node buffers to prevent unbounded growth.
@@ -202,35 +217,32 @@ void LogManager::on_log_entry(const LogEntry & source_entry) {
       auto & buf = buffers_[entry.name];
       buf.push_back(entry);
       if (buf.size() > max_buffer_size_) {
-        buf.pop_front();
+        pop_oldest_locked(buf);
       }
+      buffered = true;
     }
   }
 
-  // Notify triggers about the log event (resolve logger name to entity ID)
-  if (notifier_) {
-    std::string entity_id;
-
-    // Try resolving via node_to_app mapping (manifest/hybrid mode)
-    if (node_to_entity_resolver_) {
-      // entry.name has no leading '/' (rcl convention), but the mapping
-      // may use FQNs with leading '/' - try both forms
-      entity_id = node_to_entity_resolver_("/" + entry.name);
-      if (entity_id.empty()) {
-        entity_id = node_to_entity_resolver_(entry.name);
-      }
-    }
-
-    // Fallback: extract last path segment (runtime_only mode)
-    if (entity_id.empty()) {
-      auto last_slash = entry.name.rfind('/');
-      entity_id = (last_slash != std::string::npos) ? entry.name.substr(last_slash + 1) : entry.name;
-    }
-
-    if (!entity_id.empty()) {
-      notifier_->notify("logs", entity_id, "", entry_to_json(entry), ChangeType::CREATED);
-    }
+  // A dropped entry is listed nowhere, so it emits no change.
+  if (buffered || suppress_buffer) {
+    notify_entry(entry);
   }
+}
+
+void LogManager::notify_entry(const LogEntry & entry, NotifierSubscriptionId skipped_subscription) {
+  if (!notifier_) {
+    return;
+  }
+  if (severity_to_level(level_to_severity(entry.level)) != entry.level) {
+    remember_unnamed_level(entry);
+  }
+  const std::string owner = logger_owner_fn_ ? logger_owner_fn_(entry.name) : std::string{};
+  notifier_->notify_except(skipped_subscription, "logs", owner, "", entry_to_json(entry), ChangeType::CREATED);
+}
+
+void LogManager::pop_oldest_locked(std::deque<LogEntry> & buf) {
+  marker_ids_.erase(buf.front().id);
+  buf.pop_front();
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +263,7 @@ void LogManager::inject_entry_for_testing(LogEntry entry) {
   auto & buf = buffers_[entry.name];
   buf.push_back(std::move(entry));
   if (buf.size() > max_buffer_size_) {
-    buf.pop_front();
+    pop_oldest_locked(buf);
   }
 }
 
@@ -265,7 +277,7 @@ std::size_t LogManager::dropped_entries_count() const noexcept {
 // ---------------------------------------------------------------------------
 
 void LogManager::add_log_entry(const std::string & entity_id, const std::string & severity, const std::string & message,
-                               const nlohmann::json & metadata) {
+                               const nlohmann::json & metadata, NotifierSubscriptionId skipped_subscription) {
   std::string normalized = normalize_fqn(entity_id);
 
   // Build a LogEntry using the same structure as source-emitted entries.
@@ -299,15 +311,13 @@ void LogManager::add_log_entry(const std::string & entity_id, const std::string 
     std::lock_guard<std::mutex> lock(buffers_mutex_);
     auto & buf = buffers_[entry.name];
     buf.push_back(entry);
+    marker_ids_.insert(entry.id);
     if (buf.size() > max_buffer_size_) {
-      buf.pop_front();
+      pop_oldest_locked(buf);
     }
   }
 
-  // Notify observers if a notifier is set
-  if (notifier_) {
-    notifier_->notify("logs", normalized, "", entry_to_json(entry), ChangeType::CREATED);
-  }
+  notify_entry(entry, skipped_subscription);
 }
 
 // ---------------------------------------------------------------------------
@@ -318,8 +328,47 @@ void LogManager::set_notifier(ResourceChangeNotifier * notifier) {
   notifier_ = notifier;
 }
 
-void LogManager::set_node_to_entity_resolver(NodeToEntityFn resolver) {
-  node_to_entity_resolver_ = std::move(resolver);
+void LogManager::set_logger_owner_fn(LoggerOwnerFn fn) {
+  logger_owner_fn_ = std::move(fn);
+}
+
+void LogManager::remember_unnamed_level(const LogEntry & entry) {
+  // Without a queue overflow, a change waiting for dispatch has fewer newer
+  // changes than the notifier holds in flight, so its level is still here when
+  // it is judged. Changes the queue drops count too.
+  const size_t capacity = notifier_->max_in_flight();
+  std::lock_guard<std::mutex> lock(unnamed_levels_mutex_);
+  unnamed_levels_[entry.id] = entry.level;
+  unnamed_level_order_.push_back(entry.id);
+  while (unnamed_level_order_.size() > capacity) {
+    unnamed_levels_.erase(unnamed_level_order_.front());
+    unnamed_level_order_.pop_front();
+  }
+}
+
+uint8_t LogManager::entry_level(const json & entry) const {
+  if (!entry.is_object()) {
+    return 0;
+  }
+  const auto id = entry.find("id");
+  if (id != entry.end() && id->is_string()) {
+    // Ids are "log_<n>" (entry_to_json).
+    const auto & text = id->get_ref<const std::string &>();
+    if (text.rfind("log_", 0) == 0) {
+      const char * digits = text.c_str() + 4;
+      char * end = nullptr;
+      const long long n = std::strtoll(digits, &end, 10);
+      if (end != digits && *end == '\0') {
+        std::lock_guard<std::mutex> lock(unnamed_levels_mutex_);
+        auto it = unnamed_levels_.find(n);
+        if (it != unnamed_levels_.end()) {
+          return it->second;
+        }
+      }
+    }
+  }
+  const auto severity = entry.find("severity");
+  return severity != entry.end() && severity->is_string() ? severity_to_level(severity->get<std::string>()) : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -339,8 +388,8 @@ LogProvider * LogManager::effective_provider() const {
 
 tl::expected<json, std::string> LogManager::get_logs(const std::vector<std::string> & node_fqns, bool prefix_match,
                                                      const std::string & min_severity,
-                                                     const std::string & context_filter,
-                                                     const std::string & entity_id) {
+                                                     const std::string & context_filter, const std::string & entity_id,
+                                                     std::unordered_set<std::string> * marker_ids) {
   // Delegate to plugin if one is registered
   if (auto * provider = effective_provider()) {
     // Normalize FQNs before passing to plugin (strip leading '/')
@@ -383,31 +432,14 @@ tl::expected<json, std::string> LogManager::get_logs(const std::vector<std::stri
   }
 
   std::vector<LogEntry> collected;
+  std::unordered_set<int64_t> collected_markers;
 
   {
     std::lock_guard<std::mutex> lock(buffers_mutex_);
     for (const auto & [buf_name, buf] : buffers_) {
-      bool matches = false;
-      for (const auto & fqn : node_fqns) {
-        const std::string norm = normalize_fqn(fqn);
-        // ROS 2 logger names use '.' as separator (e.g. "powertrain.engine.temp_sensor")
-        // while entity FQNs use '/' (e.g. "powertrain/engine/temp_sensor").
-        // Try both slash-format and dot-format so the default ring buffer matches either.
-        std::string norm_dot = norm;
-        std::replace(norm_dot.begin(), norm_dot.end(), '/', '.');
-        if (prefix_match) {
-          // Match exactly OR as a namespace prefix.
-          // Slash-format: prefix must be followed by '/'
-          // Dot-format:   prefix must be followed by '.'
-          matches = (buf_name == norm) || (buf_name.rfind(norm + "/", 0) == 0) || (buf_name == norm_dot) ||
-                    (buf_name.rfind(norm_dot + ".", 0) == 0);
-        } else {
-          matches = (buf_name == norm) || (buf_name == norm_dot);
-        }
-        if (matches) {
-          break;
-        }
-      }
+      const bool matches = std::any_of(node_fqns.begin(), node_fqns.end(), [&](const std::string & fqn) {
+        return logger_matches(buf_name, fqn, prefix_match);
+      });
       if (!matches) {
         continue;
       }
@@ -418,6 +450,9 @@ tl::expected<json, std::string> LogManager::get_logs(const std::vector<std::stri
         }
         if (!context_filter.empty() && entry.name.find(context_filter) == std::string::npos) {
           continue;
+        }
+        if (marker_ids && marker_ids_.count(entry.id) > 0) {
+          collected_markers.insert(entry.id);
         }
         collected.push_back(entry);
       }
@@ -437,6 +472,9 @@ tl::expected<json, std::string> LogManager::get_logs(const std::vector<std::stri
   json items = json::array();
   for (const auto & e : collected) {
     items.push_back(entry_to_json(e));
+    if (collected_markers.count(e.id) > 0) {
+      marker_ids->insert(items.back()["id"].get<std::string>());
+    }
   }
   return items;
 }

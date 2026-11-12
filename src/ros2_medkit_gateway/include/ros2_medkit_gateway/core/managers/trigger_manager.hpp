@@ -162,8 +162,38 @@ class TriggerManager {
   /// Set the entity hierarchy resolver. Called by GatewayNode after cache is available.
   void set_entity_children_fn(EntityChildrenFn fn);
 
+  /// Decides from the change payload whether a change concerns a trigger's
+  /// entity. Arguments: trigger entity type ("apps", ...), trigger entity id,
+  /// change value.
+  using CollectionScopeFn =
+      std::function<bool(const std::string & entity_type, const std::string & entity_id, const nlohmann::json & value)>;
+
+  /// Route changes on `collection` by `fn` alone: a change reaches a trigger iff
+  /// `fn` accepts it; the change's entity id and the entity hierarchy are not
+  /// consulted. GatewayNode sets it for "faults", where ownership follows the
+  /// record's owner, and for "logs", where it follows the logger name in the
+  /// entry.
+  void set_collection_scope_fn(const std::string & collection, CollectionScopeFn fn);
+
+  /// Items an entity lists in a collection, oldest first, or nullopt while
+  /// they cannot be listed: the entity is not in the cache or the listing
+  /// failed. nullopt keeps the replay pending. Arguments: entity type
+  /// ("apps", ...), entity id.
+  using RestoreReplayFn = std::function<std::optional<std::vector<nlohmann::json>>(const std::string & entity_type,
+                                                                                   const std::string & entity_id)>;
+
+  /// A trigger restored on `collection` evaluates, once, the items `fn` lists
+  /// when its entity is first in the cache, and then skips live changes whose
+  /// value "id" it replayed. Changes that arrived before discovery reach it
+  /// this way. Set before load_persistent_triggers(); GatewayNode sets it for
+  /// "logs".
+  void set_restore_replay_fn(const std::string & collection, RestoreReplayFn fn);
+
   /// Set the LogManager for trigger log_settings integration.
   /// Called by GatewayNode after both TriggerManager and LogManager are available.
+  /// The marker entry a firing writes reaches every notifier subscription but
+  /// this manager's, so it fires no trigger. This holds because GatewayNode
+  /// creates one TriggerManager per notifier.
   void set_log_manager(LogManager * log_manager);
 
   /// Resolves a resource_path to a full ROS 2 topic name for a given entity.
@@ -230,6 +260,11 @@ class TriggerManager {
     std::deque<nlohmann::json> pending_events;
     static constexpr size_t kMaxPendingEvents = 100;
     std::atomic<uint64_t> event_counter{0};
+    /// Restored trigger whose restore replay has not run. Read without `mtx`
+    /// by the sweep; the replay clears it under `mtx`.
+    std::atomic<bool> replay_pending{false};
+    /// Value ids the restore replay evaluated.
+    std::unordered_set<std::string> replayed_ids;
   };
 
   /// Generate the next trigger ID.
@@ -246,8 +281,21 @@ class TriggerManager {
   void remove_from_dispatch_index(const std::string & trigger_id, const std::string & collection,
                                   const std::string & entity_id);
 
-  /// Check if the notification entity matches the trigger's entity (direct or hierarchy).
-  bool matches_entity(const TriggerState & state, const std::string & notification_entity_id) const;
+  /// Check if a change concerns the trigger's entity: by the collection's scope
+  /// function when one is set, otherwise by direct or hierarchy id match.
+  bool matches_entity(const TriggerState & state, const ResourceChange & change) const;
+
+  /// Whether the trigger's entity is in discovery, by the entity-exists function.
+  bool entity_exists(const TriggerState & state) const;
+
+  /// Evaluate `value` against the trigger's condition and queue an event when
+  /// it fires. Caller holds state.mtx. nullopt when the trigger's path does not
+  /// resolve in `value` or its condition type has no evaluator.
+  std::optional<bool> evaluate_locked(TriggerState & state, const nlohmann::json & value);
+
+  /// Run the pending restore replay if the entity is in the cache. Caller
+  /// holds state.mtx. Returns true when a one-shot trigger fired and ended.
+  bool replay_restored_locked(TriggerState & state);
 
   /// Check if a trigger has expired.
   bool is_expired(const TriggerState & state) const;
@@ -287,9 +335,11 @@ class TriggerManager {
   // Removal callback
   OnRemovedCallback on_removed_;
 
-  // Hierarchy resolver
+  // Hierarchy resolver and per-collection scope functions
   mutable std::mutex hierarchy_mutex_;
   EntityChildrenFn entity_children_fn_;
+  std::unordered_map<std::string, CollectionScopeFn> collection_scope_fns_;
+  std::unordered_map<std::string, RestoreReplayFn> restore_replay_fns_;
 
   // Data trigger topic transport (shared, optional). The adapter side owns
   // the rclcpp resources; the manager only stores per-trigger handles.
@@ -310,11 +360,6 @@ class TriggerManager {
   // Entity existence checker (for orphan sweep)
   mutable std::mutex entity_exists_mutex_;
   EntityExistsFn entity_exists_fn_;
-
-  // Recursive loop prevention: set when evaluating a trigger fires a log entry
-  // that would re-enter on_resource_change(). Only accessed from the notifier
-  // worker thread (single-threaded dispatch), so no synchronization needed.
-  bool evaluating_trigger_{false};
 
   // Deferred resolution for data triggers whose topic was not discoverable when
   // the trigger entered this process - created through the API before the topic

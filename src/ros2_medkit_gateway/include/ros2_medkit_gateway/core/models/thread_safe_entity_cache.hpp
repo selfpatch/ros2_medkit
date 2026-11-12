@@ -294,6 +294,8 @@ class ThreadSafeEntityCache {
   bool has_component(const std::string & id) const;
   bool has_app(const std::string & id) const;
   bool has_function(const std::string & id) const;
+  /// The has_* check for `type`; false for SERVER and UNKNOWN.
+  bool has_entity(SovdEntityType type, const std::string & id) const;
 
   // --- Topic type lookup (O(1)) ---
   /**

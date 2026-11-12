@@ -24,17 +24,19 @@ namespace ros2_medkit_gateway {
 
 /// Turns the events of a `FaultEventSource` into "faults" notifications for the trigger manager.
 ///
-/// The entity of an event is the first reporting source, mapped by the resolver when it knows the source and by its
-/// last path segment otherwise. The resource path is "/" plus the fault code; the value is the fault JSON plus
-/// `event_type`. The feed holds one subscription on the source, so other consumers can subscribe to the same source.
+/// Which triggers a change reaches is decided from the record's owner (its first reporting source) by the trigger
+/// manager's "faults" scope function, not from the change's entity id. The entity id is the app the resolver maps the
+/// owner to, or empty when no app owns it, and is informational. The resource path is "/" plus the fault code; the
+/// value is the fault JSON plus `event_type`. An event without an owner is dropped. The feed holds one subscription on
+/// the source, so other consumers can subscribe to the same source.
 class TriggerFaultFeed {
  public:
-  /// Maps a reporting source to an entity id. Returns an empty string for a source it does not know.
-  using NodeToEntityFn = std::function<std::string(const std::string &)>;
+  /// Maps a record's owner (its reporting source) to the id of the app whose scope holds it, or "" when no app does.
+  using FaultOwnerFn = std::function<std::string(const std::string & owner)>;
 
   /// Subscribes to `source` at once. `source` and `notifier` must outlive the feed.
   /// Destroying the feed ends its subscription and waits for a running callback.
-  TriggerFaultFeed(FaultEventSource & source, ResourceChangeNotifier & notifier, NodeToEntityFn resolver = {});
+  TriggerFaultFeed(FaultEventSource & source, ResourceChangeNotifier & notifier, FaultOwnerFn resolver = {});
   ~TriggerFaultFeed();
   TriggerFaultFeed(const TriggerFaultFeed &) = delete;
   TriggerFaultFeed & operator=(const TriggerFaultFeed &) = delete;
@@ -42,13 +44,13 @@ class TriggerFaultFeed {
   TriggerFaultFeed & operator=(TriggerFaultFeed &&) = delete;
 
   /// Replaces the resolver. Call it before events can arrive: it is not synchronised with delivery.
-  void set_node_to_entity_resolver(NodeToEntityFn resolver);
+  void set_fault_owner_resolver(FaultOwnerFn resolver);
 
  private:
   void on_event(const ros2_medkit::fault_detection::FaultEventRecord & event);
 
   ResourceChangeNotifier & notifier_;
-  NodeToEntityFn resolver_;
+  FaultOwnerFn resolver_;
   FaultEventSubscription subscription_;
 };
 

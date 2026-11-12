@@ -90,7 +90,8 @@ store from it:
 * ``make_trigger_host`` (``core/trigger_host.hpp``) builds the trigger store and
   the ``TriggerManager`` from a ``TriggerHostConfig`` (the ``triggers.*``
   names and defaults, plus ``data_poll_interval_ms``), wires the entity lookups
-  to the entity cache and restores persistent triggers. Fault triggers are fed
+  to the entity cache, sets the ``faults`` and ``logs`` scope functions and the
+  ``logs`` restore replay, and restores persistent triggers. Fault triggers are fed
   by a ``TriggerFaultFeed`` that holds one ``FaultEventSubscription`` on a
   ``FaultEventSource``, so it can share the source with the fault SSE stream
   and the freeze-frame capture. A data trigger with a known topic reads
@@ -723,19 +724,35 @@ It consists of five main components:
    - Evaluates conditions using registered ``ConditionEvaluator`` instances via the ``ConditionRegistry``
    - Uses O(1) dispatch indexing by ``{collection, entity_id}`` for efficient notification matching
    - Supports entity hierarchy matching (area-level triggers catch descendant changes)
+   - A collection can route by a scope function on the change value instead of the change's entity id.
+     ``faults`` uses one: the record's owner against the entity's fault sources. ``logs`` uses one: the
+     entry's ``context.node`` against the entity's log sources and its level against the entity's
+     ``severity_filter``, checked at dispatch
+   - A persistent ``logs`` trigger restored before its entity is discovered replays, once, what
+     ``GET /{entity}/logs`` lists when the entity appears, less markers, and skips the live changes for
+     those entries
+   - The marker a firing writes through ``log_settings`` (``LogManager::add_log_entry``) is notified to every
+     subscription but the manager's own, so no trigger fires for it; ``LogManager::get_logs`` reports which
+     listed entries are markers, and the replay leaves them out
+   - The orphan sweep and the replay look the entity up by the trigger's entity type, so a Component
+     that shares an App's id does not stand in for the App
    - Manages pending events for SSE stream pickup with per-trigger mutexes
    - Persists triggers via the ``TriggerStore`` interface
    - Data-trigger ROS subscriptions are routed through ``TopicSubscriptionTransport`` (``Ros2TopicSubscriptionTransport`` adapter wraps ``TriggerTopicSubscriber``)
 
 2. **ResourceChangeNotifier** ``[gateway_core]`` - Async notification hub for resource changes.
 
-   - Producers (FaultManager, DataAccessManager, UpdateManager, OperationManager, LogManager) call ``notify()``
+   - Producers (FaultManager, DataAccessManager, UpdateManager, OperationManager, LogManager) call ``notify()``;
+     ``notify_except()`` skips one subscription
    - Observers (TriggerManager) register callbacks with filters
    - ``notify()`` is non-blocking - pushes to an internal queue processed by a dedicated worker thread
    - Filters support collection, entity_id, and resource_path matching
    - ``unsubscribe(id)`` from another thread returns once that callback is not running, and the callback is never
      called again, so an observer can be destroyed right after it unsubscribes. From inside a notifier callback it
      returns at once, the current invocation continues, and the callback is not called again after it returns.
+   - The queue holds 10000 changes and drops the oldest past that
+   - A ``logs`` change names the one app whose log scope holds the logger, or no entity; the logger name is
+     ``context.node`` in the value
    - **Teardown contract:** producers hold a non-owning ``ResourceChangeNotifier *``, so every producer must be
      quiesced before the notifier is destroyed. ``notify()``'s internal drain guard only protects calls that are
      already in progress - it cannot help a call that starts after the object is freed. Most producers notify from

@@ -77,8 +77,9 @@ struct TriggerHost {
 /// Registers OnChange, OnChangeTo, EnterRange and LeaveRange.
 void register_builtin_conditions(ConditionRegistry & conditions);
 
-/// The entity a reporting source (a node FQN) belongs to, or an empty string. A leading slash is optional.
-std::string resolve_trigger_entity(const ThreadSafeEntityCache & cache, const std::string & node_fqn);
+/// Maps a fault record's owner to the id of the app whose scope holds it, the app whose
+/// `GET /apps/{id}/faults?status=all` lists the record, or "" when none does. `cache` must outlive the resolver.
+TriggerFaultFeed::FaultOwnerFn make_fault_owner_resolver(const ThreadSafeEntityCache & cache);
 
 /// The topic of `entity_id` a data trigger on `resource_path` binds to: the first one whose name equals the path or
 /// ends with it. Empty when there is none. `resource_path` starts with the separator slash, and the item after it may

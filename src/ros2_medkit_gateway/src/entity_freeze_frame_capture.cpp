@@ -156,8 +156,9 @@ EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, ros2_com
 
 EntityFreezeFrameCapture::~EntityFreezeFrameCapture() = default;
 
-std::vector<FreezeFrameSource::Frame> EntityFreezeFrameCapture::frames_for(const std::string & fault_code) const {
-  return capture_->frames_for(fault_code);
+std::vector<FreezeFrameSource::Frame> EntityFreezeFrameCapture::frames_for(const std::string & fault_code,
+                                                                           const std::string & owner) const {
+  return capture_->frames_for(fault_code, owner);
 }
 
 }  // namespace ros2_medkit_gateway

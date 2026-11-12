@@ -120,7 +120,7 @@ class EntityFreezeFrameCapture : public FreezeFrameSource {
   EntityFreezeFrameCapture(EntityFreezeFrameCapture &&) = delete;
   EntityFreezeFrameCapture & operator=(EntityFreezeFrameCapture &&) = delete;
 
-  std::vector<Frame> frames_for(const std::string & fault_code) const override;
+  std::vector<Frame> frames_for(const std::string & fault_code, const std::string & owner) const override;
 
   /// See FreezeFrameCapture::standing_faults_from_list_reply.
   static std::optional<std::vector<StandingFault>> standing_faults_from_list_reply(const nlohmann::json & data) {

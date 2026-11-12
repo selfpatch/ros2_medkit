@@ -14,6 +14,10 @@
 
 #include <gtest/gtest.h>
 
+#include <optional>
+#include <stdexcept>
+
+#include "ros2_medkit_gateway/core/plugins/plugin_http_types.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/fault_provider.hpp"
@@ -21,6 +25,7 @@
 #include "ros2_medkit_gateway/dto/data.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
 #include "ros2_medkit_gateway/dto/operations.hpp"
+#include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
 
 using namespace ros2_medkit_gateway;
 // json alias already available via ros2_medkit_gateway namespace headers
@@ -128,6 +133,237 @@ class MockMixedFitnessPlugin : public GatewayPlugin, public DataProvider, public
     return entity_id == "data_entity";
   }
 };
+
+// A plugin that serves /data ONLY through its DataProvider: no vendor route,
+// which is what an in-tree plugin looks like.
+class ProviderOnlyPlugin : public GatewayPlugin, public DataProvider {
+ public:
+  std::string name() const override {
+    return "provider_only";
+  }
+  void configure(const json & /*config*/) override {
+  }
+  void shutdown() override {
+  }
+
+  tl::expected<dto::DataListResult, DataProviderErrorInfo> list_data(const std::string & entity_id) override {
+    if (throws_) {
+      throw std::runtime_error("provider exploded");
+    }
+    return dto::DataListResult{
+        json{{"connected", true}, {"items", json::array({{{"id", "level"}, {"value", 7.5}, {"entity", entity_id}}})}}};
+  }
+  tl::expected<dto::DataValue, DataProviderErrorInfo> read_data(const std::string & /*entity_id*/,
+                                                                const std::string & resource) override {
+    return dto::DataValue{json{{"value", resource}}};
+  }
+  tl::expected<dto::DataWriteResult, DataProviderErrorInfo>
+  write_data(const std::string & /*entity_id*/, const std::string & /*resource*/, const json & /*payload*/) override {
+    return dto::DataWriteResult{json{{"status", "ok"}}};
+  }
+
+  bool throws_ = false;
+};
+
+// A plugin that serves the SAME entity through BOTH a DataProvider and its own
+// data route, with different values in each. Without this fixture the
+// provider-first order is unpinned: every provider-only and route-only case
+// passes under either order, so restoring route-first breaks nothing and is
+// caught by nothing.
+class ProviderAndRoutePlugin : public GatewayPlugin, public DataProvider {
+ public:
+  static constexpr double kProviderLevel = 11.0;
+  static constexpr double kRouteLevel = 99.0;
+
+  std::string name() const override {
+    return "provider_and_route";
+  }
+  void configure(const json & /*config*/) override {
+  }
+  void shutdown() override {
+  }
+
+  std::vector<PluginRoute> get_routes() override {
+    return {
+        {"GET", R"(apps/([^/]+)/x-plc-data)",
+         [this](const PluginRequest & /*req*/, PluginResponse & res) {
+           ++route_calls;
+           res.send_json(json{{"connected", route_connected},
+                              {"items", json::array({{{"id", "level"}, {"value", kRouteLevel}}})}});
+         }},
+    };
+  }
+
+  tl::expected<dto::DataListResult, DataProviderErrorInfo> list_data(const std::string & /*entity_id*/) override {
+    ++provider_calls;
+    return dto::DataListResult{json{{"connected", provider_connected},
+                                    {"items", json::array({{{"id", "level"}, {"value", kProviderLevel}}})}}};
+  }
+  tl::expected<dto::DataValue, DataProviderErrorInfo> read_data(const std::string & /*entity_id*/,
+                                                                const std::string & resource) override {
+    return dto::DataValue{json{{"value", resource}}};
+  }
+  tl::expected<dto::DataWriteResult, DataProviderErrorInfo>
+  write_data(const std::string & /*entity_id*/, const std::string & /*resource*/, const json & /*payload*/) override {
+    return dto::DataWriteResult{json{{"status", "ok"}}};
+  }
+
+  int provider_calls = 0;
+  int route_calls = 0;
+  bool provider_connected = true;
+  bool route_connected = true;
+};
+
+// The same both-sources shape, with a provider that throws. Used to show the
+// route really is reachable on this fixture, so the order test above is about
+// the order and not about an unreachable route.
+class ThrowingProviderAndRoutePlugin : public ProviderAndRoutePlugin {
+ public:
+  std::string name() const override {
+    return "throwing_provider_and_route";
+  }
+  tl::expected<dto::DataListResult, DataProviderErrorInfo> list_data(const std::string & /*entity_id*/) override {
+    ++provider_calls;
+    throw std::runtime_error("provider exploded");
+  }
+};
+
+// A plugin that exposes no DataProvider at all and registers no route either,
+// which is every grouping-only plugin.
+class NoDataPlugin : public GatewayPlugin {
+ public:
+  std::string name() const override {
+    return "no_data";
+  }
+  void configure(const json & /*config*/) override {
+  }
+  void shutdown() override {
+  }
+};
+
+// =============================================================================
+// fetch_entity_data_content - which source an entity's /data comes from
+//
+// Provider first, the plugin's own vendor route only when it exposes no
+// provider. The fault-trigger engine reads rule values through this and
+// enumerates a rule's data points through it, so reading the route first meant
+// a rule on a provider-served app evaluated to nothing every tick and sat
+// there silently.
+// =============================================================================
+
+TEST(PluginEntityDataContent, ProviderServesAnEntityWithNoVendorRoute) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<ProviderOnlyPlugin>();
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("provider_only", {"tank"});
+
+  auto content = mgr.fetch_entity_data_content("tank");
+
+  ASSERT_TRUE(content.has_value()) << "an entity served by a DataProvider must not read as having no data";
+  ASSERT_TRUE(content->contains("items"));
+  EXPECT_EQ((*content)["items"][0]["id"], "level");
+  EXPECT_DOUBLE_EQ((*content)["items"][0]["value"].get<double>(), 7.5);
+}
+
+TEST(PluginEntityDataContent, AThrowingProviderFallsThroughInsteadOfEscaping) {
+  // The fault-trigger engine calls this on its own evaluation loop, and a
+  // plugin exception must not leave that loop.
+  PluginManager mgr;
+  auto plugin = std::make_unique<ProviderOnlyPlugin>();
+  plugin->throws_ = true;
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("provider_only", {"tank"});
+
+  std::optional<json> content;
+  EXPECT_NO_THROW(content = mgr.fetch_entity_data_content("tank"));
+  // No vendor route behind it, so there is nothing left to answer with.
+  EXPECT_FALSE(content.has_value());
+}
+
+TEST(PluginEntityDataContent, NeitherProviderNorRouteIsNullopt) {
+  PluginManager mgr;
+  mgr.add_plugin(std::make_unique<NoDataPlugin>());
+  mgr.register_entity_ownership("no_data", {"grouping"});
+
+  EXPECT_FALSE(mgr.fetch_entity_data_content("grouping").has_value());
+}
+
+TEST(PluginEntityDataContent, AnUnownedEntityIsNullopt) {
+  PluginManager mgr;
+  EXPECT_FALSE(mgr.fetch_entity_data_content("nobody").has_value());
+}
+
+// One entity, both sources, different values in each. This is the only fixture
+// in which the ORDER is observable at all.
+TEST(PluginEntityDataContent, TheProviderIsReadBeforeTheVendorRoute) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<ProviderAndRoutePlugin>();
+  auto * raw = plugin.get();
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("provider_and_route", {"tank"});
+
+  auto content = mgr.fetch_entity_data_content("tank");
+
+  ASSERT_TRUE(content.has_value());
+  EXPECT_DOUBLE_EQ((*content)["items"][0]["value"].get<double>(), ProviderAndRoutePlugin::kProviderLevel)
+      << "the route answered first, so a provider-served entity reads its vendor route instead";
+  EXPECT_EQ(raw->provider_calls, 1);
+  EXPECT_EQ(raw->route_calls, 0) << "the route must not be dispatched when the provider answered";
+}
+
+// The route is the fallback, not the second opinion. On the same both-sources
+// fixture, a provider that throws hands over and the value then comes from the
+// route, which is what makes the previous test about ORDER rather than about the
+// route being unreachable.
+TEST(PluginEntityDataContent, TheVendorRouteAnswersWhenTheProviderThrows) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<ThrowingProviderAndRoutePlugin>();
+  auto * raw = plugin.get();
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("throwing_provider_and_route", {"tank"});
+
+  auto content = mgr.fetch_entity_data_content("tank");
+
+  ASSERT_TRUE(content.has_value());
+  EXPECT_DOUBLE_EQ((*content)["items"][0]["value"].get<double>(), ProviderAndRoutePlugin::kRouteLevel);
+  EXPECT_EQ(raw->route_calls, 1) << "the route is the fallback and must have been dispatched";
+}
+
+// The trigger fetcher's link-down guard reads `connected` off this content. A
+// provider envelope without it left the guard unable to fire for every
+// provider-served entity, so a rule evaluated on frozen last-known values for a
+// whole outage.
+TEST(PluginEntityDataContent, ADisconnectedProviderEnvelopeReportsDisconnected) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<ProviderAndRoutePlugin>();
+  auto * raw = plugin.get();
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("provider_and_route", {"tank"});
+  raw->provider_connected = false;
+
+  auto content = mgr.fetch_entity_data_content("tank");
+
+  ASSERT_TRUE(content.has_value());
+  EXPECT_TRUE(EntityFreezeFrameCapture::content_has_live_data(*content));
+  EXPECT_TRUE(EntityFreezeFrameCapture::content_reports_disconnected(*content))
+      << "a provider envelope reporting a down link must read as disconnected, "
+         "or the trigger fetcher evaluates on frozen values";
+}
+
+// The control on the same harness: a connected provider envelope must NOT read
+// as disconnected, so the assertion above is about the flag and not about the
+// guard answering true for everything.
+TEST(PluginEntityDataContent, AConnectedProviderEnvelopeReportsConnected) {
+  PluginManager mgr;
+  auto plugin = std::make_unique<ProviderAndRoutePlugin>();
+  mgr.add_plugin(std::move(plugin));
+  mgr.register_entity_ownership("provider_and_route", {"tank"});
+
+  auto content = mgr.fetch_entity_data_content("tank");
+
+  ASSERT_TRUE(content.has_value());
+  EXPECT_FALSE(EntityFreezeFrameCapture::content_reports_disconnected(*content));
+}
 
 // =============================================================================
 // Entity Ownership Tests

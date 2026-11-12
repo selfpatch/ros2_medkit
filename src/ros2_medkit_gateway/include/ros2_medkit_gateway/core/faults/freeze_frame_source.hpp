@@ -62,8 +62,9 @@ class FreezeFrameSource {
   FreezeFrameSource(FreezeFrameSource &&) = delete;
   FreezeFrameSource & operator=(FreezeFrameSource &&) = delete;
 
-  /// Frames captured for a fault code (empty when none). Thread-safe.
-  virtual std::vector<Frame> frames_for(const std::string & fault_code) const = 0;
+  /// Frames captured for one fault record, addressed by its code and the
+  /// reporting source that owns it (empty when none). Thread-safe.
+  virtual std::vector<Frame> frames_for(const std::string & fault_code, const std::string & owner) const = 0;
 
   /// Build the compact {resource_id: value} dict from a DataProvider::list_data
   /// response. Items without a "value" field map to null; a response without an

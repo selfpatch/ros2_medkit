@@ -154,17 +154,27 @@ class NoFaultTransport : public gw::FaultServiceTransport {
     hook(fault_code, source_id);
     return {true, {}, {}, gw::FaultFailure::Declined};
   }
-  // Once set, every list answers one fault whose occurrence_count grows with each call.
+  // Once set, every list answers one fault whose occurrence_count grows with each call. The codes `serve_detail`
+  // made answer are listed too, so a per-entity fault route can resolve their records.
   gw::FaultResult list_faults(const std::string & /*source_id*/, bool /*include_prefailed*/, bool /*include_confirmed*/,
                               bool /*include_cleared*/, bool /*include_healed*/, bool /*include_muted*/,
                               bool /*include_clusters*/) override {
-    if (!reports_faults.load()) {
+    gw::json faults = gw::json::array();
+    {
+      std::lock_guard<std::mutex> lock(detail_mutex_);
+      for (const auto & [code, source] : detail_sources_) {
+        faults.push_back(served_fault(code, source));
+      }
+    }
+    if (reports_faults.load()) {
+      faults.push_back({{"fault_code", "CHECK_FAULT"},
+                        {"occurrence_count", ++list_calls},
+                        {"reporting_sources", gw::json::array({"hosted_app"})}});
+    }
+    if (faults.empty()) {
       return none();
     }
-    gw::json fault = {{"fault_code", "CHECK_FAULT"},
-                      {"occurrence_count", ++list_calls},
-                      {"reporting_sources", gw::json::array({"hosted_app"})}};
-    return {true, {{"faults", gw::json::array({fault})}}, {}, gw::FaultFailure::Declined};
+    return {true, {{"faults", faults}}, {}, gw::FaultFailure::Declined};
   }
   gw::FaultWithEnvJsonResult get_fault_with_env(const std::string & fault_code,
                                                 const std::string & /*source_id*/) override {
@@ -173,12 +183,10 @@ class NoFaultTransport : public gw::FaultServiceTransport {
     if (it == detail_sources_.end()) {
       return {false, "not supported", {}, gw::FaultFailure::Unavailable};
     }
-    const gw::json fault = {{"fault_code", fault_code},
-                            {"severity", 2},
-                            {"status", "CONFIRMED"},
-                            {"occurrence_count", 1},
-                            {"reporting_sources", gw::json::array({it->second})}};
-    return {true, {}, {{"fault", fault}, {"environment_data", gw::json::object()}}, gw::FaultFailure::Declined};
+    return {true,
+            {},
+            {{"fault", served_fault(fault_code, it->second)}, {"environment_data", gw::json::object()}},
+            gw::FaultFailure::Declined};
   }
   // Makes the detail of `fault_code` answer, reported by `source`.
   void serve_detail(const std::string & fault_code, const std::string & source) {
@@ -188,17 +196,19 @@ class NoFaultTransport : public gw::FaultServiceTransport {
   gw::FaultResult get_fault(const std::string & /*fault_code*/, const std::string & /*source_id*/) override {
     return none();
   }
-  gw::FaultResult clear_fault(const std::string & /*fault_code*/, bool /*skip_correlation_auto_clear*/) override {
+  gw::FaultResult clear_fault(const std::string & /*fault_code*/, const std::string & /*source_id*/,
+                              bool /*skip_correlation_auto_clear*/) override {
     if (!on_report_set()) {
       return none();
     }
     ++clears;
     return {true, {}, {}, gw::FaultFailure::Declined};
   }
-  gw::FaultResult get_snapshots(const std::string & /*fault_code*/, const std::string & /*topic*/) override {
+  gw::FaultResult get_snapshots(const std::string & /*fault_code*/, const std::string & /*source_id*/,
+                                const std::string & /*topic*/) override {
     return none();
   }
-  gw::FaultResult get_rosbag(const std::string & /*fault_code*/) override {
+  gw::FaultResult get_rosbag(const std::string & /*id*/, const std::string & /*source_id*/) override {
     return none();
   }
   gw::FaultResult list_rosbags(const std::string & /*entity_fqn*/) override {
@@ -234,6 +244,14 @@ class NoFaultTransport : public gw::FaultServiceTransport {
   std::map<std::string, std::string> detail_sources_;
   static gw::FaultResult none() {
     return {false, {}, "not supported", gw::FaultFailure::Unavailable};
+  }
+  // The record `serve_detail` makes answer: confirmed, owned by `source`.
+  static gw::json served_fault(const std::string & fault_code, const std::string & source) {
+    return {{"fault_code", fault_code},
+            {"severity", 2},
+            {"status", "CONFIRMED"},
+            {"occurrence_count", 1},
+            {"reporting_sources", gw::json::array({source})}};
   }
 };
 
@@ -871,7 +889,7 @@ std::pair<bool, bool> share_one_event_source() {
   stream_done = true;
   reader.join();
   const bool framed = wait_until([&] {
-    return !capture->frames_for("SHARED_1").empty();
+    return !capture->frames_for("SHARED_1", "plugin_app").empty();
   });
   return {sse_seen.load(), framed};
 }
@@ -1232,7 +1250,7 @@ bool check_triggers() {
   });
   ok &= check(fault_fired, "a confirmation from the host's event source fires the fault trigger");
   ok &= check(capture && wait_until([&] {
-                return !capture->frames_for("TRIGGER_FAULT").empty();
+                return !capture->frames_for("TRIGGER_FAULT", "plugin_app").empty();
               }),
               "the freeze-frame capture on the same source holds a frame for the confirmation");
   if (fault_fired) {
@@ -1475,7 +1493,7 @@ bool check_plugin_context_and_fault_triggers() {
   stream_done = true;
   stream.join();
   ok &= check(wait_until([&] {
-                return !capture->frames_for("SPEED_HIGH").empty();
+                return !capture->frames_for("SPEED_HIGH", "plugin_app").empty();
               }),
               "the freeze-frame capture gets the same confirmation");
   const auto detail = client.Get("/api/v1/apps/plugin_app/faults/SPEED_HIGH");
@@ -1826,7 +1844,7 @@ static int run() {
       plugin.speed = 10;
       events.confirm("FF_1", "plugin_app");
       ok &= check(wait_until([&] {
-                    return !capture->frames_for("FF_1").empty();
+                    return !capture->frames_for("FF_1", "plugin_app").empty();
                   }),
                   "a fault confirmation for a plugin-served entity is captured");
       plugin.speed = 99;
@@ -1843,10 +1861,10 @@ static int run() {
       events.confirm("FF_HOSTED", "hosted_app");
       events.confirm("FF_2", "plugin_app");
       ok &= check(wait_until([&] {
-                    return !capture->frames_for("FF_2").empty();
+                    return !capture->frames_for("FF_2", "plugin_app").empty();
                   }),
                   "a second fault is captured");
-      ok &= check(capture->frames_for("FF_HOSTED").empty() &&
+      ok &= check(capture->frames_for("FF_HOSTED", "hosted_app").empty() &&
                       freeze_frame_of(detail_of("hosted_app", "FF_HOSTED").second, "hosted_app").is_null(),
                   "an entity no plugin serves gets no freeze_frame");
 
@@ -1854,13 +1872,14 @@ static int run() {
       plugin.speed = 30;
       events.confirm("FF_3", "plugin_app");
       ok &= check(wait_until([&] {
-                    return !capture->frames_for("FF_3").empty();
+                    return !capture->frames_for("FF_3", "plugin_app").empty();
                   }),
                   "a third fault is captured");
-      ok &= check(capture->frames_for("FF_1").empty() &&
+      ok &= check(capture->frames_for("FF_1", "plugin_app").empty() &&
                       freeze_frame_of(detail_of("plugin_app", "FF_1").second, "plugin_app").is_null(),
                   "past max_faults the oldest fault's frames are evicted");
-      ok &= check(!capture->frames_for("FF_2").empty() && !capture->frames_for("FF_3").empty(),
+      ok &= check(!capture->frames_for("FF_2", "plugin_app").empty() &&
+                      !capture->frames_for("FF_3", "plugin_app").empty(),
                   "the newer faults keep their frames");
 
       // A re-confirmation takes a new frame.

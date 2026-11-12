@@ -122,6 +122,16 @@ void TriggerManager::set_entity_children_fn(EntityChildrenFn fn) {
   entity_children_fn_ = std::move(fn);
 }
 
+void TriggerManager::set_collection_scope_fn(const std::string & collection, CollectionScopeFn fn) {
+  std::lock_guard<std::mutex> lock(hierarchy_mutex_);
+  collection_scope_fns_[collection] = std::move(fn);
+}
+
+void TriggerManager::set_restore_replay_fn(const std::string & collection, RestoreReplayFn fn) {
+  std::lock_guard<std::mutex> lock(hierarchy_mutex_);
+  restore_replay_fns_[collection] = std::move(fn);
+}
+
 void TriggerManager::set_log_manager(LogManager * log_manager) {
   log_manager_ = log_manager;
 }
@@ -262,9 +272,15 @@ void TriggerManager::set_entity_exists_fn(EntityExistsFn fn) {
   entity_exists_fn_ = std::move(fn);
 }
 
+bool TriggerManager::entity_exists(const TriggerState & state) const {
+  std::lock_guard<std::mutex> lock(entity_exists_mutex_);
+  return entity_exists_fn_ && entity_exists_fn_(state.info.entity_id, state.info.entity_type);
+}
+
 void TriggerManager::sweep_orphaned_triggers() {
   // Phase 1: collect orphaned triggers under lock
   std::vector<std::pair<std::string, std::string>> orphaned;  // trigger id, entity id
+  std::vector<std::pair<std::string, std::shared_ptr<TriggerState>>> to_replay;
   WarnLogFn warn_fn;
   {
     std::lock_guard<std::mutex> lock(triggers_mutex_);
@@ -280,6 +296,9 @@ void TriggerManager::sweep_orphaned_triggers() {
       }
       if (entity_exists_fn_(state->info.entity_id, state->info.entity_type)) {
         state->entity_seen.store(true);
+        if (state->replay_pending.load()) {
+          to_replay.emplace_back(id, state);
+        }
         continue;
       }
       // An entity this gateway has never seen has not disappeared from its
@@ -308,22 +327,47 @@ void TriggerManager::sweep_orphaned_triggers() {
               "' is not in the discovery cache.");
     }
   }
+
+  // Phase 3: restored triggers whose entity is now discovered replay what it
+  // lists, unless a live change already made them do so.
+  for (const auto & [id, state] : to_replay) {
+    if (shutdown_flag_.load()) {
+      return;
+    }
+    bool ended = false;
+    {
+      std::lock_guard<std::mutex> lock(state->mtx);
+      if (state->info.status != TriggerStatus::ACTIVE || !state->active.load()) {
+        continue;
+      }
+      ended = replay_restored_locked(*state);
+      state->cv.notify_all();
+    }
+    if (ended) {
+      remove(id);
+    }
+  }
 }
 
-bool TriggerManager::matches_entity(const TriggerState & state, const std::string & notification_entity_id) const {
+bool TriggerManager::matches_entity(const TriggerState & state, const ResourceChange & change) const {
+  std::lock_guard<std::mutex> lock(hierarchy_mutex_);
+  auto scope_it = collection_scope_fns_.find(change.collection);
+  if (scope_it != collection_scope_fns_.end() && scope_it->second) {
+    return scope_it->second(state.info.entity_type, state.info.entity_id, change.value);
+  }
+
   // Direct match
-  if (state.info.entity_id == notification_entity_id) {
+  if (state.info.entity_id == change.entity_id) {
     return true;
   }
 
   // Hierarchy match: check if notification entity is a descendant
-  std::lock_guard<std::mutex> lock(hierarchy_mutex_);
   if (!entity_children_fn_) {
     return false;
   }
 
   auto children = entity_children_fn_(state.info.entity_id, state.info.entity_type);
-  return std::find(children.begin(), children.end(), notification_entity_id) != children.end();
+  return std::find(children.begin(), children.end(), change.entity_id) != children.end();
 }
 
 // ---------------------------------------------------------------------------
@@ -790,6 +834,10 @@ size_t TriggerManager::load_persistent_triggers() {
       // not read "missing from the cache" as "gone" until discovery has had
       // its say.
       state->entity_seen.store(false);
+      {
+        std::lock_guard<std::mutex> replay_lock(hierarchy_mutex_);
+        state->replay_pending.store(restore_replay_fns_.count(state->info.collection) > 0);
+      }
 
       // Restore previous value state if available
       auto state_result = store_.load_state(state->info.id);
@@ -889,15 +937,125 @@ size_t TriggerManager::load_persistent_triggers() {
 // Resource change evaluation
 // ---------------------------------------------------------------------------
 
-void TriggerManager::on_resource_change(const ResourceChange & change) {
-  if (shutdown_flag_.load()) {
-    return;
+std::optional<bool> TriggerManager::evaluate_locked(TriggerState & state, const nlohmann::json & value) {
+  // Extract value via JSON Pointer - skip evaluation if pointer doesn't match
+  nlohmann::json extracted_value;
+  if (state.info.path.empty()) {
+    extracted_value = value;
+  } else {
+    try {
+      auto ptr = nlohmann::json::json_pointer(state.info.path);
+      if (!value.contains(ptr)) {
+        return std::nullopt;
+      }
+      extracted_value = value[ptr];
+    } catch (...) {
+      return std::nullopt;  // Malformed pointer - skip evaluation
+    }
   }
 
-  // I5 fix: prevent recursive trigger evaluation. The notifier worker is
-  // single-threaded, so if log_manager_->add_log_entry() triggers a notification
-  // that re-enters on_resource_change(), we break the cycle here.
-  if (evaluating_trigger_) {
+  auto evaluator = conditions_.get(state.info.condition_type);
+  if (!evaluator) {
+    return std::nullopt;
+  }
+
+  std::optional<nlohmann::json> prev_opt;
+  if (state.has_previous_value) {
+    prev_opt = state.previous_value;
+  }
+  const bool fired = evaluator->evaluate(prev_opt, extracted_value, state.info.condition_params);
+  state.previous_value = std::move(extracted_value);
+  state.has_previous_value = true;
+
+  if (fired) {
+    // Event counter feeds the SSE id: field for reconnection.
+    state.event_counter.fetch_add(1);
+    nlohmann::json envelope;
+    envelope["timestamp"] = to_iso8601(std::chrono::system_clock::now());
+    envelope["payload"] = value;
+    // Bounded: the oldest undelivered event is dropped.
+    state.pending_events.push_back(std::move(envelope));
+    if (state.pending_events.size() > TriggerState::kMaxPendingEvents) {
+      state.pending_events.pop_front();
+    }
+  }
+  return fired;
+}
+
+bool TriggerManager::replay_restored_locked(TriggerState & state) {
+  // The sweep and the dispatch worker both call this; the first one replays.
+  if (!state.replay_pending.load()) {
+    return false;
+  }
+  RestoreReplayFn replay_fn;
+  {
+    std::lock_guard<std::mutex> lock(hierarchy_mutex_);
+    auto it = restore_replay_fns_.find(state.info.collection);
+    if (it != restore_replay_fns_.end()) {
+      replay_fn = it->second;
+    }
+  }
+  if (!replay_fn) {
+    state.replay_pending.store(false);
+    return false;
+  }
+  auto items = replay_fn(state.info.entity_type, state.info.entity_id);
+  if (!items) {
+    return false;  // Entity not in the cache yet.
+  }
+  state.replay_pending.store(false);
+
+  bool evaluated_any = false;
+  bool ended = false;
+  for (const auto & item : *items) {
+    if (item.is_object()) {
+      auto id_it = item.find("id");
+      if (id_it != item.end() && id_it->is_string()) {
+        state.replayed_ids.insert(id_it->get<std::string>());
+      }
+    }
+    auto evaluated = evaluate_locked(state, item);
+    if (!evaluated) {
+      continue;
+    }
+    evaluated_any = true;
+    if (!*evaluated) {
+      continue;
+    }
+    if (state.info.log_settings.has_value() && log_manager_) {
+      const auto & ls = *state.info.log_settings;
+      try {
+        log_manager_->add_log_entry(state.info.entity_id, ls.value("severity", "info"),
+                                    ls.value("marker", "Trigger fired"),
+                                    {{"trigger_id", state.info.id},
+                                     {"condition_type", state.info.condition_type},
+                                     {"resource", state.info.resource_uri}},
+                                    notifier_sub_id_);
+      } catch (...) {
+        // Don't let log entry failure prevent trigger delivery
+      }
+    }
+    if (!state.info.multishot) {
+      state.info.status = TriggerStatus::TERMINATED;
+      state.active.store(false);
+      ended = true;
+      break;
+    }
+  }
+
+  if (evaluated_any && config_.on_restart_behavior == "restore" && state.info.persistent) {
+    (void)store_.save_state(state.info.id, state.previous_value);
+  }
+  if (ended && state.info.persistent) {
+    nlohmann::json fields;
+    fields["status"] = "TERMINATED";
+    (void)store_.update(state.info.id, fields);
+  }
+  return ended;
+}
+
+void TriggerManager::on_resource_change(const ResourceChange & change) {
+  if (shutdown_flag_.load()) {
     return;
   }
 
@@ -958,8 +1116,14 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
     // Release sub_lock before calling matches_entity (it acquires hierarchy_mutex_)
     sub_lock.unlock();
 
-    if (!matches_entity(*state, change.entity_id)) {
+    if (!matches_entity(*state, change)) {
       continue;
+    }
+
+    // A restored trigger whose entity a live change finds has seen it, as it
+    // would at the next sweep; the sweep can then remove it once it is gone.
+    if (!state->entity_seen.load() && entity_exists(*state)) {
+      state->entity_seen.store(true);
     }
 
     sub_lock.lock();
@@ -969,62 +1133,43 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
       continue;
     }
 
-    // Extract value via JSON Pointer - skip evaluation if pointer doesn't match
-    nlohmann::json extracted_value;
-    if (state->info.path.empty()) {
-      extracted_value = change.value;
-    } else {
-      try {
-        auto ptr = nlohmann::json::json_pointer(state->info.path);
-        if (change.value.contains(ptr)) {
-          extracted_value = change.value[ptr];
-        } else {
-          continue;  // Path not found in this change - skip evaluation
-        }
-      } catch (...) {
-        continue;  // Malformed pointer - skip evaluation
+    // A restored trigger replays what its entity lists before its first live
+    // change, and skips the live changes it replayed. While the replay stays
+    // pending the live change is not judged: the replay that succeeds lists
+    // it, after the entries logged before it.
+    if (state->replay_pending.load()) {
+      const bool ended = replay_restored_locked(*state);
+      state->cv.notify_all();
+      if (ended) {
+        terminated_triggers.push_back(trigger_id);
+        continue;
+      }
+      if (state->replay_pending.load()) {
+        continue;
+      }
+    }
+    if (!state->replayed_ids.empty() && change.value.is_object()) {
+      auto id_it = change.value.find("id");
+      if (id_it != change.value.end() && id_it->is_string() && state->replayed_ids.count(id_it->get<std::string>())) {
+        continue;
       }
     }
 
-    // Get the evaluator
-    auto evaluator = conditions_.get(state->info.condition_type);
-    if (!evaluator) {
+    auto evaluated = evaluate_locked(*state, change.value);
+    if (!evaluated) {
       continue;
     }
-
-    // Build optional previous value
-    std::optional<nlohmann::json> prev_opt;
-    if (state->has_previous_value) {
-      prev_opt = state->previous_value;
+    const bool fired = *evaluated;
+    const bool should_persist_state = (config_.on_restart_behavior == "restore" && state->info.persistent);
+    nlohmann::json previous_value_copy;
+    if (should_persist_state) {
+      previous_value_copy = state->previous_value;
     }
 
-    // Evaluate condition
-    bool fired = evaluator->evaluate(prev_opt, extracted_value, state->info.condition_params);
-
-    // Update previous value
-    state->previous_value = extracted_value;
-    state->has_previous_value = true;
-
     if (fired) {
-      // Build EventEnvelope
-      // Increment event counter (used by SSE id: field for reconnection)
-      state->event_counter.fetch_add(1);
-      nlohmann::json envelope;
-      envelope["timestamp"] = to_iso8601(std::chrono::system_clock::now());
-      envelope["payload"] = change.value;
-
-      // C2 fix: push to bounded deque instead of overwriting single optional.
-      // Drop oldest events when queue is full to prevent unbounded growth.
-      state->pending_events.push_back(std::move(envelope));
-      if (state->pending_events.size() > TriggerState::kMaxPendingEvents) {
-        state->pending_events.pop_front();
-      }
-
       // I6 fix: capture data under lock, then release before doing I/O.
       // This prevents store_.save_state() and log_manager_->add_log_entry()
       // from blocking SSE consumers that need state->mtx.
-      bool should_persist_state = (config_.on_restart_behavior == "restore" && state->info.persistent);
-      const auto & previous_value_copy = extracted_value;
       bool should_terminate = !state->info.multishot;
       auto tid_copy = state->info.id;
       auto log_settings_copy = state->info.log_settings;
@@ -1059,23 +1204,20 @@ void TriggerManager::on_resource_change(const ResourceChange & change) {
         (void)store_.update(tid_copy, fields);
       }
 
-      // I5 fix: RAII guard prevents recursive notification from log triggers
+      // The marker skips this manager's subscription, so it fires no trigger.
       if (log_settings_copy.has_value() && log_manager_) {
         auto & ls = *log_settings_copy;
-        evaluating_trigger_ = true;
         try {
           log_manager_->add_log_entry(
               entity_id_copy, ls.value("severity", "info"), ls.value("marker", "Trigger fired"),
-              {{"trigger_id", tid_copy}, {"condition_type", condition_type_copy}, {"resource", resource_uri_copy}});
+              {{"trigger_id", tid_copy}, {"condition_type", condition_type_copy}, {"resource", resource_uri_copy}},
+              notifier_sub_id_);
         } catch (...) {
           // Don't let log entry failure prevent trigger delivery
         }
-        evaluating_trigger_ = false;
       }
     } else {
       // Condition didn't fire - persist state if needed (I6: still move I/O outside lock)
-      bool should_persist_state = (config_.on_restart_behavior == "restore" && state->info.persistent);
-      const auto & previous_value_copy = extracted_value;
       auto tid_copy = trigger_id;
       sub_lock.unlock();
 

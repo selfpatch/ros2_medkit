@@ -66,7 +66,7 @@ class FakeFaultTransport : public FaultServiceTransport {
   std::set<std::string> list_rosbags_fails_for;
   int list_rosbags_calls{0};
 
-  FaultResult get_rosbag(const std::string & id) override {
+  FaultResult get_rosbag(const std::string & id, const std::string & /*source_id*/) override {
     FaultResult r;
     r.success = false;
     if (get_rosbag_unavailable) {
@@ -149,10 +149,12 @@ class FakeFaultTransport : public FaultServiceTransport {
                                             const std::string & /*source_id*/) override {
     return {};
   }
-  FaultResult clear_fault(const std::string & /*fault_code*/, bool /*skip_correlation_auto_clear*/) override {
+  FaultResult clear_fault(const std::string & /*fault_code*/, const std::string & /*source_id*/,
+                          bool /*skip_correlation_auto_clear*/) override {
     return {};
   }
-  FaultResult get_snapshots(const std::string & /*fault_code*/, const std::string & /*topic*/) override {
+  FaultResult get_snapshots(const std::string & /*fault_code*/, const std::string & /*source_id*/,
+                            const std::string & /*topic*/) override {
     return {};
   }
   bool wait_for_services(std::chrono::duration<double> /*timeout*/) override {

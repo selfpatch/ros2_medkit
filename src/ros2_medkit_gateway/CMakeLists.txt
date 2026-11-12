@@ -455,6 +455,12 @@ if(BUILD_TESTING)
   medkit_add_gtest(test_plugin_notify_integration test/test_plugin_notify_integration.cpp)
   target_link_libraries(test_plugin_notify_integration gateway_ros2)
 
+  medkit_add_gtest(test_log_change_owner test/test_log_change_owner.cpp TIMEOUT 180)
+  target_link_libraries(test_log_change_owner gateway_ros2)
+
+  medkit_add_gtest(test_log_trigger_restore test/test_log_trigger_restore.cpp TIMEOUT 120)
+  target_link_libraries(test_log_trigger_restore gateway_ros2)
+
   medkit_add_gtest(test_plugin_context_aggregation test/test_plugin_context_aggregation.cpp)
   target_link_libraries(test_plugin_context_aggregation gateway_ros2)
 
@@ -731,6 +737,9 @@ if(BUILD_TESTING)
   medkit_add_gtest(test_sse_fault_handler test/test_sse_fault_handler.cpp)
   target_link_libraries(test_sse_fault_handler gateway_ros2)
   medkit_target_dependencies(test_sse_fault_handler rclcpp ros2_medkit_msgs)
+  medkit_add_gtest(test_fault_handlers_plugin_clear test/test_fault_handlers_plugin_clear.cpp)
+  target_link_libraries(test_fault_handlers_plugin_clear gateway_ros2)
+  medkit_target_dependencies(test_fault_handlers_plugin_clear rclcpp ros2_medkit_msgs)
 
   # Zero-config entity freeze-frame capture tests
   medkit_add_gtest(test_entity_freeze_frame_capture test/test_entity_freeze_frame_capture.cpp)

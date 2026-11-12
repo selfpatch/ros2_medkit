@@ -292,6 +292,7 @@ if(BUILD_TESTING)
     test_aggregated_function_hosts
     test_peer_recovery
     test_triggers_restore_before_discovery
+    test_triggers_logs_restore_before_discovery
     test_aggregator_fault_stream
     test_aggregated_colliding_node_names)
   set(_TWO_GATEWAY_DOMAINS 2)
@@ -376,6 +377,9 @@ if(BUILD_TESTING)
     test_triggers_restore_before_discovery 300
     # Seven cases share one gateway, and their scaled give-up bounds add up past 120s.
     test_graph_leftover_nodes 300
+    # Thirteen cases, most logging for at least five seconds and then settling,
+    # after starting two gateways and a fault manager.
+    test_triggers_logs_markers 300
     # Three discovery budgets in setUpClass before the first case runs, and a
     # broken merge spends all of them. The glob default cuts that short and
     # reports a timeout with no test name, which is the one answer that says
