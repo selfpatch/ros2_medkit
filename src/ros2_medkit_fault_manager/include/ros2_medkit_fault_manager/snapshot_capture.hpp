@@ -15,10 +15,12 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <regex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -132,6 +134,10 @@ struct SnapshotConfig {
   /// default_topics) always wins when present.
   bool entity_default{true};
 
+  /// Recapture cooldown in seconds (0 = off). Per-source records of one code that confirm inside it
+  /// share one capture of the code's topics.
+  double recapture_cooldown_sec{0.0};
+
   /// Rosbag recording configuration (optional)
   RosbagConfig rosbag;
 };
@@ -182,6 +188,23 @@ class SnapshotCapture {
   /// @param id The fault record that was confirmed
   void capture(const FaultId & id);
 
+  /// What the caller does with the capture of a record.
+  enum class Admission {
+    kEnqueue,  ///< Queue capture(): the record needs a worker.
+    kJoined    ///< The record shares a capture already running or done: queue nothing for snapshots.
+  };
+
+  /// Decide, before capture() is queued, whether the record needs a capture of its own.
+  ///
+  /// Per-source records of one code confirming inside the recapture cooldown share ONE capture of the
+  /// code's topics, and every one of them gets the rows and the freeze frame written under its own
+  /// owner. Only a code whose topics are resolved by code qualifies: the entity-default topics depend
+  /// on the owner. A shared record, a disabled cooldown or an unconfigured code is always kEnqueue.
+  Admission admit(const FaultId & id);
+
+  /// Undo admit() for a record whose capture could not be queued.
+  void withdraw(const FaultId & id);
+
   /// Get current configuration
   const SnapshotConfig & config() const {
     return config_;
@@ -207,6 +230,30 @@ class SnapshotCapture {
   /// and empty is returned when the owner resolves to no live node. Never
   /// throws; any failure degrades to empty.
   std::vector<std::string> resolve_entity_topics(const FaultId & id) const;
+
+  /// Write the rows and the freeze frame of one capture under the record @p id.
+  void persist_capture(const FaultId & id, std::vector<SnapshotData> rows, const nlohmann::json & freeze_frame,
+                       size_t captured_count, bool entity_scoped, int64_t capture_id);
+
+  /// The capture of one code that its per-source records share inside the cooldown.
+  struct CaptureGroup {
+    enum class State { kQueued, kRunning, kDone };
+    State state{State::kQueued};
+    std::set<std::string> owners;  ///< Records the capture is written for
+    std::chrono::steady_clock::time_point started;
+    /// What the capture sampled, kept while the cooldown runs so a record confirming after it
+    /// finished gets the same rows.
+    std::vector<SnapshotData> rows;
+    nlohmann::json freeze_frame = nlohmann::json::object();
+    size_t captured_count{0};
+    int64_t capture_id{0};
+  };
+
+  /// Drop groups older than the cooldown. Caller holds groups_mutex_.
+  void prune_groups_locked(std::chrono::steady_clock::time_point now);
+
+  /// Whether @p id takes part in grouping: a per-source record of a code with by-code topics.
+  bool groups_by_code(const FaultId & id) const;
 
   /// Capture a single topic on-demand (creates temporary subscription)
   /// On success also records the captured value into @p freeze_frame under the topic key.
@@ -255,6 +302,10 @@ class SnapshotCapture {
 
   std::atomic<bool> capture_seq_seeded_{false};
   std::mutex capture_seq_seed_mutex_;
+
+  /// Captures shared by the per-source records of a code (code -> group), guarded by groups_mutex_.
+  std::mutex groups_mutex_;
+  std::map<std::string, CaptureGroup> groups_;
 
   /// Compiled regex patterns (cached for performance)
   std::vector<std::pair<std::regex, std::vector<std::string>>> compiled_patterns_;

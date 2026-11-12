@@ -291,6 +291,11 @@ core::CaptureResult FaultManagerNode::enqueue_capture(const FaultId & id) {
   if (!capture_pool_) {
     return {};
   }
+  // A per-source record whose code is already captured inside the cooldown shares that capture. Its
+  // snapshots need no worker; only a recording still does.
+  if (snapshot_capture_ && snapshot_capture_->admit(id) == SnapshotCapture::Admission::kJoined && !rosbag_capture_) {
+    return {core::CaptureEnqueue::kAccepted, {}};
+  }
   const EnqueueOutcome outcome = capture_pool_->enqueue(id);
   // RCLCPP_WARN_THROTTLE needs a non-const Clock lvalue (Humble/Lyrical compat); mirror
   // rosbag_capture.cpp's local-copy pattern. The counter is cast to unsigned long long for %llu
@@ -308,6 +313,9 @@ core::CaptureResult FaultManagerNode::enqueue_capture(const FaultId & id) {
                            static_cast<unsigned long long>(capture_pool_->dropped_captures()));
       return {core::CaptureEnqueue::kEvictedOldest, outcome.evicted_id.value_or(FaultId{})};
     case EnqueueResult::kDroppedNewest:
+      if (snapshot_capture_) {
+        snapshot_capture_->withdraw(id);
+      }
       RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 2000,
                            "Capture queue full (reject_newest): dropped capture for '%s' "
                            "(pool=%d, queue=%d, total_dropped=%llu)",
@@ -315,6 +323,9 @@ core::CaptureResult FaultManagerNode::enqueue_capture(const FaultId & id) {
                            static_cast<unsigned long long>(capture_pool_->dropped_captures()));
       return {core::CaptureEnqueue::kDroppedNewest, {}};
     case EnqueueResult::kRejectedShuttingDown:
+      if (snapshot_capture_) {
+        snapshot_capture_->withdraw(id);
+      }
       RCLCPP_DEBUG(get_logger(), "Capture pool shutting down; skipped capture for '%s'", id.fault_code.c_str());
       return {core::CaptureEnqueue::kShuttingDown, {}};
   }
@@ -520,6 +531,7 @@ SnapshotConfig FaultManagerNode::create_snapshot_config() {
   config.default_topics = config_.snapshots_default_topics;
 
   config.entity_default = config_.snapshots_entity_default;
+  config.recapture_cooldown_sec = config_.snapshots_recapture_cooldown_sec;
 
   if (!config_.snapshots_config_file.empty()) {
     load_snapshot_config_from_yaml(config_.snapshots_config_file, config);
