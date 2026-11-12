@@ -68,8 +68,8 @@ A build without the option stops at startup when ``storage_type`` is ``postgres`
   ``near_misses`` and ``rosbag_files``, the primary keys on the fault code are replaced by unique
   indexes that include it, and every existing row becomes the shared record of its code (owner
   ``*``), keeping its ``reporting_sources``. The same rules as for SQLite apply, see the package
-  README. The migration runs in one transaction. Keep a copy of the database first: an earlier
-  release cannot use the migrated tables.
+  README. The migration runs in one transaction. It is one way: opening a migrated database with
+  an earlier release is unsupported, and a copy taken before the upgrade is the only way back.
 - The audit log stays a local SQLite file, see ``audit_log.database_path``.
 - The node never logs ``database_url``. It logs host, port, database and user, or the service
   name. Error text from the server is logged and returned with the password from ``database_url``
