@@ -26,27 +26,27 @@ namespace ros2_medkit_fault_manager::ros2 {
 /// the function given at construction; the node reads its capture members when it runs.
 class RosCaptureHooks : public core::CaptureHooks {
  public:
-  using CaptureFn = std::function<core::CaptureResult(const std::string &)>;
-  using CodeFn = std::function<void(const std::string &)>;
+  using CaptureFn = std::function<core::CaptureResult(const FaultId &)>;
+  using RecordFn = std::function<void(const FaultId &)>;
 
-  RosCaptureHooks(CaptureFn capture_now, CodeFn on_prefailed, CodeFn on_cleared)
+  RosCaptureHooks(CaptureFn capture_now, RecordFn on_prefailed, RecordFn on_cleared)
     : capture_now_(std::move(capture_now)), on_prefailed_(std::move(on_prefailed)), on_cleared_(std::move(on_cleared)) {
   }
 
-  core::CaptureResult capture_now(const std::string & code) override {
-    return capture_now_(code);
+  core::CaptureResult capture_now(const FaultId & id) override {
+    return capture_now_(id);
   }
-  void on_prefailed(const std::string & code) override {
-    on_prefailed_(code);
+  void on_prefailed(const FaultId & id) override {
+    on_prefailed_(id);
   }
-  void on_cleared(const std::string & code) override {
-    on_cleared_(code);
+  void on_cleared(const FaultId & id) override {
+    on_cleared_(id);
   }
 
  private:
   CaptureFn capture_now_;
-  CodeFn on_prefailed_;
-  CodeFn on_cleared_;
+  RecordFn on_prefailed_;
+  RecordFn on_cleared_;
 };
 
 }  // namespace ros2_medkit_fault_manager::ros2

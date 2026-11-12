@@ -14,7 +14,8 @@
 #
 # GetSnapshots.srv - Retrieve topic snapshots captured when a fault was confirmed.
 #
-# Returns topic data that was captured at the moment a fault transitioned to CONFIRMED.
+# Returns topic data that was captured at the moment a fault record transitioned to
+# CONFIRMED. Snapshots belong to one record, identified by (fault_code, source_id).
 # Snapshots provide debugging context by preserving system state at fault time.
 
 # Request fields
@@ -25,6 +26,11 @@ string fault_code
 # Optional topic filter. If empty, returns snapshots for all captured topics.
 # If specified, returns only the snapshot for that specific topic.
 string topic
+
+# Reporting source that owns the fault record (the source_id used in ReportFault).
+# Together with fault_code it identifies one record. Empty: the call applies only
+# when exactly one record carries fault_code, otherwise it fails as ambiguous.
+string source_id
 ---
 # Response fields
 

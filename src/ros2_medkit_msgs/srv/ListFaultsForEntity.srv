@@ -14,7 +14,8 @@
 #
 # ListFaultsForEntity.srv - Request list of faults for a specific entity.
 #
-# Filters faults by checking if entity FQN appears in fault.reporting_sources[].
+# Filters fault records by their owning reporting source: the entity FQN must match
+# the single entry of fault.reporting_sources[], exactly or as an FQN suffix.
 # Used by the gateway to serve entity-specific fault lists.
 
 # Request fields

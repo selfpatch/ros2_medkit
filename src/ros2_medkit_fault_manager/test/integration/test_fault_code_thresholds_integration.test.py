@@ -17,11 +17,10 @@
 Integration tests for per-fault_code debounce thresholds.
 
 The node is launched with both layers configured, because the point of the
-fault-code layer is what it does to the entity layer underneath it: the debounce
-counter belongs to the fault code while an entity override is chosen by the
-reporting source, so without this layer two entities reporting one code debounce
-it two ways. The last case here covers the warning that says so when no
-fault-code override settles it.
+fault-code layer is what it does to the entity layer underneath it: an entity
+override is chosen by the reporting source, so without this layer two entities
+reporting one code debounce it two ways. Each owner's record keeps its own
+counter, and the fault-code override sets the band it is judged against.
 """
 
 import os
@@ -37,25 +36,9 @@ from rclpy.node import Node
 from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import GetFault, ReportFault
 
-# The node's own wording, so a reworded warning fails here rather than going quiet.
-CONFLICT_WARNING = 'is debounced two ways'
-
 # Entities whose debounce policies differ, from test_entity_thresholds.yaml.
 LIDAR = '/sensors/lidar/front'
 MOTOR = '/powertrain/motor/left'
-
-
-def _output_text(proc_output, process):
-    """
-    Return everything the process has written so far, as one string.
-
-    Concatenated with NO separator: proc_output yields raw stream chunks, not
-    lines, so joining on a newline would splice one into the middle of a log
-    line and break a substring match on a message that is plainly there.
-    """
-    return ''.join(
-        output.text.decode(errors='replace') for output in proc_output[process]
-    )
 
 
 def generate_test_description():
@@ -142,10 +125,11 @@ class TestPerFaultCodeThresholds(unittest.TestCase):
         resp = self._call(self.report_client, req)
         self.assertTrue(resp.accepted)
 
-    def _status(self, fault_code):
-        """Get a fault's current status."""
+    def _status(self, fault_code, source_id):
+        """Get the current status of the record one source owns."""
         req = GetFault.Request()
         req.fault_code = fault_code
+        req.source_id = source_id
         resp = self._call(self.get_client, req)
         self.assertTrue(resp.success, resp.error_message)
         return resp.fault.status
@@ -160,131 +144,63 @@ class TestPerFaultCodeThresholds(unittest.TestCase):
         top of the entity one.
         """
         self._report('SHARED.OVERHEAT', LIDAR)
-        self.assertEqual(self._status('SHARED.OVERHEAT'), Fault.STATUS_PREFAILED)
+        self.assertEqual(self._status('SHARED.OVERHEAT', LIDAR), Fault.STATUS_PREFAILED)
 
         self._report('SHARED.OVERHEAT', LIDAR)
-        self.assertEqual(self._status('SHARED.OVERHEAT'), Fault.STATUS_PREFAILED)
+        self.assertEqual(self._status('SHARED.OVERHEAT', LIDAR), Fault.STATUS_PREFAILED)
 
         self._report('SHARED.OVERHEAT', LIDAR)
-        self.assertEqual(self._status('SHARED.OVERHEAT'), Fault.STATUS_CONFIRMED)
+        self.assertEqual(self._status('SHARED.OVERHEAT', LIDAR), Fault.STATUS_CONFIRMED)
 
     # @verifies REQ_INTEROP_107
-    def test_02_one_code_debounces_alike_from_two_entities(self):
+    def test_02_one_code_debounces_alike_for_each_entitys_record(self):
         """
-        Confirm SHARED.JAM on its own fourth event, whoever reported it.
+        Confirm each owner's SHARED.JAM record on its own fourth event.
 
-        Alternating the two sources is the problem case: under the
-        entity layer alone lidar's -1 would confirm this on the second event,
-        bypassing the motor's policy.
+        The two sources own two records on their own counters. Under the entity
+        layer alone lidar's -1 would confirm its record on the first event and
+        the motor's -5 would take five.
         """
-        self._report('SHARED.JAM', MOTOR)
-        self.assertEqual(self._status('SHARED.JAM'), Fault.STATUS_PREFAILED)
+        for source in (MOTOR, LIDAR):
+            for _ in range(3):
+                self._report('SHARED.JAM', source)
+                self.assertEqual(
+                    self._status('SHARED.JAM', source), Fault.STATUS_PREFAILED)
 
-        self._report('SHARED.JAM', LIDAR)
-        self.assertEqual(self._status('SHARED.JAM'), Fault.STATUS_PREFAILED)
-
-        self._report('SHARED.JAM', MOTOR)
-        self.assertEqual(self._status('SHARED.JAM'), Fault.STATUS_PREFAILED)
-
-        self._report('SHARED.JAM', LIDAR)
-        self.assertEqual(self._status('SHARED.JAM'), Fault.STATUS_CONFIRMED)
+            self._report('SHARED.JAM', source)
+            self.assertEqual(
+                self._status('SHARED.JAM', source), Fault.STATUS_CONFIRMED)
 
     # @verifies REQ_INTEROP_107
     def test_03_a_code_with_no_override_keeps_the_entity_policy(self):
         """The new layer is opt-in: an unlisted code still follows its entity."""
         self._report('MOTOR.ONLY', MOTOR)
-        self.assertEqual(self._status('MOTOR.ONLY'), Fault.STATUS_PREFAILED)
+        self.assertEqual(self._status('MOTOR.ONLY', MOTOR), Fault.STATUS_PREFAILED)
 
         self._report('LIDAR.ONLY', LIDAR)
-        self.assertEqual(self._status('LIDAR.ONLY'), Fault.STATUS_CONFIRMED)
+        self.assertEqual(self._status('LIDAR.ONLY', LIDAR), Fault.STATUS_CONFIRMED)
 
     # @verifies REQ_INTEROP_107
-    def test_04_a_half_pinned_code_is_still_reported(self, proc_output,
-                                                     fault_manager_node):
+    def test_04_a_half_pinned_code_confirms_on_the_pinned_threshold(self):
         """
         Report SHARED.PARTIAL, which pins confirmation but not healing.
 
-        The override settles the direction it names and no more: the two sources
-        heal this code under thresholds 1 and 5. Warning on the whole policy
-        rather than on the presence of an override is what keeps that visible.
+        Both owners' records confirm on their own second event, whatever
+        confirmation threshold their entity carries.
         """
-        self._report('SHARED.PARTIAL', LIDAR)
-        self.assertEqual(self._status('SHARED.PARTIAL'), Fault.STATUS_PREFAILED)
+        for source in (LIDAR, MOTOR):
+            self._report('SHARED.PARTIAL', source)
+            self.assertEqual(
+                self._status('SHARED.PARTIAL', source), Fault.STATUS_PREFAILED)
 
-        self._report('SHARED.PARTIAL', MOTOR)
-        self.assertEqual(self._status('SHARED.PARTIAL'), Fault.STATUS_CONFIRMED)
-
-        proc_output.assertWaitFor(
-            f"Fault code 'SHARED.PARTIAL' {CONFLICT_WARNING}",
-            process=fault_manager_node,
-            timeout=10.0,
-        )
-
-    def test_05_conflicting_policies_are_reported_once(self, proc_output,
-                                                       fault_manager_node):
-        """
-        Warn on two entities reporting one unlisted code, and warn once.
-
-        Without the warning the bypass is invisible - the fault confirms under
-        whichever policy happened to report, and nothing in the log distinguishes
-        that from the policy the operator configured.
-        """
-        self._report('CONFLICTING.CODE', LIDAR)
-        self._report('CONFLICTING.CODE', MOTOR)
-
-        proc_output.assertWaitFor(
-            f"Fault code 'CONFLICTING.CODE' {CONFLICT_WARNING}",
-            process=fault_manager_node,
-            timeout=10.0,
-        )
-
-        # Report again. The node must not warn a second time; that is checked
-        # in TestShutdown, once the whole output has been read.
-        self._report('CONFLICTING.CODE', LIDAR)
-        self._report('CONFLICTING.CODE', MOTOR)
+            self._report('SHARED.PARTIAL', source)
+            self.assertEqual(
+                self._status('SHARED.PARTIAL', source), Fault.STATUS_CONFIRMED)
 
 
 @launch_testing.post_shutdown_test()
 class TestShutdown(unittest.TestCase):
-    """Verify fault_manager exits cleanly and stayed quiet where it should."""
-
-    def test_an_overridden_code_never_warns(self, proc_output,
-                                            fault_manager_node):
-        """
-        Stay quiet about a code whose override settles it for both sources.
-
-        SHARED.JAM had two sources and no conflict: a fault-code override
-        resolves the same for both, so there is nothing to warn about. Checked
-        after shutdown, when the whole output is in hand - asserting an absence
-        against a stream still being written proves nothing.
-        """
-        text = _output_text(proc_output, fault_manager_node)
-        self.assertNotIn("Fault code 'SHARED.JAM'", text)
-
-        # And a code only one source ever reports has nothing to conflict with.
-        # A witness compared against the global config instead of against the
-        # first report would warn here, on every ordinary single-reporter robot.
-        self.assertNotIn("Fault code 'SHARED.OVERHEAT'", text)
-        self.assertNotIn("Fault code 'MOTOR.ONLY'", text)
-        self.assertNotIn("Fault code 'LIDAR.ONLY'", text)
-
-    def test_conflict_is_warned_once_with_both_policies(self, proc_output,
-                                                        fault_manager_node):
-        """
-        Warn once for CONFLICTING.CODE, naming both sources and both policies.
-
-        Counted here, after shutdown: during the run proc_output may not have
-        read the last warning yet, so a count there can pass on two warnings.
-        """
-        text = _output_text(proc_output, fault_manager_node)
-        self.assertEqual(text.count("Fault code 'CONFLICTING.CODE'"), 1)
-        # Lidar reported first, so it is named first. Values come from
-        # test_entity_thresholds.yaml; motor inherits healing_enabled=false.
-        self.assertIn(
-            f"'{LIDAR}' resolves confirmation=-1 healing_enabled=true healing=1, "
-            f"'{MOTOR}' resolves confirmation=-3 healing_enabled=false healing=5",
-            text,
-        )
+    """Verify fault_manager exits cleanly."""
 
     def test_exit_code(self, proc_info):
         """Check process exit code."""

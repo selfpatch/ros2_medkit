@@ -283,7 +283,7 @@ TEST_F(ActionStatusBridgeTest, ReporterFor_StickyCreatedOnceNeverSwapped) {
   ActionStatusBridgeTestAccess access(node.get());
   // No publisher exists, so the server FQN is unresolved and the reporter falls
   // back to the action name. It must be created once and reused, never swapped:
-  // reporting_sources is append-only, so a provisional source cannot be undone.
+  // a swapped source would open a second fault record and strand the first.
   const void * first = access.reporter_identity("/nav");
   EXPECT_NE(first, nullptr);
   EXPECT_EQ(access.reporter_identity("/nav"), first);
