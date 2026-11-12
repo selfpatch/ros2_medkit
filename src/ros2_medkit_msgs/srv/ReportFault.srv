@@ -15,14 +15,14 @@
 # ReportFault.srv - Report a fault event to the FaultManager.
 #
 # Called by FaultReporter clients or directly by nodes to report fault conditions.
-# The FaultManager aggregates reports by fault_code across all sources and applies
-# debounce filtering based on FAILED/PASSED event counts.
+# The FaultManager keeps one record per (fault_code, source_id) pair and applies
+# debounce filtering per record, based on FAILED/PASSED event counts.
 
 # Request fields
 
 # Global fault identifier. Convention: UPPER_SNAKE_CASE (e.g., "MOTOR_OVERHEAT").
 # Recommended max length: 64 characters. Allowed: A-Z, 0-9, underscore.
-# Same fault_code from different sources = single aggregated fault.
+# Same fault_code from different sources = one record each, filtered independently.
 string fault_code
 
 # Event type indicating whether the fault condition is detected or cleared.
@@ -47,7 +47,9 @@ string description
 
 # Identifier of the reporting node/entity. Recommended: fully qualified ROS 2 node name
 # including namespace (e.g., "/powertrain/engine/temp_sensor").
-# This value is added to the fault's reporting_sources array for multi-source tracking.
+# This value owns the record: (fault_code, source_id) is the record identity, and the
+# services that read or clear one record take it back as their source_id field.
+# Required: a report with an empty source_id is rejected.
 string source_id
 ---
 # Response fields

@@ -332,8 +332,8 @@ void reclassify_stale_healed(FaultStorage & storage, const FaultCodeThresholdRes
     if (!reclassified.empty()) {
       if (audit_enabled) {
         const int64_t reclassified_at_ns = wall_clock_ns();
-        for (const auto & fault_code : reclassified) {
-          auto fault = storage.get_fault(fault_code);
+        for (const auto & id : reclassified) {
+          auto fault = storage.get_fault(id);
           if (fault) {
             audit(*fault, reclassified_at_ns);
           }

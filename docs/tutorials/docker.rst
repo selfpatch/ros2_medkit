@@ -39,7 +39,7 @@ Images are available for all supported ROS 2 distributions:
 Each image includes the gateway and all open-core packages:
 
 - ``ros2_medkit_gateway`` - HTTP REST server
-- ``ros2_medkit_fault_manager`` - Fault aggregation and management
+- ``ros2_medkit_fault_manager`` - Fault record keeping and lifecycle management
 - ``ros2_medkit_fault_reporter`` - Client library for fault reporting
 - ``ros2_medkit_diagnostic_bridge`` - Bridges ``/diagnostics`` to fault manager
 - ``ros2_medkit_serialization`` - Runtime JSON/ROS 2 serialization

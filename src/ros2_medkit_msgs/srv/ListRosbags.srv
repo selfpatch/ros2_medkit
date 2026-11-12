@@ -20,7 +20,7 @@
 # Request fields
 
 # Entity FQN (fully qualified name) to filter rosbags by.
-# Matches against fault reporting_sources using prefix matching.
+# Matches the owning reporting source of each recording's fault record, exactly.
 string entity_fqn
 ---
 # Response fields

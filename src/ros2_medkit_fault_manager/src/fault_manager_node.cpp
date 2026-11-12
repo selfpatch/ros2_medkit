@@ -104,17 +104,17 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
   event_publisher_ = create_publisher<ros2_medkit_msgs::msg::FaultEvent>("~/events", rclcpp::QoS(100).reliable());
   event_sink_ = std::make_unique<ros2::RosEventSink>(event_publisher_);
   capture_hooks_ = std::make_unique<ros2::RosCaptureHooks>(
-      [this](const std::string & code) {
-        return enqueue_capture(code);
+      [this](const FaultId & id) {
+        return enqueue_capture(id);
       },
-      [this](const std::string & code) {
+      [this](const FaultId & id) {
         if (rosbag_capture_) {
-          rosbag_capture_->on_fault_prefailed(code);
+          rosbag_capture_->on_fault_prefailed(id);
         }
       },
-      [this](const std::string & code) {
+      [this](const FaultId & id) {
         if (rosbag_capture_) {
-          rosbag_capture_->on_fault_cleared(code);
+          rosbag_capture_->on_fault_cleared(id);
         }
       });
   core_ = std::make_unique<core::FaultManagerCore>(config_, std::move(parts), *event_sink_, *capture_hooks_,
@@ -123,11 +123,13 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
 
   // Runs after the override files are loaded, so a code with its own healing_enabled: true keeps
   // its HEALED status. Each flipped fault is audited, or the audit log's verify() would not see it.
-  core::reclassify_stale_healed(*storage_, core_->fault_code_resolver(), core_->global_debounce(),
-                                core_->audit_log() != nullptr, log_sink_, config_.logger_name,
-                                [this](const fd::FaultRecord & fault, int64_t reclassified_at_ns) {
-                                  audit_transition(kTransitionCleared, fault, "startup_reclassify", reclassified_at_ns);
-                                });
+  core::reclassify_stale_healed(
+      *storage_, core_->fault_code_resolver(), core_->global_debounce(), core_->audit_log() != nullptr, log_sink_,
+      config_.logger_name, [this](const fd::FaultRecord & fault, int64_t reclassified_at_ns) {
+        audit_transition(kTransitionCleared, fault,
+                         fault.reporting_sources.empty() ? std::string() : fault.reporting_sources.front(),
+                         reclassified_at_ns);
+      });
 
   // Create service servers
   report_fault_srv_ = create_service<ros2_medkit_msgs::srv::ReportFault>(
@@ -215,13 +217,13 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
     capture_pool_ = std::make_unique<CaptureThreadPool>(
         static_cast<std::size_t>(capture_pool_size_), static_cast<std::size_t>(capture_queue_depth_),
         capture_queue_full_policy_, log_sink_,
-        [snap, bag, rosbag_mutex](const std::string & fault_code) {
+        [snap, bag, rosbag_mutex](const FaultId & id) {
           if (snap) {
-            snap->capture(fault_code);
+            snap->capture(id);
           }
           if (bag) {
             std::lock_guard<std::mutex> bag_lock(*rosbag_mutex);
-            bag->on_fault_confirmed(fault_code);
+            bag->on_fault_confirmed(id);
           }
         },
         config_.logger_name);
@@ -286,11 +288,11 @@ FaultManagerNode::~FaultManagerNode() {
   }
 }
 
-core::CaptureResult FaultManagerNode::enqueue_capture(const std::string & fault_code) {
+core::CaptureResult FaultManagerNode::enqueue_capture(const FaultId & id) {
   if (!capture_pool_) {
     return {};
   }
-  const EnqueueOutcome outcome = capture_pool_->enqueue(fault_code);
+  const EnqueueOutcome outcome = capture_pool_->enqueue(id);
   // RCLCPP_WARN_THROTTLE needs a non-const Clock lvalue (Humble/Lyrical compat); mirror
   // rosbag_capture.cpp's local-copy pattern. The counter is cast to unsigned long long for %llu
   // to avoid -Wuseless-cast (uint64_t == unsigned long on LP64).
@@ -302,19 +304,19 @@ core::CaptureResult FaultManagerNode::enqueue_capture(const std::string & fault_
       RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 2000,
                            "Capture queue full (drop_oldest): evicted pending '%s' for '%s' "
                            "(pool=%d, queue=%d, total_dropped=%llu)",
-                           outcome.evicted_code ? outcome.evicted_code->c_str() : "?", fault_code.c_str(),
+                           outcome.evicted_id ? outcome.evicted_id->fault_code.c_str() : "?", id.fault_code.c_str(),
                            capture_pool_size_, capture_queue_depth_,
                            static_cast<unsigned long long>(capture_pool_->dropped_captures()));
-      return {core::CaptureEnqueue::kEvictedOldest, outcome.evicted_code.value_or(std::string{})};
+      return {core::CaptureEnqueue::kEvictedOldest, outcome.evicted_id.value_or(FaultId{})};
     case EnqueueResult::kDroppedNewest:
       RCLCPP_WARN_THROTTLE(get_logger(), throttle_clock, 2000,
                            "Capture queue full (reject_newest): dropped capture for '%s' "
                            "(pool=%d, queue=%d, total_dropped=%llu)",
-                           fault_code.c_str(), capture_pool_size_, capture_queue_depth_,
+                           id.fault_code.c_str(), capture_pool_size_, capture_queue_depth_,
                            static_cast<unsigned long long>(capture_pool_->dropped_captures()));
       return {core::CaptureEnqueue::kDroppedNewest, {}};
     case EnqueueResult::kRejectedShuttingDown:
-      RCLCPP_DEBUG(get_logger(), "Capture pool shutting down; skipped capture for '%s'", fault_code.c_str());
+      RCLCPP_DEBUG(get_logger(), "Capture pool shutting down; skipped capture for '%s'", id.fault_code.c_str());
       return {core::CaptureEnqueue::kShuttingDown, {}};
   }
   return {};
@@ -353,6 +355,7 @@ void FaultManagerNode::handle_list_faults(
   for (const auto & muted : outcome.muted_faults) {
     ros2_medkit_msgs::msg::MutedFaultInfo info;
     info.fault_code = muted.fault_code;
+    info.source_id = muted.source_id;
     info.root_cause_code = muted.root_cause_code;
     info.rule_id = muted.rule_id;
     info.delay_ms = muted.delay_ms;
@@ -378,7 +381,7 @@ void FaultManagerNode::handle_list_faults(
 void FaultManagerNode::handle_clear_fault(
     const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & request,
     const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & response) {
-  auto outcome = core_->clear(request->fault_code, request->skip_correlation_auto_clear);
+  auto outcome = core_->clear(request->fault_code, request->source_id, request->skip_correlation_auto_clear);
   response->success = outcome.success;
   response->message = std::move(outcome.message);
   response->auto_cleared_codes = std::move(outcome.auto_cleared_codes);
@@ -386,7 +389,7 @@ void FaultManagerNode::handle_clear_fault(
 
 void FaultManagerNode::handle_get_fault(const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Request> & request,
                                         const std::shared_ptr<ros2_medkit_msgs::srv::GetFault::Response> & response) {
-  const auto detail = core_->get(request->fault_code);
+  const auto detail = core_->get(request->fault_code, request->source_id);
   response->success = detail.success;
   response->error_message = detail.error_message;
   if (detail.fault.fault_code.empty()) {
@@ -623,26 +626,19 @@ void FaultManagerNode::handle_get_snapshots(
     return;
   }
 
-  // Check if fault exists
-  std::optional<fd::FaultRecord> fault;
-  try {
-    fault = storage_->get_fault(request->fault_code);
-  } catch (const FaultStorage::IgnorableConnectionException & e) {
-    RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+  // Which record
+  std::string resolve_error;
+  const auto target = core_->resolve_target(request->fault_code, request->source_id, resolve_error);
+  if (!target) {
     response->success = false;
-    response->error_message = storage_unavailable(e);
-    return;
-  }
-  if (!fault) {
-    response->success = false;
-    response->error_message = "Fault not found: " + request->fault_code;
+    response->error_message = resolve_error;
     return;
   }
 
   // Get snapshots from storage, newest capture set first.
   std::vector<SnapshotData> snapshots = {};
   try {
-    snapshots = storage_->get_snapshots(request->fault_code, request->topic);
+    snapshots = storage_->get_snapshots(*target, request->topic);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
     response->success = false;
@@ -712,7 +708,7 @@ void FaultManagerNode::handle_get_snapshots(
   // No download_url: rosbags are addressed per entity by the gateway.
   std::optional<RosbagFileInfo> rosbag_info;
   try {
-    rosbag_info = storage_->get_rosbag_file(request->fault_code);
+    rosbag_info = storage_->get_rosbag_file(*target);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
     response->success = false;
@@ -739,9 +735,11 @@ void FaultManagerNode::handle_get_snapshots(
 
 void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Request> & request,
                                          const std::shared_ptr<ros2_medkit_msgs::srv::GetRosbag::Response> & response) {
-  // Two ways in. recording_id addresses one specific bag and is tried first;
-  // fault_code keeps working and means "the newest recording of this fault", which
-  // is what it has always meant back when a fault could only have one.
+  // Two ways in. recording_id addresses one specific bag and is tried first, and
+  // source_id does not scope it: a recording is named directly and is shared by every
+  // record of its burst. fault_code (with source_id) keeps working and means "the
+  // newest recording of this record", which is what it has always meant back when a
+  // fault could only have one.
   //
   // A caller that cannot tell the two apart - the gateway, holding one URL segment
   // that may be either - sets both to the same string and relies on this fallthrough.
@@ -749,6 +747,17 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
   std::optional<RosbagFileInfo> rosbag_info;
   std::vector<std::string> attached_codes;
   std::string subject;
+
+  // fault_codes answers "which faults does this recording cover", so it is a set of
+  // codes. One row per RECORD means a burst of several owners of one code produces
+  // several rows pointing at the same bag, and pushing the code once per row would
+  // repeat it. First-seen order is kept, so the codes still read in the order the
+  // recording collected them.
+  const auto attach_code = [&attached_codes](const std::string & code) {
+    if (std::find(attached_codes.begin(), attached_codes.end(), code) == attached_codes.end()) {
+      attached_codes.push_back(code);
+    }
+  };
 
   if (!request->recording_id.empty()) {
     // Validation stays a hard failure: a traversal-shaped id is malformed on
@@ -773,7 +782,7 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
       subject = "recording " + request->recording_id;
       rosbag_info = rows.front();
       for (const auto & row : rows) {
-        attached_codes.push_back(row.fault_code);
+        attach_code(row.fault_code);
       }
     } else if (request->fault_code.empty()) {
       response->success = false;
@@ -791,24 +800,17 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
     }
     subject = "fault " + request->fault_code;
 
-    // Check if fault exists
-    std::optional<fd::FaultRecord> fault;
-    try {
-      fault = storage_->get_fault(request->fault_code);
-    } catch (const FaultStorage::IgnorableConnectionException & e) {
-      RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
+    // Which record
+    std::string resolve_error;
+    const auto target = core_->resolve_target(request->fault_code, request->source_id, resolve_error);
+    if (!target) {
       response->success = false;
-      response->error_message = storage_unavailable(e);
-      return;
-    }
-    if (!fault) {
-      response->success = false;
-      response->error_message = "Fault not found: " + request->fault_code;
+      response->error_message = resolve_error;
       return;
     }
 
     try {
-      rosbag_info = storage_->get_rosbag_file(request->fault_code);
+      rosbag_info = storage_->get_rosbag_file(*target);
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
       response->success = false;
@@ -824,7 +826,7 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
     // caller authorizes the download against this set.
     try {
       for (const auto & row : storage_->get_rosbag_files_by_recording(rosbag_info->recording_id)) {
-        attached_codes.push_back(row.fault_code);
+        attach_code(row.fault_code);
       }
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());

@@ -146,12 +146,15 @@ bool SnapshotCapture::seed_capture_seq() {
   return true;
 }
 
-void SnapshotCapture::capture(const std::string & fault_code) {
+void SnapshotCapture::capture(const FaultId & id) {
+  const std::string & fault_code = id.fault_code;
   if (!config_.enabled) {
     RCLCPP_DEBUG(node_->get_logger(), "Snapshot capture disabled, skipping for fault '%s'", fault_code.c_str());
     return;
   }
 
+  // Resolution is by CODE: fault_specific and patterns are config about what a code
+  // means, not about who reported it.
   bool explicit_match = false;
   auto topics = resolve_topics(fault_code, explicit_match);
   // Zero-config fallback: nothing in the explicit config even mentioned this
@@ -159,7 +162,7 @@ void SnapshotCapture::capture(const std::string & fault_code) {
   // per-fault opt-out (explicit_match == true) and must NOT fall through here.
   bool entity_scoped = false;
   if (topics.empty() && !explicit_match && config_.entity_default) {
-    topics = resolve_entity_topics(fault_code);
+    topics = resolve_entity_topics(id);
     entity_scoped = !topics.empty();
   }
   if (topics.empty()) {
@@ -193,9 +196,9 @@ void SnapshotCapture::capture(const std::string & fault_code) {
     // Entity-default topics are not known at construction, so the background
     // cache never holds them - always sample those on demand.
     if (config_.background_capture && !entity_scoped) {
-      success = capture_topic_from_cache(fault_code, topic, freeze_frame, rows);
+      success = capture_topic_from_cache(id, topic, freeze_frame, rows);
     } else {
-      success = capture_topic_on_demand(fault_code, topic, freeze_frame, rows);
+      success = capture_topic_on_demand(id, topic, freeze_frame, rows);
     }
 
     if (success) {
@@ -221,7 +224,7 @@ void SnapshotCapture::capture(const std::string & fault_code) {
   // asked to retain snapshots there is no such promise, so the batch stands.
   // Absent is not cleared: a caller driving the capture directly still stores.
   // Mirrors rosbag_capture's wants_a_row.
-  const auto fault = storage_->get_fault(fault_code);
+  const auto fault = storage_->get_fault(id);
   const bool acknowledged_mid_capture = fault.has_value() && fault->status == fd::fault_status::kCleared;
   if (acknowledged_mid_capture && !storage_->retains_snapshots_on_clear()) {
     RCLCPP_DEBUG(node_->get_logger(), "Dropping capture for '%s' - acknowledged while it ran", fault_code.c_str());
@@ -229,7 +232,7 @@ void SnapshotCapture::capture(const std::string & fault_code) {
     storage_->store_snapshots(rows);
   }
 
-  // Persist the compact freeze-frame keyed by fault_code (retained across clear_fault).
+  // Persist the compact freeze-frame keyed by the RECORD (retained across clear_fault).
   // Only reached for faults with a configured capture set (unconfigured codes returned
   // early above and get no row). If nothing was publishing at confirmation time the row
   // holds an empty object, recording that a configured capture ran but sampled nothing.
@@ -244,7 +247,7 @@ void SnapshotCapture::capture(const std::string & fault_code) {
                    fault_code.c_str());
       return;
     }
-    auto existing = storage_->get_freeze_frame(fault_code);
+    auto existing = storage_->get_freeze_frame(id);
     if (existing.has_value() && existing->data != "{}") {
       RCLCPP_WARN(node_->get_logger(), "Nothing captured for fault '%s'; keeping previously retained freeze-frame",
                   fault_code.c_str());
@@ -254,6 +257,7 @@ void SnapshotCapture::capture(const std::string & fault_code) {
 
   FreezeFrameData frame;
   frame.fault_code = fault_code;
+  frame.owner = id.owner;
   frame.data = freeze_frame.dump();
   frame.captured_at_ns = get_wall_clock_ns();
   storage_->store_freeze_frame(frame);
@@ -287,7 +291,8 @@ std::vector<std::string> SnapshotCapture::resolve_topics(const std::string & fau
   return {};
 }
 
-std::vector<std::string> SnapshotCapture::resolve_entity_topics(const std::string & fault_code) const {
+std::vector<std::string> SnapshotCapture::resolve_entity_topics(const FaultId & id) const {
+  const std::string & fault_code = id.fault_code;
   // Bound the on-demand sweep: each silent-but-published topic costs up to
   // timeout_sec, so a node with many declared topics must not stall a capture
   // pool worker indefinitely.
@@ -298,8 +303,7 @@ std::vector<std::string> SnapshotCapture::resolve_entity_topics(const std::strin
   // pool worker with no outer catch, and storage_->get_fault() can throw on
   // the sqlite backend. Any failure degrades to "no entity-default capture".
   try {
-    auto fault = storage_->get_fault(fault_code);
-    if (!fault || fault->reporting_sources.empty()) {
+    if (!storage_->contains(id)) {
       return {};
     }
 
@@ -308,16 +312,19 @@ std::vector<std::string> SnapshotCapture::resolve_entity_topics(const std::strin
     // as (name, ns="/") could match an unrelated root-namespace node of the
     // same name and freeze-frame its topics. Their zero-config frames come
     // from the gateway's EntityFreezeFrameCapture instead.
+    //
+    // One owner, so one (name, namespace) pair: the record names exactly the
+    // source whose own data belongs in its frame.
     std::set<std::pair<std::string, std::string>> wanted;
-    for (const auto & source : fault->reporting_sources) {
-      if (source.size() < 2 || source.front() != '/') {
-        continue;
-      }
-      const auto slash = source.rfind('/');
-      const std::string name = source.substr(slash + 1);
-      const std::string ns = (slash == 0) ? "/" : source.substr(0, slash);
-      if (!name.empty()) {
-        wanted.emplace(name, ns);
+    {
+      const std::string & source = id.owner;
+      if (source.size() >= 2 && source.front() == '/') {
+        const auto slash = source.rfind('/');
+        const std::string name = source.substr(slash + 1);
+        const std::string ns = (slash == 0) ? "/" : source.substr(0, slash);
+        if (!name.empty()) {
+          wanted.emplace(name, ns);
+        }
       }
     }
     if (wanted.empty()) {
@@ -357,13 +364,13 @@ std::vector<std::string> SnapshotCapture::resolve_entity_topics(const std::strin
   }
 
   if (!topics.empty()) {
-    RCLCPP_INFO(node_->get_logger(), "Entity-default capture for fault '%s': %zu topic(s) from the reporting node(s)",
+    RCLCPP_INFO(node_->get_logger(), "Entity-default capture for fault '%s': %zu topic(s) from the owning node",
                 fault_code.c_str(), topics.size());
   }
   return {topics.begin(), topics.end()};
 }
 
-bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, const std::string & topic,
+bool SnapshotCapture::capture_topic_on_demand(const FaultId & id, const std::string & topic,
                                               nlohmann::json & freeze_frame, std::vector<SnapshotData> & rows) {
   // Get topic type
   std::string msg_type = get_topic_type(topic);
@@ -468,7 +475,8 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
 
     // Store snapshot (use wall clock time, not sim time, for proper timestamps)
     SnapshotData snapshot;
-    snapshot.fault_code = fault_code;
+    snapshot.fault_code = id.fault_code;
+    snapshot.owner = id.owner;
     snapshot.topic = topic;
     snapshot.message_type = msg_type;
     snapshot.data = json_data.dump();
@@ -479,7 +487,8 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
     // Record the value into the compact freeze-frame dict under the topic key.
     freeze_frame[topic] = std::move(json_data);
 
-    RCLCPP_DEBUG(node_->get_logger(), "Captured snapshot from '%s' for fault '%s'", topic.c_str(), fault_code.c_str());
+    RCLCPP_DEBUG(node_->get_logger(), "Captured snapshot from '%s' for fault '%s'", topic.c_str(),
+                 id.fault_code.c_str());
     return true;
 
   } catch (const ros2_medkit_serialization::TypeNotFoundError & e) {
@@ -493,8 +502,9 @@ bool SnapshotCapture::capture_topic_on_demand(const std::string & fault_code, co
   return false;
 }
 
-bool SnapshotCapture::capture_topic_from_cache(const std::string & fault_code, const std::string & topic,
+bool SnapshotCapture::capture_topic_from_cache(const FaultId & id, const std::string & topic,
                                                nlohmann::json & freeze_frame, std::vector<SnapshotData> & rows) {
+  const std::string & fault_code = id.fault_code;
   std::lock_guard<std::mutex> lock(cache_mutex_);
 
   auto it = message_cache_.find(topic);
@@ -507,7 +517,8 @@ bool SnapshotCapture::capture_topic_from_cache(const std::string & fault_code, c
 
   // Store snapshot from cache
   SnapshotData snapshot;
-  snapshot.fault_code = fault_code;
+  snapshot.fault_code = id.fault_code;
+  snapshot.owner = id.owner;
   snapshot.topic = topic;
   snapshot.message_type = cached.message_type;
   snapshot.data = cached.data;

@@ -33,6 +33,7 @@ using ros2_medkit_fault_manager::EntityDebounceOverride;
 using ros2_medkit_fault_manager::EntityThresholdResolver;
 using ros2_medkit_fault_manager::FaultCodeDebounceOverride;
 using ros2_medkit_fault_manager::FaultCodeThresholdResolver;
+using ros2_medkit_fault_manager::FaultId;
 using ros2_medkit_fault_manager::InMemoryFaultStorage;
 using ros2_medkit_msgs::msg::Fault;
 using ros2_medkit_msgs::srv::ReportFault;
@@ -456,27 +457,32 @@ class FaultCodeStorageTest : public ::testing::Test {
 };
 
 // @verifies REQ_INTEROP_107
-TEST_F(FaultCodeStorageTest, LidarNoLongerConfirmsTheMotorsCodeEarly) {
-  // Without the fault-code override, lidar's threshold of -1 would confirm this
-  // on the second event (the counter is shared). With it, both sources debounce
-  // at -3.
-  report("OVERHEAT", "/powertrain/motor/left");
-  EXPECT_EQ(storage_.get_fault("OVERHEAT")->status, Fault::STATUS_PREFAILED);
+TEST_F(FaultCodeStorageTest, TheCodeOverrideGovernsEachOwnersRecord) {
+  // Without the fault-code override, lidar's threshold of -1 would confirm its record on
+  // its first event. With it, the record of each owner debounces at -3, on its own counter.
+  const FaultId motor{"OVERHEAT", "/powertrain/motor/left"};
+  const FaultId lidar{"OVERHEAT", "/sensors/lidar/front"};
 
-  report("OVERHEAT", "/sensors/lidar/front");
-  EXPECT_EQ(storage_.get_fault("OVERHEAT")->status, Fault::STATUS_PREFAILED);
+  report(motor.fault_code, motor.owner);
+  EXPECT_EQ(storage_.get_fault(motor)->status, Fault::STATUS_PREFAILED);
 
-  report("OVERHEAT", "/sensors/lidar/front");
-  EXPECT_EQ(storage_.get_fault("OVERHEAT")->status, Fault::STATUS_CONFIRMED);
+  report(lidar.fault_code, lidar.owner);
+  EXPECT_EQ(storage_.get_fault(lidar)->status, Fault::STATUS_PREFAILED);
+  report(lidar.fault_code, lidar.owner);
+  EXPECT_EQ(storage_.get_fault(lidar)->status, Fault::STATUS_PREFAILED);
+  report(lidar.fault_code, lidar.owner);
+  EXPECT_EQ(storage_.get_fault(lidar)->status, Fault::STATUS_CONFIRMED);
+
+  EXPECT_EQ(storage_.get_fault(motor)->status, Fault::STATUS_PREFAILED) << "the motor's own counter is at 1 of 3";
 }
 
 // @verifies REQ_INTEROP_107
 TEST_F(FaultCodeStorageTest, ACodeWithoutAnOverrideKeepsEntityBehaviour) {
   report("MOTOR_STALL", "/powertrain/motor/left");
-  EXPECT_EQ(storage_.get_fault("MOTOR_STALL")->status, Fault::STATUS_PREFAILED);
+  EXPECT_EQ(storage_.get_fault({"MOTOR_STALL", "/powertrain/motor/left"})->status, Fault::STATUS_PREFAILED);
 
   report("LIDAR_BLOCKED", "/sensors/lidar/front");
-  EXPECT_EQ(storage_.get_fault("LIDAR_BLOCKED")->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(storage_.get_fault({"LIDAR_BLOCKED", "/sensors/lidar/front"})->status, Fault::STATUS_CONFIRMED);
 }
 
 // The startup pass flips HEALED to CLEARED only for codes whose healing is off.
@@ -488,10 +494,10 @@ TEST_F(FaultCodeStorageTest, ReclassifyKeepsCodesThatStillHeal) {
   for (const std::string code : {"KEEPS.HEALING", "STOPPED.HEALING"}) {
     storage_.report_fault_event(code, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "", "/src",
                                 clock_.now().nanoseconds(), healing);
-    for (int i = 0; i < 3 && storage_.get_fault(code)->status != Fault::STATUS_HEALED; ++i) {
+    for (int i = 0; i < 3 && storage_.get_fault({code, "/src"})->status != Fault::STATUS_HEALED; ++i) {
       storage_.report_fault_event(code, fd::ReportKind::kPassed, 0, "", "/src", clock_.now().nanoseconds(), healing);
     }
-    ASSERT_EQ(storage_.get_fault(code)->status, Fault::STATUS_HEALED);
+    ASSERT_EQ(storage_.get_fault({code, "/src"})->status, Fault::STATUS_HEALED);
   }
 
   auto reclassified = storage_.reclassify_healed_as_cleared([](const std::string & code) {
@@ -499,7 +505,7 @@ TEST_F(FaultCodeStorageTest, ReclassifyKeepsCodesThatStillHeal) {
   });
 
   ASSERT_EQ(reclassified.size(), 1u);
-  EXPECT_EQ(reclassified[0], "STOPPED.HEALING");
-  EXPECT_EQ(storage_.get_fault("KEEPS.HEALING")->status, Fault::STATUS_HEALED);
-  EXPECT_EQ(storage_.get_fault("STOPPED.HEALING")->status, Fault::STATUS_CLEARED);
+  EXPECT_EQ(reclassified[0], (FaultId{"STOPPED.HEALING", "/src"}));
+  EXPECT_EQ(storage_.get_fault({"KEEPS.HEALING", "/src"})->status, Fault::STATUS_HEALED);
+  EXPECT_EQ(storage_.get_fault({"STOPPED.HEALING", "/src"})->status, Fault::STATUS_CLEARED);
 }

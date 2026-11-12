@@ -6,7 +6,7 @@ ROS 2 message and service definitions for the ros2_medkit fault management syste
 
 This package provides the interface definitions used by the fault management components:
 
-- **FaultManager** (`ros2_medkit_fault_manager`) - Central fault aggregation and lifecycle management
+- **FaultManager** (`ros2_medkit_fault_manager`) - Central fault record store and lifecycle management
 - **FaultReporter** (`ros2_medkit_fault_reporter`) - Client library for fault reporting
 - **Gateway** (`ros2_medkit_gateway`) - REST API endpoints for fault access
 
@@ -14,7 +14,15 @@ This package provides the interface definitions used by the fault management com
 
 ### Fault.msg
 
-Core fault data model representing an aggregated fault condition with AUTOSAR DEM-style debounce filtering.
+Core fault data model representing one fault record with AUTOSAR DEM-style debounce filtering.
+
+A record is identified by the pair (`fault_code`, owning reporting source). The owner is the
+`source_id` a `ReportFault` call carried. Two sources reporting one `fault_code` are two records,
+each with its own status, debounce counter, `occurrence_count`, severity and timestamps, and each
+cleared on its own. The services that act on a single record (`ClearFault`, `GetFault`,
+`GetSnapshots`, `GetRosbag`) carry a `source_id` request field naming the owner. An empty
+`source_id` is unscoped: the call applies only when exactly one record carries the `fault_code`,
+and fails as ambiguous when several do.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -26,7 +34,7 @@ Core fault data model representing an aggregated fault condition with AUTOSAR DE
 | `last_passed` | builtin_interfaces/Time | When fault last reported PASSED (zero = never) |
 | `occurrence_count` | uint32 | Times this fault has occurred, counted on edges (first FAILED, then each FAILED that arrives while CLEARED). Repeats within one occurrence do not increment it |
 | `status` | string | Current status (see STATUS_* constants) |
-| `reporting_sources` | string[] | List of source identifiers that reported this fault |
+| `reporting_sources` | string[] | The reporting source that owns this record, as a one-element list |
 
 **Severity Levels:**
 | Constant | Value | Description |
@@ -121,12 +129,14 @@ Query faults with optional filtering.
 
 ### ClearFault.srv
 
-Clear/acknowledge a fault. Cleared faults are retained and queryable with `statuses=["CLEARED"]`.
+Clear/acknowledge one fault record. Cleared records are retained and queryable with
+`statuses=["CLEARED"]`.
 
 **Request:**
 | Field | Type | Description |
 |-------|------|-------------|
-| `fault_code` | string | The fault to clear |
+| `fault_code` | string | The fault code to clear |
+| `source_id` | string | Reporting source that owns the record. Empty means unscoped: the call applies only when exactly one record carries the `fault_code`, otherwise it fails with a message beginning `ambiguous:` and clears nothing |
 | `skip_correlation_auto_clear` | bool | When `true`, only the requested fault_code is cleared; symptom faults that the correlation engine would normally auto-clear via `auto_clear_with_root` rules are left untouched. Default `false` (cascade clear). The gateway sets this to `true` on per-entity `DELETE /{entity-path}/faults/{fault_code}` so that an operator with access to one entity cannot cascade-clear correlated symptoms reported by apps in other entities. |
 
 **Response:**
@@ -136,7 +146,11 @@ Clear/acknowledge a fault. Cleared faults are retained and queryable with `statu
 | `message` | string | Status or error message |
 | `auto_cleared_codes` | string[] | Symptom fault codes auto-cleared with the root cause (empty when `skip_correlation_auto_clear=true`) |
 
-> **Note:** `skip_correlation_auto_clear` was added in `ros2_medkit_msgs` post-0.4.0. Adding a request field changes the service type hash, so out-of-tree callers that invoke `/fault_manager/clear_fault` directly (via `ros2 service call` or a generated client) must rebuild against the new `ros2_medkit_msgs` release to keep talking to `fault_manager`.
+> **Note:** `skip_correlation_auto_clear` was added in `ros2_medkit_msgs` post-0.4.0, and `source_id`
+> after it. `source_id` was added the same way to `GetFault`, `GetSnapshots` and `GetRosbag`. Adding a
+> request field changes the service type hash, so out-of-tree callers that invoke those services
+> directly (via `ros2 service call` or a generated client) must rebuild against the new
+> `ros2_medkit_msgs` release to keep talking to `fault_manager`.
 
 ## Usage
 

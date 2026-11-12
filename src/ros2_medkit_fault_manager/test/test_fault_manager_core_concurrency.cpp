@@ -39,6 +39,9 @@ constexpr int kReportsPerThread = 500;
 constexpr int kCodes = 4;
 constexpr int kClearEvery = 50;
 const char * const kClearedCode = "CLEARED_CODE";
+/// Every load thread reports as one source, so the threads contend on the same records.
+const char * const kLoadSource = "/load";
+const char * const kSeedSource = "/seed";
 
 class NullLogSink : public core::LogSink {
  public:
@@ -64,12 +67,12 @@ class CountingEventSink : public core::EventSink {
 
 class NoCaptureHooks : public core::CaptureHooks {
  public:
-  core::CaptureResult capture_now(const std::string & /*code*/) override {
+  core::CaptureResult capture_now(const ros2_medkit_fault_manager::FaultId & /*id*/) override {
     return {};
   }
-  void on_prefailed(const std::string & /*code*/) override {
+  void on_prefailed(const ros2_medkit_fault_manager::FaultId & /*id*/) override {
   }
-  void on_cleared(const std::string & /*code*/) override {
+  void on_cleared(const ros2_medkit_fault_manager::FaultId & /*id*/) override {
   }
 };
 
@@ -92,8 +95,8 @@ class YieldingStorage : public ros2_medkit_fault_manager::InMemoryFaultStorage {
     return InMemoryFaultStorage::report_fault_event(fault_code, kind, severity, description, source_id, timestamp_ns,
                                                     config);
   }
-  std::optional<fd::FaultRecord> get_fault(const std::string & fault_code) const override {
-    auto result = InMemoryFaultStorage::get_fault(fault_code);
+  std::optional<fd::FaultRecord> get_fault(const ros2_medkit_fault_manager::FaultId & id) const override {
+    auto result = InMemoryFaultStorage::get_fault(id);
     pause();
     return result;
   }
@@ -130,7 +133,7 @@ struct Fixture {
     fd::FaultReport seed;
     seed.fault_code = kClearedCode;
     seed.severity = fd::severity::kError;
-    seed.source_id = "/seed";
+    seed.source_id = kSeedSource;
     EXPECT_TRUE(core.report(seed).accepted);
   }
 };
@@ -147,10 +150,10 @@ void run_thread_sequence(core::FaultManagerCore & core, int thread_index) {
     report.kind = fd::ReportKind::kFailed;
     report.severity = fd::severity::kError;
     report.description = "load";
-    report.source_id = "/thread_" + std::to_string(thread_index);
+    report.source_id = kLoadSource;
     EXPECT_TRUE(core.report(report).accepted);
     if (i % kClearEvery == 0) {
-      EXPECT_TRUE(core.clear(kClearedCode, true).success);
+      EXPECT_TRUE(core.clear(kClearedCode, kSeedSource, true).success);
     }
   }
 }
@@ -199,8 +202,8 @@ TEST(FaultManagerCoreConcurrency, ParallelReportsKeepCounts) {
   // Per code occurrence_count and status equal the replay's.
   for (int c = 0; c < kCodes; ++c) {
     const auto code = code_name(c);
-    const auto got = parallel.core.get(code);
-    const auto want = replay.core.get(code);
+    const auto got = parallel.core.get(code, kLoadSource);
+    const auto want = replay.core.get(code, kLoadSource);
     ASSERT_TRUE(got.success) << code;
     ASSERT_TRUE(want.success) << code;
     EXPECT_EQ(got.fault.occurrence_count, want.fault.occurrence_count) << code;

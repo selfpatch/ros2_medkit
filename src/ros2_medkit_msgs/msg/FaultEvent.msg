@@ -35,7 +35,8 @@ string EVENT_CONFIRMED = "fault_confirmed"
 # the two apart.
 string EVENT_CLEARED = "fault_cleared"
 # Emitted when fault data changes without status transition (e.g., last_occurred
-# advanced, severity escalated, new source added to reporting_sources).
+# advanced, severity escalated). A report from a source that owns no record yet
+# is not one of them: it creates a record of its own.
 # occurrence_count is not one of them: it only changes on an occurrence edge
 # (the first FAILED, or a FAILED that arrives while the fault is CLEARED).
 string EVENT_UPDATED = "fault_updated"

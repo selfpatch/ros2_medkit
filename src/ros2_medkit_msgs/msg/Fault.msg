@@ -14,16 +14,19 @@
 #
 # Fault.msg - Core fault data model for ros2_medkit fault management system.
 #
-# A Fault represents an aggregated fault condition identified by a global fault_code.
-# Multiple sources can report the same fault_code, and they are aggregated into a
-# single Fault with tracked occurrence_count and reporting_sources.
+# A Fault is one fault record, identified by the pair (fault_code, reporting source).
+# The reporting source is the source_id a ReportFault call carried, and it is the
+# owner of the record. Two sources reporting one fault_code are two records, each
+# with its own status, debounce counter, occurrence_count, severity and timestamps,
+# and each cleared on its own. reporting_sources holds the one owner.
 #
 # Debounce model (AUTOSAR DEM-style):
 # - FAILED events decrement internal counter (towards confirmation)
 # - PASSED events increment internal counter (towards healing)
 # - Status reflects the current debounce state
 
-# Global fault identifier (e.g., "MOTOR_OVERHEAT", "SENSOR_FAILURE_001")
+# Global fault identifier (e.g., "MOTOR_OVERHEAT", "SENSOR_FAILURE_001").
+# Half of the record identity: the other half is the owning reporting source.
 string fault_code
 
 # Fault severity level (use SEVERITY_* constants)
@@ -53,7 +56,9 @@ uint32 occurrence_count
 # Current fault status (use STATUS_* constants)
 string status
 
-# List of source identifiers that have reported this fault
+# The reporting source that owns this record, as a one-element list. Together with
+# fault_code it identifies the record. Services that act on a single record take
+# this value as their source_id request field.
 string[] reporting_sources
 
 # Severity level constants

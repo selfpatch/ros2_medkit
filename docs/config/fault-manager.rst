@@ -1,7 +1,8 @@
 Fault Manager Configuration
 ===========================
 
-The ``ros2_medkit_fault_manager`` node aggregates and manages faults from multiple sources.
+The ``ros2_medkit_fault_manager`` node keeps and manages one fault record per
+(``fault_code``, reporting source) pair.
 This page documents all configuration parameters.
 
 .. contents:: Table of Contents
@@ -163,6 +164,21 @@ The fault manager uses AUTOSAR DEM-style debounce filtering to prevent fault fla
    which is also the default. ``0`` is rejected: the threshold must be strictly
    negative, and the node falls back to ``-1`` with a warning.
    Faults with ``SEVERITY_CRITICAL`` always bypass debounce regardless of this setting.
+   The bypass (``critical_immediate_confirm`` in the debounce config, on by default and not a ROS
+   parameter) reads the **stored** severity of the fault record, not the severity of the report.
+   A record keeps the highest severity its source ever reported, across occurrences, so after a
+   CRITICAL occurrence is cleared, one WARN report from the same source confirms the next
+   occurrence at once, and the record shows CRITICAL. The same holds for a FAILED report on a
+   HEALED CRITICAL record: the latch does not hold it back. Another source's record of the same
+   code has its own severity and is not affected.
+
+.. note::
+
+   A FAILED report whose severity differs from the stored severity of its record is logged as a
+   warning naming the code, both severities and the source. One source should report one code
+   with one severity, so the warning points at a misconfigured reporter. It is logged once per
+   code, source and reported severity until the node restarts, so a reporter that repeats the
+   report at a high rate produces one line.
 
 .. important::
 
@@ -199,25 +215,26 @@ A **near miss** is a FAILED report that moved the debounce counter without the f
 CONFIRMED - the fault nearly happened. PASSED reports move the counter in the healing direction
 (the fault receding) and are not near misses.
 
-The fault manager appends one entry per near miss to a per-fault-code series, holding the
-timestamp, the counter value after the report, the confirmation threshold, the severity, the
-reporting source and the fault status the report left behind.
+The fault manager appends one entry per near miss to the series of the fault record it moved (one
+series per fault code and reporting source), holding the timestamp, the counter value after the
+report, the confirmation threshold, the severity the report carried (not the stored severity of the
+record), the reporting source and the fault status the report left behind.
 
 The status matters when reading the series. The HEALED latch holds the status all the way from the
 healing threshold down to the confirmation threshold, so reports on the way back into a fault that
 does confirm are also near misses by the definition above. Entries recording ``PREFAILED`` are
 approaches from a resting state; entries recording ``HEALED`` are a counter walking back down under
-the latch. The recorded confirmation threshold belongs to the reporting source, while the counter
-is shared by all sources of that fault code, so with per-entity thresholds it is not on its own the
-distance to confirmation. The series is **retained when the fault is cleared**, because acknowledging one
-fault cycle must not erase how often that code approached confirmation across cycles.
+the latch. The recorded confirmation threshold and the counter both belong to the record's own
+reporting source, so with per-entity thresholds each entry still reads as the record's distance to
+confirmation. The series is **retained when the fault is cleared**, because acknowledging one
+fault cycle must not erase how often that record approached confirmation across cycles.
 
 .. code-block:: yaml
 
    fault_manager:
      ros__parameters:
        near_miss:
-         max_per_fault: 200                # Entries kept per fault code (0 = unlimited)
+         max_per_fault: 200                # Entries kept per fault record (0 = unlimited)
 
 .. list-table::
    :header-rows: 1
@@ -228,7 +245,7 @@ fault cycle must not erase how often that code approached confirmation across cy
      - Description
    * - ``near_miss.max_per_fault``
      - ``200``
-     - Near-miss entries retained per fault code. When the bound is reached the **oldest**
+     - Near-miss entries retained per fault record. When the bound is reached the **oldest**
        entries are evicted, the same direction as ``snapshots.max_per_fault`` and the rosbag cap:
        a series frozen at boot says nothing about whether the rate of near misses is changing.
        Set to 0 for unlimited, accepting growth with the reporting rate.
@@ -293,8 +310,8 @@ threshold overrides:
 
 - The ``source_id`` is the identifier passed in ``ReportFault`` service requests, typically the
   fully qualified name of the reporting ROS 2 node (e.g., ``/sensors/lidar/front_node``).
-  You can inspect actual ``source_id`` values in the ``reporting_sources`` field of existing
-  faults via ``GET /api/v1/faults``.
+  It also owns the record it creates, so you can inspect actual ``source_id`` values in the
+  one-element ``reporting_sources`` field of existing faults via ``GET /api/v1/faults``.
 - The ``source_id`` from ``ReportFault`` requests is matched against configured prefixes.
 - The **longest matching prefix** wins. For example, ``/sensors/lidar/front`` matches
   ``/sensors/lidar`` over ``/sensors``.
@@ -304,12 +321,11 @@ threshold overrides:
 
 .. note::
 
-   When multiple entities report the same ``fault_code``, each event applies the
-   thresholds resolved from that event's ``source_id``. This means the debounce
-   behavior follows the reporting entity, not the fault. The debounce counter,
-   however, belongs to the fault code, so the two entities share one counter under
-   two policies - see `Per-Fault-Code Thresholds`_ for what that does and how to
-   settle it. The node warns when it happens.
+   When multiple entities report the same ``fault_code``, each of them owns its own
+   record and each event applies the thresholds resolved from that event's
+   ``source_id``. The debounce counter belongs to the same record, so an entity's
+   configured band governs exactly the counter its own reports move: one entity's
+   reports can neither confirm nor heal another entity's fault.
 
    ``auto_confirm_after_sec`` is global-only and cannot be overridden per-entity.
    Critical faults skip debounce and confirm on their first occurrence; that is
@@ -319,18 +335,18 @@ Per-Fault-Code Thresholds
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Per-entity thresholds are the right tool when you know which subsystems are noisy but not
-which codes they will emit. They have one limit: the debounce counter is kept per
-``fault_code``, while the override is chosen per ``source_id``. Two entities reporting one
-code therefore share a counter and debounce it under two policies, and the report that
-happens to arrive decides the transition:
+which codes they will emit. They have one limit: the override is chosen per ``source_id``, so
+two entities reporting one code debounce it under two different policies, each on its own
+record's counter:
 
 .. code-block:: text
 
-   motor  (confirmation_threshold=-5) reports OVERHEAT -> counter=-1, PREFAILED
-   lidar  (confirmation_threshold=-1) reports OVERHEAT -> counter=-1, CONFIRMED
+   motor  (confirmation_threshold=-5) reports OVERHEAT -> motor's record: counter=-1, PREFAILED
+   lidar  (confirmation_threshold=-1) reports OVERHEAT -> lidar's record: counter=-1, CONFIRMED
 
-The motor's policy was bypassed. Per-fault_code thresholds are the layer that removes
-that: they are matched on the code itself, so they resolve the same whoever reports.
+When the policy should follow the code and not the reporter, per-fault_code thresholds are
+the layer that does it: they are matched on the code itself, so they resolve the same
+whoever reports.
 
 .. code-block:: yaml
 
@@ -379,35 +395,14 @@ override carries:
 - Like the entity file, this one is loaded once at node startup. Changes require a restart.
 - At startup, a HEALED fault is reclassified to CLEARED when its code has healing disabled.
   The code's entry in this file decides, and the global ``healing_enabled`` applies when the
-  entry does not set it. Entity overrides are not used here, because a stored fault belongs
-  to its code and can have several sources.
+  entry does not set it. Entity overrides are not used here: the pass runs before any source
+  has reported, so it has no ``source_id`` to match a prefix against.
 
 .. note::
 
    An override that names only some fields settles only those. If ``MOTOR_OVERHEAT`` pins
    ``confirmation_threshold`` but not ``healing_threshold``, the healing direction still
-   follows whichever entity reported, and the node still reports the conflict below. Pin
-   all three fields to settle a code completely.
-
-**When one code is debounced two ways**
-
-The node resolves the policy for every report, and warns the first time two sources resolve
-different policies for one code:
-
-.. code-block:: text
-
-   [WARN] Fault code 'OVERHEAT' is debounced two ways: '/powertrain/motor/left' resolves
-   confirmation=-5 healing_enabled=false healing=10, '/sensors/lidar/front' resolves
-   confirmation=-1 healing_enabled=true healing=1. The debounce counter belongs to the
-   fault code, so whichever source reports decides the transition and the other policy is
-   bypassed. Pin confirmation_threshold, healing_enabled and healing_threshold for this code
-   in fault_thresholds.config_file.
-
-The warning names both sources and both resolved policies, and is emitted **once per fault
-code** for the life of the node, so a busy reporter does not turn it into a log storm. It
-is a diagnostic, not an error: the configuration is legal and the fault is still debounced,
-just not under a policy an operator chose. Giving the code an entry in
-``fault_thresholds.config_file`` that pins all three fields ends it.
+   follows whichever entity reported. Pin all three fields to settle a code completely.
 
 Snapshot Configuration
 ----------------------
@@ -428,8 +423,8 @@ Basic Snapshot Settings
          max_message_size: 65536           # Max message size in bytes (64KB)
          default_topics: []                # Topics to capture for all faults
          config_file: ""                   # Path to YAML config file
-         recapture_cooldown_sec: 60.0      # Min seconds between snapshot captures per fault
-         max_per_fault: 10                 # Max snapshots stored per fault code (0 = unlimited)
+         recapture_cooldown_sec: 60.0      # Min seconds between snapshot captures per fault record
+         max_per_fault: 10                 # Max snapshots stored per fault record (0 = unlimited)
          capture_pool_size: 2              # Max concurrent capture threads (1-64)
          capture_queue_depth: 16           # Max pending captures before policy applies (1-65536)
          capture_queue_full_policy: reject_newest  # reject_newest | drop_oldest
@@ -470,11 +465,11 @@ Basic Snapshot Settings
      - Path to YAML file with fault-specific snapshot configurations.
    * - ``snapshots.recapture_cooldown_sec``
      - ``60.0``
-     - Minimum seconds between snapshot captures for the same fault code.
+     - Minimum seconds between snapshot captures for the same fault record.
        Prevents snapshot storms when a fault is reported repeatedly. Set to 0 to disable.
    * - ``snapshots.max_per_fault``
      - ``10``
-     - Maximum number of snapshot rows stored per fault code. One confirmation
+     - Maximum number of snapshot rows stored per fault record. One confirmation
        writes one row per configured topic, and those rows are evicted together:
        past the limit the OLDEST capture set is dropped whole. A capture larger
        than the cap is kept anyway rather than torn, since half a freeze frame is
@@ -527,7 +522,7 @@ Capture continuous rosbag recordings around fault events.
            max_buffer_mb: 256              # Ring-buffer RAM cap
            max_bag_size_mb: 50             # Max size per bag file
            max_total_storage_mb: 500       # Max total storage
-           max_bags_per_fault: 1           # Recordings kept per fault code
+           max_bags_per_fault: 1           # Recordings kept per fault record
            auto_cleanup: true              # Auto-delete old bags
 
 .. list-table::
@@ -609,7 +604,7 @@ Capture continuous rosbag recordings around fault events.
        limit until a newer recording replaces it.
    * - ``rosbag.max_bags_per_fault``
      - ``1``
-     - How many recordings one fault code keeps. Past the cap the oldest is
+     - How many recordings one fault record keeps. Past the cap the oldest is
        unlinked, so the default reproduces the historical behaviour exactly: a
        new recording replaces the previous one. ``0`` means unlimited, bounded
        only by ``max_total_storage_mb``. ``3`` is a reasonable value for a fault
@@ -747,6 +742,10 @@ Audit Log
 An append-only, hash-chained record of fault state transitions, for deployments
 that have to show afterwards what the fault state was and when it changed. Off
 by default: with it off there is no table, no file and no write cost.
+
+Every row records the stored severity of the fault record at the transition,
+the value ``GET /faults`` and the fault events show. The severity a single
+report carried is in the near-miss series and in the severity mismatch warning.
 
 .. code-block:: yaml
 

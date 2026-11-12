@@ -4,9 +4,65 @@ Central fault manager node for the ros2_medkit fault management system.
 
 ## Overview
 
-The FaultManager node provides a central point for fault aggregation and lifecycle management.
-It receives fault reports from multiple sources, aggregates them by `fault_code`, and provides
-query and clearing interfaces.
+The FaultManager node provides a central point for fault record keeping and lifecycle management.
+It receives fault reports from multiple sources, keeps one record per `(fault_code, reporting
+source)` pair, and provides query and clearing interfaces.
+
+A record is identified by its `fault_code` and by the `source_id` the `ReportFault` call carried.
+That source is the record's **owner**. Two sources reporting one `fault_code` are two records, each
+with its own status, debounce counter, occurrence count, severity, timestamps, freeze frame,
+snapshots, near-miss series and rosbag links. A clear or an auto-heal driven by one owner never
+touches another owner's record. The services that act on a single record (`~/clear_fault`,
+`~/get_fault`, `~/get_snapshots`, `~/get_rosbag`) carry a `source_id` request field naming the
+owner. Leaving it empty is unscoped and applies only when exactly one record carries the
+`fault_code`, otherwise the call fails with a message beginning `ambiguous:` that lists the
+owners and changes nothing.
+
+### Upgrading a database written before the owner column
+
+A SQLite store written by an earlier release is keyed by the bare `fault_code` and is rebuilt on
+the first open. The owner of each migrated record is the first entry of that row's legacy
+`reporting_sources` value. A row that listed several sources folds onto its first one, because the
+old schema recorded no per-source counter, status or timestamps to split it by, and inventing them
+would put numbers in the store that no report ever produced. `confirmed_at_ns` is copied as it was,
+except on a PREFAILED or PREPASSED row, where it becomes 0 (see Storage Backends below).
+
+The rebuild is one way. A fault manager from an earlier release opened on a migrated store aborts
+on the first report of a fault code the store does not hold yet
+(`NOT NULL constraint failed: faults.owner`), and on a fault code two sources share it writes one
+source's data into the other source's row. If a rollback may be needed, keep a copy of `faults.db`
+from before the upgrade and restore that copy instead of pointing the earlier release at the
+migrated file.
+
+The recovery reads that column as text rather than requiring it to be valid JSON, because earlier
+builds escaped only the quote, the backslash and `\b \f \n \r \t`, so a `source_id` carrying any
+other control byte was written as text no JSON parser accepts. The mapping is exact:
+
+| stored `reporting_sources` | migrated owner |
+|---|---|
+| empty | `legacy` |
+| `sensor_a` (a bare word, not an array) | `sensor_a` |
+| `[]` | `legacy` |
+| `["a<0x01>b"]` | `a<0x01>b` (the control byte is kept) |
+| anything that is neither a JSON array nor a bare word (an object wrapper, a value behind a byte-order mark) | `legacy` |
+
+A migrated record never carries an empty owner. Where no source can be read the record gets the
+synthetic owner `legacy` and one warning names it, so it stays addressable through `source_id` like
+any other record: `ClearFault` and `GetFault` take `legacy` and act on it alone, and it appears
+under that name in an `ambiguous:` refusal. New rows are always written as valid JSON, control
+bytes escaped as `\u00XX`.
+
+The empty owner therefore means exactly one thing: an evidence row (freeze frame, snapshot, rosbag
+link) not yet assigned to a record. Such a row takes the owner of its fault code when that code has
+exactly one owner. When it has several, or none, the row keeps the empty owner and is named in a
+warning rather than handed to an owner the database cannot prove it belongs to. That backfill runs
+on any open that finds a row it can actually assign, not only on the open that adds the column, so
+a store left half-migrated by an interrupted run is healed the next time it is opened, while a row
+nothing can resolve is left alone instead of being retried forever.
+
+The table names `faults_new` and `freeze_frames_new` are reserved for the rebuild. Anything found
+under those names is debris from a rebuild that did not finish and is dropped on open, with a
+warning naming the table.
 
 ## Quick Start
 
@@ -46,15 +102,18 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 
 ## Features
 
-- **Multi-source aggregation**: Same `fault_code` from different sources creates a single fault
+- **Per-source records**: Same `fault_code` from different sources creates one record per source,
+  each filtered, cleared and healed on its own
 - **Occurrence tracking**: Counts outages, not reports - the count starts at one and rises only
-  when a cleared fault is raised again - and tracks all reporting sources
-- **Severity escalation**: Fault severity is updated if a higher severity is reported
+  when a cleared record is raised again by its own owner
+- **Severity escalation**: A record has one severity, the highest its owner has reported, kept
+  within an occurrence and across occurrences. A report with a different severity is logged (see
+  [Severity](#severity))
 - **Persistent storage**: SQLite (default) or PostgreSQL backend ensures faults survive node restarts
 - **Debounce filtering** (optional): AUTOSAR DEM-style counter-based fault confirmation with per-entity and per-fault_code threshold overrides
 - **Snapshot capture**: Captures topic data when faults are confirmed for debugging (the value snapshots are deleted when the fault is cleared, unless `snapshots.retain_on_clear` is set)
-- **Near-miss series**: Appends one entry per FAILED report that moved the debounce counter without confirming, bounded per fault code and retained when the fault is cleared
-- **Freeze-frame retention**: One compact JSON freeze-frame per fault code, retained across `clear_fault` (see below)
+- **Near-miss series**: Appends one entry per FAILED report that moved the debounce counter without confirming, bounded per record and retained when the record is cleared
+- **Freeze-frame retention**: One compact JSON freeze-frame per record, retained across `clear_fault` (see below)
 - **Fault correlation** (optional): Root cause analysis with symptom muting and auto-clear
 - **Tamper-evident audit log** (optional): Append-only, hash-chained record of fault state transitions for verifiable history
 
@@ -71,13 +130,13 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 | `auto_confirm_after_sec`        | double | `0.0`                              | Auto-confirm PREFAILED faults after timeout (0 = disabled)                      |
 | `entity_thresholds.config_file` | string | `""`                               | Path to YAML file with per-entity debounce threshold overrides                  |
 | `fault_thresholds.config_file`  | string | `""`                               | Path to YAML file with per-fault_code debounce threshold overrides, applied on top of the entity ones |
-| `near_miss.max_per_fault`       | int    | `200`                              | Near-miss entries retained per fault code, oldest evicted first (0 = unlimited) |
+| `near_miss.max_per_fault`       | int    | `200`                              | Near-miss entries retained per fault record, oldest evicted first (0 = unlimited) |
 
 ### Snapshot Parameters
 
 Snapshots capture topic data when faults are confirmed for post-mortem debugging.
 
-Each confirm also writes a **freeze-frame**: a single compact JSON object mapping every captured topic to its value at confirmation time, keyed by fault code. It differs from per-topic snapshots in two ways: snapshots are deleted when the fault is cleared, while the freeze-frame is retained across `clear_fault` (once the snapshots are gone, `~/get_fault` serves the retained frame so the confirmed-state record stays available after acknowledgement); and a re-confirm that captures nothing (e.g. source publishers down) never overwrites an existing non-empty frame. A fault code with no configured capture set gets no freeze-frame row; a configured capture that samples nothing on its first run records an empty `{}` frame. Freeze-frame storage is bounded by the number of distinct fault codes (one row per code, replaced in place) and rows are never evicted.
+Each confirm also writes a **freeze-frame**: a single compact JSON object mapping every captured topic to its value at confirmation time, keyed by the record. Which topics are captured is decided by the fault CODE (`fault_specific` and `patterns` are configuration about what a code means), while what is written belongs to the record, so two owners confirming one code capture the same topics into two separate frames. It differs from per-topic snapshots in two ways: snapshots are deleted when the record is cleared, while the freeze-frame is retained across `clear_fault` (once the snapshots are gone, `~/get_fault` serves the retained frame so the confirmed-state record stays available after acknowledgement), and a re-confirm that captures nothing (e.g. source publishers down) never overwrites an existing non-empty frame. A fault code with no configured capture set gets no freeze-frame row. A configured capture that samples nothing on its first run records an empty `{}` frame. Freeze-frame storage is bounded by the number of distinct records (one row per record, replaced in place) and rows are never evicted.
 
 Under a fault storm, captures are bounded by a worker pool (`capture_pool_size`) draining a bounded queue (`capture_queue_depth`); excess captures are dropped per `capture_queue_full_policy` and logged (throttled). The pool is shared and is created when snapshots **or** rosbag is enabled, so these parameters bound both. `capture_pool_size` parallelizes freeze-frame snapshot capture only - rosbag stays single-writer regardless of pool size, and correlated faults confirming inside one post-roll window share a single recording.
 
@@ -91,7 +150,7 @@ That single-writer property also shapes what each fault of a burst gets. Nothing
 | `snapshots.max_message_size`          | int      | `65536`         | Maximum message size in bytes (larger messages skipped)                                                                    |
 | `snapshots.default_topics`            | string[] | `[]`            | Topics to capture for all faults                                                                                           |
 | `snapshots.config_file`               | string   | `""`            | Path to YAML config for `fault_specific` and `patterns`                                                                    |
-| `snapshots.recapture_cooldown_sec`    | double   | `60.0`          | Min seconds between captures for the same fault code.                                                                      |
+| `snapshots.recapture_cooldown_sec`    | double   | `60.0`          | Min seconds between captures for the same fault record.                                                                   |
 | `snapshots.max_per_fault`             | int      | `10`            | Max snapshots retained per fault.                                                                                          |
 | `snapshots.capture_pool_size`         | int      | `2`             | Max concurrent capture threads under a fault storm (>= 1). Parallelizes snapshot capture only; rosbag stays single-writer. |
 | `snapshots.capture_queue_depth`       | int      | `16`            | Max pending captures before the full-queue policy applies (>= 1).                                                          |
@@ -136,6 +195,12 @@ This is the persisted fault store (`storage_type`), separate from the rosbag sto
 format used by black-box capture (`snapshots.rosbag.format`, see Rosbag Capture above).
 
 **SQLite (default)**: Faults are persisted to disk and survive node restarts. Uses WAL mode for optimal performance.
+Each row also records when the current occurrence of its record confirmed (`confirmed_at_ns`, read from the
+database file, not by any service). It is 0 until the occurrence confirms: a FAILED report on a CLEARED record
+resets it, and the confirmation of that new occurrence sets it again. The owner migration keeps the value of a
+CONFIRMED, HEALED or CLEARED row and writes 0 for a PREFAILED or PREPASSED one. A row that confirmed stays
+CONFIRMED or HEALED until it is cleared, so a pending row with a value carries it from the occurrence before a
+reactivation.
 
 **Memory**: Faults are stored in memory only. Useful for testing or when persistence is not required.
 
@@ -151,6 +216,40 @@ The build downloads libpqxx 7.10.7 from GitHub at configure time and links it st
 
 A wrong configuration stops the node at startup with exit code 1: a connection string libpq cannot parse, or a server that accepts the connection but does not allow creating the schema, or a table that lacks a column the node uses. A server that cannot be reached (including a wrong password or a missing database) does not stop it: the node runs without storage, services with an error field answer `Fault storage unavailable`, and `ReportFault` answers `accepted=false`. After a failed connection attempt, requests fail at once for 5 s and the next request tries again. An attempt waits at most 2 s per host address unless `connect_timeout` or `PGCONNECT_TIMEOUT` says otherwise, and a request on an open connection to a server that went off the network fails after `tcp_user_timeout` (5 s). With a libpq service, these values come from the service file. See `docs/config/fault-manager.rst` for the full table.
 
+## Severity
+
+A record has one severity. The stored severity is the highest any FAILED report from its owner has
+carried, within an occurrence and across occurrences: `~/clear_fault` ends an occurrence but does
+not lower the severity, and the SQLite store keeps it across restarts. Two reports of one code from
+one source with different severities mean a misconfigured reporter, and keeping the maximum is the
+conservative reading. Another source's record of the same code keeps its own severity: a CRITICAL
+from one owner neither escalates nor confirms another owner's record.
+
+What each surface carries:
+
+| Surface | Severity |
+|---|---|
+| `~/list_faults`, `~/get_fault`, the gateway's `GET /faults` and fault detail | stored |
+| `FaultEvent` on `~/events`, the gateway's `/faults/stream` frames and fault trigger payloads | stored, the same value a read of the record returns after the report |
+| Audit rows (`occurred`, `confirmed`, `healed`, `cleared`) | stored, at the moment of the transition |
+| Near-miss entries | the severity that report carried |
+
+The near-miss series is per-report history, so it keeps what the reporter sent. A lower report
+stays visible there and in the mismatch warning below.
+
+`critical_immediate_confirm` reads the stored severity of the record. A FAILED report on a record
+stored as `CRITICAL` confirms it at once, whatever severity the report carries, from a cleared
+record and from the HEALED latch alike. So no report leaves a record `CRITICAL` in `PREFAILED` or
+`PREPASSED`. A row an earlier release stored that way keeps its status through the migration until
+its next FAILED report.
+
+When a FAILED report carries a severity other than the one stored for its record, the node logs a
+warning naming the code, the reported and the stored severity and the source. It is logged once per
+code, source and reported severity until the node restarts, so a reporter that repeats the same
+report many times a second produces one line. The number of lines is bounded by the distinct
+combinations, at most four per record, and not by the report rate. Each misconfigured source is
+named on its own line.
+
 ## Near-Miss Series
 
 A **near miss** is a FAILED report that moved the debounce counter without the fault ending up
@@ -159,8 +258,8 @@ to any scoring sense used elsewhere. PASSED reports move the counter too, but in
 direction (the fault receding), so they are not near misses.
 
 The series is **append-only**: one entry per qualifying report, holding the timestamp, the counter
-value after the report, the confirmation threshold it was measured against, the severity, the
-reporting source, and the fault status the report left behind. Every field describes that one report, so a series spanning a threshold change
+value after the report, the confirmation threshold it was measured against, the severity the
+report carried, the reporting source, and the fault status the report left behind. Every field describes that one report, so a series spanning a threshold change
 or a new reporting source stays readable. Nothing is updated in place, so "this code approached
 confirmation five times this hour" stays answerable.
 
@@ -174,12 +273,9 @@ counter walking back down under the latch. Without the field the two cannot be t
 rows written before the field existed.
 
 With per-entity thresholds the recorded `confirmation_threshold` is the one belonging to the
-**reporting source**, while the debounce counter is shared by every source of that fault code. It
-is therefore not by itself the distance to confirmation for the fault as a whole. An entry in
-`fault_thresholds.config_file` that sets `confirmation_threshold` makes the two agree again: it
-resolves the same for every source, so the recorded threshold is the fault's own. An entry with
-only healing fields keeps the per-source threshold. The node warns
-once per code when two sources resolve different policies for it.
+**reporting source**. The counter it describes is that source's own record, so the pair is the
+distance to confirmation for the record. The counter is no longer shared between sources of one
+fault code: each source's reports move only its own record.
 
 Entries are kept and evicted in **arrival order**, not by their timestamps. Reporters carry their
 own clocks, so a report can arrive carrying a timestamp behind one already stored; ordering the
@@ -196,11 +292,11 @@ retained snapshots, because it records the most recent confirmation while the sn
 to earlier ones. `~/get_snapshots` returns one entry per topic and serves the newest capture of
 that topic, whichever storage backend is in use.
 
-The bound is **per fault code, not per database**. Fault codes are unbounded in cardinality, so a
-reporter emitting a stream of distinct codes still grows the table; the bound caps what any single
-code costs, not the total.
+The bound is **per record, not per database**. Fault codes are unbounded in cardinality and so is
+the set of reporting sources, so a reporter emitting a stream of distinct codes still grows the
+table. The bound caps what any single record costs, not the total.
 
-Retention is **bounded per fault code** by `near_miss.max_per_fault` (default 200), evicting the
+Retention is **bounded per record** by `near_miss.max_per_fault` (default 200), evicting the
 **oldest** entries first. That is the same direction as `snapshots.max_per_fault` and the rosbag
 cap, and for the same reason: a series frozen at boot says nothing about whether the rate is
 changing, and the evidence a technician wants is the evidence from the fault happening now. Set it
@@ -213,7 +309,7 @@ storage API or the database file.
 
 ## Advanced: Tamper-Evident Audit Log
 
-An optional append-only, hash-chained audit log records every fault state transition (`occurred`, `confirmed`, `healed`, `cleared`) so the fault history is independently verifiable. Auto-recovery (a fault reaching the healing threshold via PASSED events) is recorded as a distinct `healed` row with source `auto_heal`, so the fault's END is in the timeline and is not confused with a manual `cleared`. The manager has no acknowledge action separate from clearing, so `~/clear_fault` is recorded as `cleared` (clear == ack); there is no `ack` kind. The log also records its own lifecycle with `logging_activated` / `logging_deactivated` markers at start and stop. It is **off by default** because it adds a write and storage cost per transition.
+An optional append-only, hash-chained audit log records every fault state transition (`occurred`, `confirmed`, `healed`, `cleared`) so the fault history is independently verifiable. Auto-recovery (a record reaching the healing threshold via PASSED events) is recorded as a distinct `healed` row, so the record's END is in the timeline and is not confused with a manual `cleared`. Every row's `source` is the record's owner, the automatic transitions included: the `transition` column already says what moved the row, and with several owners per fault code the source has to answer whose record moved. The manager has no acknowledge action separate from clearing, so `~/clear_fault` is recorded as `cleared` (clear == ack), and there is no `ack` kind. The log also records its own lifecycle with `logging_activated` / `logging_deactivated` markers at start and stop. Every row records the record's stored severity at the transition (see [Severity](#severity)). It is **off by default** because it adds a write and storage cost per transition.
 
 Each transition appends one immutable row holding `record_hash = sha256(prev_hash + canonical(event))` (OpenSSL EVP SHA-256), the `prev_hash` it links to, and a monotonic `seq`. The hash is computed once at insert and never recomputed. A persisted chain head lets the chain resume across restarts. The log is stored in its own SQLite database (separate from the fault store) and is treated as append-only: the manager only ever inserts rows, and `BEFORE UPDATE` / `BEFORE DELETE` triggers reject out-of-band edits (the guarded rotation prune excepted).
 
@@ -317,9 +413,9 @@ never confirms again, and `occurrence_count` does not move either. Prefer leavin
 `confirmation_threshold` at `-1` for such a reporter, and filter noisy samples in the reporter
 itself, where the samples are.
 
-Two things ignore the counter. `SEVERITY_CRITICAL` confirms at once unless
-`critical_immediate_confirm` is turned off in the debounce config, and that field is not exposed as
-a ROS parameter. `auto_confirm_after_sec` promotes on elapsed time since the last FAILED, which is
+Two things ignore the counter. A FAILED report on a record stored as `SEVERITY_CRITICAL` confirms
+at once unless `critical_immediate_confirm` is turned off in the debounce config, and that field is
+not exposed as a ROS parameter. `auto_confirm_after_sec` promotes on elapsed time since the last FAILED, which is
 not the same as observing that the condition is still there.
 
 ### Fault Lifecycle with Debounce
@@ -368,7 +464,10 @@ Event types: `0` = EVENT_FAILED, `1` = EVENT_PASSED
 
 ### Immediate Confirmation
 
-CRITICAL severity faults bypass debounce and are immediately CONFIRMED, regardless of threshold.
+A FAILED report on a record whose stored severity is CRITICAL confirms it at once, regardless of
+threshold and of the HEALED latch. The stored severity decides, not the report: after a CRITICAL
+occurrence is cleared, one WARN report from the same source confirms the next occurrence, which
+shows CRITICAL. This holds under a per-entity threshold override too.
 
 ## Advanced: Fault Correlation
 
@@ -463,7 +562,9 @@ Response includes:
 
 - `muted_count`: Number of muted symptom faults
 - `cluster_count`: Number of active fault clusters
-- `muted_faults[]`: Details of muted faults (when `include_muted=true`)
+- `muted_faults[]`: Details of muted records (when `include_muted=true`), one entry per muted
+  record. Muting is per record, so a symptom muted under one owner's root cause never hides
+  another owner's record of the same code, and each entry names its owner in `source_id`.
 - `clusters[]`: Details of active clusters (when `include_clusters=true`)
 
 ### REST API (via Gateway)
@@ -486,7 +587,8 @@ Response fields:
       "fault_code": "MOTOR_COMM_FL",
       "root_cause_code": "ESTOP_001",
       "rule_id": "estop_cascade",
-      "delay_ms": 50
+      "delay_ms": 50,
+      "source_id": "/powertrain/motor_controller"
     }
   ],
   "clusters": [
