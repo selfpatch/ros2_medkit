@@ -58,10 +58,16 @@ it statically, so it needs network access at configure time. rosdep installs not
 A build without the option stops at startup when ``storage_type`` is ``postgres``.
 
 - Supported servers: PostgreSQL 14 and newer.
-- One database belongs to exactly one fault manager. Fault codes are the primary key, so two fault
-  managers on one database merge their faults and delete each other's rosbag rows. Give each fault
-  manager its own database, or its own schema with ``options=-csearch_path=<schema>`` in the
-  connection string.
+- One database belongs to exactly one fault manager. A record is keyed by ``(fault_code, owner)``,
+  so two fault managers on one database merge their records and delete each other's rosbag rows.
+  Give each fault manager its own database, or its own schema with
+  ``options=-csearch_path=<schema>`` in the connection string.
+- Tables written before records were keyed by owner (one row per fault code) are migrated in place
+  on the first connection: ``owner`` is added to ``faults``, ``freeze_frames``, ``snapshots`` and
+  ``rosbag_files``, the primary keys on the fault code are replaced by unique indexes that include
+  it, and each row takes the first entry of its ``reporting_sources``. The same rules as for
+  SQLite apply, see the package README. The migration runs in one transaction. Keep a copy of the
+  database first: an earlier release cannot use the migrated tables.
 - The audit log stays a local SQLite file, see ``audit_log.database_path``.
 - The node never logs ``database_url``. It logs host, port, database and user, or the service
   name. Error text from the server is logged and returned with the password from ``database_url``

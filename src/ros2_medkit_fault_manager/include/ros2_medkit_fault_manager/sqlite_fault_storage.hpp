@@ -26,16 +26,6 @@
 
 namespace ros2_medkit_fault_manager {
 
-/// Owner given to a record migrated out of a database that recorded no readable
-/// reporting source.
-///
-/// A migrated record is never left with an empty owner. It would be unreachable
-/// through the source_id every single-record service takes, and it would leave the
-/// child backfill looking for work on every open. The empty owner means one thing
-/// only, a child row (freeze frame, snapshot, rosbag link) not yet assigned to a
-/// record, and keeping that meaning unambiguous is what this constant is for.
-inline constexpr const char * kLegacyOwner = "legacy";
-
 /// SQLite-based fault storage implementation with persistence
 /// Thread-safe implementation using mutex protection
 class SqliteFaultStorage : public FaultStorage {

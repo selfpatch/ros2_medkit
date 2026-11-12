@@ -116,6 +116,16 @@ struct FaultId {
   }
 };
 
+/// Owner given to a record migrated out of a database that recorded no readable
+/// reporting source.
+///
+/// A migrated record is never left with an empty owner. It would be unreachable
+/// through the source_id every single-record service takes, and it would leave the
+/// child backfill looking for work on every open. The empty owner means one thing
+/// only, a child row (freeze frame, snapshot, rosbag link) not yet assigned to a
+/// record, and keeping that meaning unambiguous is what this constant is for.
+inline constexpr const char * kLegacyOwner = "legacy";
+
 /// Internal fault state of one record, stored in memory. Times are wall-clock ns >= 0; 0 means never.
 struct FaultState {
   std::string fault_code;
