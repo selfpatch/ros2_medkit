@@ -112,13 +112,24 @@ FreezeFrameCapture::~FreezeFrameCapture() {
   }
 }
 
-std::vector<FreezeFrameCapture::Frame> FreezeFrameCapture::frames_for(const std::string & fault_code) const {
+namespace {
+
+/// The storage key for one record. '\0' cannot appear in a fault code or in a
+/// reporting source, so no pair of ids can collide with another pair.
+std::string record_key(const std::string & fault_code, const std::string & owner) {
+  return fault_code + '\0' + owner;
+}
+
+}  // namespace
+
+std::vector<FreezeFrameCapture::Frame> FreezeFrameCapture::frames_for(const std::string & fault_code,
+                                                                      const std::string & owner) const {
   std::lock_guard<std::mutex> lock(mutex_);
   // Until judged, a reloaded frame may belong to an earlier occurrence of the fault.
   if (!reloaded_judged_ && reloaded_codes_.count(fault_code) != 0) {
     return {};
   }
-  auto it = frames_.find(fault_code);
+  auto it = frames_.find(record_key(fault_code, owner));
   return it != frames_.end() ? it->second : std::vector<Frame>{};
 }
 
@@ -621,16 +632,20 @@ void FreezeFrameCapture::capture_standing_faults(const std::vector<StandingFault
     std::lock_guard<std::mutex> lock(queue_mutex_);
     return stop_;
   };
-  // Codes with a confirm already queued belong to the drain loop: capturing
-  // them here too would read the plugin twice for one confirm.
-  std::unordered_set<std::string> queued_codes;
+  // Records with a confirm already queued belong to the drain loop: capturing
+  // them here too would read the plugin twice for one confirm. The key is the
+  // record and not the code, because another source's record of the same code
+  // has its own confirm and its own frame.
+  std::unordered_set<std::string> queued_records;
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     if (stop_) {
       return;
     }
     for (const auto & queued : queue_) {
-      queued_codes.insert(queued.fault.fault_code);
+      for (const auto & source : queued.fault.reporting_sources) {
+        queued_records.insert(record_key(queued.fault.fault_code, source));
+      }
     }
   }
 
@@ -659,8 +674,14 @@ void FreezeFrameCapture::capture_standing_faults(const std::vector<StandingFault
     if (fault.fault_code.empty() || fault.reporting_sources.empty()) {
       continue;
     }
-    if (queued_codes.count(fault.fault_code) != 0) {
-      continue;
+    std::vector<std::string> pending_sources;
+    for (const auto & source : fault.reporting_sources) {
+      if (queued_records.count(record_key(fault.fault_code, source)) == 0) {
+        pending_sources.push_back(source);
+      }
+    }
+    if (pending_sources.empty()) {
+      continue;  // every record of this code is already on the drain loop
     }
     // A reloaded frame from this occurrence is the one to serve.
     if (already_framed.count(fault.fault_code) != 0) {
@@ -676,7 +697,7 @@ void FreezeFrameCapture::capture_standing_faults(const std::vector<StandingFault
     fd::FaultEventRecord event;
     event.event_type = fd::fault_event_type::kConfirmed;
     event.fault.fault_code = fault.fault_code;
-    event.fault.reporting_sources = fault.reporting_sources;
+    event.fault.reporting_sources = std::move(pending_sources);
     if (capture_for_event(event, fault.occurrence, /*startup_catchup=*/true)) {
       ++framed;
       ++captured;
@@ -800,32 +821,28 @@ bool FreezeFrameCapture::capture_for_event(const fd::FaultEventRecord & event, c
   std::vector<StoredEntityFreezeFrame> rows;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (frames_.find(fault_code) != frames_.end()) {
-      // A recapture is the newest frame, as its captured_at says after a reload.
-      insertion_order_.erase(std::remove(insertion_order_.begin(), insertion_order_.end(), fault_code),
-                             insertion_order_.end());
-      insertion_order_.push_back(fault_code);
-    } else {
-      insertion_order_.push_back(fault_code);
-      while (frames_.size() >= max_faults_ && !insertion_order_.empty()) {
-        const std::string oldest = insertion_order_.front();
-        insertion_order_.pop_front();
-        forget_locked(oldest);
-        // The rows go too, or the evicted frame comes back on the next start.
-        evicted.push_back(oldest);
+    // One entry per source, under the source that reported it, because
+    // frames_for asks for one owner at a time.
+    for (const auto & frame : frames) {
+      const auto key = record_key(fault_code, frame.entity_id);
+      if (frames_.find(key) == frames_.end()) {
+        insertion_order_.push_back(key);
+        while (frames_.size() >= max_faults_ && !insertion_order_.empty()) {
+          const std::string oldest = insertion_order_.front();
+          insertion_order_.pop_front();
+          forget_locked(oldest);
+          // The rows go too, or the evicted frame comes back on the next start.
+          evicted.push_back(oldest.substr(0, oldest.find('\0')));
+        }
+      }
+      frames_[key] = std::vector<Frame>{frame};
+      if (store_) {
+        rows.push_back(to_stored(fault_code, frame, occurrence));
       }
     }
     // A capture on this fault's own edge supersedes what was reloaded for it.
     reloaded_codes_.erase(fault_code);
     occurrences_[fault_code] = occurrence;
-    auto & stored = frames_[fault_code];
-    stored = std::move(frames);
-    if (store_) {
-      rows.reserve(stored.size());
-      for (const auto & frame : stored) {
-        rows.push_back(to_stored(fault_code, frame, occurrence));
-      }
-    }
   }
   // Outside mutex_, so a fault-detail request does not wait for the store.
   erase_persisted(evicted);

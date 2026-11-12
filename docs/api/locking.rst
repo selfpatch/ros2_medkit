@@ -232,8 +232,14 @@ The One Exception: Global Fault Clear
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``DELETE /api/v1/faults`` reads ``X-Client-Id`` like the writes above but never
-answers ``409``. It walks every fault, **skips** the ones whose reporting
-entity is locked by another client, clears the rest, and answers ``204``.
+answers ``409``. It walks every fault RECORD, **skips** the ones whose owning
+entity is locked by another client, clears the rest one record at a time with
+its owner, and answers ``204``. A record belongs to an app when its owner is
+the app's node FQN (the app's own id for an external app) or a path child of
+it, and to an external component when its owner is the component's id or a path
+child of it. The record is skipped when it belongs to an entity whose ``faults``
+this client may not write, counting the locks of that entity's parent component
+and area as a per-entity ``DELETE`` does.
 Nothing on the response says which faults were skipped - the
 ``X-Medkit-Local-Only: true`` header that 204 also carries is set
 unconditionally and reports that aggregated *peers* were not cleared, not that

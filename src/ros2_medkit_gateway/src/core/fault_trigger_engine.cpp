@@ -176,16 +176,18 @@ tl::expected<FaultTriggerRule, std::pair<int, std::string>> FaultTriggerEngine::
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
-  // fault_code is the PRIMARY KEY of the fault-manager store, so two rules
-  // sharing one code would fight over the same stored fault (one rule's clear
-  // erases the other's assertion) and make per-app delete/clear ambiguous.
+  // One rule per fault_code across every app, checked with no app filter. A code
+  // is how an operator names a rule's condition, and one code asserted by two
+  // rules cannot be read back to either of them. Unless the code is per_source
+  // in the fault manager, two rules on two apps would also share one record.
   const auto dup = std::find_if(rules_.begin(), rules_.end(), [&](const FaultTriggerRule & r) {
     return r.fault_code == rule.fault_code;
   });
   if (dup != rules_.end()) {
-    return tl::make_unexpected(
-        std::make_pair(409, "fault_code '" + rule.fault_code + "' is already used by rule '" + dup->id + "' on app '" +
-                                dup->app_id + "' - fault codes are global to the fault store, pick a distinct one"));
+    return tl::make_unexpected(std::make_pair(
+        409, "fault_code '" + rule.fault_code + "' is already used by rule '" + dup->id + "' on app '" + dup->app_id +
+                 "'. The trigger engine keeps one rule per fault code across every app, so "
+                 "that a code names exactly one rule's condition. Pick a distinct fault_code."));
   }
   rule.id = "ftr_" + std::to_string(next_seq_++);
   rules_.push_back(rule);

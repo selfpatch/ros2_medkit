@@ -210,6 +210,8 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
                                                                          const std::string & fault_code) override;
   tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> clear_fault(const std::string & entity_id,
                                                                           const std::string & fault_code) override;
+  tl::expected<dto::FaultClearResult, FaultProviderErrorInfo>
+  clear_fault_record(const std::string & entity_id, const std::string & fault_code, const std::string & owner) override;
 
   // Resolve the SOVD severity bucket for an event alarm. An explicit configured
   // override wins; with none configured the raw OPC-UA event Severity (1-1000)
@@ -648,7 +650,10 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // Report/clear fault via ROS 2 service (private helpers, not the FaultProvider overrides)
   void send_report_fault(const std::string & entity_id, const std::string & fault_code,
                          const std::string & severity_str, const std::string & message);
-  // ``source_id`` is the entity id the fault is reported under.
+  // ``source_id`` is the reporting source that owns the record. On the polled
+  // and event paths it is the entity this plugin reported under. On the REST
+  // path it is the owner the gateway resolved, which for a component route is
+  // one of its hosted apps. A refusal in the reply is logged.
   // ``origin`` says why the clear is being sent, which decides both the wire
   // flag and how the pending buffer ranks it. See ClearOrigin.
   void send_clear_fault(const std::string & fault_code, const std::string & source_id,

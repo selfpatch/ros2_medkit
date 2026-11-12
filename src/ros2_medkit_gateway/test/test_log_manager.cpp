@@ -17,9 +17,14 @@
 #include <rcl_interfaces/msg/log.hpp>
 #include <rclcpp/rclcpp.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "ros2_medkit_gateway/core/managers/log_manager.hpp"
 #include "ros2_medkit_gateway/core/plugins/gateway_plugin.hpp"
@@ -744,25 +749,30 @@ TEST_F(LogManagerIngestionTest, PluginGetConfigThrowReturnsError) {
 }
 
 // ============================================================
-// Resolver notification tests — verify on_rosout() resolves
-// node names to entity IDs and passes them to the notifier
+// Notification tests - a /rosout entry reaches the notifier with
+// its logger name, whatever the form
 // ============================================================
 
-class LogManagerResolverTest : public ::testing::Test {
+class LogManagerNotifyTest : public ::testing::Test {
  protected:
   void SetUp() override {
     rclcpp::init(0, nullptr);
-    node_ = std::make_shared<rclcpp::Node>("test_log_resolver");
+    node_ = std::make_shared<rclcpp::Node>("test_log_notify");
     notifier_ = std::make_unique<ros2_medkit_gateway::ResourceChangeNotifier>();
     mgr_ = std::make_unique<LogManager>(std::make_shared<ros2_medkit_gateway::ros2::Ros2LogSource>(node_.get()),
                                         nullptr, 10);
+    mgr_->set_logger_owner_fn([](const std::string & logger_name) {
+      return logger_name == "powertrain/engine/temp_sensor" || logger_name == "powertrain.engine.temp_sensor"
+                 ? std::string("engine-temp")
+                 : std::string();
+    });
     mgr_->set_notifier(notifier_.get());
 
-    // Subscribe to notifier to capture entity IDs
+    // Capture (entity_id, logger name) of every logs change
     notifier_->subscribe(ros2_medkit_gateway::NotifierFilter{"logs", "", ""},
                          [this](const ros2_medkit_gateway::ResourceChange & change) {
                            std::lock_guard<std::mutex> lock(captured_mutex_);
-                           captured_entity_ids_.push_back(change.entity_id);
+                           captured_.emplace_back(change.entity_id, change.value["context"].value("node", ""));
                          });
 
     // Create /rosout publisher for sending test log messages
@@ -789,7 +799,7 @@ class LogManagerResolverTest : public ::testing::Test {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     // Clear whatever was captured during startup
     std::lock_guard<std::mutex> lock(captured_mutex_);
-    captured_entity_ids_.clear();
+    captured_.clear();
   }
 
   void publish_and_spin(const std::string & logger_name) {
@@ -798,25 +808,31 @@ class LogManagerResolverTest : public ::testing::Test {
     msg.name = logger_name;
     msg.msg = "test message";
     rosout_pub_->publish(msg);
-    // Spin to process the subscription callback
+    // Spin until the notifier worker has seen this logger name.
     auto start = std::chrono::steady_clock::now();
-    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
+    while (std::chrono::steady_clock::now() - start < std::chrono::seconds(5)) {
       rclcpp::spin_some(node_);
       {
         std::lock_guard<std::mutex> lock(captured_mutex_);
-        if (!captured_entity_ids_.empty()) {
-          break;
+        if (std::any_of(captured_.begin(), captured_.end(), [&](const auto & c) {
+              return c.second == logger_name;
+            })) {
+          return;
         }
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    // Allow notifier worker thread to process
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 
-  std::vector<std::string> get_captured() {
+  /// Entity id of the first change for `logger_name`, nullopt when none came.
+  std::optional<std::string> entity_id_for(const std::string & logger_name) {
     std::lock_guard<std::mutex> lock(captured_mutex_);
-    return captured_entity_ids_;
+    for (const auto & [entity_id, logger] : captured_) {
+      if (logger == logger_name) {
+        return entity_id;
+      }
+    }
+    return std::nullopt;
   }
 
   std::shared_ptr<rclcpp::Node> node_;
@@ -825,64 +841,20 @@ class LogManagerResolverTest : public ::testing::Test {
   rclcpp::Publisher<rcl_interfaces::msg::Log>::SharedPtr rosout_pub_;
 
   std::mutex captured_mutex_;
-  std::vector<std::string> captured_entity_ids_;
+  std::vector<std::pair<std::string, std::string>> captured_;
 };
 
-// @verifies REQ_INTEROP_061
-TEST_F(LogManagerResolverTest, ResolverMatchesWithSlashPrefixReturnsEntityId) {
-  // Resolver returns "temp_sensor_app" when called with "/powertrain/temp_sensor"
-  mgr_->set_node_to_entity_resolver([](const std::string & fqn) -> std::string {
-    if (fqn == "/powertrain/temp_sensor") {
-      return "temp_sensor_app";
-    }
-    return "";
-  });
-
-  // Drain startup log messages that arrive on /rosout before our test message
+TEST_F(LogManagerNotifyTest, RosoutEntryCarriesItsOwnerAndLoggerName) {
   drain_initial_messages();
 
   // /rosout msg.name has no leading slash per rcl convention
-  publish_and_spin("powertrain/temp_sensor");
-
-  auto captured = get_captured();
-  ASSERT_FALSE(captured.empty()) << "Notifier should have received at least one event";
-  EXPECT_EQ(captured[0], "temp_sensor_app");
-}
-
-// @verifies REQ_INTEROP_061
-TEST_F(LogManagerResolverTest, ResolverMatchesBareNameReturnsEntityId) {
-  // Resolver returns "my_app" when called with bare name (no leading slash)
-  mgr_->set_node_to_entity_resolver([](const std::string & fqn) -> std::string {
-    if (fqn == "simple_node") {
-      return "my_app";
-    }
-    return "";
-  });
-
-  drain_initial_messages();
-
-  publish_and_spin("simple_node");
-
-  auto captured = get_captured();
-  ASSERT_FALSE(captured.empty()) << "Notifier should have received at least one event";
-  EXPECT_EQ(captured[0], "my_app");
-}
-
-// @verifies REQ_INTEROP_061
-TEST_F(LogManagerResolverTest, ResolverReturnsEmptyFallsBackToLastSegment) {
-  // Resolver always returns empty -> on_rosout falls back to last path segment
-  mgr_->set_node_to_entity_resolver([](const std::string & /*fqn*/) -> std::string {
-    return "";
-  });
-
-  drain_initial_messages();
-
   publish_and_spin("powertrain/engine/temp_sensor");
+  publish_and_spin("powertrain.engine.temp_sensor");
+  publish_and_spin("temp_sensor");
 
-  auto captured = get_captured();
-  ASSERT_FALSE(captured.empty()) << "Notifier should have received at least one event";
-  // Fallback: last segment of "powertrain/engine/temp_sensor" is "temp_sensor"
-  EXPECT_EQ(captured[0], "temp_sensor");
+  EXPECT_EQ(entity_id_for("powertrain/engine/temp_sensor"), "engine-temp");
+  EXPECT_EQ(entity_id_for("powertrain.engine.temp_sensor"), "engine-temp");
+  EXPECT_EQ(entity_id_for("temp_sensor"), "") << "a logger no app owns names no entity";
 }
 
 // ============================================================

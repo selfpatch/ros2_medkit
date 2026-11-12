@@ -41,13 +41,13 @@ class TriggerFaultSubscriber {
    */
   TriggerFaultSubscriber(rclcpp::Node * node, ResourceChangeNotifier & notifier);
 
-  /// Callback to resolve ROS node FQN to manifest entity ID.
-  /// Returns manifest entity ID, or empty string if not resolvable.
-  using NodeToEntityFn = TriggerFaultFeed::NodeToEntityFn;
+  /// Maps a record's owner (its reporting source) to the id of the app whose
+  /// scope holds it, or "" when no app does.
+  using FaultOwnerFn = TriggerFaultFeed::FaultOwnerFn;
 
-  /// Set the node-to-entity resolver for manifest entity ID lookup.
+  /// Set the fault owner resolver used for the change's entity id.
   /// Write-once: call it before the ROS executor starts spinning.
-  void set_node_to_entity_resolver(NodeToEntityFn resolver);
+  void set_fault_owner_resolver(FaultOwnerFn resolver);
 
   ~TriggerFaultSubscriber() = default;
   TriggerFaultSubscriber(const TriggerFaultSubscriber &) = delete;

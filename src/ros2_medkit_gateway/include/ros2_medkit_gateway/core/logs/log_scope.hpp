@@ -14,10 +14,16 @@
 
 #pragma once
 
+#include <cstdint>
+#include <mutex>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <set>
 #include <string>
 #include <tl/expected.hpp>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
 
@@ -27,6 +33,65 @@ class LogManager;
 class ThreadSafeEntityCache;
 
 namespace logs {
+
+/// Log sources of one entity, as the log routes query them.
+struct LogScope {
+  /// Matched exactly (slash or dot form).
+  std::vector<std::string> exact;
+  /// Namespace prefix, COMPONENT and AREA only. Empty when there is none.
+  std::string prefix;
+};
+
+/// Build the scope `query_entity_logs` queries. `resolved_sources` (optional
+/// out) receives the exact-match source set.
+LogScope resolve_log_scope(const ThreadSafeEntityCache & cache, SovdEntityType type, const std::string & entity_id,
+                           const std::string & entity_fqn, std::set<std::string> * resolved_sources = nullptr);
+
+/// True when entries of `logger_name` fall inside `scope`
+/// (`LogManager::logger_matches` per source).
+bool log_scope_contains(const LogScope & scope, const std::string & logger_name);
+
+/// The fqn the log routes pass for an entity: component fqn, area namespace,
+/// app effective fqn. Empty for FUNCTION and for an entity not in the cache.
+std::string entity_log_fqn(const ThreadSafeEntityCache & cache, SovdEntityType type, const std::string & entity_id);
+
+/// True when the log routes' rule admits an entry of `logger_name` at
+/// `level`: the logger is in the entity's scope and `level` is at or above the
+/// entity's configured severity_filter. With a LogProvider plugin, GET
+/// returns the plugin's entries instead.
+bool entity_lists_log_entry(const LogManager & log_mgr, const ThreadSafeEntityCache & cache, SovdEntityType type,
+                            const std::string & entity_id, const std::string & logger_name, uint8_t level);
+
+/// `entity_lists_log_entry` for the value of a "logs" change: the logger name
+/// is `context.node`, the level is `LogManager::entry_level`. False for a value
+/// that carries no logger name.
+bool entity_lists_log_change(const LogManager & log_mgr, const ThreadSafeEntityCache & cache, SovdEntityType type,
+                             const std::string & entity_id, const nlohmann::json & entry);
+
+/// Entries a restored logs trigger on the entity replays: what
+/// `GET /{entity}/logs` lists now, oldest first, less the trigger markers
+/// (`LogManager::add_log_entry`). nullopt while the entity of that type is not
+/// in the cache or the listing fails; the replay is then retried by the next
+/// sweep or live change.
+std::optional<std::vector<nlohmann::json>> restore_replay_entries(LogManager & log_mgr,
+                                                                  const ThreadSafeEntityCache & cache,
+                                                                  SovdEntityType type, const std::string & entity_id);
+
+/// Loggers the log scope of each cached app holds, rebuilt when the cache
+/// generation moves. Thread-safe.
+class LoggerOwnerIndex {
+ public:
+  /// Id of the one app whose log scope holds `logger_name`, or "" when no app
+  /// or more than one does.
+  std::string find_owner(const ThreadSafeEntityCache & cache, const std::string & logger_name);
+
+ private:
+  std::mutex mutex_;
+  bool built_{false};
+  uint64_t generation_{0};
+  /// Logger name in slash and dot form -> owning app id, "" when shared.
+  std::unordered_map<std::string, std::string> owners_;
+};
 
 /// Query every log entry within an entity's scope.
 ///
@@ -42,12 +107,14 @@ namespace logs {
 /// ascending and re-capped to the entity's configured max_entries.
 ///
 /// `resolved_sources` (optional out) receives the exact-match source set for
-/// response metadata. Shared by the HTTP log handlers and the cyclic
+/// response metadata. `marker_ids` (optional out) receives the ids of the
+/// listed trigger markers. Shared by the HTTP log handlers and the cyclic
 /// subscription "logs" sampler so both agree on entity -> log-source scoping.
 tl::expected<nlohmann::json, std::string>
 query_entity_logs(LogManager & log_mgr, const ThreadSafeEntityCache & cache, SovdEntityType type,
                   const std::string & entity_id, const std::string & entity_fqn, const std::string & min_severity,
-                  const std::string & context_filter, std::set<std::string> * resolved_sources = nullptr);
+                  const std::string & context_filter, std::set<std::string> * resolved_sources = nullptr,
+                  std::unordered_set<std::string> * marker_ids = nullptr);
 
 }  // namespace logs
 }  // namespace ros2_medkit_gateway
