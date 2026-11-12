@@ -478,14 +478,16 @@ void SqliteFaultStorage::initialize_schema() {
   // before it.
   migrate_faults_add_owner();
 
-  // After the migration, which adds near_misses.owner to a database that predates it.
+  // After the migration, which adds owner to near_misses and snapshots on a database that predates it.
+  // The per-record trims and reads of both tables go through these.
   if (sqlite3_exec(db_,
                    "DROP INDEX IF EXISTS idx_near_misses_fault_code;"
-                   "CREATE INDEX IF NOT EXISTS idx_near_misses_record ON near_misses(fault_code, owner, id);",
+                   "CREATE INDEX IF NOT EXISTS idx_near_misses_record ON near_misses(fault_code, owner, id);"
+                   "CREATE INDEX IF NOT EXISTS idx_snapshots_record ON snapshots(fault_code, owner, capture_id);",
                    nullptr, nullptr, &err_msg) != SQLITE_OK) {
     std::string error = err_msg ? err_msg : "Unknown error";
     sqlite3_free(err_msg);
-    throw std::runtime_error("Failed to create near_misses index: " + error);
+    throw std::runtime_error("Failed to create record indexes: " + error);
   }
 
   // The record identity, expressed as an index rather than a PRIMARY KEY so the next
