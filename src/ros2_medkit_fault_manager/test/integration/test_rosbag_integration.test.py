@@ -59,6 +59,12 @@ ROSBAG_STORAGE_PATH = tempfile.mkdtemp(prefix='rosbag_test_')
 # Path to temp publisher script (set in generate_test_description, cleaned up in shutdown test)
 PUBLISHER_SCRIPT_PATH = None
 
+# One code gets a record per reporting source; every other code is shared.
+PER_SOURCE_CODES_FILE = tempfile.NamedTemporaryFile(
+    'w', suffix='.yaml', prefix='rosbag_per_source_', delete=False)
+PER_SOURCE_CODES_FILE.write('BURST_PER_SOURCE:\n  per_source: true\n')
+PER_SOURCE_CODES_FILE.close()
+
 
 def generate_test_description():
     """Generate launch description with fault_manager node with rosbag enabled."""
@@ -157,6 +163,7 @@ if __name__ == '__main__':
         parameters=[{
             'storage_type': 'memory',
             'confirmation_threshold': -1,  # Single report confirms immediately
+            'fault_thresholds.config_file': PER_SOURCE_CODES_FILE.name,
             # Rosbag configuration
             'snapshots.rosbag.enabled': True,
             'snapshots.rosbag.duration_sec': 2.0,  # 2 second buffer
@@ -586,6 +593,50 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
                          'faults of one burst must share a single recording')
         print(f'Shared recording: {responses["BURST_SHARED_A"].file_path}')
 
+        # Default codes have one shared record each: one entry per code, owned by '*'.
+        for response in responses.values():
+            self.assertEqual(sorted(response.fault_codes), fault_codes)
+            self.assertEqual(list(response.owners), ['*'] * len(fault_codes))
+            self.assertEqual(len(response.owners), len(response.fault_codes))
+
+    def test_08_per_source_burst_lists_every_owner_of_the_recording(self):
+        """Two per-source records of one code on one recording are two parallel entries."""
+        code = 'BURST_PER_SOURCE'
+        owners = ['/burst_node_a', '/burst_node_b']
+
+        self.assertTrue(self._wait_for_buffered_data(),
+                        'ring buffer did not refill before reporting faults')
+
+        for owner in owners:
+            request = ReportFault.Request()
+            request.fault_code = code
+            request.event_type = ReportFault.Request.EVENT_FAILED
+            request.severity = Fault.SEVERITY_ERROR
+            request.description = f'Per-source burst from {owner}'
+            request.source_id = owner
+            self.assertTrue(self._call_service(self.report_fault_client, request).accepted)
+
+        responses = {}
+        for owner in owners:
+            deadline = time.time() + 12.0
+            while True:
+                request = GetRosbag.Request()
+                request.fault_code = code
+                request.source_id = owner
+                response = self._call_service(self.get_rosbag_client, request)
+                if response.success or time.time() > deadline:
+                    break
+                rclpy.spin_once(self.node, timeout_sec=0.5)
+            self.assertTrue(response.success,
+                            f'GetRosbag failed for {owner}: {response.error_message}')
+            responses[owner] = response
+
+        self.assertEqual(responses[owners[0]].file_path, responses[owners[1]].file_path,
+                         'records of one burst must share a single recording')
+        for response in responses.values():
+            self.assertEqual(list(response.fault_codes), [code, code])
+            self.assertEqual(sorted(response.owners), owners)
+
 
 @launch_testing.post_shutdown_test()
 class TestRosbagCaptureShutdown(unittest.TestCase):
@@ -597,6 +648,7 @@ class TestRosbagCaptureShutdown(unittest.TestCase):
             proc_info,
             process='fault_manager_node'
         )
+        os.unlink(PER_SOURCE_CODES_FILE.name)
 
     def test_cleanup_temp_directory(self):
         """Clean up temporary rosbag storage directory and publisher script."""

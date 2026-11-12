@@ -759,17 +759,15 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
   // An id that names no recording is therefore not an answer yet, only a miss.
   std::optional<RosbagFileInfo> rosbag_info;
   std::vector<std::string> attached_codes;
+  std::vector<std::string> attached_owners;
   std::string subject;
 
-  // fault_codes answers "which faults does this recording cover", so it is a set of
-  // codes. One row per RECORD means a burst of several owners of one code produces
-  // several rows pointing at the same bag, and pushing the code once per row would
-  // repeat it. First-seen order is kept, so the codes still read in the order the
-  // recording collected them.
-  const auto attach_code = [&attached_codes](const std::string & code) {
-    if (std::find(attached_codes.begin(), attached_codes.end(), code) == attached_codes.end()) {
-      attached_codes.push_back(code);
-    }
+  // fault_codes and owners are parallel: one entry per RECORD the recording is attached to, in the order
+  // the recording collected them. A burst of several owners of one code therefore lists the code once
+  // per owner, and a shared record is one entry carrying the shared owner.
+  const auto attach_row = [&attached_codes, &attached_owners](const RosbagFileInfo & row) {
+    attached_codes.push_back(row.fault_code);
+    attached_owners.push_back(row.owner);
   };
 
   if (!request->recording_id.empty()) {
@@ -795,7 +793,7 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
       subject = "recording " + request->recording_id;
       rosbag_info = rows.front();
       for (const auto & row : rows) {
-        attach_code(row.fault_code);
+        attach_row(row);
       }
     } else if (request->fault_code.empty()) {
       response->success = false;
@@ -839,7 +837,7 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
     // caller authorizes the download against this set.
     try {
       for (const auto & row : storage_->get_rosbag_files_by_recording(rosbag_info->recording_id)) {
-        attach_code(row.fault_code);
+        attach_row(row);
       }
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
@@ -848,7 +846,8 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
       return;
     }
     if (attached_codes.empty()) {
-      attached_codes.push_back(request->fault_code);
+      attached_codes.push_back(target->fault_code);
+      attached_owners.push_back(target->owner);
     }
   }
 
@@ -871,6 +870,7 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
   response->file_path = rosbag_info->file_path;
   response->recording_id = rosbag_info->recording_id;
   response->fault_codes = attached_codes;
+  response->owners = attached_owners;
   response->format = rosbag_info->format;
   response->duration_sec = rosbag_info->duration_sec;
   response->size_bytes = core::rosbag_served_bytes(rosbag_info->file_path, rosbag_info->size_bytes);
