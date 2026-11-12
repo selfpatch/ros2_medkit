@@ -259,6 +259,10 @@ An ambiguous call clears nothing. ``GetFault``, ``GetSnapshots`` and ``GetRosbag
 the same field and resolve the same way. On ``GetRosbag`` it scopes the ``fault_code``
 lookup only, and the ``recording_id`` path ignores it.
 
+``GetRosbag`` answers with ``fault_codes`` and ``owners``, parallel arrays with one entry per
+fault record the recording is attached to. A burst of several per-source records of one code
+lists the code once per owner. A shared record is one entry carrying the owner ``*``.
+
 When ``skip_correlation_auto_clear`` is ``false`` (default), clearing a
 root-cause fault also clears every symptom that the correlation engine
 attributes to it via ``auto_clear_with_root`` rules; the cleared

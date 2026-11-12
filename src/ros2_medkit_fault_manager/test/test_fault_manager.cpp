@@ -2463,10 +2463,10 @@ class GetRosbagAttachedCodesTest : public FaultEventPublishingTest {
   rclcpp::Client<GetRosbag>::SharedPtr get_rosbag_client_;
 };
 
-// fault_codes answers which faults a recording covers, so it is a set of codes. Two
-// owners of one code are two links to the one bag, and repeating the code would make
-// the caller authorize the same download twice over.
-TEST_F(GetRosbagAttachedCodesTest, ACodeSharedByTwoOwnersIsReportedOnce) {
+// fault_codes and owners are parallel, one entry per record the recording is attached to. Two
+// owners of one code are two links to the one bag, so the code is listed once per owner and the
+// caller can tell whose record each entry is.
+TEST_F(GetRosbagAttachedCodesTest, ACodeHeldByTwoOwnersIsListedOncePerOwner) {
   ASSERT_TRUE(call_report_fault("BURST_CODE", Fault::SEVERITY_CRITICAL, "/owner_a"));
   ASSERT_TRUE(call_report_fault("BURST_CODE", Fault::SEVERITY_CRITICAL, "/owner_b"));
   link_recording("BURST_CODE", "/owner_a");
@@ -2475,11 +2475,14 @@ TEST_F(GetRosbagAttachedCodesTest, ACodeSharedByTwoOwnersIsReportedOnce) {
   auto response = call_get_rosbag("BURST_CODE", "/owner_a");
   ASSERT_TRUE(response.has_value());
   ASSERT_TRUE(response->success) << response->error_message;
-  EXPECT_EQ(response->fault_codes, std::vector<std::string>{"BURST_CODE"});
+  EXPECT_EQ(response->fault_codes, (std::vector<std::string>{"BURST_CODE", "BURST_CODE"}));
+  EXPECT_EQ(response->owners.size(), response->fault_codes.size());
+  std::vector<std::string> owners(response->owners.begin(), response->owners.end());
+  std::sort(owners.begin(), owners.end());
+  EXPECT_EQ(owners, (std::vector<std::string>{"/owner_a", "/owner_b"}));
 }
 
-// The control on the same harness: deduplicating must not collapse the set itself.
-// A burst of two different codes on one bag still reports both, in first-seen order.
+// A burst of two different codes on one bag reports both, in first-seen order, with their owners.
 TEST_F(GetRosbagAttachedCodesTest, EveryDistinctCodeOfTheBurstIsReported) {
   ASSERT_TRUE(call_report_fault("BURST_FIRST", Fault::SEVERITY_CRITICAL, "/owner_a"));
   ASSERT_TRUE(call_report_fault("BURST_SECOND", Fault::SEVERITY_CRITICAL, "/owner_a"));
@@ -2490,6 +2493,7 @@ TEST_F(GetRosbagAttachedCodesTest, EveryDistinctCodeOfTheBurstIsReported) {
   ASSERT_TRUE(response.has_value());
   ASSERT_TRUE(response->success) << response->error_message;
   EXPECT_EQ(response->fault_codes, (std::vector<std::string>{"BURST_FIRST", "BURST_SECOND"}));
+  EXPECT_EQ(response->owners, (std::vector<std::string>{"/owner_a", "/owner_a"}));
 }
 
 // @verifies REQ_INTEROP_012
