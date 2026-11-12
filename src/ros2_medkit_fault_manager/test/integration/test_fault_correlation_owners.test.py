@@ -55,6 +55,10 @@ XO_PS_STORM_2:
   per_source: true
 XO_PS_STORM_3:
   per_source: true
+XO_PS_CHURN_1:
+  per_source: true
+XO_PS_CHURN_2:
+  per_source: true
 """
 
 CORRELATION = """\
@@ -70,6 +74,8 @@ correlation:
       codes: ["XO_PS_STORM_*"]
     sh_storm:
       codes: ["XO_SH_STORM_*"]
+    ps_churn:
+      codes: ["XO_PS_CHURN_*"]
   rules:
     - id: ps_estop
       name: "Per-source e-stop"
@@ -98,6 +104,15 @@ correlation:
         - pattern: ps_storm
       min_count: 3
       window_ms: 5000
+      show_as_single: true
+      representative: first
+    - id: ps_churn
+      name: "Per-source churn"
+      mode: auto_cluster
+      match:
+        - pattern: ps_churn
+      min_count: 3
+      window_ms: 30000
       show_as_single: true
       representative: first
     - id: sh_storm
@@ -276,6 +291,36 @@ class TestCorrelationAcrossOwners(unittest.TestCase):
             lambda node: node)
         self.assertEqual(cluster.representative_code, 'XO_PS_STORM_1')
         self.assertEqual(cluster.representative_owner, '/lidar')
+
+    def test_a_cleared_member_leaves_the_cluster_and_comes_back_once(self):
+        for code, node in [('XO_PS_CHURN_1', '/lidar'), ('XO_PS_CHURN_1', '/camera'),
+                           ('XO_PS_CHURN_2', '/motor_node')]:
+            self._report(code, node)
+
+        def cluster():
+            clusters = [c for c in self._list(include_clusters=True).clusters
+                        if c.rule_id == 'ps_churn']
+            self.assertEqual(len(clusters), 1)
+            return clusters[0]
+
+        before = cluster()
+        self.assertEqual((before.representative_code, before.representative_owner),
+                         ('XO_PS_CHURN_1', '/lidar'))
+
+        self._clear('XO_PS_CHURN_1', '/lidar')
+        after = cluster()
+        self.assertEqual(sorted(zip(after.fault_codes, after.fault_owners)),
+                         [('XO_PS_CHURN_1', '/camera'), ('XO_PS_CHURN_2', '/motor_node')])
+        self.assertNotEqual((after.representative_code, after.representative_owner),
+                            ('XO_PS_CHURN_1', '/lidar'), 'a cleared record is representative')
+        self.assertIn((after.representative_code, after.representative_owner),
+                      zip(after.fault_codes, after.fault_owners))
+
+        self._report('XO_PS_CHURN_1', '/lidar')
+        again = cluster()
+        members = list(zip(again.fault_codes, again.fault_owners))
+        self.assertEqual(members.count(('XO_PS_CHURN_1', '/lidar')), 1)
+        self.assertEqual(len(members), 3)
 
     def test_shared_storm_across_nodes_forms_one_cluster(self):
         cluster = self._storm(
