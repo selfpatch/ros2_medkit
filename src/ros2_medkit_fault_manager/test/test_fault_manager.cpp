@@ -1695,10 +1695,13 @@ class SeverityConsistencyNodeTest : public FaultEventPublishingTest, public ::te
     std::uniform_int_distribution<uint64_t> dist;
     dir_ = std::filesystem::temp_directory_path() / ("test_severity_node_" + std::to_string(dist(gen)));
     std::filesystem::create_directories(dir_);
-    // The codes two sources report each get a record per source, which is what the owner-scoped
-    // assertions below are about.
-    std::ofstream(dir_ / "fault_thresholds.yaml")
-        << "MISMATCH:\n  per_source: true\nENTITY_MIXED:\n  per_source: true\n";
+    // Every code these tests report is per_source: the stored severity of a record decides immediate
+    // confirmation there, and the owner-scoped assertions below are about one record per source.
+    std::ofstream thresholds(dir_ / "fault_thresholds.yaml");
+    for (const char * code : {"EVT_SEV", "AUDIT_SEV", "AUDIT_REACT", "MISMATCH", "MISMATCH_A", "MISMATCH_B",
+                              "ENTITY_WARN", "ENTITY_CRIT", "ENTITY_MIXED"}) {
+      thresholds << code << ":\n  per_source: true\n";
+    }
   }
 
   ~SeverityConsistencyNodeTest() override {
@@ -1831,7 +1834,7 @@ TEST_P(SeverityConsistencyNodeTest, AuditRowsCarryTheStoredSeverity) {
 
   // The near-miss rows of the same reports keep what was reported.
   std::vector<int> near_miss_severities;
-  for (const auto & record : fault_manager_->get_storage().get_near_misses({"AUDIT_REACT", "*"})) {
+  for (const auto & record : fault_manager_->get_storage().get_near_misses({"AUDIT_REACT", "/a"})) {
     near_miss_severities.push_back(record.severity);
   }
   EXPECT_EQ(near_miss_severities, (std::vector<int>{error, error, warn, warn}));

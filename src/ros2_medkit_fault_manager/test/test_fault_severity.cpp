@@ -413,6 +413,21 @@ class SqliteSeverityTest : public ::testing::Test {
     open_legacy_database({LegacyRow{code, severity, status, confirmed_at_ns}});
   }
 
+  /// open_legacy_database, then hand the migrated row to the test's reporter, so it is a per-source record
+  /// and the stored severity decides immediate confirmation.
+  void open_legacy_per_source_database(const std::string & code, int severity, const std::string & status,
+                                       int64_t confirmed_at_ns) {
+    open_legacy_database(code, severity, status, confirmed_at_ns);
+    storage_.reset();
+    sqlite3 * raw = nullptr;
+    EXPECT_EQ(sqlite3_open(db_path().c_str(), &raw), SQLITE_OK);
+    const std::string sql = std::string("UPDATE faults SET owner = '") + kOwner + "'";
+    EXPECT_EQ(sqlite3_exec(raw, sql.c_str(), nullptr, nullptr, nullptr), SQLITE_OK) << sqlite3_errmsg(raw);
+    sqlite3_close(raw);
+    record_owner_ = kOwner;
+    reopen();
+  }
+
   void failed(const std::string & code, uint8_t severity, int64_t second, const DebounceConfig & config) {
     storage_->report_fault_event(FaultId{code, record_owner_}, fd::ReportKind::kFailed, severity, "report", kOwner,
                                  at(second), config);
@@ -551,7 +566,7 @@ TEST_F(SqliteSeverityTest, MigratedClearedRecordHasNoConfirmationTimeUntilItConf
 
 TEST_F(SqliteSeverityTest, MigratedClearedCriticalRecordConfirmsOnAWarn) {
   const auto config = confirm_at(-3);
-  open_legacy_database("MIGRATED_CRIT", Fault::SEVERITY_CRITICAL, Fault::STATUS_CLEARED, at(0));
+  open_legacy_per_source_database("MIGRATED_CRIT", Fault::SEVERITY_CRITICAL, Fault::STATUS_CLEARED, at(0));
 
   failed("MIGRATED_CRIT", Fault::SEVERITY_WARN, 2, config);
   const auto f = fault("MIGRATED_CRIT");
@@ -563,7 +578,7 @@ TEST_F(SqliteSeverityTest, MigratedClearedCriticalRecordConfirmsOnAWarn) {
 TEST_F(SqliteSeverityTest, PendingCriticalRowFromAnEarlierReleaseStaysUntilAReport) {
   // The row an earlier release left after CRITICAL, clear, WARN at threshold -3: CRITICAL in
   // PREFAILED, occurrence 2, still holding the first occurrence's confirmation time.
-  open_legacy_database("LEGACY", Fault::SEVERITY_CRITICAL, Fault::STATUS_PREFAILED, at(0));
+  open_legacy_per_source_database("LEGACY", Fault::SEVERITY_CRITICAL, Fault::STATUS_PREFAILED, at(0));
   auto f = fault("LEGACY");
   EXPECT_EQ(f.status, Fault::STATUS_PREFAILED) << "the migration does not rewrite the status";
   EXPECT_EQ(f.severity, Fault::SEVERITY_CRITICAL);
@@ -657,7 +672,7 @@ TEST_F(SqliteSeverityTest, PendingCriticalRowConfirmsOnTheNextFailedOfAnySeverit
        {Fault::SEVERITY_INFO, Fault::SEVERITY_WARN, Fault::SEVERITY_ERROR, Fault::SEVERITY_CRITICAL}) {
     const std::string code = "LEGACY_FAILED_" + std::to_string(severity);
     SCOPED_TRACE(code);
-    open_legacy_database(code, Fault::SEVERITY_CRITICAL, Fault::STATUS_PREFAILED, at(0));
+    open_legacy_per_source_database(code, Fault::SEVERITY_CRITICAL, Fault::STATUS_PREFAILED, at(0));
 
     failed(code, severity, 2, config);
     const auto f = fault(code);
@@ -670,7 +685,7 @@ TEST_F(SqliteSeverityTest, PendingCriticalRowConfirmsOnTheNextFailedOfAnySeverit
 
 TEST_F(SqliteSeverityTest, PendingCriticalRowCanMoveToPrepassedOnPassed) {
   const auto config = confirm_at(-3);
-  open_legacy_database("LEGACY_PASSED", Fault::SEVERITY_CRITICAL, Fault::STATUS_PREFAILED, at(0));
+  open_legacy_per_source_database("LEGACY_PASSED", Fault::SEVERITY_CRITICAL, Fault::STATUS_PREFAILED, at(0));
 
   passed("LEGACY_PASSED", 2, config);
   EXPECT_EQ(fault("LEGACY_PASSED").status, Fault::STATUS_PREFAILED) << "counter 0 keeps the status";

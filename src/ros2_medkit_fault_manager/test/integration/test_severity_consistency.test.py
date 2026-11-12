@@ -88,8 +88,17 @@ def seed_legacy_database():
                  f'["{SOURCE}"]', 500_000_000, LEGACY_CONFIRMED_AT_NS))
 
 
+# Codes whose records are per source, so the stored severity decides immediate confirmation. The
+# migrated rows and every other code are shared records, where the report's severity decides.
+PER_SOURCE_CODES = ('SEV_CRIT', 'HEAL_CRIT') + tuple(f'SEV_MARK_{i}' for i in range(1, 9))
+THRESHOLDS_PATH = os.path.join(DB_DIR, 'fault_thresholds.yaml')
+
+
 def generate_test_description():
     seed_legacy_database()
+    with open(THRESHOLDS_PATH, 'w') as f:
+        for code in PER_SOURCE_CODES:
+            f.write(f'{code}:\n  per_source: true\n')
     fault_manager_node = launch_ros.actions.Node(
         package='ros2_medkit_fault_manager',
         executable='fault_manager_node',
@@ -101,6 +110,7 @@ def generate_test_description():
             'confirmation_threshold': -3,
             'healing_enabled': True,
             'healing_threshold': 1,
+            'fault_thresholds.config_file': THRESHOLDS_PATH,
             'snapshots.enabled': False,
             'snapshots.rosbag.enabled': False,
         }],
@@ -277,11 +287,10 @@ class TestSeverityConsistency(unittest.TestCase):
             self.assertEqual(fault.status, Fault.STATUS_PREFAILED)
             self.assertEqual(fault.occurrence_count, 2)
             self.assertEqual(self._confirmed_at('LEGACY_CONF_AT'), 0)
-        with self.subTest(case='migrated CRITICAL, WARN'):
+        with self.subTest(case='migrated shared CRITICAL, WARN: the report decides'):
             fault = self._fault('LEGACY_CRIT')
             self.assertEqual(fault.severity, Fault.SEVERITY_CRITICAL)
-            self.assertEqual(fault.status, Fault.STATUS_CONFIRMED)
-            self.assertGreater(self._confirmed_at('LEGACY_CRIT'), LEGACY_CONFIRMED_AT_NS)
+            self.assertEqual(fault.status, Fault.STATUS_PREFAILED)
 
         # Process 1: CRITICAL, cleared; CRITICAL, healed; ERROR confirmed, cleared.
         self._report('SEV_CRIT', Fault.SEVERITY_CRITICAL)
@@ -321,10 +330,10 @@ class TestSeverityConsistency(unittest.TestCase):
             self.assertEqual(fault.occurrence_count, 1)
 
         with self.subTest(case='no pending CRITICAL'):
-            self.assertEqual(
-                self._list(statuses=[Fault.STATUS_PREFAILED, Fault.STATUS_PREPASSED],
-                           severity=Fault.SEVERITY_CRITICAL),
-                {})
+            pending = self._list(statuses=[Fault.STATUS_PREFAILED, Fault.STATUS_PREPASSED],
+                                 severity=Fault.SEVERITY_CRITICAL)
+            # LEGACY_CRIT is a shared record, which a WARN report leaves pending.
+            self.assertEqual(sorted(pending), ['LEGACY_CRIT'])
 
         for _ in range(9):
             self._report('SEV_CRIT', Fault.SEVERITY_WARN)

@@ -246,13 +246,13 @@ What each surface carries:
 The near-miss series is per-report history, so it keeps what the reporter sent. A lower report
 stays visible there and in the mismatch warning below.
 
-`critical_immediate_confirm` reads the stored severity of the record. A FAILED report on a record
-stored as `CRITICAL` confirms it at once, whatever severity the report carries, from a cleared
-record and from the HEALED latch alike. So no report leaves a record `CRITICAL` in `PREFAILED` or
-`PREPASSED`. A row an earlier release stored that way keeps its status through the migration until
-its next FAILED report.
+`critical_immediate_confirm` depends on the identity of the record. On a record shared by all sources
+of a code (the default) the severity of the report decides. On a `per_source` record the stored
+severity decides: a FAILED report on a record stored as `CRITICAL` confirms it at once, whatever
+severity the report carries, from a cleared record and from the HEALED latch alike. So no report
+leaves a `per_source` record `CRITICAL` in `PREFAILED` or `PREPASSED`.
 
-When a FAILED report carries a severity other than the one stored for its record, the node logs a
+When a FAILED report on a `per_source` record carries a severity other than the one stored for its record, the node logs a
 warning naming the code, the reported and the stored severity and the source. It is logged once per
 code, source and reported severity until the node restarts, so a reporter that repeats the same
 report many times a second produces one line. The number of lines is bounded by the distinct
@@ -426,8 +426,8 @@ never confirms again, and `occurrence_count` does not move either. Prefer leavin
 `confirmation_threshold` at `-1` for such a reporter, and filter noisy samples in the reporter
 itself, where the samples are.
 
-Two things ignore the counter. A FAILED report on a record stored as `SEVERITY_CRITICAL` confirms
-at once unless `critical_immediate_confirm` is turned off in the debounce config, and that field is
+Two things ignore the counter. A CRITICAL report on a shared record, or a FAILED report on a
+`per_source` record stored as `SEVERITY_CRITICAL`, confirms at once unless `critical_immediate_confirm` is turned off in the debounce config, and that field is
 not exposed as a ROS parameter. `auto_confirm_after_sec` promotes on elapsed time since the last FAILED, which is
 not the same as observing that the condition is still there.
 
@@ -477,8 +477,8 @@ Event types: `0` = EVENT_FAILED, `1` = EVENT_PASSED
 
 ### Immediate Confirmation
 
-A FAILED report on a record whose stored severity is CRITICAL confirms it at once, regardless of
-threshold and of the HEALED latch. The stored severity decides, not the report: after a CRITICAL
+A CRITICAL FAILED report on a shared record confirms it at once, regardless of threshold and of the
+HEALED latch. On a `per_source` record the stored severity decides, not the report: after a CRITICAL
 occurrence is cleared, one WARN report for the same record confirms the next occurrence, which
 shows CRITICAL. This holds under a per-entity threshold override too.
 

@@ -255,7 +255,7 @@ Reports a new fault or updates an existing one.
   which ``ReportFault`` refuses as a source_id). Each record is debounced, cleared and healed on its own
 - **Severity escalation**: A record's severity is updated if a higher one is reported for it
 - **Severity mismatch**: A FAILED report whose severity differs from the stored severity of its
-  record is logged as a warning, once per code, source and reported severity until restart
+  per-source record is logged as a warning, once per code, source and reported severity until restart
 - **Returns**: ``accepted=true`` if event was processed
 
 ~/list_faults
@@ -346,11 +346,10 @@ Faults follow an AUTOSAR DEM-style debounce lifecycle:
 
 FAILED events decrement the debounce counter (towards confirmation).
 PASSED events increment the debounce counter (towards healing).
-CRITICAL severity bypasses debounce and confirms immediately. The check reads the stored severity
-of the record after the report is applied, so any FAILED report on a record stored as CRITICAL
-confirms it, from CLEARED and from the HEALED latch alike, and no report leaves a record CRITICAL in
-PREFAILED or PREPASSED. A row an earlier release stored that way keeps its status through the owner
-migration until its next FAILED report.
+CRITICAL severity bypasses debounce and confirms immediately. On a shared record the severity of
+the report decides. On a per-source record the check reads the stored severity after the report is
+applied, so any FAILED report on a record stored as CRITICAL confirms it, from CLEARED and from the
+HEALED latch alike, and no report leaves a per-source record CRITICAL in PREFAILED or PREPASSED.
 
 The SQLite store records when the current occurrence of a record confirmed (``confirmed_at_ns``).
 A FAILED report on a CLEARED record resets it to 0, and the confirmation of the new occurrence sets

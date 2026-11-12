@@ -173,17 +173,17 @@ The fault manager uses AUTOSAR DEM-style debounce filtering to prevent fault fla
    negative, and the node falls back to ``-1`` with a warning.
    Faults with ``SEVERITY_CRITICAL`` always bypass debounce regardless of this setting.
    The bypass (``critical_immediate_confirm`` in the debounce config, on by default and not a ROS
-   parameter) reads the **stored** severity of the fault record, not the severity of the report.
-   A record keeps the highest severity ever reported for it, across occurrences, so after a
-   CRITICAL occurrence is cleared, one WARN report confirms the next occurrence at once, and
-   the record shows CRITICAL. The same holds for a FAILED report on a HEALED CRITICAL record: the
-   latch does not hold it back. Another record of the same code (a ``per_source`` code has one per
-   source) has its own severity and is not affected.
+   parameter) depends on the record's identity. A record shared by all sources of a code (the
+   default) bypasses debounce on the severity of the **report**. A ``per_source`` record bypasses it
+   on its **stored** severity, the highest ever reported for that record, so after a CRITICAL
+   occurrence is cleared, one WARN report from the same source confirms the next occurrence at once,
+   and the record shows CRITICAL. The same holds for a FAILED report on a HEALED CRITICAL
+   ``per_source`` record: the latch does not hold it back.
 
 .. note::
 
-   A FAILED report whose severity differs from the stored severity of its record is logged as a
-   warning naming the code, both severities and the source. A source should report one code
+   A FAILED report whose severity differs from the stored severity of its ``per_source`` record is
+   logged as a warning naming the code, both severities and the source. A source should report one code
    with one severity, so the warning points at a misconfigured reporter. It is logged once per
    code, source and reported severity until the node restarts, so a reporter that repeats the
    report at a high rate produces one line.

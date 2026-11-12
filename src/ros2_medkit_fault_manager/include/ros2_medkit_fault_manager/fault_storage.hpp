@@ -61,8 +61,9 @@ struct DebounceConfig {
   /// Default: 3 (3 more PASSED than FAILED events to heal).
   int32_t healing_threshold{3};
 
-  /// Whether a FAILED report on a record whose stored severity is CRITICAL confirms it immediately,
-  /// bypassing debounce and the HEALED latch. The stored severity decides, not the report's.
+  /// Whether a CRITICAL record confirms immediately on a FAILED report, bypassing debounce and the
+  /// HEALED latch. A shared record (owner kSharedOwner) goes by the report's severity, any other
+  /// record by its stored severity.
   bool critical_immediate_confirm{true};
 
   /// Time-based auto-confirmation. If > 0, PREFAILED faults older than this are auto-confirmed.
