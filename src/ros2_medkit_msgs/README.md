@@ -151,9 +151,14 @@ Clear/acknowledge one fault record. Cleared records are retained and queryable w
 
 > **Note:** `skip_correlation_auto_clear` was added in `ros2_medkit_msgs` post-0.4.0, and `source_id`
 > after it. `source_id` was added the same way to `GetFault`, `GetSnapshots` and `GetRosbag`. Adding a
-> request field changes the service type hash, so out-of-tree callers that invoke those services
-> directly (via `ros2 service call` or a generated client) must rebuild against the new
-> `ros2_medkit_msgs` release to keep talking to `fault_manager`.
+> field changes the type hash, and a field added inside an array element changes the wire layout, so
+> every client of the fault manager's services and topics must be rebuilt against this
+> `ros2_medkit_msgs`. This includes out-of-tree callers that use `ros2 service call` or a generated
+> client. The case that breaks without an error is `ListFaults`: `MutedFaultInfo.source_id` and
+> `ClusterInfo.fault_owners` / `representative_owner` sit inside the elements of the `muted_faults`
+> and `clusters` arrays, CDR has no per-element length, and a client built against an earlier
+> `ros2_medkit_msgs` misreads any response that carries a muted or clustered entry. Trailing fields
+> do not keep old clients working.
 
 ## Usage
 
