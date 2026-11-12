@@ -14,8 +14,8 @@
 #
 # ClearFault.srv - Clear/acknowledge a fault in the FaultManager.
 #
-# Marks one fault record as CLEARED. A record is identified by (fault_code, source_id),
-# so clearing one owner's record never touches another owner's record of the same code.
+# Marks one fault record as CLEARED. A record is identified by (fault_code, owner), so
+# clearing one record never touches another record of the same code.
 # The record is retained for historical purposes and can be retrieved by calling
 # ListFaults with statuses=["CLEARED"].
 # Cleared faults are retained indefinitely unless storage cleanup is configured.
@@ -32,9 +32,11 @@ string fault_code        # The fault_code to clear
 # cannot cascade-clear symptom faults reported by apps in other entities.
 bool skip_correlation_auto_clear
 
-# Reporting source that owns the fault record (the source_id used in ReportFault).
-# Together with fault_code it identifies one record. Empty: the call applies only
-# when exactly one record carries fault_code, otherwise it fails as ambiguous.
+# Which record. Set it to the owner of the record: the reporting source for a per_source
+# code, or "*" for the record that every source of any other code shares. A reporting source
+# that owns no record reaches the record it reports into, so a client that knows only the
+# source it reports as still finds the shared record. Empty: the call applies only when
+# exactly one record carries fault_code, otherwise it fails as ambiguous.
 string source_id
 ---
 # Response fields

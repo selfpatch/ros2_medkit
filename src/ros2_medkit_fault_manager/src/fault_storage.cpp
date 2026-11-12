@@ -93,11 +93,7 @@ fd::FaultRecord FaultState::to_record() const {
   msg.last_passed_ns = last_passed_ns;
   msg.occurrence_count = occurrence_count;
   msg.status = status;
-
-  // The owner, as a one-element list: the field names the source that owns the record,
-  // and the services that act on a single record take that value back as their source_id.
-  msg.reporting_sources.assign(1, owner);
-
+  msg.reporting_sources.assign(reporting_sources.begin(), reporting_sources.end());
   return msg;
 }
 
@@ -117,26 +113,25 @@ void InMemoryFaultStorage::update_status(FaultState & state, const DebounceConfi
   state.status = compute_debounce_status(state.debounce_counter, state.status, config);
 }
 
-bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
+bool InMemoryFaultStorage::report_fault_event(const FaultId & id, fd::ReportKind kind, uint8_t severity,
                                               const std::string & description, const std::string & source_id,
                                               int64_t timestamp_ns, const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   const bool is_failed = (kind == fd::ReportKind::kFailed);
 
-  const FaultId id{fault_code, source_id};
-
   auto it = faults_.find(id);
   if (it == faults_.end()) {
-    // New record - only create one for FAILED events. A source that has never reported
-    // this code owns no record yet, so a PASSED from it has nothing to heal.
+    // New record - only create one for FAILED events. A PASSED event for a record that
+    // does not exist has nothing to heal.
     if (!is_failed) {
       return false;  // PASSED event for non-existent record is ignored
     }
 
     FaultState state;
-    state.fault_code = fault_code;
-    state.owner = source_id;
+    state.fault_code = id.fault_code;
+    state.owner = id.owner;
+    state.reporting_sources.insert(source_id);
     state.severity = severity;
     state.description = description;
     state.first_occurred_ns = timestamp_ns;
@@ -176,6 +171,7 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, fd
     state.first_occurred_ns = timestamp_ns;
     state.last_failed_ns = timestamp_ns;
     state.last_occurred_ns = timestamp_ns;
+    state.reporting_sources.insert(source_id);
     if (state.occurrence_count < std::numeric_limits<uint32_t>::max()) {
       ++state.occurrence_count;
     }
@@ -198,11 +194,11 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, fd
   }
 
   // Bring a counter left outside this config's band back into range before applying the report.
-  // A record's counter belongs to one source, but that source's resolved band can change under
-  // it: an entity-threshold file reloaded with different values, or a global config that moved
-  // between runs, leaves a stored value clamped to the old ceiling sitting above the new one.
-  // The SQLite backend clamps on read for the same reason, and the two backends have to agree on
-  // the counter they record and on the status it produces.
+  // The band a record resolves to can change under it (per-entity overrides when several sources
+  // share the counter, a reloaded threshold file, a global config that moved between runs), which
+  // leaves a stored value clamped to the old ceiling sitting above the new one. The SQLite
+  // backend clamps on read for the same reason, and the two backends have to agree on the counter
+  // they record and on the status it produces.
   state.debounce_counter = clamp_debounce_counter(state.debounce_counter, config);
 
   if (is_failed) {
@@ -221,8 +217,10 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, fd
     // run the counter off to INT32_MIN and delay later healing).
     state.debounce_counter = clamp_debounce_counter(state.debounce_counter - 1, config);
 
-    // Update severity if higher. Per record: a CRITICAL from one owner does not escalate
-    // another owner's record of the same code.
+    // Add source if not already present
+    state.reporting_sources.insert(source_id);
+
+    // Update severity if higher
     if (severity > state.severity) {
       state.severity = severity;
     }
@@ -257,8 +255,8 @@ bool InMemoryFaultStorage::report_fault_event(const std::string & fault_code, fd
   return false;
 }
 
-std::vector<fd::FaultRecord> InMemoryFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
-                                                               const std::vector<std::string> & statuses) const {
+std::vector<FaultEntry> InMemoryFaultStorage::list_fault_entries(bool filter_by_severity, uint8_t severity,
+                                                                 const std::vector<std::string> & statuses) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Determine which statuses to include
@@ -280,7 +278,7 @@ std::vector<fd::FaultRecord> InMemoryFaultStorage::list_faults(bool filter_by_se
     }
   }
 
-  std::vector<fd::FaultRecord> result;
+  std::vector<FaultEntry> result;
   result.reserve(faults_.size());
 
   for (const auto & [id, state] : faults_) {
@@ -294,7 +292,7 @@ std::vector<fd::FaultRecord> InMemoryFaultStorage::list_faults(bool filter_by_se
       continue;
     }
 
-    result.push_back(state.to_record());
+    result.push_back(FaultEntry{id, state.to_record()});
   }
 
   return result;
@@ -311,18 +309,18 @@ std::optional<fd::FaultRecord> InMemoryFaultStorage::get_fault(const FaultId & i
   return it->second.to_record();
 }
 
-std::vector<fd::FaultRecord> InMemoryFaultStorage::get_faults_by_code(const std::string & fault_code) const {
+std::vector<FaultId> InMemoryFaultStorage::get_ids_by_code(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // FaultId orders by code first, so the records of one code are one contiguous range
   // and this is a range scan. Owner order inside it is the map's, which is what makes
   // an ambiguity message list the owners the same way every time.
-  std::vector<fd::FaultRecord> result;
+  std::vector<FaultId> result;
   for (auto it = faults_.lower_bound(FaultId{fault_code, ""}); it != faults_.end(); ++it) {
     if (it->first.fault_code != fault_code) {
       break;
     }
-    result.push_back(it->second.to_record());
+    result.push_back(it->first);
   }
   return result;
 }
@@ -519,6 +517,7 @@ void InMemoryFaultStorage::record_near_miss(const FaultState & state, const Debo
 
   NearMissRecord record;
   record.fault_code = state.fault_code;
+  record.owner = state.owner;
   record.occurred_at_ns = timestamp_ns;
   record.debounce_counter = state.debounce_counter;
   record.confirmation_threshold = config.confirmation_threshold;
@@ -831,13 +830,13 @@ std::vector<RosbagFileInfo> InMemoryFaultStorage::list_rosbags_for_entity(const 
 
   std::vector<const RosbagRow *> rows;
   for (const auto & row : rosbag_files_) {
-    // The row already carries its record's owner, so the entity match is on the row.
-    // The faults_ lookup stays as the existence check it always was: a row whose
-    // record is gone is not served.
-    if (faults_.find(FaultId{row.info.fault_code, row.info.owner}) == faults_.end()) {
+    // The entity owns the row when it is among the reporting sources of the row's record.
+    auto fault_it = faults_.find(FaultId{row.info.fault_code, row.info.owner});
+    if (fault_it == faults_.end()) {
       continue;
     }
-    if (row.info.owner == entity_fqn) {
+    const auto & sources = fault_it->second.reporting_sources;
+    if (sources.find(entity_fqn) != sources.end()) {
       rows.push_back(&row);
     }
   }

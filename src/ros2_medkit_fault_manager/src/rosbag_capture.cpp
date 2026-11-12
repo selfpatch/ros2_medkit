@@ -1033,12 +1033,12 @@ std::set<std::string> RosbagCapture::compute_entity_topics(const FaultId & id) {
   // A throw here would terminate the process - the exact crash the crash-safety work
   // removed - so any failure degrades to "write everything".
   try {
-    if (storage_->contains(id)) {
-      // The record's owner is the reporting node's FQN (e.g. "/planner_server").
-      // Split it into (name, namespace) to match against topic endpoints.
+    auto fault = storage_->get_fault(id);
+    if (fault && !fault->reporting_sources.empty()) {
+      // reporting_sources hold the reporting node's FQN (e.g. "/planner_server").
+      // Split each into (name, namespace) to match against topic endpoints.
       std::set<std::pair<std::string, std::string>> wanted;
-      {
-        const std::string & source = id.owner;
+      for (const auto & source : fault->reporting_sources) {
         std::string ns = "/";
         std::string name = source;
         const auto slash = source.rfind('/');

@@ -303,7 +303,8 @@ std::vector<std::string> SnapshotCapture::resolve_entity_topics(const FaultId & 
   // pool worker with no outer catch, and storage_->get_fault() can throw on
   // the sqlite backend. Any failure degrades to "no entity-default capture".
   try {
-    if (!storage_->contains(id)) {
+    auto fault = storage_->get_fault(id);
+    if (!fault || fault->reporting_sources.empty()) {
       return {};
     }
 
@@ -313,18 +314,16 @@ std::vector<std::string> SnapshotCapture::resolve_entity_topics(const FaultId & 
     // same name and freeze-frame its topics. Their zero-config frames come
     // from the gateway's EntityFreezeFrameCapture instead.
     //
-    // One owner, so one (name, namespace) pair: the record names exactly the
-    // source whose own data belongs in its frame.
     std::set<std::pair<std::string, std::string>> wanted;
-    {
-      const std::string & source = id.owner;
-      if (source.size() >= 2 && source.front() == '/') {
-        const auto slash = source.rfind('/');
-        const std::string name = source.substr(slash + 1);
-        const std::string ns = (slash == 0) ? "/" : source.substr(0, slash);
-        if (!name.empty()) {
-          wanted.emplace(name, ns);
-        }
+    for (const auto & source : fault->reporting_sources) {
+      if (source.size() < 2 || source.front() != '/') {
+        continue;
+      }
+      const auto slash = source.rfind('/');
+      const std::string name = source.substr(slash + 1);
+      const std::string ns = (slash == 0) ? "/" : source.substr(0, slash);
+      if (!name.empty()) {
+        wanted.emplace(name, ns);
       }
     }
     if (wanted.empty()) {
@@ -364,7 +363,7 @@ std::vector<std::string> SnapshotCapture::resolve_entity_topics(const FaultId & 
   }
 
   if (!topics.empty()) {
-    RCLCPP_INFO(node_->get_logger(), "Entity-default capture for fault '%s': %zu topic(s) from the owning node",
+    RCLCPP_INFO(node_->get_logger(), "Entity-default capture for fault '%s': %zu topic(s) from the reporting node(s)",
                 fault_code.c_str(), topics.size());
   }
   return {topics.begin(), topics.end()};

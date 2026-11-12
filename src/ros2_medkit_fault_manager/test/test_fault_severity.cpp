@@ -108,12 +108,13 @@ class FaultSeverityTest : public ::testing::Test {
 
   bool failed(const std::string & code, uint8_t severity, int64_t second, const DebounceConfig & config,
               const std::string & owner = kOwner) {
-    return storage_->report_fault_event(code, fd::ReportKind::kFailed, severity, "report", owner, at(second), config);
+    return storage_->report_fault_event(FaultId{code, owner}, fd::ReportKind::kFailed, severity, "report", owner,
+                                        at(second), config);
   }
 
   void passed(const std::string & code, int64_t second, const DebounceConfig & config,
               const std::string & owner = kOwner) {
-    storage_->report_fault_event(code, fd::ReportKind::kPassed, 0, "", owner, at(second), config);
+    storage_->report_fault_event(FaultId{code, owner}, fd::ReportKind::kPassed, 0, "", owner, at(second), config);
   }
 
   bool clear(const std::string & code, const std::string & owner = kOwner) {
@@ -403,6 +404,7 @@ class SqliteSeverityTest : public ::testing::Test {
     }
     EXPECT_EQ(sqlite3_exec(raw, sql.str().c_str(), nullptr, nullptr, nullptr), SQLITE_OK) << sqlite3_errmsg(raw);
     sqlite3_close(raw);
+    record_owner_ = ros2_medkit_fault_manager::kSharedOwner;  // a migrated row is the shared record of its code
     reopen();
   }
 
@@ -412,19 +414,21 @@ class SqliteSeverityTest : public ::testing::Test {
   }
 
   void failed(const std::string & code, uint8_t severity, int64_t second, const DebounceConfig & config) {
-    storage_->report_fault_event(code, fd::ReportKind::kFailed, severity, "report", kOwner, at(second), config);
+    storage_->report_fault_event(FaultId{code, record_owner_}, fd::ReportKind::kFailed, severity, "report", kOwner,
+                                 at(second), config);
   }
 
   void passed(const std::string & code, int64_t second, const DebounceConfig & config) {
-    storage_->report_fault_event(code, fd::ReportKind::kPassed, 0, "", kOwner, at(second), config);
+    storage_->report_fault_event(FaultId{code, record_owner_}, fd::ReportKind::kPassed, 0, "", kOwner, at(second),
+                                 config);
   }
 
   bool clear(const std::string & code) {
-    return storage_->clear_fault(FaultId{code, kOwner});
+    return storage_->clear_fault(FaultId{code, record_owner_});
   }
 
   fd::FaultRecord fault(const std::string & code) {
-    auto f = storage_->get_fault(FaultId{code, kOwner});
+    auto f = storage_->get_fault(FaultId{code, record_owner_});
     EXPECT_TRUE(f.has_value()) << code;
     return f.value_or(fd::FaultRecord{});
   }
@@ -437,7 +441,7 @@ class SqliteSeverityTest : public ::testing::Test {
                                  &stmt, nullptr),
               SQLITE_OK);
     sqlite3_bind_text(stmt, 1, code.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 2, kOwner, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, record_owner_.c_str(), -1, SQLITE_TRANSIENT);
     int64_t value = -1;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
       value = sqlite3_column_int64(stmt, 0);
@@ -449,6 +453,8 @@ class SqliteSeverityTest : public ::testing::Test {
 
   std::filesystem::path dir_;
   std::unique_ptr<SqliteFaultStorage> storage_;
+  /// Owner of the records the helpers address: the test's reporter, or the shared owner after a legacy open.
+  std::string record_owner_{kOwner};
 };
 
 TEST_F(SqliteSeverityTest, CriticalClearRestartWarnConfirms) {
@@ -820,8 +826,10 @@ void run_sweep(const DebounceConfig & config, const std::string & tag, int lengt
         sqlite.clear_fault(FaultId{code, e.owner});
       } else {
         const fd::ReportKind type = e.kind == Kind::kFailed ? fd::ReportKind::kFailed : fd::ReportKind::kPassed;
-        memory.report_fault_event(code, type, e.severity, "step " + std::to_string(step), e.owner, t, config);
-        sqlite.report_fault_event(code, type, e.severity, "step " + std::to_string(step), e.owner, t, config);
+        memory.report_fault_event(FaultId{code, e.owner}, type, e.severity, "step " + std::to_string(step), e.owner, t,
+                                  config);
+        sqlite.report_fault_event(FaultId{code, e.owner}, type, e.severity, "step " + std::to_string(step), e.owner, t,
+                                  config);
       }
 
       std::string diff;
