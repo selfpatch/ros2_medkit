@@ -163,6 +163,12 @@ class TestSnapshotGrouping(unittest.TestCase):
             {json.dumps(d['topics'], sort_keys=True) for d in captures},
             {json.dumps(captures[0]['topics'], sort_keys=True)})
 
+        # Three records carry the code, so an unscoped call is refused and returns no evidence.
+        unscoped = self._snapshot('XG.GROUP', '')
+        self.assertFalse(unscoped.success)
+        self.assertTrue(unscoped.error_message.startswith('ambiguous:'), unscoped.error_message)
+        self.assertEqual(unscoped.data, '')
+
     def test_a_record_that_confirms_again_gets_a_capture_of_its_own(self):
         code = 'XG.AGAIN'
         source = '/grp/again'

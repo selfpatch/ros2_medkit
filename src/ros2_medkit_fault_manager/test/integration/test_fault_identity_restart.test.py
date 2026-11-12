@@ -295,6 +295,23 @@ class TestFaultIdentityRestart(unittest.TestCase):
             ('N.PER', '*'), ('N.PER', '/a'), ('N.PER', '/b'),
         ])
 
+    def test_a_malformed_per_source_value_rejects_the_whole_file(self):
+        thresholds = 'A:\n  per_source: true\nB:\n  per_source: "yes"\n'
+        process = self._start(self._path('malformed.db'), thresholds)
+        try:
+            self.assertIsNotNone(
+                process.wait_for_line('Failed to parse fault thresholds config'),
+                'the malformed per_source value was not reported')
+            # The file is dropped as a whole, so A is not per_source either: one shared record.
+            self._report('A', '/a')
+            self._report('A', '/b')
+            records = self._records('A')
+            self.assertEqual(len(records), 1)
+            self.assertEqual(list(records[0].reporting_sources), ['/a', '/b'])
+            self.assertTrue(self._get('A', '*').success)
+        finally:
+            self._stop(process)
+
     def test_a_store_written_with_one_record_per_code_opens_as_shared_records(self):
         db_path = self._path('legacy.db')
         bag_path = self._path('fault_MIG.CODE_1')

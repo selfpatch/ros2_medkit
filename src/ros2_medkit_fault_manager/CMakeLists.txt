@@ -315,6 +315,9 @@ endif()
   medkit_add_launch_test(test_fault_shared_events
     test/integration/test_fault_shared_events.test.py TIMEOUT 120 LABELS "integration")
 
+  medkit_add_launch_test(test_fault_snapshot_cap
+    test/integration/test_fault_snapshot_cap.test.py TIMEOUT 120 LABELS "integration")
+
   medkit_add_launch_test(test_fault_identity_restart
     test/integration/test_fault_identity_restart.test.py TIMEOUT 180 LABELS "integration")
 
