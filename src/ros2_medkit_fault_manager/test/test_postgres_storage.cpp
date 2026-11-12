@@ -3236,6 +3236,31 @@ TEST_F(PgFaultStorageTest, NearMissSeriesIsPerRecord) {
   EXPECT_EQ(backup.front().severity, Fault::SEVERITY_ERROR);
 }
 
+TEST_F(PgFaultStorageTest, ASharedRecordConfirmsCriticalOnTheReportsSeverity) {
+  rclcpp::Clock clock;
+  DebounceConfig config;
+  config.confirmation_threshold = -3;
+  ASSERT_TRUE(config.critical_immediate_confirm);
+  const FaultId shared{"CRIT_SHARED", ros2_medkit_fault_manager::kSharedOwner};
+  const FaultId per_source{"CRIT_PER", "/a"};
+
+  storage_->report_fault_event(shared, fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "", "/a",
+                               clock.now().nanoseconds(), config);
+  ASSERT_EQ(storage_->get_fault(shared)->status, Fault::STATUS_CONFIRMED);
+  ASSERT_TRUE(storage_->clear_fault(shared));
+  EXPECT_TRUE(storage_->report_fault_event(shared, fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "", "/b",
+                                           clock.now().nanoseconds(), config));
+  EXPECT_EQ(storage_->get_fault(shared)->severity, Fault::SEVERITY_CRITICAL);
+  EXPECT_EQ(storage_->get_fault(shared)->status, Fault::STATUS_PREFAILED) << "the report's severity decides";
+
+  storage_->report_fault_event(per_source, fd::ReportKind::kFailed, Fault::SEVERITY_CRITICAL, "", "/a",
+                               clock.now().nanoseconds(), config);
+  ASSERT_TRUE(storage_->clear_fault(per_source));
+  storage_->report_fault_event(per_source, fd::ReportKind::kFailed, Fault::SEVERITY_WARN, "", "/a",
+                               clock.now().nanoseconds(), config);
+  EXPECT_EQ(storage_->get_fault(per_source)->status, Fault::STATUS_CONFIRMED) << "the stored severity decides";
+}
+
 TEST_F(PgFaultStorageTest, ACriticalRecordConfirmsOnAnyFailedReportAndAnotherOwnersIsUntouched) {
   rclcpp::Clock clock;
   DebounceConfig config;
