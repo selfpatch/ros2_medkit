@@ -125,8 +125,9 @@ node mutes, and with ``auto_clear_with_root`` auto-clears, the matching symptoms
 reported by any other node inside the window. An auto-cluster collects the matching
 faults of every node. The relations hold fault records, not codes: for a code
 configured with ``per_source: true`` each reporting node has its own record, and the
-cascade clears exactly the records the root cause muted. For any other code there is
-one shared record, and that record is what is muted or cleared.
+cascade clears the records the root cause has muted since its last report. A new report
+of the root cause starts that list again. For any other code there is one shared record,
+and that record is what is muted or cleared.
 
 Quick Start
 -----------
