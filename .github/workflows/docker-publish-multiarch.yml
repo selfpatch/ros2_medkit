@@ -1,8 +1,8 @@
 # Multi-arch (linux/amd64 + linux/arm64) image publish for the gateway.
 #
-# Gated on release tags and manual dispatch only - NOT on pull_request or
-# push-to-main. Per-PR / push-to-main CI still runs the amd64-only
-# docker-publish.yml, which stays fast (no emulated arm64 on every change).
+# Runs on every push to main (moves :latest and adds sha-<short>), on release
+# tags (semver tags, no :latest) and on manual dispatch. Not on pull_request.
+# arm64 targets (RevPi, Jetson, RPi) get the same image as amd64 on every merge.
 #
 # Each arch builds on its own NATIVE runner (arm64 on ubuntu-24.04-arm), so
 # there is no QEMU emulation. Each arch is pushed by digest, then the merge
@@ -10,10 +10,12 @@
 # manifest list and tags it. Mirrors the ros2_medkit_web_ui docker-publish.yml
 # pattern, extended with the ros_distro build-arg dimension.
 
-name: Docker Publish (multi-arch, release)
+name: Docker Publish (multi-arch)
 
 on:
     push:
+        branches:
+            - main
         tags:
             # Release tags are bare semver; only the first release carried a
             # `v`. Both shapes match, and neither matches the bloom
@@ -21,6 +23,11 @@ on:
             - '[0-9]*.[0-9]*.[0-9]*'
             - 'v[0-9]*.[0-9]*.[0-9]*'
     workflow_dispatch:
+
+# A newer push to main supersedes an older one still building. Tags never cancel.
+concurrency:
+    group: docker-publish-${{ github.ref }}
+    cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 env:
     REGISTRY: ghcr.io
@@ -81,8 +88,10 @@ jobs:
                   build-args: ROS_DISTRO=${{ matrix.ros_distro }}
                   labels: ${{ steps.meta.outputs.labels }}
                   # Separate cache scope per distro+arch so jobs do not evict each other.
+                  # mode=min: six scopes at mode=max overrun the 10 GB Actions cache
+                  # quota and evict the ccache entries the PR build jobs depend on.
                   cache-from: type=gha,scope=${{ matrix.ros_distro }}-${{ env.PLATFORM_PAIR }}
-                  cache-to: type=gha,mode=max,scope=${{ matrix.ros_distro }}-${{ env.PLATFORM_PAIR }}
+                  cache-to: type=gha,mode=min,scope=${{ matrix.ros_distro }}-${{ env.PLATFORM_PAIR }}
                   # Push each arch by digest; the merge job creates and tags the manifest list.
                   outputs: type=image,name=${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }},push-by-digest=true,name-canonical=true,push=true
 
@@ -163,11 +172,11 @@ jobs:
               uses: docker/metadata-action@v5
               with:
                   images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}
-                  # `latest` belongs to docker-publish.yml, which moves it on
-                  # every push to main; without this the action's default
-                  # `latest=auto` would have a release take that tag over.
+                  # :latest follows main only; a release tag never takes it over.
                   flavor: latest=false
                   tags: |
+                      # latest on pushes to main
+                      type=raw,value=latest,enable={{is_default_branch}}
                       # version tag (0.7.0 -> 0.7.0)
                       type=semver,pattern={{version}}
                       # major.minor (0.7.0 -> 0.7)
