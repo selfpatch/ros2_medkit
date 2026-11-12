@@ -20,7 +20,7 @@
 namespace ros2_medkit_fault_manager {
 
 CaptureThreadPool::CaptureThreadPool(std::size_t pool_size, std::size_t queue_depth, QueueFullPolicy full_policy,
-                                     core::LogSink & log, std::function<void(const std::string &)> capture_fn,
+                                     core::LogSink & log, std::function<void(const FaultId &)> capture_fn,
                                      std::string logger_name)
   : queue_depth_(queue_depth == 0 ? 1 : queue_depth)
   , full_policy_(full_policy)
@@ -44,13 +44,13 @@ CaptureThreadPool::~CaptureThreadPool() {
   shutdown();
 }
 
-EnqueueOutcome CaptureThreadPool::enqueue(const std::string & fault_code) {
+EnqueueOutcome CaptureThreadPool::enqueue(const FaultId & id) {
   std::lock_guard<std::mutex> lock(queue_mutex_);
   if (stop_) {
     return {EnqueueResult::kRejectedShuttingDown, std::nullopt};
   }
   if (queue_.size() < queue_depth_) {
-    queue_.push_back(fault_code);
+    queue_.push_back(id);
     cv_.notify_one();
     return {EnqueueResult::kAccepted, std::nullopt};
   }
@@ -60,9 +60,9 @@ EnqueueOutcome CaptureThreadPool::enqueue(const std::string & fault_code) {
     return {EnqueueResult::kDroppedNewest, std::nullopt};
   }
   // kDropOldest: evict the oldest pending job.
-  std::string evicted = std::move(queue_.front());
+  FaultId evicted = std::move(queue_.front());
   queue_.pop_front();
-  queue_.push_back(fault_code);
+  queue_.push_back(id);
   dropped_captures_.fetch_add(1, std::memory_order_relaxed);
   cv_.notify_one();
   return {EnqueueResult::kEvictedOldest, std::move(evicted)};
@@ -103,7 +103,7 @@ std::size_t CaptureThreadPool::pending_size() const {
 
 void CaptureThreadPool::worker_loop() {
   for (;;) {
-    std::string job;
+    FaultId job;
     {
       std::unique_lock<std::mutex> lock(queue_mutex_);
       cv_.wait(lock, [this] {
@@ -120,10 +120,11 @@ void CaptureThreadPool::worker_loop() {
         capture_fn_(job);
       }
     } catch (const std::exception & e) {
-      core::logf(log_, core::LogLevel::kError, logger_name_, "Capture job for '%s' threw: %s", job.c_str(), e.what());
+      core::logf(log_, core::LogLevel::kError, logger_name_, "Capture job for '%s' threw: %s", job.fault_code.c_str(),
+                 e.what());
     } catch (...) {
       core::logf(log_, core::LogLevel::kError, logger_name_, "Capture job for '%s' threw unknown exception",
-                 job.c_str());
+                 job.fault_code.c_str());
     }
   }
 }

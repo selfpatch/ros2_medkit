@@ -14,7 +14,8 @@
 #
 # GetRosbag.srv - Retrieve rosbag file information for a fault.
 #
-# Returns the path to the rosbag file that was recorded when a fault was confirmed.
+# Returns the path to the rosbag file that was recorded when a fault record was
+# confirmed. A recording is linked per record, identified by (fault_code, source_id).
 # The rosbag contains time-window recording of configured topics before and after
 # the fault confirmation event.
 
@@ -29,6 +30,12 @@ string fault_code
 # fault_code alone keeps its historical meaning, "the newest recording of this
 # fault".
 string recording_id
+
+# Reporting source that owns the fault record (the source_id used in ReportFault).
+# Together with fault_code it identifies one record. Empty: the call applies only
+# when exactly one record carries fault_code, otherwise it fails as ambiguous.
+# It scopes the fault_code lookup only. The recording_id path ignores it.
+string source_id
 ---
 # Response fields
 

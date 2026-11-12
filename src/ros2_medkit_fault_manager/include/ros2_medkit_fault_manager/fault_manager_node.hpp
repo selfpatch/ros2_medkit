@@ -179,7 +179,7 @@ class FaultManagerNode : public rclcpp::Node {
 
   /// Queue the snapshot and rosbag capture of a confirmed fault on the capture pool. The core calls it
   /// through the capture hooks after its cooldown check.
-  core::CaptureResult enqueue_capture(const std::string & fault_code);
+  core::CaptureResult enqueue_capture(const FaultId & id);
 
   /// Append a fault state-transition to the audit log through the core.
   /// @param transition One of the kTransition* constants.
