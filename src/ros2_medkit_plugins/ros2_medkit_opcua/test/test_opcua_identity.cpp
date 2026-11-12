@@ -1799,7 +1799,12 @@ TEST_F(OpcuaIdentityE2ETest, AnAnswerToATimedOutProbeIsNotReadAsTheNextOnes) {
 
   // A answers late.
   ASSERT_TRUE(store.release_one_read());
-  std::this_thread::sleep_for(std::chrono::seconds(2));
+  // B times out in turn and a third probe parks: the decision ran again after A's answer arrived.
+  const auto next_probe_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (store.parked_read_count() < 2 && std::chrono::steady_clock::now() < next_probe_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  ASSERT_GE(store.parked_read_count(), 2u) << "no further probe was sent after the late answer";
   EXPECT_TRUE(store.cleared_codes().empty()) << "an answer to a probe already given up on decided the clear";
 
   // B answers, and that is the answer the decision is waiting for.
