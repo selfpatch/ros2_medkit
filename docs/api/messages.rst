@@ -268,7 +268,8 @@ root-cause fault also clears every symptom that the correlation engine
 attributes to it via ``auto_clear_with_root`` rules; the cleared
 symptom codes are returned in ``auto_cleared_codes``. When ``true``,
 only the requested ``fault_code`` is cleared and ``auto_cleared_codes``
-is empty. The gateway's per-entity ``DELETE
+is empty. Either way the cleared root cause ends its relations: the symptoms it
+muted are unmuted, and it no longer mutes later reports. The gateway's per-entity ``DELETE
 /{entity-path}/faults/{fault_code}`` route sets this to ``true`` so
 that an operator with access to one entity cannot cascade-clear
 correlated symptoms reported by apps in other entities. The global

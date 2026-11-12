@@ -595,15 +595,18 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, const std:
     return outcome;
   }
 
-  // Then the correlation engine (to get the auto-clear list). Symptoms come back as the
-  // exact records the root cause muted.
+  // Then the correlation engine. A cleared record ends its relations whatever the flag says: its muted
+  // symptoms are unmuted and it stops muting later reports. Symptoms come back as the exact records the
+  // root cause muted.
   // `skip_correlation_auto_clear` lets the caller opt out of cascade-clearing
   // correlated symptom faults. Per-entity DELETE routes set it to true
   // so they cannot reach across entity boundaries via the correlation graph.
   std::vector<FaultId> auto_cleared;
-  if (correlation_ && !skip_correlation_auto_clear) {
+  if (correlation_) {
     auto clear_result = correlation_->process_clear(id);
-    auto_cleared = clear_result.auto_cleared_symptoms;
+    if (!skip_correlation_auto_clear) {
+      auto_cleared = clear_result.auto_cleared_symptoms;
+    }
   }
 
   outcome.success = cleared;
