@@ -29,10 +29,9 @@ using ros2_medkit_fault_manager::FaultId;
 
 namespace {
 
-// The engine relates fault RECORDS, and every relation it forms is between records
-// of the same owner. Most of this suite exercises the rule vocabulary, which is
-// keyed by code, so those tests report everything from one owner. The tests that
-// name a second owner are the ones checking that a relation does not cross owners.
+// The engine relates fault RECORDS. Rules match by code whoever owns the record, so most
+// of this suite reports everything from one owner; the tests that name a second owner
+// check that a relation crosses owners.
 constexpr const char * kOwner = "/reporter_a";
 constexpr const char * kOtherOwner = "/reporter_b";
 
@@ -233,10 +232,8 @@ TEST_F(CorrelationEngineTest, ClearRootCauseClearsSymptoms) {
   EXPECT_EQ(0u, engine.get_muted_count());
 }
 
-// A root cause explains its own reporter's faults, not everyone's. Without the owner
-// on the relation, the first reporter of a root-cause code would mute and auto-clear
-// every other reporter's identical symptom.
-TEST_F(CorrelationEngineTest, RootCauseDoesNotMuteAnotherOwnersSymptom) {
+// Rules match by code across owners; the relation then holds the exact records.
+TEST_F(CorrelationEngineTest, RootCauseMutesMatchingSymptomsOfAnyOwner) {
   auto config = create_hierarchical_config();
   CorrelationEngine engine(config);
 
@@ -246,27 +243,28 @@ TEST_F(CorrelationEngineTest, RootCauseDoesNotMuteAnotherOwnersSymptom) {
   const auto other_owner = engine.process_fault(other("MOTOR_COMM_FL"), "ERROR");
 
   EXPECT_TRUE(same_owner.should_mute);
-  EXPECT_FALSE(other_owner.should_mute) << "a root cause of one owner must not mute another owner's record";
+  EXPECT_TRUE(other_owner.should_mute);
   EXPECT_TRUE(engine.is_muted(rec("MOTOR_COMM_FL")));
-  EXPECT_FALSE(engine.is_muted(other("MOTOR_COMM_FL")));
-  EXPECT_EQ(1u, engine.get_muted_count());
+  EXPECT_TRUE(engine.is_muted(other("MOTOR_COMM_FL")));
+  EXPECT_EQ(2u, engine.get_muted_count());
 }
 
-// The auto-clear cascade is the same relation seen from the clear side.
-TEST_F(CorrelationEngineTest, ClearRootCauseLeavesAnotherOwnersSymptomAlone) {
+// The cascade acts on exactly the records the root cause muted.
+TEST_F(CorrelationEngineTest, ClearRootCauseCascadesToTheRecordsItMuted) {
   auto config = create_hierarchical_config();
   CorrelationEngine engine(config);
 
   engine.process_fault(rec("ESTOP_001"), "CRITICAL");
-  engine.process_fault(other("ESTOP_001"), "CRITICAL");
-  engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR");
   engine.process_fault(other("MOTOR_COMM_FL"), "ERROR");
+  engine.process_fault(rec("MOTOR_COMM_FR"), "ERROR");
 
   const auto clear_result = engine.process_clear(rec("ESTOP_001"));
 
-  ASSERT_EQ(1u, clear_result.auto_cleared_symptoms.size());
-  EXPECT_EQ(rec("MOTOR_COMM_FL"), clear_result.auto_cleared_symptoms.front());
-  EXPECT_TRUE(engine.is_muted(other("MOTOR_COMM_FL"))) << "the other owner's symptom stays muted by its own root cause";
+  const auto & symptoms = clear_result.auto_cleared_symptoms;
+  ASSERT_EQ(2u, symptoms.size());
+  EXPECT_NE(std::find(symptoms.begin(), symptoms.end(), other("MOTOR_COMM_FL")), symptoms.end());
+  EXPECT_NE(std::find(symptoms.begin(), symptoms.end(), rec("MOTOR_COMM_FR")), symptoms.end());
+  EXPECT_EQ(0u, engine.get_muted_count());
 }
 
 TEST_F(CorrelationEngineTest, UnrelatedFaultNotCorrelated) {
@@ -611,18 +609,18 @@ correlation:
   auto result1 = engine.process_fault(rec("SENSOR_001"), "ERROR", t0);
   EXPECT_FALSE(result1.should_mute);  // First fault is representative
   EXPECT_FALSE(result1.cluster_id.empty());
-  EXPECT_TRUE(result1.retroactive_mute_codes.empty());  // Cluster not active yet
+  EXPECT_TRUE(result1.retroactive_mute_ids.empty());  // Cluster not active yet
 
   // Fault #2 - not muted because cluster not active
   auto result2 = engine.process_fault(rec("SENSOR_002"), "ERROR", t0 + std::chrono::milliseconds(10));
   EXPECT_FALSE(result2.should_mute);  // Cluster still not active
-  EXPECT_TRUE(result2.retroactive_mute_codes.empty());
+  EXPECT_TRUE(result2.retroactive_mute_ids.empty());
 
   // Fault #3 - triggers cluster activation (min_count=3)
   auto result3 = engine.process_fault(rec("SENSOR_003"), "ERROR", t0 + std::chrono::milliseconds(20));
-  EXPECT_TRUE(result3.should_mute);                      // #3 is muted (not representative)
-  EXPECT_EQ(1u, result3.retroactive_mute_codes.size());  // #2 should be retroactively muted
-  EXPECT_EQ("SENSOR_002", result3.retroactive_mute_codes[0]);
+  EXPECT_TRUE(result3.should_mute);                    // #3 is muted (not representative)
+  EXPECT_EQ(1u, result3.retroactive_mute_ids.size());  // #2 should be retroactively muted
+  EXPECT_EQ(rec("SENSOR_002"), result3.retroactive_mute_ids[0]);
 
   // Cluster should be active with 3 faults
   EXPECT_EQ(1u, engine.get_cluster_count());
