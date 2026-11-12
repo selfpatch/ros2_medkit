@@ -31,6 +31,8 @@ the opcua plugin, and reads the fault over HTTP. A real outage raises the fault.
   * per-source record under a stand-in: the gateway raises the fault under the stand-in
     of its endpoint, the PLC comes up and names the component, and the same gateway
     clears the record it raised under the stand-in.
+  * per-source pinned stand-in: the same, with the gateway restarted in between, so it remembers
+    nothing and the record is found under the stand-in derived from its endpoint.
   * binding directory: a binding file whose directory cannot be looked up is
     reported, and the plugin stays connected. Once at start, and once on the
     poll thread when a rescan adopts a PLC that came up later.
@@ -507,6 +509,26 @@ def scenario_per_source_placeholder_rename(run):
                              f'after the component was renamed: {records}\n' + tail(gateway))
 
 
+def scenario_per_source_pinned_stand_in(run):
+    run.start_fault_manager('persrc_pinned', per_source_codes=[COMMS_LOST])
+    port = free_port()
+    endpoint = f'opc.tcp://127.0.0.1:{port}'
+    gateway = run.start_gateway('persrc_pinned_before', endpoint=endpoint)
+    records = wait_records(run, lambda r: len(r) == 1 and 'CONFIRMED' in r.values(), 60)
+    if len(records) != 1 or 'CONFIRMED' not in records.values():
+        raise AssertionError(f'the outage was never reported: {records}\n' + tail(gateway))
+    stand_in = next(iter(records))
+    run.stop(gateway.proc)
+
+    # The restarted gateway remembers nothing, and the PLC names the component.
+    run.start_server('persrc_pinned', port=port)
+    after = run.start_gateway('persrc_pinned_after', endpoint=endpoint)
+    records = wait_records(run, lambda r: r.get(stand_in) == 'CLEARED', 60)
+    if records.get(stand_in) != 'CLEARED':
+        raise AssertionError(f'the record raised under the stand-in {stand_in} stayed standing '
+                             f'after a restart: {records}\n' + tail(after))
+
+
 def start_discovering_gateway(run, name):
     """Start a config-less gateway whose binding file sits under a symlink loop."""
     loop_a = run.workdir / 'loop_a'
@@ -571,6 +593,7 @@ SCENARIOS = [
     ('late nameplate', scenario_late_nameplate),
     ('per-source record', scenario_per_source_record),
     ('per-source record under a stand-in', scenario_per_source_placeholder_rename),
+    ('per-source pinned stand-in', scenario_per_source_pinned_stand_in),
     ('binding directory at start', scenario_binding_directory_at_start),
     ('binding directory on reconnect', scenario_binding_directory_on_reconnect),
 ]
