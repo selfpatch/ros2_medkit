@@ -425,7 +425,8 @@ void PgFaultStorage::create_schema(pqxx::work & tx) const {
         capture_id BIGINT NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_snapshots_fault_code ON snapshots(fault_code);
-      CREATE INDEX IF NOT EXISTS idx_snapshots_fault_topic ON snapshots(fault_code, topic);)");
+      CREATE INDEX IF NOT EXISTS idx_snapshots_fault_topic ON snapshots(fault_code, topic);
+      CREATE INDEX IF NOT EXISTS idx_snapshots_record ON snapshots(fault_code, owner, capture_id);)");
 
   // Create freeze_frames table: one compact JSON dict of captured topic values per fault
   // RECORD. Unlike snapshots, freeze frames are keyed by the record identity and are NOT

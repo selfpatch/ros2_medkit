@@ -74,6 +74,62 @@ class SqliteFaultStorageTest : public ::testing::Test {
   std::unique_ptr<SqliteFaultStorage> storage_;
 };
 
+namespace {
+
+/// The detail column of every row EXPLAIN QUERY PLAN returns for @p sql, joined by newlines.
+std::string query_plan(const std::string & db_path, const std::string & sql) {
+  sqlite3 * raw = nullptr;
+  EXPECT_EQ(sqlite3_open(db_path.c_str(), &raw), SQLITE_OK);
+  std::string plan;
+  sqlite3_stmt * stmt = nullptr;
+  EXPECT_EQ(sqlite3_prepare_v2(raw, ("EXPLAIN QUERY PLAN " + sql).c_str(), -1, &stmt, nullptr), SQLITE_OK);
+  while (stmt != nullptr && sqlite3_step(stmt) == SQLITE_ROW) {
+    plan += reinterpret_cast<const char *>(sqlite3_column_text(stmt, 3));
+    plan += "\n";
+  }
+  sqlite3_finalize(stmt);
+  sqlite3_close(raw);
+  return plan;
+}
+
+}  // namespace
+
+// The per-record trims and reads of snapshots and near misses filter on (fault_code, owner): they must
+// be served by an index on exactly those columns, and a store that lacks them gets them on open.
+TEST_F(SqliteFaultStorageTest, RecordIndexesServeTheTrims) {
+  const std::string path = temp_db_path_.string();
+  const std::string snapshots_trim = "SELECT MAX(capture_id) FROM snapshots WHERE fault_code = 'C' AND owner = 'O'";
+  const std::string snapshots_count = "SELECT COUNT(*) FROM snapshots WHERE fault_code = 'C' AND owner = 'O'";
+  const std::string near_miss_trim =
+      "SELECT id FROM near_misses WHERE fault_code = 'C' AND owner = 'O' ORDER BY id DESC LIMIT 5";
+
+  const auto expect_served = [&path](const std::string & sql, const std::string & index) {
+    const std::string plan = query_plan(path, sql);
+    EXPECT_NE(plan.find(index), std::string::npos) << sql << "\n" << plan;
+    EXPECT_EQ(plan.find("SCAN"), std::string::npos) << sql << "\n" << plan;
+  };
+  expect_served(snapshots_trim, "idx_snapshots_record");
+  expect_served(snapshots_count, "idx_snapshots_record");
+  expect_served(near_miss_trim, "idx_near_misses_record");
+
+  // A store written without them gets them when it is opened.
+  storage_.reset();
+  {
+    sqlite3 * raw = nullptr;
+    ASSERT_EQ(sqlite3_open(path.c_str(), &raw), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(raw, "DROP INDEX idx_snapshots_record; DROP INDEX idx_near_misses_record;", nullptr, nullptr,
+                           nullptr),
+              SQLITE_OK);
+    sqlite3_close(raw);
+  }
+  EXPECT_EQ(query_plan(path, snapshots_trim).find("idx_snapshots_record"), std::string::npos)
+      << "the fixture must start without them";
+  EXPECT_EQ(query_plan(path, near_miss_trim).find("idx_near_misses_record"), std::string::npos);
+  storage_ = std::make_unique<SqliteFaultStorage>(path, test_log_sink());
+  expect_served(snapshots_trim, "idx_snapshots_record");
+  expect_served(near_miss_trim, "idx_near_misses_record");
+}
+
 TEST_F(SqliteFaultStorageTest, ReportNewFaultEvent) {
   rclcpp::Clock clock;
   auto timestamp = clock.now();
