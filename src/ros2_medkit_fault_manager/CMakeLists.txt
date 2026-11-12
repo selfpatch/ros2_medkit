@@ -309,6 +309,9 @@ endif()
   medkit_add_launch_test(test_fault_snapshot_grouping
     test/integration/test_fault_snapshot_grouping.test.py TIMEOUT 120 LABELS "integration")
 
+  medkit_add_launch_test(test_fault_snapshot_queue
+    test/integration/test_fault_snapshot_queue.test.py TIMEOUT 180 LABELS "integration")
+
   medkit_add_launch_test(test_fault_identity_restart
     test/integration/test_fault_identity_restart.test.py TIMEOUT 180 LABELS "integration")
 
