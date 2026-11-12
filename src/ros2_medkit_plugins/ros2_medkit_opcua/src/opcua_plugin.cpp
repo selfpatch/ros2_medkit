@@ -1324,6 +1324,8 @@ void OpcuaPlugin::on_alarm_change(const std::string & entity_id,
       // before it has processed this report, so the decision that follows earns
       // one more (see comms_lost_raise_since_decision_).
       comms_lost_raise_since_decision_.store(true);
+      std::lock_guard<std::mutex> lock(comms_lost_entity_mutex_);
+      comms_lost_entity_id_ = entity_id;
     }
     send_report_fault(entity_id, signal.fault_code, signal.severity, signal.message);
   } else {
@@ -1647,7 +1649,19 @@ void OpcuaPlugin::apply_comms_lost_answer(bool found, const std::vector<std::str
   // anything, so a correlation rule naming PLC_COMMS_LOST as a root cause must
   // not cascade-clear the symptoms the outage produced.
   log_info(std::string("OPC-UA connection established, clearing this bridge's ") + kCommsLostFaultCode);
-  send_clear_fault(kCommsLostFaultCode, node_map_.component_id(), ClearOrigin::LinkState);
+  send_clear_fault(kCommsLostFaultCode, comms_lost_entity_id(), ClearOrigin::LinkState);
+  std::lock_guard<std::mutex> lock(comms_lost_entity_mutex_);
+  comms_lost_entity_id_.clear();
+}
+
+std::string OpcuaPlugin::comms_lost_entity_id() const {
+  {
+    std::lock_guard<std::mutex> lock(comms_lost_entity_mutex_);
+    if (!comms_lost_entity_id_.empty()) {
+      return comms_lost_entity_id_;
+    }
+  }
+  return node_map_.component_id();
 }
 
 void OpcuaPlugin::drive_comms_lost_decision() {
@@ -1741,7 +1755,7 @@ void OpcuaPlugin::drive_comms_lost_decision() {
   request->fault_code = kCommsLostFaultCode;
   // The record this bridge reports it under, so a second source that raised the code does not make the
   // probe ambiguous.
-  request->source_id = node_map_.component_id();
+  request->source_id = comms_lost_entity_id();
   // rclcpp selects the response-callback overload of async_send_request only for
   // a callable whose parameter list is exactly (SharedFuture); a const reference
   // parameter matches no overload. The future is therefore taken by value.
