@@ -16,8 +16,8 @@
 """A fault record shows one severity on every gateway surface.
 
 Real fault manager (SQLite, confirmation threshold -3), real gateway, reports
-through the ReportFault service. Each code has one owner, so the gateway's
-code-addressed routes reach its one record. A CRITICAL fault is acknowledged
+through the ReportFault service. Both codes are per_source, so a record belongs
+to one owner and the gateway's code-addressed routes reach it. A CRITICAL fault is acknowledged
 and then reported again as WARN. The record keeps CRITICAL, so the WARN report
 confirms it at once, and GET /faults, the fault detail, the /faults/stream
 frame and the payload of an OnChange trigger all carry the same severity and
@@ -50,9 +50,13 @@ OWNER = '/powertrain/engine/temp_sensor'
 CODE = 'SEV_CONSISTENCY'
 PRIME_CODE = 'SEV_CONSISTENCY_PRIME'
 DB_DIR = tempfile.mkdtemp(prefix='medkit_severity_e2e_')
+THRESHOLDS_PATH = os.path.join(DB_DIR, 'fault_thresholds.yaml')
 
 
 def generate_test_description():
+    with open(THRESHOLDS_PATH, 'w') as f:
+        for code in (CODE, PRIME_CODE):
+            f.write(f'{code}:\n  per_source: true\n')
     return create_test_launch(
         demo_nodes=['temp_sensor'],
         fault_manager=True,
@@ -60,6 +64,7 @@ def generate_test_description():
             'storage_type': 'sqlite',
             'database_path': os.path.join(DB_DIR, 'faults.db'),
             'confirmation_threshold': -3,
+            'fault_thresholds.config_file': THRESHOLDS_PATH,
             'snapshots.rosbag.enabled': False,
         },
         gateway_params={
