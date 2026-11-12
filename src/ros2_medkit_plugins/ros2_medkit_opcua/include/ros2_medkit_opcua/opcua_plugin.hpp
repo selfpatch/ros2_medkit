@@ -561,10 +561,13 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   }
 
   // Build the ClearFault request for one fault code.
+  // ``source_id`` is the entity id the fault is reported under: it picks the
+  // record when more than one source reported the code.
   // ``skip_correlation_auto_clear`` goes on the wire verbatim (see ClearOrigin
-  // for who sets it and why). Static so the wire field is assertable without a
+  // for who sets it and why). Static so the wire fields are assertable without a
   // fault manager.
   static ros2_medkit_msgs::srv::ClearFault::Request make_clear_fault_request(const std::string & fault_code,
+                                                                             const std::string & source_id,
                                                                              bool skip_correlation_auto_clear);
 
   // One entry in the bounded buffer of fault dispatches held while the
@@ -644,9 +647,11 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // Report/clear fault via ROS 2 service (private helpers, not the FaultProvider overrides)
   void send_report_fault(const std::string & entity_id, const std::string & fault_code,
                          const std::string & severity_str, const std::string & message);
+  // ``source_id`` is the entity id the fault is reported under.
   // ``origin`` says why the clear is being sent, which decides both the wire
   // flag and how the pending buffer ranks it. See ClearOrigin.
-  void send_clear_fault(const std::string & fault_code, ClearOrigin origin = ClearOrigin::DeviceAlarm);
+  void send_clear_fault(const std::string & fault_code, const std::string & source_id,
+                        ClearOrigin origin = ClearOrigin::DeviceAlarm);
 
   // Record that a link-state decision about PLC_COMMS_LOST is due.
   //
