@@ -823,6 +823,16 @@ Every row records the stored severity of the fault record at the transition,
 the value ``GET /faults`` and the fault events show. The severity a single
 report carried is in the near-miss series and in the severity mismatch warning.
 
+The ``source`` of a row says what drove the transition. A report drives
+``occurred`` and ``confirmed`` rows and its ``source_id`` is the source. An
+automatic transition carries its mechanism: ``auto_confirm_timer``,
+``auto_heal``, ``startup_reclassify``, ``clear_service`` (an operator clear) and
+``correlation_auto_clear`` (a symptom cleared with its root cause). The
+``owner`` of a row is the owner of a per-source record and is empty for the
+shared record of a code, so a shared record's rows are unchanged and an existing
+chain still verifies. A log created before the ``owner`` column existed gets the
+column on open.
+
 .. code-block:: yaml
 
    fault_manager:

@@ -49,10 +49,20 @@ struct AuditEvent {
   std::string transition;     ///< one of the kTransition* constants below
   uint8_t severity{0};        ///< severity at the time of the transition
   std::string status;         ///< resulting fault status (e.g. CONFIRMED)
-  std::string source_id;      ///< reporting source that drove the transition
+  std::string source_id;      ///< the report's source, or a kAuditSource* mechanism for an automatic transition
   std::string description;    ///< human-readable description
   int64_t occurred_at_ns{0};  ///< wall-clock timestamp of the transition
+  /// Owner of a per-source record. Empty for a shared record. Hashed only when non-empty, so every
+  /// row of a shared record hashes as it did before the field existed.
+  std::string owner;
 };
+
+/// `source_id` of the rows no report drives. Stored verbatim, so they are part of the hash.
+constexpr const char * kAuditSourceAutoConfirm = "auto_confirm_timer";
+constexpr const char * kAuditSourceAutoHeal = "auto_heal";
+constexpr const char * kAuditSourceClearService = "clear_service";
+constexpr const char * kAuditSourceCorrelationAutoClear = "correlation_auto_clear";
+constexpr const char * kAuditSourceStartupReclassify = "startup_reclassify";
 
 /// Canonical transition kinds. Stored verbatim, so they are part of the hash.
 constexpr const char * kTransitionOccurred = "occurred";

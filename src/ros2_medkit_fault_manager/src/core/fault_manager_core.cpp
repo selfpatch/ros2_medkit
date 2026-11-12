@@ -240,10 +240,10 @@ std::vector<fd::FaultRecord> FaultManagerCore::list_for_entity(const std::string
   return result;
 }
 
-void FaultManagerCore::record_transition(const char * transition, const fd::FaultRecord & fault,
+void FaultManagerCore::record_transition(const char * transition, const fd::FaultRecord & fault, const FaultId & id,
                                          const std::string & source_id, int64_t occurred_at_ns) {
   std::lock_guard<std::mutex> lock(mutex_);
-  audit_transition(transition, fault, source_id, occurred_at_ns);
+  audit_transition(transition, fault, id, source_id, occurred_at_ns);
 }
 
 void FaultManagerCore::tick(int64_t wall_now_ns) {
@@ -299,7 +299,7 @@ void FaultManagerCore::run_auto_confirm(int64_t wall_now_ns) {
     if (!fault) {
       continue;
     }
-    audit_transition(kTransitionConfirmed, *fault, id.owner, wall_now_ns);
+    audit_transition(kTransitionConfirmed, *fault, id, kAuditSourceAutoConfirm, wall_now_ns);
     // Same rules as the report path: a symptom muted by a root cause is not announced, and the
     // capture is not gated by muting.
     if (!correlation_ || !correlation_->is_muted(id)) {
@@ -522,13 +522,13 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
     // Recorded regardless of correlation muting: muting affects display, not the
     // fact that the state transition occurred.
     if (is_new) {
-      audit_transition(kTransitionOccurred, *fault_after, report.source_id, event_time_ns);
+      audit_transition(kTransitionOccurred, *fault_after, id, report.source_id, event_time_ns);
     }
     if (just_confirmed) {
-      audit_transition(kTransitionConfirmed, *fault_after, report.source_id, event_time_ns);
+      audit_transition(kTransitionConfirmed, *fault_after, id, report.source_id, event_time_ns);
     }
     if (just_healed) {
-      audit_transition(kTransitionHealed, *fault_after, id.owner, event_time_ns);
+      audit_transition(kTransitionHealed, *fault_after, id, kAuditSourceAutoHeal, event_time_ns);
     }
 
     if (just_confirmed) {
@@ -641,7 +641,7 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, const std:
         return outcome;
       }
       if (symptom) {
-        audit_transition(kTransitionCleared, *symptom, symptom_id.owner, clock_.now_ns());
+        audit_transition(kTransitionCleared, *symptom, symptom_id, kAuditSourceCorrelationAutoClear, clock_.now_ns());
       }
     }
     logf(log_, LogLevel::kDebug, logger, "Auto-cleared symptom: %s (root cause: %s)", symptom_id.fault_code.c_str(),
@@ -674,7 +674,7 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, const std:
   }
   if (fault) {
     publish_event(fd::fault_event_type::kCleared, *fault, auto_cleared_codes);
-    audit_transition(kTransitionCleared, *fault, id.owner, clock_.now_ns());
+    audit_transition(kTransitionCleared, *fault, id, kAuditSourceClearService, clock_.now_ns());
   }
   return outcome;
 }
@@ -923,7 +923,7 @@ void FaultManagerCore::warn_on_conflicting_debounce_policy(const FaultId & id, c
        resolved.confirmation_threshold, resolved.healing_enabled ? "true" : "false", resolved.healing_threshold);
 }
 
-void FaultManagerCore::audit_transition(const char * transition, const fd::FaultRecord & fault,
+void FaultManagerCore::audit_transition(const char * transition, const fd::FaultRecord & fault, const FaultId & id,
                                         const std::string & source_id, int64_t occurred_at_ns) {
   if (!audit_) {
     return;
@@ -938,6 +938,7 @@ void FaultManagerCore::audit_transition(const char * transition, const fd::Fault
   event.severity = fault.severity;
   event.status = fault.status;
   event.source_id = source_id;
+  event.owner = id.owner == kSharedOwner ? std::string() : id.owner;
   event.description = fault.description;
   event.occurred_at_ns = occurred_at_ns;
 

@@ -3338,11 +3338,13 @@ TEST_F(FaultAuditIntegrationTest, TransitionsAppendVerifiableChain) {
   EXPECT_EQ(records[2].event.transition, ros2_medkit_fault_manager::kTransitionConfirmed);
   EXPECT_EQ(records[3].event.transition, ros2_medkit_fault_manager::kTransitionCleared);
   EXPECT_EQ(records[1].event.fault_code, "AUDIT_FAULT");
-  // The rows a report drove name the reporting source. The clear row names the owner of the record, which
-  // for a code shared by every source is the shared owner.
+  // The rows a report drove name the reporting source, the clear row its mechanism. A shared record has no owner.
   EXPECT_EQ(records[1].event.source_id, "/plc/pump");
   EXPECT_EQ(records[2].event.source_id, "/plc/pump");
-  EXPECT_EQ(records[3].event.source_id, ros2_medkit_fault_manager::kSharedOwner);
+  EXPECT_EQ(records[3].event.source_id, ros2_medkit_fault_manager::kAuditSourceClearService);
+  for (size_t i = 1; i < records.size(); ++i) {
+    EXPECT_TRUE(records[i].event.owner.empty()) << "row " << i;
+  }
 
   auto result = audit.verify();
   EXPECT_TRUE(result.ok) << result.error;
@@ -3351,8 +3353,7 @@ TEST_F(FaultAuditIntegrationTest, TransitionsAppendVerifiableChain) {
 
 // Completeness: an auto-healed record must record its END. One FAILED confirms the
 // record (occurred + confirmed), two PASSED drive the debounce counter to the
-// healing threshold, which must append a distinct "healed" row. That row names the
-// record's owner, which for a code shared by every source is the shared owner.
+// healing threshold, which must append a distinct "healed" row. That row names its mechanism.
 // The full occurred -> confirmed -> healed chain must verify.
 TEST_F(FaultAuditIntegrationTest, AutoHealAppendsHealedRow) {
   auto send_report = [&](uint8_t event_type) {
@@ -3392,7 +3393,7 @@ TEST_F(FaultAuditIntegrationTest, AutoHealAppendsHealedRow) {
   EXPECT_EQ(transitions[0], ros2_medkit_fault_manager::kTransitionOccurred);
   EXPECT_EQ(transitions[1], ros2_medkit_fault_manager::kTransitionConfirmed);
   EXPECT_EQ(transitions[2], ros2_medkit_fault_manager::kTransitionHealed);
-  EXPECT_EQ(heal_source, ros2_medkit_fault_manager::kSharedOwner);
+  EXPECT_EQ(heal_source, ros2_medkit_fault_manager::kAuditSourceAutoHeal);
 
   auto result = audit.verify();
   EXPECT_TRUE(result.ok) << result.error;
@@ -3598,7 +3599,8 @@ TEST(FaultAuditStartupReclassifyTest, StartupReclassifyAppendsClearedRow) {
     for (const auto & rec : audit->read()) {
       if (rec.event.fault_code == "STALE_HEALED") {
         EXPECT_EQ(rec.event.transition, ros2_medkit_fault_manager::kTransitionCleared);
-        EXPECT_EQ(rec.event.source_id, "/robot/src") << "the audit row names the record's owner";
+        EXPECT_EQ(rec.event.source_id, ros2_medkit_fault_manager::kAuditSourceStartupReclassify);
+        EXPECT_EQ(rec.event.owner, "/robot/src") << "a per-source record's row names its owner";
         EXPECT_EQ(rec.event.status, Fault::STATUS_CLEARED);
         ++cleared_rows;
       }

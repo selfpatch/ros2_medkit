@@ -123,11 +123,11 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
 
   // Runs after the override files are loaded, so a code with its own healing_enabled: true keeps
   // its HEALED status. Each flipped fault is audited, or the audit log's verify() would not see it.
-  core::reclassify_stale_healed(*storage_, core_->fault_code_resolver(), core_->global_debounce(),
-                                core_->audit_log() != nullptr, log_sink_, config_.logger_name,
-                                [this](const FaultId & id, const fd::FaultRecord & fault, int64_t reclassified_at_ns) {
-                                  audit_transition(kTransitionCleared, fault, id.owner, reclassified_at_ns);
-                                });
+  core::reclassify_stale_healed(
+      *storage_, core_->fault_code_resolver(), core_->global_debounce(), core_->audit_log() != nullptr, log_sink_,
+      config_.logger_name, [this](const FaultId & id, const fd::FaultRecord & fault, int64_t reclassified_at_ns) {
+        audit_transition(kTransitionCleared, fault, id, kAuditSourceStartupReclassify, reclassified_at_ns);
+      });
   core::warn_on_identity_mode_mismatch(*storage_, core_->fault_code_resolver(), log_sink_, config_.logger_name);
 
   // Create service servers
@@ -426,9 +426,9 @@ void FaultManagerNode::publish_fault_event(const std::string & event_type, const
                fault.fault_code.c_str());
 }
 
-void FaultManagerNode::audit_transition(const char * transition, const fd::FaultRecord & fault,
+void FaultManagerNode::audit_transition(const char * transition, const fd::FaultRecord & fault, const FaultId & id,
                                         const std::string & source_id, int64_t occurred_at_ns) {
-  core_->record_transition(transition, fault, source_id, occurred_at_ns);
+  core_->record_transition(transition, fault, id, source_id, occurred_at_ns);
 }
 
 core::FaultManagerConfig FaultManagerNode::declare_config() {
