@@ -645,6 +645,7 @@ if(BUILD_TESTING)
       test/integration/test_opcua_subscription_values.test.py
       test/integration/test_opcua_raise_qualifier.test.py
       test/integration/test_opcua_comms_lost.test.py
+      test/integration/test_opcua_per_source_clear.test.py
       test/integration/test_opcua_startup_sweep_signal.test.py
       DESTINATION lib/${PROJECT_NAME})
 
@@ -717,6 +718,15 @@ if(BUILD_TESTING)
       LABELS "integration"
       RESOURCE_LOCK opcua_tcp_4840
       TIMEOUT 1200)
+
+    # A device alarm of a per-source code clears the gateway's own record only.
+    medkit_add_wrapped_test(test_opcua_per_source_clear
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_per_source_clear.test.py"
+              "${CMAKE_BINARY_DIR}/test_alarm_server")
+    set_tests_properties(test_opcua_per_source_clear PROPERTIES
+      LABELS "integration"
+      TIMEOUT 300)
 
     # A signal during the startup discovery sweep ends the sweep and the gateway.
     # Two cases, each bounded by its own 60 s start and 21 s exit deadlines.
