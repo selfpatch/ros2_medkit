@@ -80,9 +80,10 @@ class TestSharedRecordEvents(unittest.TestCase):
             FaultEvent, '/fault_manager/events', cls.events.append,
             QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE))
         deadline = time.monotonic() + TIMEOUT_SEC
-        while cls.subscription.get_publisher_count() == 0 and time.monotonic() < deadline:
+        while (cls.node.count_publishers('/fault_manager/events') == 0
+               and time.monotonic() < deadline):
             rclpy.spin_once(cls.node, timeout_sec=0.1)
-        assert cls.subscription.get_publisher_count() > 0
+        assert cls.node.count_publishers('/fault_manager/events') > 0
 
     @classmethod
     def tearDownClass(cls):

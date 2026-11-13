@@ -112,9 +112,10 @@ class TestFaultIdentity(unittest.TestCase):
         for client in (cls.report_client, cls.list_client, cls.get_client, cls.clear_client):
             assert client.wait_for_service(timeout_sec=TIMEOUT_SEC)
         deadline = time.monotonic() + TIMEOUT_SEC
-        while cls.event_sub.get_publisher_count() == 0 and time.monotonic() < deadline:
+        while (cls.node.count_publishers('/fault_manager/events') == 0
+               and time.monotonic() < deadline):
             rclpy.spin_once(cls.node, timeout_sec=0.1)
-        assert cls.event_sub.get_publisher_count() > 0
+        assert cls.node.count_publishers('/fault_manager/events') > 0
 
     @classmethod
     def tearDownClass(cls):
