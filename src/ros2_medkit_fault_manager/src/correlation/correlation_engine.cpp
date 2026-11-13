@@ -122,13 +122,12 @@ ProcessClearResult CorrelationEngine::process_clear(const FaultId & id) {
       }
     }
 
-    // Clean up muted records
-    for (const auto & symptom_id : it->second) {
-      muted_faults_.erase(symptom_id);
-    }
-
-    // Remove from root_to_symptoms
+    // The symptoms stay muted while another root cause or an active cluster still mutes them
+    const std::vector<FaultId> released = it->second;
     root_to_symptoms_.erase(it);
+    for (const auto & symptom_id : released) {
+      reconcile_muting(symptom_id);
+    }
   }
 
   // Remove from pending root causes
@@ -197,34 +196,69 @@ ProcessClearResult CorrelationEngine::process_clear(const FaultId & id) {
 }
 
 void CorrelationEngine::sync_cluster_muting(const Cluster & cluster) {
-  bool show_as_single = false;
   for (const auto & rule : config_.rules) {
-    if (rule.id == cluster.rule_id) {
-      show_as_single = rule.show_as_single;
-      break;
-    }
-  }
-  if (!show_as_single) {
-    return;
-  }
-  for (const auto & member : cluster.members) {
-    const auto muted_it = muted_faults_.find(member);
-    if (member == cluster.representative) {
-      if (muted_it != muted_faults_.end() && muted_it->second.rule_id == cluster.rule_id) {
-        muted_faults_.erase(muted_it);
+    if (rule.id == cluster.rule_id && rule.show_as_single) {
+      for (const auto & member : cluster.members) {
+        reconcile_muting(member);
       }
-      continue;
+      return;
     }
-    if (muted_it != muted_faults_.end() && muted_it->second.rule_id != cluster.rule_id) {
-      continue;
-    }
-    MutedFaultData muted;
-    muted.fault_code = member.fault_code;
-    muted.owner = member.owner;
-    muted.root_cause_code = cluster.representative.fault_code;
-    muted.rule_id = cluster.rule_id;
-    muted_faults_[member] = muted;
   }
+}
+
+bool CorrelationEngine::matches_symptom(const CorrelationRule & rule, const std::string & fault_code) const {
+  for (const auto & pattern_id : rule.symptom_pattern_ids) {
+    if (matcher_->matches(fault_code, pattern_id)) {
+      return true;
+    }
+  }
+  return !rule.inline_symptom_codes.empty() && matcher_->matches_any(fault_code, rule.inline_symptom_codes);
+}
+
+void CorrelationEngine::reconcile_muting(const FaultId & id) {
+  for (const auto & [root_id, symptoms] : root_to_symptoms_) {
+    if (std::find(symptoms.begin(), symptoms.end(), id) == symptoms.end()) {
+      continue;
+    }
+    for (const auto & rule : config_.rules) {
+      if (rule.mode != CorrelationMode::HIERARCHICAL || !rule.mute_symptoms ||
+          !matcher_->matches_any(root_id.fault_code, rule.root_cause_codes) || !matches_symptom(rule, id.fault_code)) {
+        continue;
+      }
+      MutedFaultData muted;
+      const auto existing = muted_faults_.find(id);
+      if (existing != muted_faults_.end() && existing->second.rule_id == rule.id &&
+          existing->second.root_cause_code == root_id.fault_code) {
+        muted = existing->second;
+      }
+      muted.fault_code = id.fault_code;
+      muted.owner = id.owner;
+      muted.root_cause_code = root_id.fault_code;
+      muted.rule_id = rule.id;
+      muted_faults_[id] = muted;
+      return;
+    }
+  }
+
+  const auto cluster_it = fault_to_cluster_.find(id);
+  if (cluster_it != fault_to_cluster_.end()) {
+    const auto active_it = active_clusters_.find(cluster_it->second);
+    if (active_it != active_clusters_.end() && active_it->second.representative != id) {
+      const auto & cluster = active_it->second;
+      for (const auto & rule : config_.rules) {
+        if (rule.id == cluster.rule_id && rule.show_as_single) {
+          MutedFaultData muted;
+          muted.fault_code = id.fault_code;
+          muted.owner = id.owner;
+          muted.root_cause_code = cluster.representative.fault_code;
+          muted.rule_id = cluster.rule_id;
+          muted_faults_[id] = muted;
+          return;
+        }
+      }
+    }
+  }
+  muted_faults_.erase(id);
 }
 
 void CorrelationEngine::forget_symptom(const FaultId & id) {
@@ -345,21 +379,7 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_as_symptom(const FaultI
         continue;
       }
 
-      // Check if fault matches any symptom pattern
-      bool matches_symptom = false;
-      for (const auto & pattern_id : rule.symptom_pattern_ids) {
-        if (matcher_->matches(fault_code, pattern_id)) {
-          matches_symptom = true;
-          break;
-        }
-      }
-
-      // Also check inline symptom codes (direct codes with wildcard support)
-      if (!matches_symptom && !rule.inline_symptom_codes.empty()) {
-        matches_symptom = matcher_->matches_any(fault_code, rule.inline_symptom_codes);
-      }
-
-      if (!matches_symptom) {
+      if (!matches_symptom(rule, fault_code)) {
         continue;
       }
 
