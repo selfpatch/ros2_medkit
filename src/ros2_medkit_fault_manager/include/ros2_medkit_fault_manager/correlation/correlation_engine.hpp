@@ -221,6 +221,9 @@ class CorrelationEngine {
   /// Muted records (record -> data)
   std::map<FaultId, MutedFaultData> muted_faults_;
 
+  /// Delay of a symptom record behind a root cause record, from the last attach ((root, symptom) -> ms)
+  std::map<std::pair<FaultId, FaultId>, uint32_t> relation_delay_ms_;
+
   /// Active clusters (cluster_id -> cluster)
   std::map<std::string, Cluster> active_clusters_;
 
