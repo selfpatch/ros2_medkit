@@ -185,15 +185,15 @@ Main Components
    - Future implementations can be added in Issue #8: Fault Persistence Options
 
 3. **InMemoryFaultStorage** - Thread-safe in-memory implementation of FaultStorage
-   - Uses ``std::map`` keyed by ``fault_code`` for O(log n) lookups
+   - Uses ``std::map`` keyed by ``FaultId`` for O(log n) lookups, ordered by code first
    - Protected by ``std::mutex`` for concurrent service request handling
-   - Aggregates reports from multiple sources into single fault entries
-   - Implements severity escalation (higher severity overwrites lower)
-   - Tracks occurrence counts and all reporting sources
+   - Keeps one record per ``FaultId``: one record shared by every source of a code, or one per source for a code configured ``per_source``
+   - Implements severity escalation per record (higher severity overwrites lower, across occurrences too)
+   - Tracks occurrence counts and all reporting sources per record
 
-4. **FaultState** - Internal representation of a fault entry
+4. **FaultState** - Internal representation of one fault record
    - Maps directly to ``ros2_medkit_msgs::msg::Fault`` via ``to_msg()``
-   - Uses ``std::set`` for reporting_sources to ensure uniqueness
+   - Carries its owner and uses ``std::set`` for reporting_sources to ensure uniqueness
    - Tracks first and last occurrence timestamps
    - Manages fault status lifecycle with debounce (PREFAILED -> CONFIRMED -> CLEARED)
 
@@ -247,11 +247,15 @@ Services
 
 Reports a new fault or updates an existing one.
 
-- **Input validation**: fault_code and source_id cannot be empty, event_type must be valid
+- **Input validation**: fault_code and source_id cannot be empty, source_id cannot be the reserved ``*``, event_type must be valid
 - **Event types**: FAILED (fault detected) or PASSED (fault condition cleared)
 - **Debounce**: FAILED events decrement counter, PASSED events increment counter
-- **Aggregation**: Same fault_code from different sources creates a single fault entry
-- **Severity escalation**: Fault severity is updated if a higher severity is reported
+- **Record identity**: ``FaultManagerCore::record_id_for`` decides it. A code configured ``per_source``
+  has one record per source_id, any other code one record shared by all its sources (owner ``*``,
+  which ``ReportFault`` refuses as a source_id). Each record is debounced, cleared and healed on its own
+- **Severity escalation**: A record's severity is updated if a higher one is reported for it
+- **Severity mismatch**: A FAILED report whose severity differs from the stored severity of its
+  per-source record is logged as a warning, once per code, source and reported severity until restart
 - **Returns**: ``accepted=true`` if event was processed
 
 ~/list_faults
@@ -282,22 +286,52 @@ All ``FaultStorage`` public methods acquire a mutex lock to ensure thread safety
 when handling concurrent service requests. This is essential since ROS 2 service
 callbacks may execute on different threads.
 
-Fault Aggregation
-~~~~~~~~~~~~~~~~~
+Fault Records
+~~~~~~~~~~~~~
 
-Multiple reports of the same ``fault_code`` (from same or different sources) are
-aggregated into a single fault entry. This provides:
+A fault record is identified by the pair ``(fault_code, owner)``. A code listed with
+``per_source: true`` in ``fault_thresholds.config_file`` has one record per reporting source,
+owned by the ``source_id`` of its reports. Every other code has one record shared by all its
+sources, owned by the reserved id ``*``. Reports are routed to a record by one function,
+``record_id_for``, and the storage backends receive the decided identity. This provides:
 
 - **Deduplication**: Prevents fault flooding from repeated reports
-- **Source tracking**: Identifies all sources reporting the same fault
-- **Occurrence counting**: Tracks how many times a fault was reported
+- **Source tracking**: A record lists every source that reported it
+- **Occurrence counting**: Tracks how many times a record was raised
+
+A per-source record keeps the per-reporter state apart: the debounce counter, the status, the
+severity, the occurrence count and the timestamps all belong to one reporter, so one reporter
+recovering cannot walk another reporter's fault back from confirmation, and one reporter's CRITICAL
+cannot escalate another's record. A shared record has one counter fed by every source.
+
+A request that names a ``source_id`` addresses the record it owns, else the record that source
+reports into. Stored records keep the identity they were written with when a code is switched
+between the two modes; the node logs a warning per code at startup.
 
 Severity Escalation
 ~~~~~~~~~~~~~~~~~~~
 
-When a fault is re-reported with a higher severity, the stored severity is updated.
-This ensures the fault reflects the worst-case condition. Severity levels are ordered:
+When a record is re-reported with a higher severity, the stored severity is updated. This
+ensures the record reflects the worst-case condition reported for it.
+Severity levels are ordered:
 ``INFO(0) < WARN(1) < ERROR(2) < CRITICAL(3)``.
+
+A record has one severity. The maximum is kept within an occurrence and across occurrences: a
+FAILED report on a CLEARED record starts a new occurrence (``first_occurred`` and
+``occurrence_count`` move) but does not lower the severity, and SQLite keeps it across restarts.
+Different severities from one source for one code mean a misconfigured reporter, and the maximum
+is the conservative choice.
+
+- **Reads, subscribers and the audit log** carry the stored severity of the record:
+  ``list_faults``, ``get_fault``, the ``FaultEvent`` payload, and through it the gateway's
+  ``/faults/stream`` frames and fault trigger payloads. An event therefore carries what a read of
+  the record returns right after the report. Every audit row records the stored severity at its
+  transition.
+- **Near-miss entries** carry the reported severity: the series is per-report history.
+- **Mismatch warning**: when a FAILED report carries another severity than the one stored for its
+  record, the node logs the code, both severities and the source. A set of
+  ``(fault_code, source_id, severity)`` keys limits it to one line per key for the process
+  lifetime, so the log volume does not follow the report rate.
 
 Status Lifecycle (Debounce Model)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -312,7 +346,17 @@ Faults follow an AUTOSAR DEM-style debounce lifecycle:
 
 FAILED events decrement the debounce counter (towards confirmation).
 PASSED events increment the debounce counter (towards healing).
-CRITICAL severity bypasses debounce and confirms immediately.
+CRITICAL severity bypasses debounce and confirms immediately. On a shared record the severity of
+the report decides. On a per-source record the check reads the stored severity after the report is
+applied, so any FAILED report on a record stored as CRITICAL confirms it, from CLEARED and from the
+HEALED latch alike, and no report leaves a per-source record CRITICAL in PREFAILED or PREPASSED.
+
+The SQLite store records when the current occurrence of a record confirmed (``confirmed_at_ns``).
+A FAILED report on a CLEARED record resets it to 0, and the confirmation of the new occurrence sets
+it. The owner migration keeps the value of a CONFIRMED, HEALED or CLEARED row and writes 0 for a
+PREFAILED or PREPASSED one: under the latch a row that confirmed stays CONFIRMED or HEALED until a
+clear, so a pending row with a value carries it from the occurrence before a reactivation. The
+in-memory store keeps no confirmation time.
 
 The counter is always clamped to ``[confirmation_threshold, healing_threshold]`` so a long run of
 one-sided events cannot push it out to the integer limits and delay the opposite transition.

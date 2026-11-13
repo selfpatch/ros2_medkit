@@ -48,22 +48,23 @@ class SqliteFaultStorage : public FaultStorage {
   void set_debounce_config(const DebounceConfig & config) override;
   DebounceConfig get_debounce_config() const override;
 
-  bool report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
-                          const std::string & description, const std::string & source_id, int64_t timestamp_ns,
-                          const DebounceConfig & config) override;
+  bool report_fault_event(const FaultId & id, fd::ReportKind kind, uint8_t severity, const std::string & description,
+                          const std::string & source_id, int64_t timestamp_ns, const DebounceConfig & config) override;
 
-  std::vector<fd::FaultRecord> list_faults(bool filter_by_severity, uint8_t severity,
-                                           const std::vector<std::string> & statuses) const override;
+  std::vector<FaultEntry> list_fault_entries(bool filter_by_severity, uint8_t severity,
+                                             const std::vector<std::string> & statuses) const override;
 
-  std::optional<fd::FaultRecord> get_fault(const std::string & fault_code) const override;
+  std::optional<fd::FaultRecord> get_fault(const FaultId & id) const override;
 
-  bool clear_fault(const std::string & fault_code) override;
+  std::vector<FaultId> get_ids_by_code(const std::string & fault_code) const override;
+
+  bool clear_fault(const FaultId & id) override;
 
   size_t size() const override;
 
-  bool contains(const std::string & fault_code) const override;
+  bool contains(const FaultId & id) const override;
 
-  std::vector<std::string> check_time_based_confirmation(int64_t now_ns) override;
+  std::vector<FaultId> check_time_based_confirmation(int64_t now_ns) override;
 
   void set_max_snapshots_per_fault(size_t max_count) override;
   void set_retain_snapshots_on_clear(bool retain) override;
@@ -73,29 +74,28 @@ class SqliteFaultStorage : public FaultStorage {
 
   void store_snapshot(const SnapshotData & snapshot) override;
   void store_snapshots(const std::vector<SnapshotData> & snapshots) override;
-  std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
-                                          const std::string & topic_filter = "") const override;
+  std::vector<SnapshotData> get_snapshots(const FaultId & id, const std::string & topic_filter = "") const override;
   int64_t get_max_capture_id() const override;
 
   void store_freeze_frame(const FreezeFrameData & frame) override;
-  std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) const override;
+  std::optional<FreezeFrameData> get_freeze_frame(const FaultId & id) const override;
 
   size_t set_max_near_misses_per_fault(size_t max_count) override;
-  std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) const override;
+  std::vector<NearMissRecord> get_near_misses(const FaultId & id) const override;
 
   void store_rosbag_file(const RosbagFileInfo & info) override;
   void store_rosbag_files(const std::vector<RosbagFileInfo> & infos) override;
-  std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
-  std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) const override;
+  std::optional<RosbagFileInfo> get_rosbag_file(const FaultId & id) const override;
+  std::vector<RosbagFileInfo> get_rosbag_files(const FaultId & id) const override;
   std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) const override;
-  bool delete_rosbag_file(const std::string & fault_code) override;
+  bool delete_rosbag_file(const FaultId & id) override;
   size_t delete_rosbag_recording(const std::string & recording_id) override;
-  size_t delete_rosbag_files(const std::vector<std::string> & fault_codes) override;
+  size_t delete_rosbag_files(const std::vector<FaultId> & ids) override;
   size_t get_total_rosbag_storage_bytes() const override;
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
   std::vector<fd::FaultRecord> get_all_faults() const override;
-  std::vector<std::string> reclassify_healed_as_cleared(const KeepHealedFn & keep_healed = {}) override;
+  std::vector<FaultId> reclassify_healed_as_cleared(const KeepHealedFn & keep_healed = {}) override;
 
   /// Get the database path
   const std::string & db_path() const {
@@ -122,46 +122,66 @@ class SqliteFaultStorage : public FaultStorage {
   /// C++ through rosbag_recording_id() so the basename rule has one implementation.
   void migrate_rosbag_files_add_recording_id();
 
-  /// Whether a fault other than @p fault_code still references @p file_path.
-  /// One recording can back several faults of the same burst, so the bag must
-  /// only be unlinked once the last of them is gone. Caller holds mutex_.
+  /// Move a database whose fault identity is the bare fault_code onto (fault_code, owner).
+  ///
+  /// Detected per table by PRAGMA table_info lacking `owner`, which is what makes it safe
+  /// to re-run on every open. faults and freeze_frames are REBUILT (their identity is a
+  /// PRIMARY KEY, which ALTER TABLE cannot change and CREATE TABLE IF NOT EXISTS would
+  /// silently skip), while snapshots, rosbag_files and near_misses only gain a column.
+  /// A legacy database holds one record per fault code, fed by every source, so every row
+  /// becomes the shared record of its code and every child row attaches to it. The rows keep
+  /// their reporting_sources as written. All of it runs in one transaction.
+  void migrate_faults_add_owner();
 
-  /// Whether any fault at all still references @p file_path. Caller holds mutex_.
+  /// Whether @p table exists, asked of sqlite_master. Used to tell a leftover scratch table
+  /// apart from a clean start, which DROP TABLE IF EXISTS on its own cannot report.
+  bool table_exists(const char * table) const;
+
+  /// Drop one of the migration's scratch tables, warning first when it was really there.
+  /// `faults_new` and `freeze_frames_new` are reserved for this procedure, so debris under
+  /// those names is always an unfinished rebuild and never somebody's data.
+  void drop_scratch_table(const char * table);
+
+  /// Whether @p table already carries the `owner` column. The four tables are created
+  /// by four independent CREATE TABLE IF NOT EXISTS statements, so a database can hold
+  /// a legacy one next to one this release just created: each is probed on its own.
+  bool table_has_owner(const char * table) const;
+
+  /// Whether any row at all still references @p file_path. One recording can back
+  /// several records of the same burst, so the bag must only be unlinked once the
+  /// last of them is gone. Caller holds mutex_.
   bool path_referenced(const std::string & file_path) const;
 
   /// store_rosbag_file body without taking mutex_. Caller holds mutex_ and
   /// unlinks the returned replaced-bag path once the row change is durable.
-  /// @return file_paths whose last row for this fault the per-fault cap evicted.
+  /// @return file_paths whose last row for this record the per-record cap evicted.
   /// The caller unlinks each only after the commit, and only if path_referenced()
   /// still says nobody holds it.
   std::vector<std::string> store_rosbag_file_locked(const RosbagFileInfo & info);
 
   /// report_fault_event body without taking mutex_ or opening a transaction. Caller holds mutex_
   /// and wraps the call, so the fault row and any near-miss row commit together.
-  bool report_fault_event_locked(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
+  bool report_fault_event_locked(const FaultId & id, fd::ReportKind kind, uint8_t severity,
                                  const std::string & description, const std::string & source_id, int64_t timestamp_ns,
                                  const DebounceConfig & config);
 
   /// Append one entry to the near-miss series and evict the oldest entries beyond
   /// max_near_misses_per_fault_. Caller holds mutex_ and has already written the fault row.
-  /// @param fault_code The fault code that nearly confirmed
+  /// @param id The record that nearly confirmed; it scopes the series
   /// @param occurred_at_ns Timestamp of the report
   /// @param debounce_counter Counter value after the report
   /// @param config Debounce config the report was evaluated against
   /// @param severity Severity carried by the report
-  /// @param source_id Reporting source
+  /// @param source_id Source that sent the report
   /// @param resulting_status Fault status after the report was applied
-  void record_near_miss_locked(const std::string & fault_code, int64_t occurred_at_ns, int32_t debounce_counter,
+  void record_near_miss_locked(const FaultId & id, int64_t occurred_at_ns, int32_t debounce_counter,
                                const DebounceConfig & config, uint8_t severity, const std::string & source_id,
                                const std::string & resulting_status);
 
   /// Run a plain SQL statement or throw with the SQLite error. Caller holds mutex_.
   void exec_or_throw(const char * sql);
 
-  /// Parse JSON array string to vector of strings
-  std::vector<std::string> parse_json_array(const std::string & json_str) const;
-
-  /// Serialize vector of strings to JSON array string
+  /// Serialize vector of strings to JSON array string, the form of faults.reporting_sources.
   static std::string serialize_json_array(const std::vector<std::string> & vec);
 
   std::string db_path_;

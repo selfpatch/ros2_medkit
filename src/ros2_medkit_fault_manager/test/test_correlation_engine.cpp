@@ -14,7 +14,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
+#include <string>
 #include <thread>
 
 #include "ros2_medkit_fault_manager/correlation/config_parser.hpp"
@@ -22,6 +24,26 @@
 
 using namespace ros2_medkit_fault_manager::correlation;
 using namespace std::chrono_literals;
+
+using ros2_medkit_fault_manager::FaultId;
+
+namespace {
+
+// The engine relates fault RECORDS. Rules match by code whoever owns the record, so most
+// of this suite reports everything from one owner; the tests that name a second owner
+// check that a relation crosses owners.
+constexpr const char * kOwner = "/reporter_a";
+constexpr const char * kOtherOwner = "/reporter_b";
+
+FaultId rec(const std::string & code) {
+  return FaultId{code, kOwner};
+}
+
+FaultId other(const std::string & code) {
+  return FaultId{code, kOtherOwner};
+}
+
+}  // namespace
 
 class CorrelationEngineTest : public ::testing::Test {
  protected:
@@ -114,7 +136,7 @@ TEST_F(CorrelationEngineTest, RootCauseRecognized) {
   auto config = create_hierarchical_config();
   CorrelationEngine engine(config);
 
-  auto result = engine.process_fault("ESTOP_001", "CRITICAL");
+  auto result = engine.process_fault(rec("ESTOP_001"), "CRITICAL");
 
   EXPECT_FALSE(result.should_mute);
   EXPECT_TRUE(result.is_root_cause);
@@ -126,11 +148,11 @@ TEST_F(CorrelationEngineTest, SymptomMuted) {
   CorrelationEngine engine(config);
 
   // First, report root cause
-  auto root_result = engine.process_fault("ESTOP_001", "CRITICAL");
+  auto root_result = engine.process_fault(rec("ESTOP_001"), "CRITICAL");
   EXPECT_TRUE(root_result.is_root_cause);
 
   // Then report symptom
-  auto symptom_result = engine.process_fault("MOTOR_COMM_FL", "ERROR");
+  auto symptom_result = engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR");
 
   EXPECT_TRUE(symptom_result.should_mute);
   EXPECT_FALSE(symptom_result.is_root_cause);
@@ -151,10 +173,10 @@ TEST_F(CorrelationEngineTest, MultipleSymptomsMuted) {
   auto config = create_hierarchical_config();
   CorrelationEngine engine(config);
 
-  engine.process_fault("ESTOP_001", "CRITICAL");
-  engine.process_fault("MOTOR_COMM_FL", "ERROR");
-  engine.process_fault("MOTOR_COMM_FR", "ERROR");
-  engine.process_fault("DRIVE_FAULT", "ERROR");
+  engine.process_fault(rec("ESTOP_001"), "CRITICAL");
+  engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR");
+  engine.process_fault(rec("MOTOR_COMM_FR"), "ERROR");
+  engine.process_fault(rec("DRIVE_FAULT"), "ERROR");
 
   EXPECT_EQ(3u, engine.get_muted_count());
 }
@@ -164,7 +186,7 @@ TEST_F(CorrelationEngineTest, SymptomBeforeRootCauseNotCorrelated) {
   CorrelationEngine engine(config);
 
   // Report symptom BEFORE root cause
-  auto symptom_result = engine.process_fault("MOTOR_COMM_FL", "ERROR");
+  auto symptom_result = engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR");
 
   // Should NOT be muted (no root cause yet)
   EXPECT_FALSE(symptom_result.should_mute);
@@ -177,11 +199,11 @@ TEST_F(CorrelationEngineTest, SymptomAfterWindowNotCorrelated) {
   CorrelationEngine engine(config);
 
   auto start = std::chrono::steady_clock::now();
-  engine.process_fault("ESTOP_001", "CRITICAL", start);
+  engine.process_fault(rec("ESTOP_001"), "CRITICAL", start);
 
   // Report symptom AFTER window (window is 1000ms)
   auto after_window = start + 1500ms;
-  auto symptom_result = engine.process_fault("MOTOR_COMM_FL", "ERROR", after_window);
+  auto symptom_result = engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR", after_window);
 
   // Should NOT be muted (outside window)
   EXPECT_FALSE(symptom_result.should_mute);
@@ -192,22 +214,56 @@ TEST_F(CorrelationEngineTest, ClearRootCauseClearsSymptoms) {
   auto config = create_hierarchical_config();
   CorrelationEngine engine(config);
 
-  engine.process_fault("ESTOP_001", "CRITICAL");
-  engine.process_fault("MOTOR_COMM_FL", "ERROR");
-  engine.process_fault("MOTOR_COMM_FR", "ERROR");
+  engine.process_fault(rec("ESTOP_001"), "CRITICAL");
+  engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR");
+  engine.process_fault(rec("MOTOR_COMM_FR"), "ERROR");
 
   EXPECT_EQ(2u, engine.get_muted_count());
 
   // Clear root cause
-  auto clear_result = engine.process_clear("ESTOP_001");
+  auto clear_result = engine.process_clear(rec("ESTOP_001"));
 
-  EXPECT_EQ(2u, clear_result.auto_cleared_codes.size());
-  EXPECT_NE(std::find(clear_result.auto_cleared_codes.begin(), clear_result.auto_cleared_codes.end(), "MOTOR_COMM_FL"),
-            clear_result.auto_cleared_codes.end());
-  EXPECT_NE(std::find(clear_result.auto_cleared_codes.begin(), clear_result.auto_cleared_codes.end(), "MOTOR_COMM_FR"),
-            clear_result.auto_cleared_codes.end());
+  EXPECT_EQ(2u, clear_result.auto_cleared_symptoms.size());
+  const auto & symptoms = clear_result.auto_cleared_symptoms;
+  EXPECT_NE(std::find(symptoms.begin(), symptoms.end(), rec("MOTOR_COMM_FL")), symptoms.end());
+  EXPECT_NE(std::find(symptoms.begin(), symptoms.end(), rec("MOTOR_COMM_FR")), symptoms.end());
 
-  // Muted faults should be cleared
+  // Muted records should be cleared
+  EXPECT_EQ(0u, engine.get_muted_count());
+}
+
+// Rules match by code across owners; the relation then holds the exact records.
+TEST_F(CorrelationEngineTest, RootCauseMutesMatchingSymptomsOfAnyOwner) {
+  auto config = create_hierarchical_config();
+  CorrelationEngine engine(config);
+
+  engine.process_fault(rec("ESTOP_001"), "CRITICAL");
+
+  const auto same_owner = engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR");
+  const auto other_owner = engine.process_fault(other("MOTOR_COMM_FL"), "ERROR");
+
+  EXPECT_TRUE(same_owner.should_mute);
+  EXPECT_TRUE(other_owner.should_mute);
+  EXPECT_TRUE(engine.is_muted(rec("MOTOR_COMM_FL")));
+  EXPECT_TRUE(engine.is_muted(other("MOTOR_COMM_FL")));
+  EXPECT_EQ(2u, engine.get_muted_count());
+}
+
+// The cascade acts on exactly the records the root cause muted.
+TEST_F(CorrelationEngineTest, ClearRootCauseCascadesToTheRecordsItMuted) {
+  auto config = create_hierarchical_config();
+  CorrelationEngine engine(config);
+
+  engine.process_fault(rec("ESTOP_001"), "CRITICAL");
+  engine.process_fault(other("MOTOR_COMM_FL"), "ERROR");
+  engine.process_fault(rec("MOTOR_COMM_FR"), "ERROR");
+
+  const auto clear_result = engine.process_clear(rec("ESTOP_001"));
+
+  const auto & symptoms = clear_result.auto_cleared_symptoms;
+  ASSERT_EQ(2u, symptoms.size());
+  EXPECT_NE(std::find(symptoms.begin(), symptoms.end(), other("MOTOR_COMM_FL")), symptoms.end());
+  EXPECT_NE(std::find(symptoms.begin(), symptoms.end(), rec("MOTOR_COMM_FR")), symptoms.end());
   EXPECT_EQ(0u, engine.get_muted_count());
 }
 
@@ -215,8 +271,8 @@ TEST_F(CorrelationEngineTest, UnrelatedFaultNotCorrelated) {
   auto config = create_hierarchical_config();
   CorrelationEngine engine(config);
 
-  engine.process_fault("ESTOP_001", "CRITICAL");
-  auto result = engine.process_fault("SENSOR_TIMEOUT", "ERROR");
+  engine.process_fault(rec("ESTOP_001"), "CRITICAL");
+  auto result = engine.process_fault(rec("SENSOR_TIMEOUT"), "ERROR");
 
   // SENSOR_TIMEOUT doesn't match motor_errors or drive_faults patterns
   EXPECT_FALSE(result.should_mute);
@@ -242,19 +298,19 @@ correlation:
   CorrelationEngine engine(config);
 
   // Report root cause
-  auto root_result = engine.process_fault("ESTOP_001", "CRITICAL");
+  auto root_result = engine.process_fault(rec("ESTOP_001"), "CRITICAL");
   EXPECT_TRUE(root_result.is_root_cause);
 
   // Report symptoms matching inline codes
-  auto motor_result = engine.process_fault("MOTOR_COMM_FL", "ERROR");
+  auto motor_result = engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR");
   EXPECT_TRUE(motor_result.should_mute);
   EXPECT_EQ("ESTOP_001", motor_result.root_cause_code);
 
-  auto drive_result = engine.process_fault("DRIVE_FAULT", "ERROR");
+  auto drive_result = engine.process_fault(rec("DRIVE_FAULT"), "ERROR");
   EXPECT_TRUE(drive_result.should_mute);
 
   // Unrelated fault should not be muted
-  auto sensor_result = engine.process_fault("SENSOR_ERROR", "ERROR");
+  auto sensor_result = engine.process_fault(rec("SENSOR_ERROR"), "ERROR");
   EXPECT_FALSE(sensor_result.should_mute);
 
   EXPECT_EQ(2u, engine.get_muted_count());
@@ -282,13 +338,13 @@ correlation:
   auto config = parse_config_string(yaml);
   CorrelationEngine engine(config);
 
-  engine.process_fault("ESTOP_001", "CRITICAL");
+  engine.process_fault(rec("ESTOP_001"), "CRITICAL");
 
   // Both pattern-matched and inline-matched faults should be muted
-  auto sensor_result = engine.process_fault("SENSOR_TIMEOUT", "ERROR");
+  auto sensor_result = engine.process_fault(rec("SENSOR_TIMEOUT"), "ERROR");
   EXPECT_TRUE(sensor_result.should_mute);
 
-  auto motor_result = engine.process_fault("MOTOR_FAULT", "ERROR");
+  auto motor_result = engine.process_fault(rec("MOTOR_FAULT"), "ERROR");
   EXPECT_TRUE(motor_result.should_mute);
 
   EXPECT_EQ(2u, engine.get_muted_count());
@@ -303,16 +359,16 @@ TEST_F(CorrelationEngineTest, AutoClusterTriggersAtMinCount) {
   CorrelationEngine engine(config);
 
   // Report faults - need 3 for cluster
-  auto r1 = engine.process_fault("MOTOR_COMM_FL", "ERROR");
+  auto r1 = engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR");
   EXPECT_FALSE(r1.should_mute);
   EXPECT_EQ(0u, engine.get_cluster_count());
 
-  auto r2 = engine.process_fault("SENSOR_TIMEOUT", "ERROR");
+  auto r2 = engine.process_fault(rec("SENSOR_TIMEOUT"), "ERROR");
   EXPECT_FALSE(r2.should_mute);
   EXPECT_EQ(0u, engine.get_cluster_count());
 
   // Third fault triggers cluster
-  auto r3 = engine.process_fault("DRIVE_COMM_ERROR", "WARNING");
+  auto r3 = engine.process_fault(rec("DRIVE_COMM_ERROR"), "WARNING");
   // Third fault should be muted (show_as_single=true)
   EXPECT_TRUE(r3.should_mute);
   EXPECT_EQ(1u, engine.get_cluster_count());
@@ -322,8 +378,8 @@ TEST_F(CorrelationEngineTest, AutoClusterNotTriggeredBelowMinCount) {
   auto config = create_auto_cluster_config();
   CorrelationEngine engine(config);
 
-  engine.process_fault("MOTOR_COMM_FL", "ERROR");
-  engine.process_fault("SENSOR_TIMEOUT", "ERROR");
+  engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR");
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "ERROR");
 
   // Only 2 faults, need 3
   EXPECT_EQ(0u, engine.get_cluster_count());
@@ -333,9 +389,9 @@ TEST_F(CorrelationEngineTest, AutoClusterHighestSeverityRepresentative) {
   auto config = create_auto_cluster_config();
   CorrelationEngine engine(config);
 
-  engine.process_fault("MOTOR_COMM_FL", "WARNING");
-  engine.process_fault("SENSOR_TIMEOUT", "CRITICAL");  // Higher severity
-  engine.process_fault("DRIVE_COMM_ERROR", "ERROR");
+  engine.process_fault(rec("MOTOR_COMM_FL"), "WARNING");
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "CRITICAL");  // Higher severity
+  engine.process_fault(rec("DRIVE_COMM_ERROR"), "ERROR");
 
   auto clusters = engine.get_clusters();
   ASSERT_EQ(1u, clusters.size());
@@ -361,8 +417,8 @@ correlation:
   auto config = parse_config_string(yaml);
   CorrelationEngine engine(config);
 
-  engine.process_fault("FIRST_ERROR", "WARNING");
-  engine.process_fault("SECOND_ERROR", "CRITICAL");
+  engine.process_fault(rec("FIRST_ERROR"), "WARNING");
+  engine.process_fault(rec("SECOND_ERROR"), "CRITICAL");
 
   auto clusters = engine.get_clusters();
   ASSERT_EQ(1u, clusters.size());
@@ -375,11 +431,11 @@ TEST_F(CorrelationEngineTest, AutoClusterWindowExpires) {
 
   auto start = std::chrono::steady_clock::now();
 
-  engine.process_fault("MOTOR_COMM_FL", "ERROR", start);
-  engine.process_fault("SENSOR_TIMEOUT", "ERROR", start + 100ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR", start);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "ERROR", start + 100ms);
 
   // Third fault after window (500ms)
-  engine.process_fault("DRIVE_COMM_ERROR", "ERROR", start + 600ms);
+  engine.process_fault(rec("DRIVE_COMM_ERROR"), "ERROR", start + 600ms);
 
   // Cluster should have been reset, so still not at min_count
   // Actually the third fault starts a new pending cluster
@@ -394,10 +450,10 @@ TEST_F(CorrelationEngineTest, CleanupExpiredRemovesPendingRootCauses) {
   auto past = std::chrono::steady_clock::now() - std::chrono::milliseconds(2000);
 
   // Report root cause with old timestamp
-  engine.process_fault("ESTOP_001", "CRITICAL", past);
+  engine.process_fault(rec("ESTOP_001"), "CRITICAL", past);
 
   // Symptom reported NOW should NOT be correlated (root cause expired)
-  auto result = engine.process_fault("MOTOR_COMM_FL", "ERROR");
+  auto result = engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR");
   EXPECT_FALSE(result.should_mute);  // Not muted - root cause window expired
   EXPECT_EQ(0u, engine.get_muted_count());
 
@@ -405,7 +461,7 @@ TEST_F(CorrelationEngineTest, CleanupExpiredRemovesPendingRootCauses) {
   engine.cleanup_expired();
 
   // Another symptom should also not be correlated
-  auto result2 = engine.process_fault("MOTOR_TIMEOUT_RR", "ERROR");
+  auto result2 = engine.process_fault(rec("MOTOR_TIMEOUT_RR"), "ERROR");
   EXPECT_FALSE(result2.should_mute);
   EXPECT_EQ(0u, engine.get_muted_count());
 }
@@ -416,8 +472,8 @@ TEST_F(CorrelationEngineTest, CleanupExpiredRemovesPendingClusters) {
 
   // Create pending cluster with old timestamp
   auto past = std::chrono::steady_clock::now() - std::chrono::milliseconds(1000);
-  engine.process_fault("MOTOR_COMM_FL", "ERROR", past);
-  engine.process_fault("SENSOR_TIMEOUT", "ERROR", past + 10ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR", past);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "ERROR", past + 10ms);
 
   // Cluster should not be active (only 2 faults, need 3)
   EXPECT_EQ(0u, engine.get_cluster_count());
@@ -426,7 +482,7 @@ TEST_F(CorrelationEngineTest, CleanupExpiredRemovesPendingClusters) {
   engine.cleanup_expired();
 
   // New fault should start fresh pending cluster, not join expired one
-  auto result = engine.process_fault("DRIVE_COMM_ERROR", "ERROR");
+  auto result = engine.process_fault(rec("DRIVE_COMM_ERROR"), "ERROR");
   EXPECT_FALSE(result.should_mute);           // First in new cluster
   EXPECT_EQ(0u, engine.get_cluster_count());  // Still not enough
 }
@@ -437,9 +493,9 @@ TEST_F(CorrelationEngineTest, CleanupExpiredDoesNotBreakActiveCluster) {
 
   // Create an active cluster with old timestamps (past the 500ms window)
   auto past = std::chrono::steady_clock::now() - std::chrono::milliseconds(1000);
-  engine.process_fault("MOTOR_COMM_FL", "ERROR", past);
-  engine.process_fault("SENSOR_TIMEOUT", "ERROR", past + 10ms);
-  engine.process_fault("DRIVE_COMM_ERROR", "WARNING", past + 20ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR", past);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "ERROR", past + 10ms);
+  engine.process_fault(rec("DRIVE_COMM_ERROR"), "WARNING", past + 20ms);
 
   // Cluster should be active (3 faults >= min_count=3)
   EXPECT_EQ(1u, engine.get_cluster_count());
@@ -452,7 +508,7 @@ TEST_F(CorrelationEngineTest, CleanupExpiredDoesNotBreakActiveCluster) {
   EXPECT_EQ(1u, engine.get_cluster_count());
 
   // process_clear must still find the active cluster via fault_to_cluster_
-  engine.process_clear("MOTOR_COMM_FL");
+  engine.process_clear(rec("MOTOR_COMM_FL"));
 
   // Cluster should still exist with 2 remaining fault codes and updated representative
   EXPECT_EQ(1u, engine.get_cluster_count());
@@ -472,18 +528,19 @@ TEST_F(CorrelationEngineTest, HierarchicalAndClusterCoexist) {
   CorrelationEngine engine(config);
 
   // Hierarchical: ESTOP_001 -> MOTOR_*
-  engine.process_fault("ESTOP_001", "CRITICAL");
-  auto motor_result = engine.process_fault("MOTOR_COMM_FL", "ERROR");
+  engine.process_fault(rec("ESTOP_001"), "CRITICAL");
+  auto motor_result = engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR");
   EXPECT_TRUE(motor_result.should_mute);
   EXPECT_EQ(1u, engine.get_muted_count());
 
   // Auto-cluster: SENSOR_* (need 2)
-  engine.process_fault("SENSOR_LIDAR", "ERROR");
-  engine.process_fault("SENSOR_IMU", "ERROR");
+  engine.process_fault(rec("SENSOR_LIDAR"), "ERROR");
+  engine.process_fault(rec("SENSOR_IMU"), "ERROR");
   EXPECT_EQ(1u, engine.get_cluster_count());
 
-  // Both should coexist
-  EXPECT_EQ(1u, engine.get_muted_count());    // MOTOR_COMM_FL
+  // Both should coexist: the symptom and the cluster member that is not the representative are muted
+  EXPECT_EQ(2u, engine.get_muted_count());
+  EXPECT_TRUE(engine.is_muted(rec("MOTOR_COMM_FL")));
   EXPECT_EQ(1u, engine.get_cluster_count());  // SENSOR cluster
 }
 
@@ -495,9 +552,9 @@ TEST_F(CorrelationEngineTest, DuplicateFaultCode) {
   auto config = create_hierarchical_config();
   CorrelationEngine engine(config);
 
-  engine.process_fault("ESTOP_001", "CRITICAL");
-  engine.process_fault("MOTOR_COMM_FL", "ERROR");
-  engine.process_fault("MOTOR_COMM_FL", "ERROR");  // Duplicate
+  engine.process_fault(rec("ESTOP_001"), "CRITICAL");
+  engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR");
+  engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR");  // Duplicate
 
   // Should still only have 1 muted fault (no duplicate)
   // Note: current implementation allows duplicates in symptoms list
@@ -521,9 +578,9 @@ TEST_F(CorrelationEngineTest, ClearNonExistentFault) {
   CorrelationEngine engine(config);
 
   // Clear fault that was never reported
-  auto result = engine.process_clear("NONEXISTENT");
+  auto result = engine.process_clear(rec("NONEXISTENT"));
 
-  EXPECT_TRUE(result.auto_cleared_codes.empty());
+  EXPECT_TRUE(result.auto_cleared_symptoms.empty());
 }
 
 TEST_F(CorrelationEngineTest, AutoClusterRetroactiveMuting) {
@@ -550,21 +607,21 @@ correlation:
   auto t0 = std::chrono::steady_clock::now();
 
   // Fault #1 - representative (FIRST policy)
-  auto result1 = engine.process_fault("SENSOR_001", "ERROR", t0);
+  auto result1 = engine.process_fault(rec("SENSOR_001"), "ERROR", t0);
   EXPECT_FALSE(result1.should_mute);  // First fault is representative
   EXPECT_FALSE(result1.cluster_id.empty());
-  EXPECT_TRUE(result1.retroactive_mute_codes.empty());  // Cluster not active yet
+  EXPECT_TRUE(result1.retroactive_mute_ids.empty());  // Cluster not active yet
 
   // Fault #2 - not muted because cluster not active
-  auto result2 = engine.process_fault("SENSOR_002", "ERROR", t0 + std::chrono::milliseconds(10));
+  auto result2 = engine.process_fault(rec("SENSOR_002"), "ERROR", t0 + std::chrono::milliseconds(10));
   EXPECT_FALSE(result2.should_mute);  // Cluster still not active
-  EXPECT_TRUE(result2.retroactive_mute_codes.empty());
+  EXPECT_TRUE(result2.retroactive_mute_ids.empty());
 
   // Fault #3 - triggers cluster activation (min_count=3)
-  auto result3 = engine.process_fault("SENSOR_003", "ERROR", t0 + std::chrono::milliseconds(20));
-  EXPECT_TRUE(result3.should_mute);                      // #3 is muted (not representative)
-  EXPECT_EQ(1u, result3.retroactive_mute_codes.size());  // #2 should be retroactively muted
-  EXPECT_EQ("SENSOR_002", result3.retroactive_mute_codes[0]);
+  auto result3 = engine.process_fault(rec("SENSOR_003"), "ERROR", t0 + std::chrono::milliseconds(20));
+  EXPECT_TRUE(result3.should_mute);                    // #3 is muted (not representative)
+  EXPECT_EQ(1u, result3.retroactive_mute_ids.size());  // #2 should be retroactively muted
+  EXPECT_EQ(rec("SENSOR_002"), result3.retroactive_mute_ids[0]);
 
   // Cluster should be active with 3 faults
   EXPECT_EQ(1u, engine.get_cluster_count());
@@ -584,16 +641,16 @@ TEST_F(CorrelationEngineTest, ClearFaultRemovesFromPendingCluster) {
   auto t0 = std::chrono::steady_clock::now();
 
   // Add 2 faults (below min_count=3), creating a pending cluster
-  engine.process_fault("MOTOR_COMM_FL", "ERROR", t0);
-  engine.process_fault("SENSOR_TIMEOUT", "ERROR", t0 + 10ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR", t0);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "ERROR", t0 + 10ms);
   EXPECT_EQ(0u, engine.get_cluster_count());  // Still pending
 
   // Clear one of the faults
-  engine.process_clear("MOTOR_COMM_FL");
+  engine.process_clear(rec("MOTOR_COMM_FL"));
 
   // Now add a third fault - should NOT activate the cluster because
   // the cleared fault was removed from pending, so only 2 faults total
-  engine.process_fault("DRIVE_COMM_ERROR", "ERROR", t0 + 20ms);
+  engine.process_fault(rec("DRIVE_COMM_ERROR"), "ERROR", t0 + 20ms);
   EXPECT_EQ(0u, engine.get_cluster_count());  // Still not enough
 }
 
@@ -620,15 +677,15 @@ correlation:
   auto t0 = std::chrono::steady_clock::now();
 
   // Add 2 faults, creating a pending cluster
-  engine.process_fault("FIRST_ERROR", "CRITICAL", t0);
-  engine.process_fault("SECOND_ERROR", "ERROR", t0 + 10ms);
+  engine.process_fault(rec("FIRST_ERROR"), "CRITICAL", t0);
+  engine.process_fault(rec("SECOND_ERROR"), "ERROR", t0 + 10ms);
 
   // Clear the representative (first fault)
-  engine.process_clear("FIRST_ERROR");
+  engine.process_clear(rec("FIRST_ERROR"));
 
   // Add 2 more faults to reach min_count (SECOND_ERROR + 2 new = 3)
-  engine.process_fault("THIRD_ERROR", "ERROR", t0 + 20ms);
-  engine.process_fault("FOURTH_ERROR", "ERROR", t0 + 30ms);
+  engine.process_fault(rec("THIRD_ERROR"), "ERROR", t0 + 20ms);
+  engine.process_fault(rec("FOURTH_ERROR"), "ERROR", t0 + 30ms);
 
   EXPECT_EQ(1u, engine.get_cluster_count());
   auto clusters = engine.get_clusters();
@@ -645,16 +702,16 @@ TEST_F(CorrelationEngineTest, ClearAllFaultsRemovesPendingCluster) {
   auto t0 = std::chrono::steady_clock::now();
 
   // Add 2 faults
-  engine.process_fault("MOTOR_COMM_FL", "ERROR", t0);
-  engine.process_fault("SENSOR_TIMEOUT", "ERROR", t0 + 10ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR", t0);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "ERROR", t0 + 10ms);
 
   // Clear both
-  engine.process_clear("MOTOR_COMM_FL");
-  engine.process_clear("SENSOR_TIMEOUT");
+  engine.process_clear(rec("MOTOR_COMM_FL"));
+  engine.process_clear(rec("SENSOR_TIMEOUT"));
 
   // Adding 2 new faults should start a fresh pending cluster, not join old one
-  engine.process_fault("DRIVE_COMM_NEW", "ERROR", t0 + 100ms);
-  engine.process_fault("MOTOR_COMM_NEW", "ERROR", t0 + 110ms);
+  engine.process_fault(rec("DRIVE_COMM_NEW"), "ERROR", t0 + 100ms);
+  engine.process_fault(rec("MOTOR_COMM_NEW"), "ERROR", t0 + 110ms);
   EXPECT_EQ(0u, engine.get_cluster_count());  // Still 2 faults, below min_count=3
 }
 
@@ -684,9 +741,9 @@ correlation:
 
   auto t0 = std::chrono::steady_clock::now();
 
-  engine.process_fault("FIRST_ERROR", "WARNING", t0);
-  engine.process_fault("SECOND_ERROR", "ERROR", t0 + 10ms);
-  engine.process_fault("THIRD_ERROR", "CRITICAL", t0 + 20ms);
+  engine.process_fault(rec("FIRST_ERROR"), "WARNING", t0);
+  engine.process_fault(rec("SECOND_ERROR"), "ERROR", t0 + 10ms);
+  engine.process_fault(rec("THIRD_ERROR"), "CRITICAL", t0 + 20ms);
 
   EXPECT_EQ(1u, engine.get_cluster_count());
   auto clusters = engine.get_clusters();
@@ -694,7 +751,7 @@ correlation:
   EXPECT_EQ("THIRD_ERROR", clusters[0].representative_code);
   EXPECT_EQ("CRITICAL", clusters[0].representative_severity);
 
-  engine.process_clear("THIRD_ERROR");
+  engine.process_clear(rec("THIRD_ERROR"));
 
   clusters = engine.get_clusters();
   ASSERT_EQ(1u, clusters.size());
@@ -713,9 +770,9 @@ TEST_F(CorrelationEngineTest, ClearHighestSeverityRepresentativeReassigns) {
   auto t0 = std::chrono::steady_clock::now();
 
   // WARNING, CRITICAL (rep), ERROR
-  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
-  engine.process_fault("SENSOR_TIMEOUT", "CRITICAL", t0 + 10ms);
-  engine.process_fault("DRIVE_COMM_ERROR", "ERROR", t0 + 20ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "WARNING", t0);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "CRITICAL", t0 + 10ms);
+  engine.process_fault(rec("DRIVE_COMM_ERROR"), "ERROR", t0 + 20ms);
 
   // SENSOR_TIMEOUT is representative (highest severity)
   auto clusters = engine.get_clusters();
@@ -723,7 +780,7 @@ TEST_F(CorrelationEngineTest, ClearHighestSeverityRepresentativeReassigns) {
   EXPECT_EQ("SENSOR_TIMEOUT", clusters[0].representative_code);
 
   // Clear the representative
-  engine.process_clear("SENSOR_TIMEOUT");
+  engine.process_clear(rec("SENSOR_TIMEOUT"));
 
   // Remaining: WARNING, ERROR -> ERROR should become new representative
   clusters = engine.get_clusters();
@@ -742,8 +799,8 @@ TEST_F(CorrelationEngineTest, CleanupExpiredRemovesFaultToClusterEntries) {
 
   // Create pending cluster with old timestamp
   auto past = std::chrono::steady_clock::now() - std::chrono::milliseconds(1000);
-  engine.process_fault("MOTOR_COMM_FL", "ERROR", past);
-  engine.process_fault("SENSOR_TIMEOUT", "ERROR", past + 10ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR", past);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "ERROR", past + 10ms);
   EXPECT_EQ(0u, engine.get_cluster_count());
 
   // Cleanup removes expired pending cluster
@@ -753,9 +810,9 @@ TEST_F(CorrelationEngineTest, CleanupExpiredRemovesFaultToClusterEntries) {
   // If fault_to_cluster_ was NOT cleaned, these would try to join
   // a non-existent cluster instead of creating a new one.
   auto t1 = std::chrono::steady_clock::now();
-  engine.process_fault("MOTOR_COMM_FL", "ERROR", t1);
-  engine.process_fault("SENSOR_TIMEOUT", "ERROR", t1 + 10ms);
-  engine.process_fault("DRIVE_COMM_ERROR", "ERROR", t1 + 20ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "ERROR", t1);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "ERROR", t1 + 10ms);
+  engine.process_fault(rec("DRIVE_COMM_ERROR"), "ERROR", t1 + 20ms);
 
   // Should form a NEW cluster with all 3 faults
   EXPECT_EQ(1u, engine.get_cluster_count());
@@ -771,18 +828,18 @@ TEST_F(CorrelationEngineTest, ClearRepresentativeAfterNewWindowReplacesPendingRe
   auto t0 = std::chrono::steady_clock::now();
 
   // Activate first cluster: SENSOR_TIMEOUT (CRITICAL) is representative
-  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
-  engine.process_fault("SENSOR_TIMEOUT", "CRITICAL", t0 + 10ms);
-  engine.process_fault("DRIVE_COMM_ERROR", "ERROR", t0 + 20ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "WARNING", t0);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "CRITICAL", t0 + 10ms);
+  engine.process_fault(rec("DRIVE_COMM_ERROR"), "ERROR", t0 + 20ms);
   ASSERT_EQ(1u, engine.get_cluster_count());
 
   // After window_ms (500ms), a new fault starts a fresh pending cluster for the same rule,
   // replacing pending_clusters_["comm_storm"]
-  engine.process_fault("OTHER_COMM_ERROR", "WARNING", t0 + 600ms);
+  engine.process_fault(rec("OTHER_COMM_ERROR"), "WARNING", t0 + 600ms);
 
   // Clearing the representative of the first active cluster must still reassign
   // its representative to the next-highest remaining fault (DRIVE_COMM_ERROR)
-  engine.process_clear("SENSOR_TIMEOUT");
+  engine.process_clear(rec("SENSOR_TIMEOUT"));
 
   auto clusters = engine.get_clusters();
   ASSERT_EQ(1u, clusters.size());
@@ -798,20 +855,20 @@ TEST_F(CorrelationEngineTest, ReReportRepresentativeAfterWindowAndClearReassigns
   auto t0 = std::chrono::steady_clock::now();
 
   // Activate cluster: SENSOR_TIMEOUT (CRITICAL) is representative
-  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
-  engine.process_fault("SENSOR_TIMEOUT", "CRITICAL", t0 + 10ms);
-  engine.process_fault("DRIVE_COMM_ERROR", "ERROR", t0 + 20ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "WARNING", t0);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "CRITICAL", t0 + 10ms);
+  engine.process_fault(rec("DRIVE_COMM_ERROR"), "ERROR", t0 + 20ms);
   ASSERT_EQ(1u, engine.get_cluster_count());
   const auto active_id = engine.get_clusters()[0].cluster_id;
 
   // Re-report the representative after window_ms (500ms); it must stay in the active cluster
   // rather than starting a new pending cluster and overwriting fault_to_cluster_
-  auto rereport = engine.process_fault("SENSOR_TIMEOUT", "CRITICAL", t0 + 600ms);
+  auto rereport = engine.process_fault(rec("SENSOR_TIMEOUT"), "CRITICAL", t0 + 600ms);
   EXPECT_EQ(active_id, rereport.cluster_id);
   EXPECT_FALSE(rereport.should_mute);
 
   // Clearing the representative must still update the active cluster
-  engine.process_clear("SENSOR_TIMEOUT");
+  engine.process_clear(rec("SENSOR_TIMEOUT"));
 
   auto clusters = engine.get_clusters();
   ASSERT_EQ(1u, clusters.size());
@@ -827,18 +884,18 @@ TEST_F(CorrelationEngineTest, ClearBelowMinCountInWindowThenNewFaultJoinsUpdates
   auto t0 = std::chrono::steady_clock::now();
 
   // Activate cluster with 3 faults: SENSOR_TIMEOUT (CRITICAL) is representative
-  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
-  engine.process_fault("SENSOR_TIMEOUT", "CRITICAL", t0 + 10ms);
-  engine.process_fault("DRIVE_COMM_ERROR", "WARNING", t0 + 20ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "WARNING", t0);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "CRITICAL", t0 + 10ms);
+  engine.process_fault(rec("DRIVE_COMM_ERROR"), "WARNING", t0 + 20ms);
   ASSERT_EQ(1u, engine.get_cluster_count());
 
   // Clear 2 members inside the window so the cluster holds only 1 code (< min_count)
-  engine.process_clear("MOTOR_COMM_FL");
-  engine.process_clear("DRIVE_COMM_ERROR");
+  engine.process_clear(rec("MOTOR_COMM_FL"));
+  engine.process_clear(rec("DRIVE_COMM_ERROR"));
   ASSERT_EQ(1u, engine.get_cluster_count());
 
   // A new code joins inside the window while cluster size (2) is still below min_count (3)
-  auto join_res = engine.process_fault("NEW_COMM_ERROR", "ERROR", t0 + 50ms);
+  auto join_res = engine.process_fault(rec("NEW_COMM_ERROR"), "ERROR", t0 + 50ms);
   EXPECT_TRUE(join_res.should_mute);
 
   auto clusters = engine.get_clusters();
@@ -846,7 +903,7 @@ TEST_F(CorrelationEngineTest, ClearBelowMinCountInWindowThenNewFaultJoinsUpdates
   EXPECT_EQ(2u, clusters[0].fault_codes.size());
 
   // Clearing the original representative must reassign to the newly joined code
-  engine.process_clear("SENSOR_TIMEOUT");
+  engine.process_clear(rec("SENSOR_TIMEOUT"));
 
   clusters = engine.get_clusters();
   ASSERT_EQ(1u, clusters.size());
@@ -860,12 +917,12 @@ TEST_F(CorrelationEngineTest, ReReportActiveMemberWithHigherSeverityInWindowBeco
   CorrelationEngine engine(config);
 
   auto t0 = std::chrono::steady_clock::now();
-  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
-  engine.process_fault("SENSOR_TIMEOUT", "ERROR", t0 + 10ms);
-  engine.process_fault("DRIVE_COMM_ERROR", "WARNING", t0 + 20ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "WARNING", t0);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "ERROR", t0 + 10ms);
+  engine.process_fault(rec("DRIVE_COMM_ERROR"), "WARNING", t0 + 20ms);
   ASSERT_EQ(1u, engine.get_cluster_count());
 
-  auto res = engine.process_fault("MOTOR_COMM_FL", "CRITICAL", t0 + 30ms);
+  auto res = engine.process_fault(rec("MOTOR_COMM_FL"), "CRITICAL", t0 + 30ms);
   EXPECT_FALSE(res.should_mute);
 
   auto clusters = engine.get_clusters();
@@ -879,12 +936,12 @@ TEST_F(CorrelationEngineTest, ReReportActiveMemberWithHigherSeverityAfterWindowB
   CorrelationEngine engine(config);
 
   auto t0 = std::chrono::steady_clock::now();
-  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
-  engine.process_fault("SENSOR_TIMEOUT", "ERROR", t0 + 10ms);
-  engine.process_fault("DRIVE_COMM_ERROR", "WARNING", t0 + 20ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "WARNING", t0);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "ERROR", t0 + 10ms);
+  engine.process_fault(rec("DRIVE_COMM_ERROR"), "WARNING", t0 + 20ms);
   ASSERT_EQ(1u, engine.get_cluster_count());
 
-  auto res = engine.process_fault("MOTOR_COMM_FL", "CRITICAL", t0 + 600ms);
+  auto res = engine.process_fault(rec("MOTOR_COMM_FL"), "CRITICAL", t0 + 600ms);
   EXPECT_FALSE(res.should_mute);
 
   auto clusters = engine.get_clusters();
@@ -898,12 +955,12 @@ TEST_F(CorrelationEngineTest, ReReportRepresentativeWithLowerSeverityHandsOverRe
   CorrelationEngine engine(config);
 
   auto t0 = std::chrono::steady_clock::now();
-  engine.process_fault("MOTOR_COMM_FL", "WARNING", t0);
-  engine.process_fault("SENSOR_TIMEOUT", "CRITICAL", t0 + 10ms);
-  engine.process_fault("DRIVE_COMM_ERROR", "ERROR", t0 + 20ms);
+  engine.process_fault(rec("MOTOR_COMM_FL"), "WARNING", t0);
+  engine.process_fault(rec("SENSOR_TIMEOUT"), "CRITICAL", t0 + 10ms);
+  engine.process_fault(rec("DRIVE_COMM_ERROR"), "ERROR", t0 + 20ms);
   ASSERT_EQ(1u, engine.get_cluster_count());
 
-  auto res = engine.process_fault("SENSOR_TIMEOUT", "WARNING", t0 + 600ms);
+  auto res = engine.process_fault(rec("SENSOR_TIMEOUT"), "WARNING", t0 + 600ms);
   EXPECT_TRUE(res.should_mute);
 
   auto clusters = engine.get_clusters();

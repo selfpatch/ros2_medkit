@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cinttypes>
 #include <filesystem>
+#include <map>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -332,10 +333,10 @@ void reclassify_stale_healed(FaultStorage & storage, const FaultCodeThresholdRes
     if (!reclassified.empty()) {
       if (audit_enabled) {
         const int64_t reclassified_at_ns = wall_clock_ns();
-        for (const auto & fault_code : reclassified) {
-          auto fault = storage.get_fault(fault_code);
+        for (const auto & id : reclassified) {
+          auto fault = storage.get_fault(id);
           if (fault) {
-            audit(*fault, reclassified_at_ns);
+            audit(id, *fault, reclassified_at_ns);
           }
         }
       }
@@ -346,6 +347,51 @@ void reclassify_stale_healed(FaultStorage & storage, const FaultCodeThresholdRes
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     logf(sink, LogLevel::kWarn, logger, "Startup HEALED reclassification not done, fault storage unavailable: %s",
          e.what());
+  }
+}
+
+void warn_on_identity_mode_mismatch(FaultStorage & storage, const FaultCodeThresholdResolver * fault_code_resolver,
+                                    LogSink & sink, const std::string & logger) {
+  std::vector<FaultEntry> entries;
+  try {
+    entries = storage.list_fault_entries(false, 0,
+                                         {fd::fault_status::kPrefailed, fd::fault_status::kPrepassed,
+                                          fd::fault_status::kConfirmed, fd::fault_status::kHealed});
+  } catch (const FaultStorage::IgnorableConnectionException & e) {
+    logf(sink, LogLevel::kWarn, logger, "Startup identity check not done, fault storage unavailable: %s", e.what());
+    return;
+  }
+
+  // Owners of the active records of each code, and whether any of them disagrees with the configured mode.
+  struct CodeState {
+    std::vector<std::string> owners;
+    bool mismatch{false};
+  };
+  std::map<std::string, CodeState> codes;
+  for (const auto & entry : entries) {
+    const bool per_source = fault_code_resolver != nullptr && fault_code_resolver->per_source(entry.id.fault_code);
+    auto & state = codes[entry.id.fault_code];
+    state.owners.push_back(entry.id.owner);
+    if ((entry.id.owner == kSharedOwner) == per_source) {
+      state.mismatch = true;
+    }
+  }
+
+  for (const auto & [code, state] : codes) {
+    if (!state.mismatch) {
+      continue;
+    }
+    const bool per_source = fault_code_resolver != nullptr && fault_code_resolver->per_source(code);
+    std::string owners;
+    for (const auto & owner : state.owners) {
+      owners += (owners.empty() ? "" : ", ") + owner;
+    }
+    logf(sink, LogLevel::kWarn, logger,
+         "Fault code '%s' is configured %s but holds active records owned by (%s). Stored records keep the identity "
+         "they were written with; new reports go into the configured one.",
+         code.c_str(),
+         per_source ? "per_source: one record per reporting source" : "shared: one record for all sources",
+         owners.c_str());
   }
 }
 

@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "ros2_medkit_fault_manager/core/log_sink.hpp"
+#include "ros2_medkit_fault_manager/fault_storage.hpp"
 
 namespace ros2_medkit_fault_manager {
 
@@ -46,7 +47,7 @@ enum class EnqueueResult {
 
 struct EnqueueOutcome {
   EnqueueResult result;
-  std::optional<std::string> evicted_code;  ///< Set only for kEvictedOldest.
+  std::optional<FaultId> evicted_id;  ///< Set only for kEvictedOldest.
 };
 
 /// Bounded worker pool that runs fault-capture jobs off the service thread.
@@ -64,7 +65,7 @@ class CaptureThreadPool {
   ///        for pool_size concurrent calls. Exceptions are caught and logged.
   /// @param logger_name  Logger name of the lines written to @p log.
   CaptureThreadPool(std::size_t pool_size, std::size_t queue_depth, QueueFullPolicy full_policy, core::LogSink & log,
-                    std::function<void(const std::string &)> capture_fn, std::string logger_name = "fault_manager");
+                    std::function<void(const FaultId &)> capture_fn, std::string logger_name = "fault_manager");
   ~CaptureThreadPool();
 
   CaptureThreadPool(const CaptureThreadPool &) = delete;
@@ -72,8 +73,8 @@ class CaptureThreadPool {
   CaptureThreadPool(CaptureThreadPool &&) = delete;
   CaptureThreadPool & operator=(CaptureThreadPool &&) = delete;
 
-  /// Enqueue a capture job. Non-blocking. Thread-safe.
-  EnqueueOutcome enqueue(const std::string & fault_code);
+  /// Enqueue a capture job for one fault record. Non-blocking. Thread-safe.
+  EnqueueOutcome enqueue(const FaultId & id);
 
   /// Stop accepting work, let in-flight jobs finish, discard pending, join all
   /// workers. Idempotent and noexcept. Called by the destructor.
@@ -94,11 +95,11 @@ class CaptureThreadPool {
   const QueueFullPolicy full_policy_;
   core::LogSink & log_;
   std::string logger_name_;
-  std::function<void(const std::string &)> capture_fn_;
+  std::function<void(const FaultId &)> capture_fn_;
 
   mutable std::mutex queue_mutex_;
   std::condition_variable cv_;
-  std::deque<std::string> queue_;
+  std::deque<FaultId> queue_;
   bool stop_{false};
 
   std::atomic<uint64_t> dropped_captures_{0};

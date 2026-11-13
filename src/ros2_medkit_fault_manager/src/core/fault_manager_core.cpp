@@ -21,7 +21,7 @@
 #include <cinttypes>
 #include <cmath>
 #include <cstdint>
-#include <unordered_set>
+#include <tuple>
 #include <utility>
 
 namespace ros2_medkit_fault_manager::core {
@@ -58,6 +58,22 @@ int64_t next_due_ns(int64_t due, int64_t now, int64_t period_ns) {
     return INT64_MAX;
   }
   return due + k * period_ns;
+}
+
+/// Name of a Fault.msg SEVERITY_* value, as the constants spell it.
+const char * severity_name(uint8_t severity) {
+  switch (severity) {
+    case fd::severity::kInfo:
+      return "INFO";
+    case fd::severity::kWarn:
+      return "WARN";
+    case fd::severity::kError:
+      return "ERROR";
+    case fd::severity::kCritical:
+      return "CRITICAL";
+    default:
+      return "UNKNOWN";
+  }
 }
 
 std::string extract_topic_name(const std::string & topic_path) {
@@ -125,9 +141,10 @@ ReportOutcome FaultManagerCore::report(const fd::FaultReport & report) {
   return report_locked(report);
 }
 
-ClearOutcome FaultManagerCore::clear(const std::string & code, bool skip_correlation_auto_clear) {
+ClearOutcome FaultManagerCore::clear(const std::string & code, const std::string & source_id,
+                                     bool skip_correlation_auto_clear) {
   std::lock_guard<std::mutex> lock(mutex_);
-  return clear_locked(code, skip_correlation_auto_clear);
+  return clear_locked(code, source_id, skip_correlation_auto_clear);
 }
 
 ListOutcome FaultManagerCore::list(const ListQuery & query) {
@@ -135,12 +152,12 @@ ListOutcome FaultManagerCore::list(const ListQuery & query) {
   return list_locked(query);
 }
 
-FaultDetail FaultManagerCore::get(const std::string & code) {
+FaultDetail FaultManagerCore::get(const std::string & code, const std::string & source_id) {
   std::vector<std::pair<size_t, std::string>> rosbag_paths;
   FaultDetail detail;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    detail = get_locked(code, rosbag_paths);
+    detail = get_locked(code, source_id, rosbag_paths);
   }
   // Reads metadata.yaml per recording; outside the lock so fault reports do not wait on disk.
   for (const auto & [index, path] : rosbag_paths) {
@@ -148,6 +165,68 @@ FaultDetail FaultManagerCore::get(const std::string & code) {
     entry.size_bytes = rosbag_served_bytes(path, entry.size_bytes);
   }
   return detail;
+}
+
+std::optional<FaultId> FaultManagerCore::resolve_target(const std::string & fault_code, const std::string & source_id,
+                                                        std::string & error) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return resolve_target_locked(fault_code, source_id, error);
+}
+
+std::optional<FaultId> FaultManagerCore::resolve_target_locked(const std::string & fault_code,
+                                                               const std::string & source_id, std::string & error) {
+  error.clear();
+
+  try {
+    if (!source_id.empty()) {
+      // The record the id owns, which is how a shared record (owner `*`) is addressed. Otherwise the
+      // record this source reports into, so a client that only knows a reporting source reaches the
+      // shared record of a default code.
+      FaultId id{fault_code, source_id};
+      if (storage_->contains(id)) {
+        return id;
+      }
+      id = record_id_for(fault_code, source_id);
+      if (!storage_->contains(id)) {
+        error = "Fault not found: " + fault_code + " (source " + source_id + ")";
+        return std::nullopt;
+      }
+      return id;
+    }
+
+    // Unscoped. One record: the call means that record. Several: refuse rather than
+    // pick, because acting on an arbitrary record is the failure the per-source choice
+    // exists to avoid, and the caller cannot tell which one it got.
+    const auto candidates = storage_->get_ids_by_code(fault_code);
+    if (candidates.empty()) {
+      error = "Fault not found: " + fault_code;
+      return std::nullopt;
+    }
+    if (candidates.size() > 1) {
+      std::string owners;
+      for (const auto & candidate : candidates) {
+        if (!owners.empty()) {
+          owners += ", ";
+        }
+        owners += candidate.owner;
+      }
+      error = "ambiguous: " + fault_code + " has " + std::to_string(candidates.size()) + " records, owned by (" +
+              owners + "). Set source_id to pick one.";
+      return std::nullopt;
+    }
+    return candidates.front();
+  } catch (const FaultStorage::IgnorableConnectionException & e) {
+    logf(log_, LogLevel::kWarn, config_.logger_name, "Failed to connect with the fault storage server: %s", e.what());
+    error = storage_unavailable(e);
+    return std::nullopt;
+  }
+}
+
+FaultId FaultManagerCore::record_id_for(const std::string & fault_code, const std::string & source_id) const {
+  if (fault_code_resolver_ && fault_code_resolver_->per_source(fault_code)) {
+    return FaultId{fault_code, source_id};
+  }
+  return FaultId{fault_code, kSharedOwner};
 }
 
 std::vector<fd::FaultRecord> FaultManagerCore::list_for_entity(const std::string & entity_id) {
@@ -161,10 +240,10 @@ std::vector<fd::FaultRecord> FaultManagerCore::list_for_entity(const std::string
   return result;
 }
 
-void FaultManagerCore::record_transition(const char * transition, const fd::FaultRecord & fault,
+void FaultManagerCore::record_transition(const char * transition, const fd::FaultRecord & fault, const FaultId & id,
                                          const std::string & source_id, int64_t occurred_at_ns) {
   std::lock_guard<std::mutex> lock(mutex_);
-  audit_transition(transition, fault, source_id, occurred_at_ns);
+  audit_transition(transition, fault, id, source_id, occurred_at_ns);
 }
 
 void FaultManagerCore::tick(int64_t wall_now_ns) {
@@ -198,7 +277,7 @@ void FaultManagerCore::run_auto_confirm(int64_t wall_now_ns) {
     logf(log_, LogLevel::kWarn, logger, "Failed to connect with the fault storage server: %s", e.what());
   };
 
-  std::vector<std::string> confirmed;
+  std::vector<FaultId> confirmed;
   try {
     confirmed = storage_->check_time_based_confirmation(wall_now_ns);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
@@ -209,10 +288,10 @@ void FaultManagerCore::run_auto_confirm(int64_t wall_now_ns) {
     return;
   }
   // Audit every timer-driven PREFAILED->CONFIRMED transition, or the audit log's verify() cannot see it.
-  for (const auto & fault_code : confirmed) {
+  for (const auto & id : confirmed) {
     std::optional<fd::FaultRecord> fault;
     try {
-      fault = storage_->get_fault(fault_code);
+      fault = storage_->get_fault(id);
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       connection_lost(e);
       return;
@@ -220,18 +299,18 @@ void FaultManagerCore::run_auto_confirm(int64_t wall_now_ns) {
     if (!fault) {
       continue;
     }
-    audit_transition(kTransitionConfirmed, *fault, "auto_confirm_timer", wall_now_ns);
+    audit_transition(kTransitionConfirmed, *fault, id, kAuditSourceAutoConfirm, wall_now_ns);
     // Same rules as the report path: a symptom muted by a root cause is not announced, and the
     // capture is not gated by muting.
-    if (!correlation_ || !correlation_->is_muted(fault_code)) {
+    if (!correlation_ || !correlation_->is_muted(id)) {
       publish_event(fd::fault_event_type::kConfirmed, *fault);
     }
-    capture_on_confirm(fault_code);
+    capture_on_confirm(id);
   }
   logf(log_, LogLevel::kInfo, logger, "Auto-confirmed %zu PREFAILED fault(s) due to time threshold", confirmed.size());
 }
 
-void FaultManagerCore::capture_on_confirm(const std::string & code) {
+void FaultManagerCore::capture_on_confirm(const FaultId & id) {
   const double cooldown_sec = config_.snapshots_recapture_cooldown_sec;
   const bool cooldown_enabled = cooldown_sec > 0.0;
   const auto cooldown = std::chrono::duration<double>(cooldown_sec);
@@ -246,23 +325,24 @@ void FaultManagerCore::capture_on_confirm(const std::string & code) {
         ++it;
       }
     }
-    if (last_capture_times_.find(code) != last_capture_times_.end()) {
-      logf(log_, LogLevel::kDebug, config_.logger_name, "Skipping capture for '%s' - cooldown active", code.c_str());
+    if (last_capture_times_.find(id) != last_capture_times_.end()) {
+      logf(log_, LogLevel::kDebug, config_.logger_name, "Skipping capture for '%s' (source %s) - cooldown active",
+           id.fault_code.c_str(), id.owner.c_str());
       return;
     }
   }
 
-  const CaptureResult outcome = hooks_.capture_now(code);
+  const CaptureResult outcome = hooks_.capture_now(id);
   if (!cooldown_enabled) {
     return;
   }
   switch (outcome.result) {
     case CaptureEnqueue::kAccepted:
-      last_capture_times_[code] = now;
+      last_capture_times_[id] = now;
       break;
     case CaptureEnqueue::kEvictedOldest:
-      last_capture_times_[code] = now;
-      last_capture_times_.erase(outcome.evicted_code);  // keeps the evicted fault retriable
+      last_capture_times_[id] = now;
+      last_capture_times_.erase(outcome.evicted_id);  // keeps the evicted record retriable
       break;
     case CaptureEnqueue::kDroppedNewest:  // not recorded: a later re-confirmation may still capture
     case CaptureEnqueue::kShuttingDown:
@@ -318,14 +398,22 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
     return reject("source_id cannot be empty");
   }
 
+  if (report.source_id == kSharedOwner) {
+    logf(log_, LogLevel::kWarn, logger, "ReportFault rejected: source_id '%s' is reserved", kSharedOwner);
+    return reject(std::string("source_id '") + kSharedOwner + "' is reserved");
+  }
+
   const auto connection_lost = [&](const FaultStorage::IgnorableConnectionException & e) {
     logf(log_, LogLevel::kWarn, logger, "Failed to connect with the fault storage server: %s", e.what());
   };
 
-  // Get status before update (if fault exists)
+  // The record this report goes into: the source's own for a per_source code, else the code's shared one.
+  const FaultId id = record_id_for(report.fault_code, report.source_id);
+
+  // Get status before update (if the record exists)
   std::optional<fd::FaultRecord> fault_before;
   try {
-    fault_before = storage_->get_fault(report.fault_code);
+    fault_before = storage_->get_fault(id);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     connection_lost(e);
     return outcome;
@@ -339,8 +427,8 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
   const int64_t event_time_ns = clock_.now_ns();
   bool is_new = false;
   try {
-    is_new = storage_->report_fault_event(report.fault_code, report.kind, report.severity, report.description,
-                                          report.source_id, event_time_ns, resolved_config);
+    is_new = storage_->report_fault_event(id, report.kind, report.severity, report.description, report.source_id,
+                                          event_time_ns, resolved_config);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     connection_lost(e);
     return outcome;
@@ -348,25 +436,29 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
 
   outcome.accepted = true;
 
-  // Get updated fault state to publish event
+  // Only a per-source record confirms on its stored severity, so only there a lower report needs explaining.
+  if (fault_before && failed && id.owner != kSharedOwner && report.severity != fault_before->severity) {
+    warn_severity_mismatch(report, fault_before->severity);
+  }
+
+  // Get updated record state to publish event
   std::optional<fd::FaultRecord> fault_after;
   try {
-    fault_after = storage_->get_fault(report.fault_code);
+    fault_after = storage_->get_fault(id);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     connection_lost(e);
     return outcome;
   }
 
   if (fault_after) {
-    // Only for codes the store holds: a PASSED for an unknown code writes nothing, so it must
+    // Only for records the store holds: a PASSED for an unknown record writes nothing, so it must
     // not add an entry here either (the diagnostic bridge sends PASSED for every OK status).
-    warn_on_conflicting_debounce_policy(report.fault_code, report.source_id, resolved_config);
+    warn_on_conflicting_debounce_policy(id, report.source_id, resolved_config);
 
     // Process through correlation engine (if enabled). Only FAILED events correlate.
     bool should_mute = false;
     if (correlation_ && failed) {
-      auto correlation_result =
-          correlation_->process_fault(report.fault_code, correlation::severity_to_string(report.severity));
+      auto correlation_result = correlation_->process_fault(id, correlation::severity_to_string(report.severity));
 
       should_mute = correlation_result.should_mute;
 
@@ -381,9 +473,9 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
         logf(log_, LogLevel::kDebug, logger, "Fault %s added to cluster %s", report.fault_code.c_str(),
              correlation_result.cluster_id.c_str());
         // Log retroactively muted faults when cluster becomes active
-        if (!correlation_result.retroactive_mute_codes.empty()) {
+        if (!correlation_result.retroactive_mute_ids.empty()) {
           logf(log_, LogLevel::kDebug, logger, "Cluster %s activated: retroactively muting %zu faults",
-               correlation_result.cluster_id.c_str(), correlation_result.retroactive_mute_codes.size());
+               correlation_result.cluster_id.c_str(), correlation_result.retroactive_mute_ids.size());
         }
       }
     }
@@ -404,8 +496,8 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
       }
       just_confirmed = true;
     } else if (!is_new && fault_after->status == fd::fault_status::kConfirmed) {
-      // Fault was already CONFIRMED, data updated (last_occurred, severity, sources).
-      // Not occurrence_count: a re-report inside one occurrence does not touch it.
+      // Record was already CONFIRMED, data updated (last_occurred, severity, reporting_sources). Not
+      // occurrence_count: a re-report inside one occurrence does not touch it.
       if (!should_mute) {
         publish_event(fd::fault_event_type::kUpdated, *fault_after);
       }
@@ -424,23 +516,27 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
     // an acknowledged clear.
     if (just_healed) {
       publish_event(fd::fault_event_type::kCleared, *fault_after);
+      // A healed record has ended: its muted symptoms are unmuted and keep their status.
+      if (correlation_) {
+        correlation_->process_clear(id);
+      }
     }
 
     // Append tamper-evident audit records for the transitions that just happened.
     // Recorded regardless of correlation muting: muting affects display, not the
     // fact that the state transition occurred.
     if (is_new) {
-      audit_transition(kTransitionOccurred, *fault_after, report.source_id, event_time_ns);
+      audit_transition(kTransitionOccurred, *fault_after, id, report.source_id, event_time_ns);
     }
     if (just_confirmed) {
-      audit_transition(kTransitionConfirmed, *fault_after, report.source_id, event_time_ns);
+      audit_transition(kTransitionConfirmed, *fault_after, id, report.source_id, event_time_ns);
     }
     if (just_healed) {
-      audit_transition(kTransitionHealed, *fault_after, "auto_heal", event_time_ns);
+      audit_transition(kTransitionHealed, *fault_after, id, kAuditSourceAutoHeal, event_time_ns);
     }
 
     if (just_confirmed) {
-      capture_on_confirm(report.fault_code);
+      capture_on_confirm(id);
     }
 
     // PREFAILED starts the lazy_start rosbag capture
@@ -448,7 +544,7 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
                           (!is_new && status_before != fd::fault_status::kPrefailed &&
                            fault_after->status == fd::fault_status::kPrefailed);
     if (just_prefailed) {
-      hooks_.on_prefailed(report.fault_code);
+      hooks_.on_prefailed(id);
     }
   }
 
@@ -467,7 +563,8 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
   return outcome;
 }
 
-ClearOutcome FaultManagerCore::clear_locked(const std::string & code, bool skip_correlation_auto_clear) {
+ClearOutcome FaultManagerCore::clear_locked(const std::string & code, const std::string & source_id,
+                                            bool skip_correlation_auto_clear) {
   const std::string & logger = config_.logger_name;
   ClearOutcome outcome;
 
@@ -477,6 +574,17 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, bool skip_
     return outcome;
   }
 
+  // Which record. Resolved before anything changes, so an ambiguous unscoped call
+  // clears nothing at all rather than one arbitrary owner's record.
+  std::string resolve_error;
+  const auto target = resolve_target_locked(code, source_id, resolve_error);
+  if (!target) {
+    outcome.message = resolve_error;
+    logf(log_, LogLevel::kWarn, logger, "ClearFault rejected: %s", resolve_error.c_str());
+    return outcome;
+  }
+  const FaultId & id = *target;
+
   const auto connection_lost = [&](const FaultStorage::IgnorableConnectionException & e) {
     logf(log_, LogLevel::kWarn, logger, "Failed to connect with the fault storage server: %s", e.what());
   };
@@ -484,21 +592,25 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, bool skip_
   // Storage first: a clear that the storage refuses must not change the correlation state.
   bool cleared = false;
   try {
-    cleared = storage_->clear_fault(code);
+    cleared = storage_->clear_fault(id);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     connection_lost(e);
     outcome.message = storage_unavailable(e);
     return outcome;
   }
 
-  // Then the correlation engine (to get the auto-clear list).
+  // Then the correlation engine. A cleared record ends its relations whatever the flag says: its muted
+  // symptoms are unmuted and it stops muting later reports. Symptoms come back as the exact records the
+  // root cause muted.
   // `skip_correlation_auto_clear` lets the caller opt out of cascade-clearing
-  // correlated symptom fault codes. Per-entity DELETE routes set it to true
+  // correlated symptom faults. Per-entity DELETE routes set it to true
   // so they cannot reach across entity boundaries via the correlation graph.
-  std::vector<std::string> auto_cleared_codes;
-  if (correlation_ && !skip_correlation_auto_clear) {
-    auto clear_result = correlation_->process_clear(code);
-    auto_cleared_codes = clear_result.auto_cleared_codes;
+  std::vector<FaultId> auto_cleared;
+  if (correlation_) {
+    auto clear_result = correlation_->process_clear(id);
+    if (!skip_correlation_auto_clear) {
+      auto_cleared = clear_result.auto_cleared_symptoms;
+    }
   }
 
   outcome.success = cleared;
@@ -508,38 +620,43 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, bool skip_
     return outcome;
   }
 
-  // Evict cooldown tracking for the cleared fault and the auto-cleared symptoms
-  last_capture_times_.erase(code);
-  for (const auto & symptom_code : auto_cleared_codes) {
-    last_capture_times_.erase(symptom_code);
+  // Evict cooldown tracking for the cleared record and the auto-cleared symptoms
+  last_capture_times_.erase(id);
+  for (const auto & symptom_id : auto_cleared) {
+    last_capture_times_.erase(symptom_id);
   }
 
   // Auto-clear correlated symptoms
-  for (const auto & symptom_code : auto_cleared_codes) {
+  std::vector<std::string> auto_cleared_codes;
+  auto_cleared_codes.reserve(auto_cleared.size());
+  for (const auto & symptom_id : auto_cleared) {
     try {
-      storage_->clear_fault(symptom_code);
+      storage_->clear_fault(symptom_id);
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       connection_lost(e);
       outcome.message = storage_unavailable(e);
       return outcome;
     }
+    auto_cleared_codes.push_back(symptom_id.fault_code);
+    // The cascade goes one level: a cleared symptom that was itself a root releases its own symptoms.
+    correlation_->process_clear(symptom_id);
     if (audit_) {
       std::optional<fd::FaultRecord> symptom;
       try {
-        symptom = storage_->get_fault(symptom_code);
+        symptom = storage_->get_fault(symptom_id);
       } catch (const FaultStorage::IgnorableConnectionException & e) {
         connection_lost(e);
         outcome.message = storage_unavailable(e);
         return outcome;
       }
       if (symptom) {
-        audit_transition(kTransitionCleared, *symptom, "clear_service", clock_.now_ns());
+        audit_transition(kTransitionCleared, *symptom, symptom_id, kAuditSourceCorrelationAutoClear, clock_.now_ns());
       }
     }
-    logf(log_, LogLevel::kDebug, logger, "Auto-cleared symptom: %s (root cause: %s)", symptom_code.c_str(),
+    logf(log_, LogLevel::kDebug, logger, "Auto-cleared symptom: %s (root cause: %s)", symptom_id.fault_code.c_str(),
          code.c_str());
-    // Also cleanup rosbag for auto-cleared faults
-    hooks_.on_cleared(symptom_code);
+    // Also cleanup rosbag for auto-cleared records
+    hooks_.on_cleared(symptom_id);
   }
 
   outcome.auto_cleared_codes = auto_cleared_codes;
@@ -549,16 +666,16 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, bool skip_
     outcome.message =
         "Fault cleared: " + code + " (auto-cleared " + std::to_string(auto_cleared_codes.size()) + " symptoms)";
   }
-  logf(log_, LogLevel::kInfo, logger, "Fault cleared: %s (auto-cleared %zu symptoms)", code.c_str(),
-       auto_cleared_codes.size());
+  logf(log_, LogLevel::kInfo, logger, "Fault cleared: %s (source=%s, auto-cleared %zu symptoms)", code.c_str(),
+       id.owner.c_str(), auto_cleared_codes.size());
 
-  // Cleanup rosbag for the main fault (auto_cleanup handled inside RosbagCapture)
-  hooks_.on_cleared(code);
+  // Cleanup rosbag for the cleared record (auto_cleanup handled inside RosbagCapture)
+  hooks_.on_cleared(id);
 
-  // Publish the cleared event - get the cleared fault to include in the event
+  // Publish the cleared event - get the cleared record to include in the event
   std::optional<fd::FaultRecord> fault;
   try {
-    fault = storage_->get_fault(code);
+    fault = storage_->get_fault(id);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     connection_lost(e);
     outcome.message = storage_unavailable(e);
@@ -566,7 +683,7 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, bool skip_
   }
   if (fault) {
     publish_event(fd::fault_event_type::kCleared, *fault, auto_cleared_codes);
-    audit_transition(kTransitionCleared, *fault, "clear_service", clock_.now_ns());
+    audit_transition(kTransitionCleared, *fault, id, kAuditSourceClearService, clock_.now_ns());
   }
   return outcome;
 }
@@ -574,8 +691,9 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, bool skip_
 ListOutcome FaultManagerCore::list_locked(const ListQuery & query) {
   const std::string & logger = config_.logger_name;
   ListOutcome outcome;
+  std::vector<FaultEntry> entries;
   try {
-    outcome.faults = storage_->list_faults(query.filter_by_severity, query.severity, query.statuses);
+    entries = storage_->list_fault_entries(query.filter_by_severity, query.severity, query.statuses);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     logf(log_, LogLevel::kWarn, logger, "Failed to connect with the fault storage server: %s", e.what());
     return outcome;
@@ -587,32 +705,26 @@ ListOutcome FaultManagerCore::list_locked(const ListQuery & query) {
     outcome.muted_count = correlation_->get_muted_count();
     outcome.cluster_count = correlation_->get_cluster_count();
 
-    auto muted_faults = correlation_->get_muted_faults();
-
     if (query.include_muted) {
+      const auto muted_faults = correlation_->get_muted_faults();
       outcome.muted_faults.reserve(muted_faults.size());
       for (const auto & muted : muted_faults) {
         MutedFault info;
         info.fault_code = muted.fault_code;
+        info.source_id = muted.owner;
         info.root_cause_code = muted.root_cause_code;
         info.rule_id = muted.rule_id;
         info.delay_ms = muted.delay_ms;
         outcome.muted_faults.push_back(info);
       }
     } else {
-      // Build a set of muted codes for O(1) lookup.
-      std::unordered_set<std::string> muted_codes;
-      for (const auto & muted : muted_faults) {
-        muted_codes.insert(muted.fault_code);
-      }
-
-      // Remove all faults whose code is muted, in one pass.
-      auto & faults = outcome.faults;
-      faults.erase(std::remove_if(faults.begin(), faults.end(),
-                                  [&muted_codes](const fd::FaultRecord & fault) {
-                                    return muted_codes.count(fault.fault_code) > 0;
-                                  }),
-                   faults.end());
+      // Hide the muted RECORDS, never every record of a muted code: a record the engine never muted
+      // stays in the default view.
+      entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                   [this](const FaultEntry & entry) {
+                                     return correlation_->is_muted(entry.id);
+                                   }),
+                    entries.end());
     }
 
     if (query.include_clusters) {
@@ -625,8 +737,10 @@ ListOutcome FaultManagerCore::list_locked(const ListQuery & query) {
         info.rule_name = cluster.rule_name;
         info.label = cluster.label;
         info.representative_code = cluster.representative_code;
+        info.representative_owner = cluster.representative_owner;
         info.representative_severity = cluster.representative_severity;
         info.fault_codes = cluster.fault_codes;
+        info.fault_owners = cluster.fault_owners;
         info.count = static_cast<uint32_t>(cluster.fault_codes.size());
         info.first_at_ns =
             std::chrono::duration_cast<std::chrono::nanoseconds>(cluster.first_at.time_since_epoch()).count();
@@ -637,12 +751,17 @@ ListOutcome FaultManagerCore::list_locked(const ListQuery & query) {
     }
   }
 
+  outcome.faults.reserve(entries.size());
+  for (auto & entry : entries) {
+    outcome.faults.push_back(std::move(entry.record));
+  }
+
   logf(log_, LogLevel::kDebug, logger, "ListFaults returned %zu faults (muted=%u, clusters=%u)", outcome.faults.size(),
        outcome.muted_count, outcome.cluster_count);
   return outcome;
 }
 
-FaultDetail FaultManagerCore::get_locked(const std::string & code,
+FaultDetail FaultManagerCore::get_locked(const std::string & code, const std::string & source_id,
                                          std::vector<std::pair<size_t, std::string>> & rosbag_paths) {
   const std::string & logger = config_.logger_name;
   FaultDetail detail;
@@ -662,9 +781,18 @@ FaultDetail FaultManagerCore::get_locked(const std::string & code,
     return detail;
   };
 
+  // Which record
+  std::string resolve_error;
+  const auto target = resolve_target_locked(code, source_id, resolve_error);
+  if (!target) {
+    detail.error_message = resolve_error;
+    return detail;
+  }
+  const FaultId & id = *target;
+
   std::optional<fd::FaultRecord> fault;
   try {
-    fault = storage_->get_fault(code);
+    fault = storage_->get_fault(id);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     return unavailable(e);
   }
@@ -681,7 +809,7 @@ FaultDetail FaultManagerCore::get_locked(const std::string & code,
   // Get freeze frame snapshots from storage
   std::vector<SnapshotData> stored_snapshots = {};
   try {
-    stored_snapshots = storage_->get_snapshots(code);
+    stored_snapshots = storage_->get_snapshots(id);
   } catch (const FaultStorage::IgnorableConnectionException & e) {
     return unavailable(e);
   }
@@ -706,7 +834,7 @@ FaultDetail FaultManagerCore::get_locked(const std::string & code,
   if (stored_snapshots.empty() || storage_->retains_snapshots_on_clear()) {
     std::optional<FreezeFrameData> frame;
     try {
-      frame = storage_->get_freeze_frame(code);
+      frame = storage_->get_freeze_frame(id);
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       return unavailable(e);
     }
@@ -726,7 +854,7 @@ FaultDetail FaultManagerCore::get_locked(const std::string & code,
   // this list is the only place the fault itself advertises them.
   std::vector<std::pair<size_t, std::string>> paths;
   try {
-    for (const auto & rosbag_info : storage_->get_rosbag_files(code)) {
+    for (const auto & rosbag_info : storage_->get_rosbag_files(id)) {
       SnapshotEntry rosbag_snapshot;
       rosbag_snapshot.type = kSnapshotRosbag;
       rosbag_snapshot.name = "rosbag_" + rosbag_info.recording_id;
@@ -767,11 +895,25 @@ DebounceConfig FaultManagerCore::resolve_config(const std::string & source_id, c
   return config;
 }
 
-void FaultManagerCore::warn_on_conflicting_debounce_policy(const std::string & fault_code,
-                                                           const std::string & source_id,
+void FaultManagerCore::warn_severity_mismatch(const fd::FaultReport & report, uint8_t stored_severity) {
+  if (!severity_mismatch_logged_.emplace(report.fault_code, report.source_id, report.severity).second) {
+    return;
+  }
+  logf(log_, LogLevel::kWarn, config_.logger_name,
+       "Fault '%s' reported with severity %s by '%s', but its record is stored as %s. A record has one "
+       "severity and keeps the highest ever reported. Check the reporter's configuration. Logged "
+       "once per code, source and severity until restart.",
+       report.fault_code.c_str(), severity_name(report.severity), report.source_id.c_str(),
+       severity_name(stored_severity));
+}
+
+void FaultManagerCore::warn_on_conflicting_debounce_policy(const FaultId & id, const std::string & source_id,
                                                            const DebounceConfig & resolved) {
+  if (id.owner != kSharedOwner) {
+    return;
+  }
   auto [it, inserted] =
-      debounce_policy_witness_.try_emplace(fault_code, DebouncePolicyWitness{resolved, source_id, false});
+      debounce_policy_witness_.try_emplace(id.fault_code, DebouncePolicyWitness{resolved, source_id, false});
   if (inserted || it->second.warned || debounce_policy_equal(it->second.config, resolved)) {
     return;
   }
@@ -781,16 +923,16 @@ void FaultManagerCore::warn_on_conflicting_debounce_policy(const std::string & f
   it->second.warned = true;
   logf(log_, LogLevel::kWarn, config_.logger_name,
        "Fault code '%s' is debounced two ways: '%s' resolves confirmation=%d healing_enabled=%s healing=%d, "
-       "'%s' resolves confirmation=%d healing_enabled=%s healing=%d. The debounce counter belongs to the fault "
-       "code, so whichever source reports decides the transition and the other policy is bypassed. Pin "
-       "confirmation_threshold, healing_enabled and healing_threshold for this code in "
-       "fault_thresholds.config_file.",
-       fault_code.c_str(), it->second.source_id.c_str(), it->second.config.confirmation_threshold,
+       "'%s' resolves confirmation=%d healing_enabled=%s healing=%d. The debounce counter belongs to the shared "
+       "record of the fault code, so whichever source reports decides the transition and the other policy is "
+       "bypassed. Pin confirmation_threshold, healing_enabled and healing_threshold for this code in "
+       "fault_thresholds.config_file, or set per_source: true there to give each source its own record.",
+       id.fault_code.c_str(), it->second.source_id.c_str(), it->second.config.confirmation_threshold,
        it->second.config.healing_enabled ? "true" : "false", it->second.config.healing_threshold, source_id.c_str(),
        resolved.confirmation_threshold, resolved.healing_enabled ? "true" : "false", resolved.healing_threshold);
 }
 
-void FaultManagerCore::audit_transition(const char * transition, const fd::FaultRecord & fault,
+void FaultManagerCore::audit_transition(const char * transition, const fd::FaultRecord & fault, const FaultId & id,
                                         const std::string & source_id, int64_t occurred_at_ns) {
   if (!audit_) {
     return;
@@ -805,6 +947,7 @@ void FaultManagerCore::audit_transition(const char * transition, const fd::Fault
   event.severity = fault.severity;
   event.status = fault.status;
   event.source_id = source_id;
+  event.owner = id.owner == kSharedOwner ? std::string() : id.owner;
   event.description = fault.description;
   event.occurred_at_ns = occurred_at_ns;
 

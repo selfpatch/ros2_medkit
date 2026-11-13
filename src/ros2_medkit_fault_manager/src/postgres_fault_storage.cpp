@@ -50,6 +50,11 @@ constexpr const char * kDefaultKeepalivesIdle = "5";
 /// Time after a failed connection round before the next one. Requests in between fail at once.
 constexpr std::chrono::seconds kReconnectBackoff{5};
 
+/// Columns every fault read selects; PgFaultStorage::read_fault_row decodes them.
+constexpr const char * kFaultColumns =
+    "fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count, status, "
+    "reporting_sources, last_passed_ns, owner";
+
 /// Parsed connection options by keyword, or nullopt when libpq rejects the string.
 std::optional<std::map<std::string, std::string>> parse_conn_info(const std::string & conn_info) {
   char * err = nullptr;
@@ -305,10 +310,93 @@ DebounceConfig PgFaultStorage::get_debounce_config() const {
   return config_;
 }
 
+bool PgFaultStorage::table_exists(pqxx::work & tx, const char * table) const {
+  return !execute(tx,
+                  "SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1",
+                  std::string(table))
+              .empty();
+}
+
+bool PgFaultStorage::table_has_column(pqxx::work & tx, const char * table, const char * column) const {
+  return !execute(tx,
+                  "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
+                  "AND table_name = $1 AND column_name = $2",
+                  std::string(table), std::string(column))
+              .empty();
+}
+
+void PgFaultStorage::drop_primary_key(pqxx::work & tx, const char * table) const {
+  const auto res = execute(tx, "SELECT conname FROM pg_constraint WHERE conrelid = to_regclass($1) AND contype = 'p'",
+                           std::string(table));
+  for (const auto & r : res) {
+    execute(tx,
+            std::string("ALTER TABLE ") + table + " DROP CONSTRAINT " + tx.quote_name(r["conname"].as<std::string>()));
+  }
+}
+
+void PgFaultStorage::migrate_to_owner_identity(pqxx::work & tx) const {
+  // Probed per table: a table that does not exist yet is built in the new layout by create_schema.
+  const auto needs_owner = [&](const char * table) {
+    return table_exists(tx, table) && !table_has_column(tx, table, "owner");
+  };
+  const bool faults_needs_owner = needs_owner("faults");
+  const bool freeze_frames_needs_owner = needs_owner("freeze_frames");
+  const bool snapshots_needs_owner = needs_owner("snapshots");
+  const bool rosbag_files_needs_owner = needs_owner("rosbag_files");
+  const bool near_misses_needs_owner = needs_owner("near_misses");
+
+  if (!faults_needs_owner && !freeze_frames_needs_owner && !snapshots_needs_owner && !rosbag_files_needs_owner &&
+      !near_misses_needs_owner) {
+    return;  // fresh database, or already migrated - safe to re-run on every connection
+  }
+
+  // Every row of a legacy table is a shared record: the old layout held one row per fault code,
+  // fed by every source. The row keeps its reporting_sources as written, and every child row
+  // attaches to that shared record.
+  const std::string shared = kSharedOwner;
+
+  if (faults_needs_owner) {
+    drop_primary_key(tx, "faults");
+    // A pending row carries a confirmation time from the occurrence before a reactivation.
+    execute(tx, "ALTER TABLE faults ADD COLUMN owner TEXT NOT NULL DEFAULT ''");
+    execute(tx,
+            "UPDATE faults SET owner = $1, confirmed_at_ns = CASE WHEN status IN ('PREFAILED', 'PREPASSED') "
+            "THEN 0 ELSE confirmed_at_ns END",
+            shared);
+  }
+  if (freeze_frames_needs_owner) {
+    drop_primary_key(tx, "freeze_frames");
+    execute(tx, "ALTER TABLE freeze_frames ADD COLUMN owner TEXT NOT NULL DEFAULT ''");
+    execute(tx, "UPDATE freeze_frames SET owner = $1", shared);
+  }
+  if (snapshots_needs_owner) {
+    execute(tx, "ALTER TABLE snapshots ADD COLUMN owner TEXT NOT NULL DEFAULT ''");
+    execute(tx, "UPDATE snapshots SET owner = $1", shared);
+  }
+  if (rosbag_files_needs_owner) {
+    execute(tx, "ALTER TABLE rosbag_files ADD COLUMN owner TEXT NOT NULL DEFAULT ''");
+    execute(tx, "UPDATE rosbag_files SET owner = $1", shared);
+    // CREATE INDEX IF NOT EXISTS in create_schema keeps an index that exists, so the two indexes
+    // that carry fault_code are dropped to be rebuilt with owner.
+    execute(tx, "DROP INDEX IF EXISTS idx_rosbag_files_fault_path");
+    execute(tx, "DROP INDEX IF EXISTS idx_rosbag_files_fault_created");
+  }
+  if (near_misses_needs_owner) {
+    execute(tx, "ALTER TABLE near_misses ADD COLUMN owner TEXT NOT NULL DEFAULT ''");
+    execute(tx, "UPDATE near_misses SET owner = $1", shared);
+  }
+}
+
 void PgFaultStorage::create_schema(pqxx::work & tx) const {
+  migrate_to_owner_identity(tx);
+
+  // A row is one fault RECORD, identified by (fault_code, owner). owner is the shared owner
+  // for a code every source feeds, or the source_id for a per_source code; reporting_sources
+  // lists every source that reported the record. Uniqueness through the index below, the
+  // same shape as SQLite.
   execute(tx, R"(
       CREATE TABLE IF NOT EXISTS faults (
-        fault_code TEXT PRIMARY KEY,
+        fault_code TEXT NOT NULL,
         severity INTEGER NOT NULL,
         description TEXT NOT NULL,
         first_occurred_ns BIGINT NOT NULL,
@@ -319,15 +407,17 @@ void PgFaultStorage::create_schema(pqxx::work & tx) const {
         debounce_counter INTEGER NOT NULL DEFAULT 0,
         last_failed_ns BIGINT NOT NULL DEFAULT 0,
         last_passed_ns BIGINT NOT NULL DEFAULT 0,
-        confirmed_at_ns BIGINT NOT NULL DEFAULT 0
+        confirmed_at_ns BIGINT NOT NULL DEFAULT 0,
+        owner TEXT NOT NULL DEFAULT ''
       );
-    )");
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_faults_code_owner ON faults(fault_code, owner);)");
 
   // Create snapshots table for storing topic data captured when faults are confirmed
   execute(tx, R"(
       CREATE TABLE IF NOT EXISTS snapshots (
         id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
         fault_code TEXT NOT NULL,
+        owner TEXT NOT NULL DEFAULT '',
         topic TEXT NOT NULL,
         message_type TEXT NOT NULL,
         data TEXT NOT NULL,
@@ -335,28 +425,32 @@ void PgFaultStorage::create_schema(pqxx::work & tx) const {
         capture_id BIGINT NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_snapshots_fault_code ON snapshots(fault_code);
-      CREATE INDEX IF NOT EXISTS idx_snapshots_fault_topic ON snapshots(fault_code, topic);)");
+      CREATE INDEX IF NOT EXISTS idx_snapshots_fault_topic ON snapshots(fault_code, topic);
+      CREATE INDEX IF NOT EXISTS idx_snapshots_record ON snapshots(fault_code, owner, capture_id);)");
 
   // Create freeze_frames table: one compact JSON dict of captured topic values per fault
-  // code. Unlike snapshots, freeze frames are keyed by fault_code and are NOT removed on
-  // clear_fault, so the confirmed-state record is retained after acknowledgement.
+  // RECORD. Unlike snapshots, freeze frames are keyed by the record identity and are NOT
+  // removed on clear_fault, so the confirmed-state record is retained after acknowledgement.
   execute(tx, R"(
       CREATE TABLE IF NOT EXISTS freeze_frames (
-        fault_code TEXT PRIMARY KEY,
+        fault_code TEXT NOT NULL,
+        owner TEXT NOT NULL DEFAULT '',
         data TEXT NOT NULL,
         captured_at_ns BIGINT NOT NULL
       );
-    )");
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_freeze_frames_code_owner ON freeze_frames(fault_code, owner);)");
 
   // Create near_misses table: append-only series of FAILED reports that moved the debounce
   // counter without confirming the fault. One row per qualifying report, never updated in
   // place, and NOT removed on clear_fault - acknowledging a fault cycle must not erase how
-  // often that code approached confirmation. Bounded per fault code by the caller-supplied
-  // limit, evicting the oldest rows first.
+  // often that code approached confirmation. A row belongs to the record named by
+  // (fault_code, owner) and keeps the source_id that reported it. Bounded per record by the
+  // caller-supplied limit, evicting the oldest rows first.
   execute(tx, R"(
       CREATE TABLE IF NOT EXISTS near_misses (
         id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
         fault_code TEXT NOT NULL,
+        owner TEXT NOT NULL DEFAULT '',
         occurred_at_ns BIGINT NOT NULL,
         debounce_counter INTEGER NOT NULL,
         confirmation_threshold INTEGER NOT NULL,
@@ -364,7 +458,8 @@ void PgFaultStorage::create_schema(pqxx::work & tx) const {
         source_id TEXT NOT NULL,
         resulting_status TEXT NOT NULL DEFAULT ''
       );
-      CREATE INDEX IF NOT EXISTS idx_near_misses_fault_code ON near_misses(fault_code, id);
+      DROP INDEX IF EXISTS idx_near_misses_fault_code;
+      CREATE INDEX IF NOT EXISTS idx_near_misses_record ON near_misses(fault_code, owner, id);
     )");
 
   // Create rosbag_files table. One row = one LINK (a fault claiming a recording):
@@ -374,6 +469,7 @@ void PgFaultStorage::create_schema(pqxx::work & tx) const {
       CREATE TABLE IF NOT EXISTS rosbag_files (
         id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
         fault_code TEXT NOT NULL,
+        owner TEXT NOT NULL DEFAULT '',
         recording_id TEXT NOT NULL DEFAULT '',
         file_path TEXT NOT NULL,
         format TEXT NOT NULL,
@@ -383,23 +479,23 @@ void PgFaultStorage::create_schema(pqxx::work & tx) const {
       );
       CREATE INDEX IF NOT EXISTS idx_rosbag_files_fault_code ON rosbag_files(fault_code);
       CREATE INDEX IF NOT EXISTS idx_rosbag_files_created_at ON rosbag_files(created_at_ns);
-      CREATE INDEX IF NOT EXISTS idx_rosbag_files_fault_created ON rosbag_files(fault_code, created_at_ns, id);
+      CREATE INDEX IF NOT EXISTS idx_rosbag_files_fault_created ON rosbag_files(fault_code, owner, created_at_ns, id);
       CREATE INDEX IF NOT EXISTS idx_rosbag_files_recording ON rosbag_files(recording_id);
       CREATE INDEX IF NOT EXISTS idx_rosbag_files_path ON rosbag_files(file_path);
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_rosbag_files_fault_path ON rosbag_files(fault_code, file_path);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_rosbag_files_fault_path ON rosbag_files(fault_code, owner, file_path);
     )");
 
   // CREATE TABLE IF NOT EXISTS keeps a table of another layout. Check the columns so that startup fails.
   execute(tx, R"(
       SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count, status,
-             reporting_sources, debounce_counter, last_failed_ns, last_passed_ns, confirmed_at_ns
+             reporting_sources, debounce_counter, last_failed_ns, last_passed_ns, confirmed_at_ns, owner
         FROM faults LIMIT 0;
-      SELECT id, fault_code, topic, message_type, data, captured_at_ns, capture_id FROM snapshots LIMIT 0;
-      SELECT fault_code, data, captured_at_ns FROM freeze_frames LIMIT 0;
-      SELECT id, fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, severity, source_id,
+      SELECT id, fault_code, owner, topic, message_type, data, captured_at_ns, capture_id FROM snapshots LIMIT 0;
+      SELECT fault_code, owner, data, captured_at_ns FROM freeze_frames LIMIT 0;
+      SELECT id, fault_code, owner, occurred_at_ns, debounce_counter, confirmation_threshold, severity, source_id,
              resulting_status
         FROM near_misses LIMIT 0;
-      SELECT id, fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns
+      SELECT id, fault_code, owner, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns
         FROM rosbag_files LIMIT 0;
     )");
 }
@@ -538,7 +634,21 @@ std::string PgFaultStorage::serialize_json_array(const std::vector<std::string> 
   return oss.str();
 }
 
-bool PgFaultStorage::report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
+fd::FaultRecord PgFaultStorage::read_fault_row(const pqxx::row & r) const {
+  fd::FaultRecord fault;
+  fault.fault_code = r["fault_code"].as<std::string>();
+  fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
+  fault.description = r["description"].as<std::string>();
+  fault.first_occurred_ns = r["first_occurred_ns"].as<int64_t>();
+  fault.last_occurred_ns = r["last_occurred_ns"].as<int64_t>();
+  fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
+  fault.status = r["status"].as<std::string>();
+  fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
+  fault.last_passed_ns = r["last_passed_ns"].as<int64_t>();
+  return fault;
+}
+
+bool PgFaultStorage::report_fault_event(const FaultId & id, fd::ReportKind kind, uint8_t severity,
                                         const std::string & description, const std::string & source_id,
                                         int64_t timestamp_ns, const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -549,25 +659,26 @@ bool PgFaultStorage::report_fault_event(const std::string & fault_code, fd::Repo
   // advance it a second time and the near miss it retried for would still be
   // missing from the series. run_in_transaction commits both rows together.
   return run_in_transaction("report_fault_event", [&](pqxx::work & tx) {
-    return report_fault_event_locked(fault_code, kind, severity, description, source_id, timestamp_ns, config, tx);
+    return report_fault_event_locked(id, kind, severity, description, source_id, timestamp_ns, config, tx);
   });
 }
 
-bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
+bool PgFaultStorage::report_fault_event_locked(const FaultId & id, fd::ReportKind kind, uint8_t severity,
                                                const std::string & description, const std::string & source_id,
                                                int64_t timestamp_ns, const DebounceConfig & config, pqxx::work & tx) {
   const bool is_failed = (kind == fd::ReportKind::kFailed);
+  const std::string & fault_code = id.fault_code;
 
   // No row lock needed: mutex_ serializes every call on this connection, and one database belongs to exactly one
   // fault manager.
-  // Check if fault exists
+  // Check if the record exists. Another record of the same code is a different row and is not touched.
   auto res = execute(tx,
-                     "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter, confirmed_at_ns, "
-                     "first_occurred_ns FROM faults WHERE fault_code = $1",
-                     fault_code);
+                     "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter, "
+                     "confirmed_at_ns, first_occurred_ns FROM faults WHERE fault_code = $1 AND owner = $2",
+                     fault_code, id.owner);
 
   if (!res.empty()) {
-    // Fault exists - update it
+    // Record exists - update it
     int existing_severity = res[0]["severity"].as<int>();
     int64_t existing_count = res[0]["occurrence_count"].as<int64_t>();
     std::string sources_json = res[0]["reporting_sources"].as<std::string>();
@@ -591,8 +702,10 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, f
       // decrements it to -1, then reuse the existing FAILED logic below. Also
       // reset first_occurred: this is a new outage cycle, not a continuation
       // of the one that just cleared.
+      // The new occurrence has no confirmation time until it confirms.
       debounce_counter = 0;
       first_occurred_ns = timestamp_ns;
+      confirmed_at_ns = 0;
       is_reactivation = true;
     }
 
@@ -618,9 +731,11 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, f
       // Decrement towards confirmation, clamped to the thresholds.
       debounce_counter = clamp_debounce_counter(debounce_counter - 1, config);
 
-      // CRITICAL bypasses debounce; otherwise the shared state machine decides (with hysteresis).
+      // CRITICAL bypasses debounce and the HEALED latch. A per-source record decides on its stored severity,
+      // a shared record on the report's. Otherwise the shared state machine decides (with hysteresis).
       std::string new_status;
-      if (config.critical_immediate_confirm && severity == fd::severity::kCritical) {
+      if (config.critical_immediate_confirm &&
+          (id.owner == kSharedOwner ? severity : new_severity) == fd::severity::kCritical) {
         debounce_counter = std::min(debounce_counter, -1);
         new_status = fd::fault_status::kConfirmed;
       } else {
@@ -638,21 +753,20 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, f
         execute(tx,
                 "UPDATE faults SET severity = $1, last_occurred_ns = $2, last_failed_ns = $3, occurrence_count = $4, "
                 "reporting_sources = $5, status = $6, debounce_counter = $7, confirmed_at_ns = $8, "
-                "first_occurred_ns = $9 WHERE fault_code = $10",
+                "first_occurred_ns = $9 WHERE fault_code = $10 AND owner = $11",
                 new_severity, timestamp_ns, timestamp_ns, new_count, serialize_json_array(sources), new_status,
-                debounce_counter, confirmed_at_ns, first_occurred_ns, fault_code);
+                debounce_counter, confirmed_at_ns, first_occurred_ns, fault_code, id.owner);
       } else {
         execute(tx,
                 "UPDATE faults SET severity = $1, description = $2, last_occurred_ns = $3, last_failed_ns = $4, "
                 "occurrence_count = $5, reporting_sources = $6, status = $7, debounce_counter = $8, "
-                "confirmed_at_ns = $9, first_occurred_ns = $10 WHERE fault_code = $11",
+                "confirmed_at_ns = $9, first_occurred_ns = $10 WHERE fault_code = $11 AND owner = $12",
                 new_severity, description, timestamp_ns, timestamp_ns, new_count, serialize_json_array(sources),
-                new_status, debounce_counter, confirmed_at_ns, first_occurred_ns, fault_code);
+                new_status, debounce_counter, confirmed_at_ns, first_occurred_ns, fault_code, id.owner);
       }
 
       if (is_near_miss(true, new_status)) {
-        record_near_miss_locked(fault_code, timestamp_ns, debounce_counter, config, severity, source_id, new_status,
-                                tx);
+        record_near_miss_locked(id, timestamp_ns, debounce_counter, config, severity, source_id, new_status, tx);
       }
     } else {
       // PASSED event - increment towards healing, clamped to the thresholds.
@@ -663,16 +777,18 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, f
       // last_occurred_ns is deliberately NOT touched: a PASSED event is the fault
       // ENDING, not occurring. Bumping it made a long-stale CONFIRMED fault look
       // freshly active. The PASSED instant is recorded in last_passed_ns.
-      execute(tx, "UPDATE faults SET last_passed_ns = $1, status = $2, debounce_counter = $3 WHERE fault_code = $4",
-              timestamp_ns, new_status, debounce_counter, fault_code);
+      execute(tx,
+              "UPDATE faults SET last_passed_ns = $1, status = $2, debounce_counter = $3 "
+              "WHERE fault_code = $4 AND owner = $5",
+              timestamp_ns, new_status, debounce_counter, fault_code, id.owner);
     }
 
     return is_reactivation;  // Reactivation treated as new occurrence for event publishing
   }
 
-  // New fault - only create for FAILED events
+  // New record - only create one for FAILED events
   if (!is_failed) {
-    return false;  // PASSED event for non-existent fault is ignored
+    return false;  // PASSED event for non-existent record is ignored
   }
 
   // Determine initial status based on debounce logic (shared with the in-memory backend).
@@ -688,21 +804,21 @@ bool PgFaultStorage::report_fault_event_locked(const std::string & fault_code, f
   execute(
       tx,
       "INSERT INTO faults (fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count, "
-      "status, reporting_sources, debounce_counter, last_failed_ns, last_passed_ns, confirmed_at_ns) "
-      "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+      "status, reporting_sources, debounce_counter, last_failed_ns, last_passed_ns, confirmed_at_ns, owner) "
+      "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
       fault_code, static_cast<int>(severity), description, timestamp_ns, timestamp_ns, 1 /* occurrence_count = 1 */,
       initial_status, serialize_json_array({source_id}), initial_counter, timestamp_ns, 0,
-      confirmed_now ? timestamp_ns : 0);
+      confirmed_now ? timestamp_ns : 0, id.owner);
 
   if (is_near_miss(true, initial_status)) {
-    record_near_miss_locked(fault_code, timestamp_ns, initial_counter, config, severity, source_id, initial_status, tx);
+    record_near_miss_locked(id, timestamp_ns, initial_counter, config, severity, source_id, initial_status, tx);
   }
 
   return true;  // New fault created
 }
 
-std::vector<fd::FaultRecord> PgFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
-                                                         const std::vector<std::string> & statuses) const {
+std::vector<FaultEntry> PgFaultStorage::list_fault_entries(bool filter_by_severity, uint8_t severity,
+                                                           const std::vector<std::string> & statuses) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Determine which statuses to include
@@ -723,107 +839,94 @@ std::vector<fd::FaultRecord> PgFaultStorage::list_faults(bool filter_by_severity
   const std::vector<std::string> status_filter_vector(status_filter.begin(), status_filter.end());
 
   // Build query
-  std::string sql =
-      "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count, status, "
-      "reporting_sources, last_passed_ns FROM faults WHERE status = ANY($1) ";
+  std::string sql = std::string("SELECT ") + kFaultColumns + " FROM faults WHERE status = ANY($1) ";
   if (filter_by_severity) {
     sql += " AND severity = $2";
   }
 
-  return run_in_transaction("list_faults", [&](pqxx::work & tx) {
+  return run_in_transaction("list_fault_entries", [&](pqxx::work & tx) {
     auto res = filter_by_severity ? execute(tx, sql, status_filter_vector, static_cast<int>(severity))
                                   : execute(tx, sql, status_filter_vector);
 
-    std::vector<fd::FaultRecord> result;
+    std::vector<FaultEntry> result;
     for (const auto & r : res) {
-      fd::FaultRecord fault;
-      fault.fault_code = r["fault_code"].as<std::string>();
-      fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
-      fault.description = r["description"].as<std::string>();
-      fault.first_occurred_ns = r["first_occurred_ns"].as<int64_t>();
-      fault.last_occurred_ns = r["last_occurred_ns"].as<int64_t>();
-      fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
-      fault.status = r["status"].as<std::string>();
-      fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
-      fault.last_passed_ns = r["last_passed_ns"].as<int64_t>();
-      result.push_back(fault);
+      result.push_back(
+          FaultEntry{FaultId{r["fault_code"].as<std::string>(), r["owner"].as<std::string>()}, read_fault_row(r)});
     }
     return result;
   });
 }
 
-std::optional<fd::FaultRecord> PgFaultStorage::get_fault(const std::string & fault_code) const {
+std::optional<fd::FaultRecord> PgFaultStorage::get_fault(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("get_fault", [&](pqxx::work & tx) -> std::optional<fd::FaultRecord> {
-    auto res = execute(tx,
-                       "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
-                       "occurrence_count, status, reporting_sources, last_passed_ns FROM faults WHERE fault_code = $1",
-                       fault_code);
+    auto res = execute(tx, std::string("SELECT ") + kFaultColumns + " FROM faults WHERE fault_code = $1 AND owner = $2",
+                       id.fault_code, id.owner);
     if (res.empty()) {
       return std::nullopt;
     }
-    auto r = res[0];
-    fd::FaultRecord fault;
-    fault.fault_code = r["fault_code"].as<std::string>();
-    fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
-    fault.description = r["description"].as<std::string>();
-    fault.first_occurred_ns = r["first_occurred_ns"].as<int64_t>();
-    fault.last_occurred_ns = r["last_occurred_ns"].as<int64_t>();
-    fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
-    fault.status = r["status"].as<std::string>();
-    fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
-    fault.last_passed_ns = r["last_passed_ns"].as<int64_t>();
-    return fault;
+    return read_fault_row(res[0]);
   });
 }
 
-bool PgFaultStorage::clear_fault(const std::string & fault_code) {
+std::vector<FaultId> PgFaultStorage::get_ids_by_code(const std::string & fault_code) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  return run_in_transaction("get_ids_by_code", [&](pqxx::work & tx) {
+    auto res = execute(tx, "SELECT owner FROM faults WHERE fault_code = $1 ORDER BY owner ASC", fault_code);
+    std::vector<FaultId> result;
+    for (const auto & r : res) {
+      result.push_back(FaultId{fault_code, r["owner"].as<std::string>()});
+    }
+    return result;
+  });
+}
+
+bool PgFaultStorage::clear_fault(const FaultId & id) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("clear_fault", [&](pqxx::work & tx) {
-    // The near_misses rows for this code are deliberately left alone. Clearing acknowledges one
-    // fault cycle; the record of how often the code approached confirmation spans cycles and
-    // cannot be reconstructed once deleted.
+    // The near_misses rows for this record are deliberately left alone. Clearing acknowledges
+    // one fault cycle; the record of how often the code approached confirmation spans cycles.
 
-    // Acknowledging a fault drops its value snapshots, unless a history was asked
-    // for: with recordings retained past a clear, deleting the readings that go with
-    // them leaves a fault holding bags whose matching values are gone.
+    // Acknowledging a record drops its value snapshots, scoped to the record so another
+    // owner's readings for the same code stay. Unless a history was asked for: with
+    // recordings retained past a clear, deleting the readings leaves bags whose values are gone.
     if (!retain_snapshots_on_clear_) {
-      execute(tx, "DELETE FROM snapshots WHERE fault_code = $1", fault_code);
+      execute(tx, "DELETE FROM snapshots WHERE fault_code = $1 AND owner = $2", id.fault_code, id.owner);
     }
 
-    auto res =
-        execute(tx, "UPDATE faults SET status = $1 WHERE fault_code = $2", fd::fault_status::kCleared, fault_code);
+    auto res = execute(tx, "UPDATE faults SET status = $1 WHERE fault_code = $2 AND owner = $3",
+                       fd::fault_status::kCleared, id.fault_code, id.owner);
     return res.affected_rows() > 0;
   });
 }
 
-std::vector<std::string> PgFaultStorage::reclassify_healed_as_cleared(const KeepHealedFn & keep_healed) {
+std::vector<FaultId> PgFaultStorage::reclassify_healed_as_cleared(const KeepHealedFn & keep_healed) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("reclassify_healed_as_cleared", [&](pqxx::work & tx) {
-    // Collect the codes that will flip first so the caller can audit each one. Codes the
+    // Collect the records that will flip first so the caller can audit each one. Codes the
     // caller keeps HEALED are left out. Everything runs in the same transaction, so the
     // returned list matches the rows actually reclassified below.
-    auto res = execute(tx, "SELECT fault_code FROM faults WHERE status = $1", fd::fault_status::kHealed);
-    std::vector<std::string> reclassified;
+    auto res = execute(tx, "SELECT fault_code, owner FROM faults WHERE status = $1", fd::fault_status::kHealed);
+    std::vector<FaultId> reclassified;
     for (const auto & r : res) {
-      auto code = r["fault_code"].as<std::string>();
-      if (!(keep_healed && keep_healed(code))) {
-        reclassified.push_back(std::move(code));
+      FaultId id{r["fault_code"].as<std::string>(), r["owner"].as<std::string>()};
+      if (!(keep_healed && keep_healed(id.fault_code))) {
+        reclassified.push_back(std::move(id));
       }
     }
-    for (const auto & code : reclassified) {
-      // Drop snapshots for the affected faults so a reclassified row matches CLEARED semantics.
-      // clear_fault is not the only place that takes a fault's readings, so retain_snapshots_on_clear_
-      // has to reach here too: otherwise the setting holds until the next restart and then the
-      // reclassification deletes exactly what it was set to keep.
+    for (const auto & id : reclassified) {
+      // Drop snapshots for the affected records so a reclassified row matches CLEARED
+      // semantics. clear_fault is not the only place that takes a record's readings, so
+      // retain_snapshots_on_clear_ has to reach here too.
       if (!retain_snapshots_on_clear_) {
-        execute(tx, "DELETE FROM snapshots WHERE fault_code = $1", code);
+        execute(tx, "DELETE FROM snapshots WHERE fault_code = $1 AND owner = $2", id.fault_code, id.owner);
       }
-      execute(tx, "UPDATE faults SET status = $1 WHERE fault_code = $2 AND status = $3", fd::fault_status::kCleared,
-              code, fd::fault_status::kHealed);
+      execute(tx, "UPDATE faults SET status = $1 WHERE fault_code = $2 AND owner = $3 AND status = $4",
+              fd::fault_status::kCleared, id.fault_code, id.owner, fd::fault_status::kHealed);
     }
     return reclassified;
   });
@@ -838,16 +941,17 @@ size_t PgFaultStorage::size() const {
   });
 }
 
-bool PgFaultStorage::contains(const std::string & fault_code) const {
+bool PgFaultStorage::contains(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("contains", [&](pqxx::work & tx) {
-    auto res = execute(tx, "SELECT 1 FROM faults WHERE fault_code = $1 LIMIT 1", fault_code);
+    auto res =
+        execute(tx, "SELECT 1 FROM faults WHERE fault_code = $1 AND owner = $2 LIMIT 1", id.fault_code, id.owner);
     return !res.empty();
   });
 }
 
-std::vector<std::string> PgFaultStorage::check_time_based_confirmation(int64_t now_ns) {
+std::vector<FaultId> PgFaultStorage::check_time_based_confirmation(int64_t now_ns) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (config_.auto_confirm_after_sec <= 0.0) {
@@ -856,16 +960,16 @@ std::vector<std::string> PgFaultStorage::check_time_based_confirmation(int64_t n
   const int64_t cutoff_ns = now_ns - std::llround(config_.auto_confirm_after_sec * 1e9);
 
   return run_in_transaction("check_time_based_confirmation", [&](pqxx::work & tx) {
-    // Collect the codes that will flip first so the caller can audit each one. The
+    // Collect the records that will flip first so the caller can audit each one. The
     // SELECT predicate mirrors the UPDATE exactly, and both run under the same lock,
     // so the returned list matches the rows actually confirmed below.
-    auto res =
-        execute(tx, "SELECT fault_code FROM faults WHERE status = $1 AND last_failed_ns <= $2 AND last_failed_ns > 0 ",
-                fd::fault_status::kPrefailed, cutoff_ns);
+    auto res = execute(
+        tx, "SELECT fault_code, owner FROM faults WHERE status = $1 AND last_failed_ns <= $2 AND last_failed_ns > 0 ",
+        fd::fault_status::kPrefailed, cutoff_ns);
 
-    std::vector<std::string> confirmed;
+    std::vector<FaultId> confirmed;
     for (const auto & r : res) {
-      confirmed.push_back(r["fault_code"].as<std::string>());
+      confirmed.push_back(FaultId{r["fault_code"].as<std::string>(), r["owner"].as<std::string>()});
     }
 
     if (!confirmed.empty()) {
@@ -904,44 +1008,46 @@ void PgFaultStorage::store_snapshots(const std::vector<SnapshotData> & snapshots
   std::lock_guard<std::mutex> lock(mutex_);
 
   const std::string & fault_code = snapshots.front().fault_code;
+  const std::string & owner = snapshots.front().owner;
 
   // One transaction for the whole capture: a capture is all-or-nothing, and the
   // old row-at-a-time path could leave a confirmation's values half stored.
   run_in_transaction("store_snapshots", [&](pqxx::work & tx) {
     for (const auto & snapshot : snapshots) {
-      execute(
-          tx,
-          "INSERT INTO snapshots (fault_code, topic, message_type, data, captured_at_ns, capture_id) VALUES ($1, $2, "
-          "$3, $4, $5, $6)",
-          snapshot.fault_code, snapshot.topic, snapshot.message_type, snapshot.data, snapshot.captured_at_ns,
-          snapshot.capture_id);
+      execute(tx,
+              "INSERT INTO snapshots (fault_code, owner, topic, message_type, data, captured_at_ns, capture_id) "
+              "VALUES ($1, $2, $3, $4, $5, $6, $7)",
+              snapshot.fault_code, snapshot.owner, snapshot.topic, snapshot.message_type, snapshot.data,
+              snapshot.captured_at_ns, snapshot.capture_id);
     }
     if (max_snapshots_per_fault_ > 0) {
-      // Trim whole capture sets, oldest first, until the fault fits. The old rule
-      // counted rows and rejected the NEW row once full, so a capture straddling
+      // Trim whole capture sets of THIS record, oldest first, until it fits. The old
+      // rule counted rows and rejected the NEW row once full, so a capture straddling
       // the cap was stored in part - some topics present, the rest silently gone,
       // indistinguishable from "that topic was not publishing". Keep-newest also
       // stops this cap from opposing the rosbag one.
       //
       // The newest capture is never trimmed: if it alone exceeds the cap, the cap
-      // is smaller than this fault's topic count and tearing it would be the very
+      // is smaller than this record's topic count and tearing it would be the very
       // thing being fixed.
       auto res =
-          execute(tx, "SELECT MAX(capture_id) AS max_capture_id FROM snapshots WHERE fault_code = $1", fault_code);
+          execute(tx, "SELECT MAX(capture_id) AS max_capture_id FROM snapshots WHERE fault_code = $1 AND owner = $2",
+                  fault_code, owner);
       int64_t newest_capture = 0;
       if (!res.empty() && !res[0]["max_capture_id"].is_null()) {
         newest_capture = res[0]["max_capture_id"].as<int64_t>();
       }
       while (true) {
-        auto count_res = execute(tx, "SELECT COUNT(*) AS sz FROM snapshots WHERE fault_code = $1", fault_code);
+        auto count_res =
+            execute(tx, "SELECT COUNT(*) AS sz FROM snapshots WHERE fault_code = $1 AND owner = $2", fault_code, owner);
         if (count_res.empty() || count_res[0]["sz"].as<size_t>() <= max_snapshots_per_fault_) {
           break;
         }
         auto trim_res = execute(tx,
-                                "DELETE FROM snapshots WHERE fault_code = $1 AND capture_id = "
-                                "(SELECT MIN(capture_id) FROM snapshots WHERE fault_code = $1) "
-                                "AND capture_id <> $2",
-                                fault_code, newest_capture);
+                                "DELETE FROM snapshots WHERE fault_code = $1 AND owner = $2 AND capture_id = "
+                                "(SELECT MIN(capture_id) FROM snapshots WHERE fault_code = $1 AND owner = $2) "
+                                "AND capture_id <> $3",
+                                fault_code, owner, newest_capture);
         if (trim_res.affected_rows() == 0) {
           break;
         }
@@ -950,14 +1056,14 @@ void PgFaultStorage::store_snapshots(const std::vector<SnapshotData> & snapshots
   });
 }
 
-std::vector<SnapshotData> PgFaultStorage::get_snapshots(const std::string & fault_code,
-                                                        const std::string & topic_filter) const {
+std::vector<SnapshotData> PgFaultStorage::get_snapshots(const FaultId & id, const std::string & topic_filter) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::string sql =
-      "SELECT fault_code, topic, message_type, data, captured_at_ns, capture_id FROM snapshots WHERE fault_code = $1";
+      "SELECT fault_code, owner, topic, message_type, data, captured_at_ns, capture_id FROM snapshots "
+      "WHERE fault_code = $1 AND owner = $2";
   if (!topic_filter.empty()) {
-    sql += " AND topic = $2";
+    sql += " AND topic = $3";
   }
   // capture_id before the timestamp: the rows of one capture are written seconds
   // apart under load and their timestamps interleave with a neighbouring capture's,
@@ -965,12 +1071,14 @@ std::vector<SnapshotData> PgFaultStorage::get_snapshots(const std::string & faul
   sql += " ORDER BY capture_id DESC, captured_at_ns DESC";
 
   return run_in_transaction("get_snapshots", [&](pqxx::work & tx) {
-    auto res = topic_filter.empty() ? execute(tx, sql, fault_code) : execute(tx, sql, fault_code, topic_filter);
+    auto res = topic_filter.empty() ? execute(tx, sql, id.fault_code, id.owner)
+                                    : execute(tx, sql, id.fault_code, id.owner, topic_filter);
 
     std::vector<SnapshotData> result;
     for (const auto & r : res) {
       SnapshotData snapshot;
       snapshot.fault_code = r["fault_code"].as<std::string>();
+      snapshot.owner = r["owner"].as<std::string>();
       snapshot.topic = r["topic"].as<std::string>();
       snapshot.message_type = r["message_type"].as<std::string>();
       snapshot.data = r["data"].as<std::string>();
@@ -998,26 +1106,28 @@ void PgFaultStorage::store_freeze_frame(const FreezeFrameData & frame) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   run_in_transaction("store_freeze_frame", [&](pqxx::work & tx) {
-    // Keyed by fault_code (PRIMARY KEY): a re-confirm replaces the previous frame.
+    // Keyed by the record (idx_freeze_frames_code_owner): a re-confirm of the same record
+    // replaces its frame, and another owner's frame of the same code is its own row.
     execute(tx,
-            "INSERT INTO freeze_frames (fault_code, data, captured_at_ns) VALUES ($1, $2, $3) ON CONFLICT(fault_code) "
-            "DO "
-            "UPDATE SET data = $2, captured_at_ns = $3 ",
-            frame.fault_code, frame.data, frame.captured_at_ns);
+            "INSERT INTO freeze_frames (fault_code, owner, data, captured_at_ns) VALUES ($1, $2, $3, $4) "
+            "ON CONFLICT(fault_code, owner) DO UPDATE SET data = $3, captured_at_ns = $4 ",
+            frame.fault_code, frame.owner, frame.data, frame.captured_at_ns);
   });
 }
 
-std::optional<FreezeFrameData> PgFaultStorage::get_freeze_frame(const std::string & fault_code) const {
+std::optional<FreezeFrameData> PgFaultStorage::get_freeze_frame(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("get_freeze_frame", [&](pqxx::work & tx) -> std::optional<FreezeFrameData> {
-    auto res =
-        execute(tx, "SELECT fault_code, data, captured_at_ns FROM freeze_frames WHERE fault_code = $1", fault_code);
+    auto res = execute(
+        tx, "SELECT fault_code, owner, data, captured_at_ns FROM freeze_frames WHERE fault_code = $1 AND owner = $2",
+        id.fault_code, id.owner);
     if (res.empty()) {
       return std::nullopt;
     }
     FreezeFrameData frame;
     frame.fault_code = res[0]["fault_code"].as<std::string>();
+    frame.owner = res[0]["owner"].as<std::string>();
     frame.data = res[0]["data"].as<std::string>();
     frame.captured_at_ns = res[0]["captured_at_ns"].as<int64_t>();
     return frame;
@@ -1042,7 +1152,7 @@ size_t PgFaultStorage::set_max_near_misses_per_fault(size_t max_count) {
     auto res = execute(tx,
                        "DELETE FROM near_misses WHERE id IN ("
                        "SELECT id FROM (SELECT id, ROW_NUMBER() OVER "
-                       "(PARTITION BY fault_code ORDER BY id DESC) AS rn FROM near_misses) AS ranked "
+                       "(PARTITION BY fault_code, owner ORDER BY id DESC) AS rn FROM near_misses) AS ranked "
                        "WHERE rn > $1)",
                        static_cast<int64_t>(max_count));
     // Returned rather than logged: the storage layer has no logger, and a bound applied by mistake
@@ -1051,15 +1161,15 @@ size_t PgFaultStorage::set_max_near_misses_per_fault(size_t max_count) {
   });
 }
 
-void PgFaultStorage::record_near_miss_locked(const std::string & fault_code, int64_t occurred_at_ns,
-                                             int32_t debounce_counter, const DebounceConfig & config, uint8_t severity,
+void PgFaultStorage::record_near_miss_locked(const FaultId & id, int64_t occurred_at_ns, int32_t debounce_counter,
+                                             const DebounceConfig & config, uint8_t severity,
                                              const std::string & source_id, const std::string & resulting_status,
                                              pqxx::work & tx) {
   execute(tx,
-          "INSERT INTO near_misses (fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, severity, "
-          "source_id, resulting_status) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-          fault_code, occurred_at_ns, debounce_counter, config.confirmation_threshold, static_cast<int>(severity),
-          source_id, resulting_status);
+          "INSERT INTO near_misses (fault_code, owner, occurred_at_ns, debounce_counter, confirmation_threshold, "
+          "severity, source_id, resulting_status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+          id.fault_code, id.owner, occurred_at_ns, debounce_counter, config.confirmation_threshold,
+          static_cast<int>(severity), source_id, resulting_status);
 
   if (max_near_misses_per_fault_ == 0 ||
       max_near_misses_per_fault_ > static_cast<size_t>(std::numeric_limits<int64_t>::max())) {
@@ -1075,25 +1185,26 @@ void PgFaultStorage::record_near_miss_locked(const std::string & fault_code, int
   // by timestamp would then drop the row that was just appended and make the two backends, which
   // append in arrival order, disagree on the same input.
   execute(tx,
-          "DELETE FROM near_misses WHERE fault_code = $1 AND id NOT IN "
-          "(SELECT id FROM near_misses WHERE fault_code = $1 ORDER BY id DESC LIMIT $2)",
-          fault_code, static_cast<int64_t>(max_near_misses_per_fault_));
+          "DELETE FROM near_misses WHERE fault_code = $1 AND owner = $2 AND id NOT IN "
+          "(SELECT id FROM near_misses WHERE fault_code = $1 AND owner = $2 ORDER BY id DESC LIMIT $3)",
+          id.fault_code, id.owner, static_cast<int64_t>(max_near_misses_per_fault_));
 }
 
-std::vector<NearMissRecord> PgFaultStorage::get_near_misses(const std::string & fault_code) const {
+std::vector<NearMissRecord> PgFaultStorage::get_near_misses(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("get_near_misses", [&](pqxx::work & tx) {
     auto res = execute(tx,
-                       "SELECT fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, "
-                       "severity, source_id, resulting_status FROM near_misses WHERE fault_code = $1 "
-                       "ORDER BY id ASC",
-                       fault_code);
+                       "SELECT fault_code, owner, occurred_at_ns, debounce_counter, confirmation_threshold, "
+                       "severity, source_id, resulting_status FROM near_misses "
+                       "WHERE fault_code = $1 AND owner = $2 ORDER BY id ASC",
+                       id.fault_code, id.owner);
 
     std::vector<NearMissRecord> result;
     for (const auto & r : res) {
       NearMissRecord record;
       record.fault_code = r["fault_code"].as<std::string>();
+      record.owner = r["owner"].as<std::string>();
       record.occurred_at_ns = r["occurred_at_ns"].as<int64_t>();
       record.debounce_counter = r["debounce_counter"].as<int32_t>();
       record.confirmation_threshold = r["confirmation_threshold"].as<int32_t>();
@@ -1175,25 +1286,25 @@ std::vector<std::string> PgFaultStorage::store_rosbag_file_locked(const RosbagFi
   // re-stored row inside a tie group.
   execute(tx,
           "INSERT INTO rosbag_files "
-          "(fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns) "
-          "VALUES ($1, $2, $3, $4, $5, $6, $7) "
-          "ON CONFLICT (fault_code, file_path) DO UPDATE SET "
+          "(fault_code, owner, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns) "
+          "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+          "ON CONFLICT (fault_code, owner, file_path) DO UPDATE SET "
           "recording_id = EXCLUDED.recording_id, format = EXCLUDED.format, "
           "duration_sec = EXCLUDED.duration_sec, size_bytes = EXCLUDED.size_bytes, "
           "created_at_ns = EXCLUDED.created_at_ns",
-          row.fault_code, row.recording_id, row.file_path, row.format, row.duration_sec,
+          row.fault_code, row.owner, row.recording_id, row.file_path, row.format, row.duration_sec,
           static_cast<int64_t>(row.size_bytes), row.created_at_ns);
 
   if (max_rosbags_per_fault_ == 0) {
-    return {};  // unlimited per fault; only the global byte quota bounds this
+    return {};  // unlimited per record; only the global byte quota bounds this
   }
 
-  auto res =
-      execute(tx,
-              "DELETE FROM rosbag_files WHERE fault_code = $1 AND id NOT IN "
-              "(SELECT id FROM rosbag_files WHERE fault_code = $1 ORDER BY created_at_ns DESC, id DESC LIMIT $2) "
-              "RETURNING file_path",
-              row.fault_code, static_cast<int64_t>(max_rosbags_per_fault_));
+  auto res = execute(tx,
+                     "DELETE FROM rosbag_files WHERE fault_code = $1 AND owner = $2 AND id NOT IN "
+                     "(SELECT id FROM rosbag_files WHERE fault_code = $1 AND owner = $2 ORDER BY created_at_ns DESC, "
+                     "id DESC LIMIT $3) "
+                     "RETURNING file_path",
+                     row.fault_code, row.owner, static_cast<int64_t>(max_rosbags_per_fault_));
 
   std::set<std::string> evicted;
   for (const auto & r : res) {
@@ -1207,6 +1318,7 @@ namespace {
 RosbagFileInfo read_rosbag_row(const pqxx::row & r) {
   RosbagFileInfo info;
   info.fault_code = r["fault_code"].as<std::string>();
+  info.owner = r["owner"].as<std::string>();
   info.recording_id = r["recording_id"].as<std::string>();
   info.file_path = r["file_path"].as<std::string>();
   info.format = r["format"].as<std::string>();
@@ -1217,18 +1329,19 @@ RosbagFileInfo read_rosbag_row(const pqxx::row & r) {
 }
 
 constexpr const char * kRosbagColumns =
-    "fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns";
+    "fault_code, owner, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns";
 
 }  // namespace
 
-std::vector<RosbagFileInfo> PgFaultStorage::get_rosbag_files(const std::string & fault_code) const {
+std::vector<RosbagFileInfo> PgFaultStorage::get_rosbag_files(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("get_rosbag_files", [&](pqxx::work & tx) {
-    auto res = execute(tx,
-                       std::string("SELECT ") + kRosbagColumns +
-                           " FROM rosbag_files WHERE fault_code = $1 ORDER BY created_at_ns DESC, id DESC",
-                       fault_code);
+    auto res =
+        execute(tx,
+                std::string("SELECT ") + kRosbagColumns +
+                    " FROM rosbag_files WHERE fault_code = $1 AND owner = $2 ORDER BY created_at_ns DESC, id DESC",
+                id.fault_code, id.owner);
 
     std::vector<RosbagFileInfo> result;
     for (const auto & r : res) {
@@ -1244,7 +1357,7 @@ std::vector<RosbagFileInfo> PgFaultStorage::get_rosbag_files_by_recording(const 
   return run_in_transaction("get_rosbag_files_by_recording", [&](pqxx::work & tx) {
     auto res = execute(tx,
                        std::string("SELECT ") + kRosbagColumns +
-                           " FROM rosbag_files WHERE recording_id = $1 ORDER BY fault_code ASC",
+                           " FROM rosbag_files WHERE recording_id = $1 ORDER BY fault_code ASC, owner ASC",
                        recording_id);
 
     std::vector<RosbagFileInfo> result;
@@ -1291,19 +1404,20 @@ size_t PgFaultStorage::delete_rosbag_recording(const std::string & recording_id)
   return outcome.second;
 }
 
-std::optional<RosbagFileInfo> PgFaultStorage::get_rosbag_file(const std::string & fault_code) const {
+std::optional<RosbagFileInfo> PgFaultStorage::get_rosbag_file(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("get_rosbag_file", [&](pqxx::work & tx) -> std::optional<RosbagFileInfo> {
-    // ORDER BY is load-bearing now that a fault can hold several recordings. Without
+    // ORDER BY is load-bearing now that a record can hold several recordings. Without
     // it PostgreSQL may return any matching row, so the fault detail and the download
     // would serve an arbitrary recording - non-deterministically, which no test
     // catches reliably. id breaks the tie because a burst stamps one created_at_ns
     // across all its rows.
     auto res = execute(tx,
-                       "SELECT fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns "
-                       "FROM rosbag_files WHERE fault_code = $1 ORDER BY created_at_ns DESC, id DESC LIMIT 1",
-                       fault_code);
+                       std::string("SELECT ") + kRosbagColumns +
+                           " FROM rosbag_files WHERE fault_code = $1 AND owner = $2 "
+                           "ORDER BY created_at_ns DESC, id DESC LIMIT 1",
+                       id.fault_code, id.owner);
     if (res.empty()) {
       return std::nullopt;
     }
@@ -1311,7 +1425,7 @@ std::optional<RosbagFileInfo> PgFaultStorage::get_rosbag_file(const std::string 
   });
 }
 
-bool PgFaultStorage::delete_rosbag_file(const std::string & fault_code) {
+bool PgFaultStorage::delete_rosbag_file(const FaultId & id) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   auto outcome =
@@ -1320,8 +1434,9 @@ bool PgFaultStorage::delete_rosbag_file(const std::string & fault_code) {
         // DELETE, leave a surviving row pointing at a directory that is gone -
         // unreadable for good, and still charged against the storage quota, which sums
         // rows. This way the worst case is an orphaned directory instead.
-        auto res = execute(tx, "DELETE FROM rosbag_files WHERE fault_code = $1 RETURNING file_path", fault_code);
-        // Every path, not the first one: a fault holds as many recordings as its cap
+        auto res = execute(tx, "DELETE FROM rosbag_files WHERE fault_code = $1 AND owner = $2 RETURNING file_path",
+                           id.fault_code, id.owner);
+        // Every path, not the first one: a record holds as many recordings as its cap
         // allows, and reading one row would unlink one bag and leak the rest - rows gone,
         // directories left behind, uncounted by a quota that sums rows.
         std::set<std::string> paths;
@@ -1347,8 +1462,8 @@ bool PgFaultStorage::delete_rosbag_file(const std::string & fault_code) {
   return outcome.second;
 }
 
-size_t PgFaultStorage::delete_rosbag_files(const std::vector<std::string> & fault_codes) {
-  if (fault_codes.empty()) {
+size_t PgFaultStorage::delete_rosbag_files(const std::vector<FaultId> & ids) {
+  if (ids.empty()) {
     return 0;
   }
   std::lock_guard<std::mutex> lock(mutex_);
@@ -1360,11 +1475,12 @@ size_t PgFaultStorage::delete_rosbag_files(const std::vector<std::string> & faul
       run_in_transaction("delete_rosbag_files", [&](pqxx::work & tx) -> std::pair<std::set<std::string>, size_t> {
         std::set<std::string> paths;
         size_t deleted = 0;
-        for (const auto & code : fault_codes) {
-          // RETURNING gives every path this code held, not just the first: one fault
-          // code can name several recordings now, and the sweep must be able to
-          // reclaim every one of their bags.
-          auto res = execute(tx, "DELETE FROM rosbag_files WHERE fault_code = $1 RETURNING file_path", code);
+        for (const auto & id : ids) {
+          // RETURNING gives every path this record held, not just the first: one record
+          // can name several recordings now, and the sweep must be able to reclaim every
+          // one of their bags.
+          auto res = execute(tx, "DELETE FROM rosbag_files WHERE fault_code = $1 AND owner = $2 RETURNING file_path",
+                             id.fault_code, id.owner);
           for (const auto & r : res) {
             paths.insert(r["file_path"].as<std::string>());
           }
@@ -1415,21 +1531,12 @@ std::vector<RosbagFileInfo> PgFaultStorage::get_all_rosbag_files() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("get_all_rosbag_files", [&](pqxx::work & tx) {
-    auto res = execute(tx,
-                       "SELECT fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns "
-                       "FROM rosbag_files ORDER BY created_at_ns ASC, id ASC");
+    auto res =
+        execute(tx, std::string("SELECT ") + kRosbagColumns + " FROM rosbag_files ORDER BY created_at_ns ASC, id ASC");
 
     std::vector<RosbagFileInfo> result;
     for (const auto & r : res) {
-      RosbagFileInfo info;
-      info.fault_code = r["fault_code"].as<std::string>();
-      info.recording_id = r["recording_id"].as<std::string>();
-      info.file_path = r["file_path"].as<std::string>();
-      info.format = r["format"].as<std::string>();
-      info.duration_sec = r["duration_sec"].as<double>();
-      info.size_bytes = static_cast<size_t>(r["size_bytes"].as<int64_t>());
-      info.created_at_ns = r["created_at_ns"].as<int64_t>();
-      result.push_back(info);
+      result.push_back(read_rosbag_row(r));
     }
     return result;
   });
@@ -1439,26 +1546,20 @@ std::vector<RosbagFileInfo> PgFaultStorage::list_rosbags_for_entity(const std::s
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("list_rosbags_for_entity", [&](pqxx::work & tx) {
-    auto res = execute(
-        tx,
-        "SELECT r.fault_code, r.recording_id, r.file_path, r.format, r.duration_sec, r.size_bytes, r.created_at_ns "
-        "FROM rosbag_files r "
-        "JOIN faults f ON r.fault_code = f.fault_code "
-        "JOIN jsonb_array_elements_text(f.reporting_sources::jsonb) AS j(value) ON j.value = $1 "
-        "ORDER BY r.created_at_ns DESC, r.id DESC",
-        entity_fqn);
+    // The rows whose record lists the entity among its reporting sources.
+    auto res =
+        execute(tx,
+                "SELECT r.fault_code, r.owner, r.recording_id, r.file_path, r.format, r.duration_sec, r.size_bytes, "
+                "r.created_at_ns "
+                "FROM rosbag_files r "
+                "JOIN faults f ON r.fault_code = f.fault_code AND r.owner = f.owner "
+                "JOIN jsonb_array_elements_text(f.reporting_sources::jsonb) AS j(value) ON j.value = $1 "
+                "ORDER BY r.created_at_ns DESC, r.id DESC",
+                entity_fqn);
 
     std::vector<RosbagFileInfo> result;
     for (const auto & r : res) {
-      RosbagFileInfo info;
-      info.fault_code = r["fault_code"].as<std::string>();
-      info.recording_id = r["recording_id"].as<std::string>();
-      info.file_path = r["file_path"].as<std::string>();
-      info.format = r["format"].as<std::string>();
-      info.duration_sec = r["duration_sec"].as<double>();
-      info.size_bytes = static_cast<size_t>(r["size_bytes"].as<int64_t>());
-      info.created_at_ns = r["created_at_ns"].as<int64_t>();
-      result.push_back(info);
+      result.push_back(read_rosbag_row(r));
     }
     return result;
   });
@@ -1468,23 +1569,11 @@ std::vector<fd::FaultRecord> PgFaultStorage::get_all_faults() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   return run_in_transaction("get_all_faults", [&](pqxx::work & tx) {
-    auto res = execute(tx,
-                       "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
-                       "occurrence_count, status, reporting_sources, last_passed_ns FROM faults");
+    auto res = execute(tx, std::string("SELECT ") + kFaultColumns + " FROM faults");
 
     std::vector<fd::FaultRecord> result;
     for (const auto & r : res) {
-      fd::FaultRecord fault;
-      fault.fault_code = r["fault_code"].as<std::string>();
-      fault.severity = static_cast<uint8_t>(r["severity"].as<int>());
-      fault.description = r["description"].as<std::string>();
-      fault.first_occurred_ns = r["first_occurred_ns"].as<int64_t>();
-      fault.last_occurred_ns = r["last_occurred_ns"].as<int64_t>();
-      fault.occurrence_count = static_cast<uint32_t>(r["occurrence_count"].as<int64_t>());
-      fault.status = r["status"].as<std::string>();
-      fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
-      fault.last_passed_ns = r["last_passed_ns"].as<int64_t>();
-      result.push_back(fault);
+      result.push_back(read_fault_row(r));
     }
     return result;
   });

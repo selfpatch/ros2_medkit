@@ -15,7 +15,13 @@ Messages
 Fault.msg
 ~~~~~~~~~
 
-Core fault data model representing an aggregated fault condition.
+Core fault data model representing one fault record.
+
+A record is identified by the pair (``fault_code``, owner). A code listed with
+``per_source: true`` in ``fault_thresholds.yaml`` has one record per reporting source, owned by
+the ``source_id`` of the ``ReportFault`` call. Every other code has one record shared by all
+its sources, owned by the reserved id ``*``. Each record has its own status, debounce counter,
+``occurrence_count``, severity and timestamps, and is cleared on its own.
 
 .. code-block:: text
 
@@ -49,7 +55,8 @@ Core fault data model representing an aggregated fault condition.
    # Current fault status (PREFAILED, PREPASSED, CONFIRMED, HEALED, CLEARED)
    string status
 
-   # List of source identifiers that have reported this fault
+   # Every source that reported this record: one for a per-source record, all of
+   # them for a shared one.
    string[] reporting_sources
 
 **Severity Constants:**
@@ -146,7 +153,10 @@ prefix (for example ``/robot1/fault_manager/events``).
 MutedFaultInfo.msg
 ~~~~~~~~~~~~~~~~~~
 
-Information about correlated (muted) symptom faults.
+Information about a correlated (muted) symptom record. One entry per muted RECORD:
+a root cause mutes the matching symptom records of every owner, so two per-source records
+muted on one ``fault_code`` produce two entries carrying that code, told apart by
+``source_id``.
 
 .. code-block:: text
 
@@ -154,6 +164,7 @@ Information about correlated (muted) symptom faults.
    string root_cause_code  # Root cause that triggered muting
    string rule_id          # Correlation rule ID that matched
    uint32 delay_ms         # Time delay from root cause [ms]
+   string source_id        # Owner of the muted record (``*`` for a shared record)
 
 ClusterInfo.msg
 ~~~~~~~~~~~~~~~
@@ -172,6 +183,12 @@ Auto-detected fault cluster information.
    uint32 count                   # Number of faults
    builtin_interfaces/Time first_at  # First fault timestamp
    builtin_interfaces/Time last_at   # Last fault timestamp
+   string[] fault_owners          # Owner of each member, parallel to fault_codes
+   string representative_owner    # Owner of the representative record
+
+A cluster holds the matching records of every owner, so a member is the record
+``(fault_codes[i], fault_owners[i])``. Pass the owner as ``source_id`` to the
+single-record services. The owner of a shared record is ``*``.
 
 Services
 --------
@@ -189,7 +206,8 @@ Report a fault event to the FaultManager.
    uint8 event_type    # EVENT_FAILED (0) or EVENT_PASSED (1)
    uint8 severity      # Fault.SEVERITY_* constant (for FAILED events)
    string description  # Human-readable description
-   string source_id    # Fully qualified node name (e.g., "/powertrain/temp_sensor")
+   string source_id    # Fully qualified node name (e.g., "/powertrain/temp_sensor").
+                       # Owns the record of a per_source code. "*" is reserved and refused.
 
 **Response:**
 
@@ -215,7 +233,7 @@ Report a fault event to the FaultManager.
 ClearFault.srv
 ~~~~~~~~~~~~~~
 
-Clear/acknowledge a fault.
+Clear/acknowledge one fault record.
 
 **Request:**
 
@@ -223,21 +241,35 @@ Clear/acknowledge a fault.
 
    string fault_code                # Fault code to clear
    bool   skip_correlation_auto_clear  # Opt out of correlation cascade clear
+   string source_id                 # Owner of the record, or a source that reports into it
 
 **Response:**
 
 .. code-block:: text
 
-   bool success            # True if fault was found and cleared
+   bool success            # True if the record was found and cleared
    string message          # Status message or error description
    string[] auto_cleared_codes  # Symptoms auto-cleared with root cause
+
+``source_id`` names the owner of the record to clear (``*`` for a shared record). When no
+record has that owner, it names the record that source reports into. Leaving it empty is
+unscoped: the call applies only when exactly one record carries the ``fault_code``, and fails
+otherwise with ``success=false`` and a ``message`` beginning ``ambiguous:`` that lists the owners.
+An ambiguous call clears nothing. ``GetFault``, ``GetSnapshots`` and ``GetRosbag`` carry
+the same field and resolve the same way. On ``GetRosbag`` it scopes the ``fault_code``
+lookup only, and the ``recording_id`` path ignores it.
+
+``GetRosbag`` answers with ``fault_codes`` and ``owners``, parallel arrays with one entry per
+fault record the recording is attached to. A burst of several per-source records of one code
+lists the code once per owner. A shared record is one entry carrying the owner ``*``.
 
 When ``skip_correlation_auto_clear`` is ``false`` (default), clearing a
 root-cause fault also clears every symptom that the correlation engine
 attributes to it via ``auto_clear_with_root`` rules; the cleared
 symptom codes are returned in ``auto_cleared_codes``. When ``true``,
 only the requested ``fault_code`` is cleared and ``auto_cleared_codes``
-is empty. The gateway's per-entity ``DELETE
+is empty. Either way the cleared root cause ends its relations: the symptoms it
+muted are unmuted, and it no longer mutes later reports. The gateway's per-entity ``DELETE
 /{entity-path}/faults/{fault_code}`` route sets this to ``true`` so
 that an operator with access to one entity cannot cascade-clear
 correlated symptoms reported by apps in other entities. The global
@@ -246,11 +278,18 @@ cluster-wide clearing still works.
 
 .. note::
 
-   Added in ``ros2_medkit_msgs`` post-0.4.0. Adding a request field
-   changes the service type hash, so out-of-tree callers that invoke
-   ``/fault_manager/clear_fault`` directly via ``ros2 service call`` or
-   a generated client must rebuild against the new ``ros2_medkit_msgs``
-   release to keep talking to ``fault_manager``.
+   ``skip_correlation_auto_clear`` was added in ``ros2_medkit_msgs`` post-0.4.0,
+   and ``source_id`` after it (the same field was added to ``GetFault``,
+   ``GetSnapshots`` and ``GetRosbag``). Adding a field changes the type hash, and
+   a field added inside an array element changes the wire layout, so every client
+   of the fault manager's services and topics must be rebuilt against this
+   ``ros2_medkit_msgs``. This includes out-of-tree callers that use ``ros2
+   service call`` or a generated client. The case that breaks without an error is
+   ``ListFaults``: ``MutedFaultInfo.source_id`` and ``ClusterInfo.fault_owners`` and
+   ``representative_owner`` sit inside the elements of the ``muted_faults`` and
+   ``clusters`` arrays, CDR has no per-element length, and a client built against
+   an earlier ``ros2_medkit_msgs`` misreads any response that carries a muted or
+   clustered entry. Trailing fields do not keep old clients working.
 
 ListFaults.srv
 ~~~~~~~~~~~~~~

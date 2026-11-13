@@ -65,6 +65,21 @@ OverrideFields parse_override_fields(const YAML::Node & node, core::LogSink & si
   return fields;
 }
 
+/// A YAML boolean, spelled true or false. Throws YAML::BadConversion for any other scalar: yaml-cpp
+/// reads "yes", "on" and "y" as booleans too, and a typo must not decide how a code is identified.
+bool parse_strict_bool(const YAML::Node & node) {
+  if (node.IsScalar()) {
+    const std::string & text = node.Scalar();
+    if (text == "true" || text == "True" || text == "TRUE") {
+      return true;
+    }
+    if (text == "false" || text == "False" || text == "FALSE") {
+      return false;
+    }
+  }
+  throw YAML::BadConversion(node.Mark());
+}
+
 /// Open a threshold config file and hand back its top-level map, or an undefined
 /// node when the file is missing, unparseable or not a map. Every rejection is
 /// logged here so both loaders report the same way.
@@ -199,6 +214,11 @@ DebounceConfig FaultCodeThresholdResolver::resolve(const std::string & fault_cod
   return result;
 }
 
+bool FaultCodeThresholdResolver::per_source(const std::string & fault_code) const {
+  const auto it = entries_.find(fault_code);
+  return it != entries_.end() && it->second.per_source;
+}
+
 size_t FaultCodeThresholdResolver::size() const {
   return entries_.size();
 }
@@ -239,6 +259,9 @@ std::vector<FaultCodeDebounceOverride> FaultCodeThresholdResolver::load_from_yam
       entry.confirmation_threshold = fields.confirmation_threshold;
       entry.healing_enabled = fields.healing_enabled;
       entry.healing_threshold = fields.healing_threshold;
+      if (item.second["per_source"]) {
+        entry.per_source = parse_strict_bool(item.second["per_source"]);
+      }
 
       entries.push_back(std::move(entry));
     }

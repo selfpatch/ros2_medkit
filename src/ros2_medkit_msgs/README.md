@@ -14,7 +14,18 @@ This package provides the interface definitions used by the fault management com
 
 ### Fault.msg
 
-Core fault data model representing an aggregated fault condition with AUTOSAR DEM-style debounce filtering.
+Core fault data model representing one fault record with AUTOSAR DEM-style debounce filtering.
+
+A record is identified by the pair (`fault_code`, owner). A code listed with `per_source: true`
+in `fault_thresholds.yaml` has one record per reporting source, owned by the `source_id` of the
+`ReportFault` call. Every other code has one record shared by all its sources, owned by the
+reserved id `*`, which `ReportFault` refuses as a `source_id`. Each record has its own status,
+debounce counter, `occurrence_count`, severity and timestamps, and is cleared on its own. The
+services that act on a single record (`ClearFault`, `GetFault`, `GetSnapshots`, `GetRosbag`) carry
+a `source_id` request field. It names the owner (`*` for a shared record). A reporting source that
+owns no record reaches the record it reports into. An empty `source_id` is unscoped: the call
+applies only when exactly one record carries the `fault_code`, and fails as ambiguous when
+several do.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -26,7 +37,7 @@ Core fault data model representing an aggregated fault condition with AUTOSAR DE
 | `last_passed` | builtin_interfaces/Time | When fault last reported PASSED (zero = never) |
 | `occurrence_count` | uint32 | Times this fault has occurred, counted on edges (first FAILED, then each FAILED that arrives while CLEARED). Repeats within one occurrence do not increment it |
 | `status` | string | Current status (see STATUS_* constants) |
-| `reporting_sources` | string[] | List of source identifiers that reported this fault |
+| `reporting_sources` | string[] | Every source that reported this record: one for a per-source record, all of them for a shared one |
 
 **Severity Levels:**
 | Constant | Value | Description |
@@ -121,12 +132,14 @@ Query faults with optional filtering.
 
 ### ClearFault.srv
 
-Clear/acknowledge a fault. Cleared faults are retained and queryable with `statuses=["CLEARED"]`.
+Clear/acknowledge one fault record. Cleared records are retained and queryable with
+`statuses=["CLEARED"]`.
 
 **Request:**
 | Field | Type | Description |
 |-------|------|-------------|
-| `fault_code` | string | The fault to clear |
+| `fault_code` | string | The fault code to clear |
+| `source_id` | string | Owner of the record (`*` for a shared record), or a source that reports into it. Empty means unscoped: the call applies only when exactly one record carries the `fault_code`, otherwise it fails with a message beginning `ambiguous:` and clears nothing |
 | `skip_correlation_auto_clear` | bool | When `true`, only the requested fault_code is cleared; symptom faults that the correlation engine would normally auto-clear via `auto_clear_with_root` rules are left untouched. Default `false` (cascade clear). The gateway sets this to `true` on per-entity `DELETE /{entity-path}/faults/{fault_code}` so that an operator with access to one entity cannot cascade-clear correlated symptoms reported by apps in other entities. |
 
 **Response:**
@@ -136,7 +149,16 @@ Clear/acknowledge a fault. Cleared faults are retained and queryable with `statu
 | `message` | string | Status or error message |
 | `auto_cleared_codes` | string[] | Symptom fault codes auto-cleared with the root cause (empty when `skip_correlation_auto_clear=true`) |
 
-> **Note:** `skip_correlation_auto_clear` was added in `ros2_medkit_msgs` post-0.4.0. Adding a request field changes the service type hash, so out-of-tree callers that invoke `/fault_manager/clear_fault` directly (via `ros2 service call` or a generated client) must rebuild against the new `ros2_medkit_msgs` release to keep talking to `fault_manager`.
+> **Note:** `skip_correlation_auto_clear` was added in `ros2_medkit_msgs` post-0.4.0, and `source_id`
+> after it. `source_id` was added the same way to `GetFault`, `GetSnapshots` and `GetRosbag`. Adding a
+> field changes the type hash, and a field added inside an array element changes the wire layout, so
+> every client of the fault manager's services and topics must be rebuilt against this
+> `ros2_medkit_msgs`. This includes out-of-tree callers that use `ros2 service call` or a generated
+> client. The case that breaks without an error is `ListFaults`: `MutedFaultInfo.source_id` and
+> `ClusterInfo.fault_owners` / `representative_owner` sit inside the elements of the `muted_faults`
+> and `clusters` arrays, CDR has no per-element length, and a client built against an earlier
+> `ros2_medkit_msgs` misreads any response that carries a muted or clustered entry. Trailing fields
+> do not keep old clients working.
 
 ## Usage
 

@@ -14,7 +14,8 @@
 #
 # GetRosbag.srv - Retrieve rosbag file information for a fault.
 #
-# Returns the path to the rosbag file that was recorded when a fault was confirmed.
+# Returns the path to the rosbag file that was recorded when a fault record was
+# confirmed. A recording is linked per record, identified by (fault_code, owner).
 # The rosbag contains time-window recording of configured topics before and after
 # the fault confirmation event.
 
@@ -29,6 +30,14 @@ string fault_code
 # fault_code alone keeps its historical meaning, "the newest recording of this
 # fault".
 string recording_id
+
+# Which record. Set it to the owner of the record: the reporting source for a per_source
+# code, or "*" for the record that every source of any other code shares. A reporting source
+# that owns no record reaches the record it reports into, so a client that knows only the
+# source it reports as still finds the shared record. Empty: the call applies only when
+# exactly one record carries fault_code, otherwise it fails as ambiguous.
+# It scopes the fault_code lookup only. The recording_id path ignores it.
+string source_id
 ---
 # Response fields
 
@@ -43,8 +52,9 @@ string file_path
 # as the bulk-data id.
 string recording_id
 
-# Every fault this recording covers - a burst of correlated faults shares one bag.
-# Callers authorize a download against this set, not against a single code.
+# Every fault record this recording covers - a burst of correlated faults shares one bag.
+# One entry per record, so a code appears once per owner that holds it. Callers authorize a
+# download against this set, not against a single code. owners is parallel to this array.
 string[] fault_codes
 
 # Storage format: "sqlite3" or "mcap"
@@ -61,3 +71,8 @@ uint64 size_bytes
 
 # Error message if success is false.
 string error_message
+
+# Owner of each record in fault_codes, one entry per fault_codes entry in the same order:
+# the reporting source for a per_source code, "*" for the record that every source of any
+# other code shares.
+string[] owners

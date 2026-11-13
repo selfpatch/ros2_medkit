@@ -15,8 +15,10 @@
 
 """Integration tests for ros2_medkit_fault_manager services."""
 
+import atexit
 import json
 import os
+import tempfile
 import threading
 import time
 import unittest
@@ -72,6 +74,13 @@ def get_coverage_env():
 
 def generate_test_description():
     """Generate launch description with fault_manager node."""
+    # One code gets a record per source, for the scoped-clear test. Every other code is shared.
+    per_source_codes = tempfile.NamedTemporaryFile(
+        'w', suffix='.yaml', prefix='per_source_codes_', delete=False)
+    per_source_codes.write('TEST_SCOPED_CLEAR:\n  per_source: true\n')
+    per_source_codes.close()
+    atexit.register(os.unlink, per_source_codes.name)
+
     # Get path to test snapshot config
     pkg_share = get_package_share_directory('ros2_medkit_fault_manager')
     snapshot_config = os.path.join(pkg_share, 'test', 'test_snapshots.yaml')
@@ -96,6 +105,7 @@ def generate_test_description():
             'snapshots.capture_queue_depth': 2,
             'snapshots.capture_queue_full_policy': 'reject_newest',
             'correlation.config_file': correlation_config,  # Enable correlation
+            'fault_thresholds.config_file': per_source_codes.name,
         }],
         # Give the node room to flush coverage data at shutdown before SIGKILL.
         sigterm_timeout='30',
@@ -975,6 +985,56 @@ class TestFaultManagerIntegration(unittest.TestCase):
         self.assertEqual(fault.occurrence_count, 2)
         self.assertEqual(len(fault.reporting_sources), 2)
         print(f'Cleared fault reactivated: occurrence_count={fault.occurrence_count}')
+
+    def test_26b_scoped_clear_leaves_the_other_owners_record(self):
+        """A scoped clear takes one record, an unscoped clear of two is refused."""
+        fault_code = 'TEST_SCOPED_CLEAR'
+        owners = ['/owner_a', '/owner_b']
+
+        for owner in owners:
+            request = ReportFault.Request()
+            request.fault_code = fault_code
+            request.event_type = ReportFault.Request.EVENT_FAILED
+            request.severity = Fault.SEVERITY_CRITICAL
+            request.description = 'Two owners'
+            request.source_id = owner
+            self.assertTrue(self._call_service(self.report_fault_client, request).accepted)
+
+        # Unscoped: two records carry the code, so the call is refused outright.
+        unscoped = ClearFault.Request()
+        unscoped.fault_code = fault_code
+        unscoped_response = self._call_service(self.clear_fault_client, unscoped)
+        self.assertFalse(unscoped_response.success)
+        self.assertTrue(unscoped_response.message.startswith('ambiguous:'),
+                        unscoped_response.message)
+        for owner in owners:
+            self.assertIn(owner, unscoped_response.message)
+
+        # Nothing was cleared by the refusal.
+        confirmed = ListFaults.Request()
+        confirmed.statuses = [Fault.STATUS_CONFIRMED]
+        still = [f for f in self._call_service(self.list_faults_client, confirmed).faults
+                 if f.fault_code == fault_code]
+        self.assertEqual(len(still), 2)
+
+        # Scoped: exactly one record moves.
+        scoped = ClearFault.Request()
+        scoped.fault_code = fault_code
+        scoped.source_id = '/owner_a'
+        self.assertTrue(self._call_service(self.clear_fault_client, scoped).success)
+
+        after = self._call_service(self.list_faults_client, confirmed).faults
+        remaining = [f for f in after if f.fault_code == fault_code]
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0].reporting_sources, ['/owner_b'])
+
+        cleared_request = ListFaults.Request()
+        cleared_request.statuses = [Fault.STATUS_CLEARED]
+        cleared = [f for f in self._call_service(self.list_faults_client, cleared_request).faults
+                   if f.fault_code == fault_code]
+        self.assertEqual(len(cleared), 1)
+        self.assertEqual(cleared[0].reporting_sources, ['/owner_a'])
+        print('Scoped clear took one record and left the other CONFIRMED')
 
     def test_27_capture_pool_bounds_fault_storm(self, proc_output):
         """

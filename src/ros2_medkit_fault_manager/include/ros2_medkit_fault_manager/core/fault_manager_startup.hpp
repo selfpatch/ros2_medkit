@@ -45,12 +45,19 @@ CoreParts build_core_parts(const FaultManagerConfig & config, LogSink & sink);
 
 /// Appends the audit event of one reclassified fault. May throw to fail the startup.
 using ReclassifyAuditFn =
-    std::function<void(const ros2_medkit::fault_detection::FaultRecord &, int64_t occurred_at_ns)>;
+    std::function<void(const FaultId &, const ros2_medkit::fault_detection::FaultRecord &, int64_t occurred_at_ns)>;
 
 /// Turns stale HEALED rows into CLEARED for codes whose healing is now disabled. Calls @p audit for
 /// each flipped fault when @p audit_enabled. Storage that is unreachable skips it with a warning.
 void reclassify_stale_healed(FaultStorage & storage, const FaultCodeThresholdResolver * fault_code_resolver,
                              const DebounceConfig & global_debounce, bool audit_enabled, LogSink & sink,
                              const std::string & logger, const ReclassifyAuditFn & audit);
+
+/// Logs one warning per fault code that holds an active (not CLEARED) record stored under the other
+/// identity than the code is configured for: a shared record of a per_source code, or a per-source record
+/// of a shared one. Stored records keep the identity they were written with; new reports use the
+/// configured one. Storage that is unreachable skips it with a warning.
+void warn_on_identity_mode_mismatch(FaultStorage & storage, const FaultCodeThresholdResolver * fault_code_resolver,
+                                    LogSink & sink, const std::string & logger);
 
 }  // namespace ros2_medkit_fault_manager::core

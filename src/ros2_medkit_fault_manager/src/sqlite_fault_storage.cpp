@@ -14,12 +14,19 @@
 
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace ros2_medkit_fault_manager {
 
@@ -103,6 +110,111 @@ class SqliteStatement {
   sqlite3_stmt * stmt_{nullptr};
 };
 
+/// The strings of a JSON array written by serialize_json_array. A malformed value is logged and
+/// yields what was read before the text went wrong.
+std::vector<std::string> parse_json_array(const std::string & json_str, core::LogSink & sink) {
+  std::vector<std::string> result;
+
+  if (json_str.size() < 2 || json_str.front() != '[' || json_str.back() != ']') {
+    if (!json_str.empty()) {
+      core::logf(sink, core::LogLevel::kWarn, "sqlite_fault_storage", "Malformed JSON array in database: '%s'",
+                 json_str.c_str());
+    }
+    return result;
+  }
+
+  const std::string content = json_str.substr(1, json_str.size() - 2);
+  size_t pos = 0;
+  while (pos < content.size()) {
+    while (pos < content.size() && std::isspace(static_cast<unsigned char>(content[pos])) != 0) {
+      ++pos;
+    }
+    if (pos >= content.size() || content[pos] != '"') {
+      break;
+    }
+    ++pos;  // past the opening quote
+
+    std::string value;
+    while (pos < content.size() && content[pos] != '"') {
+      if (content[pos] != '\\' || pos + 1 >= content.size()) {
+        value.push_back(content[pos]);
+        ++pos;
+        continue;
+      }
+      const char escaped = content[pos + 1];
+      pos += 2;
+      switch (escaped) {
+        case 'b':
+          value.push_back('\b');
+          break;
+        case 'f':
+          value.push_back('\f');
+          break;
+        case 'n':
+          value.push_back('\n');
+          break;
+        case 'r':
+          value.push_back('\r');
+          break;
+        case 't':
+          value.push_back('\t');
+          break;
+        case 'u': {
+          // serialize_json_array writes only \u00XX, for control bytes.
+          if (pos + 4 <= content.size() && content.compare(pos, 2, "00") == 0) {
+            char * end = nullptr;
+            const std::string digits = content.substr(pos + 2, 2);
+            const auto code = std::strtol(digits.c_str(), &end, 16);
+            if (end != nullptr && *end == '\0') {
+              value.push_back(static_cast<char>(code));
+              pos += 4;
+              break;
+            }
+          }
+          value.push_back('u');
+          break;
+        }
+        default:
+          value.push_back(escaped);  // covers \" \\ and \/
+          break;
+      }
+    }
+    if (pos < content.size()) {
+      ++pos;  // past the closing quote
+    }
+    result.push_back(std::move(value));
+
+    while (pos < content.size() &&
+           (std::isspace(static_cast<unsigned char>(content[pos])) != 0 || content[pos] == ',')) {
+      ++pos;
+    }
+  }
+  return result;
+}
+
+/// Columns every fault read selects, in the order read_fault_row and read_fault_owner decode them.
+constexpr const char * kFaultColumns =
+    "fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
+    "occurrence_count, status, reporting_sources, last_passed_ns, owner";
+
+fd::FaultRecord read_fault_row(SqliteStatement & stmt, core::LogSink & sink) {
+  fd::FaultRecord fault;
+  fault.fault_code = stmt.column_text(0);
+  fault.severity = static_cast<uint8_t>(stmt.column_int(1));
+  fault.description = stmt.column_text(2);
+  fault.first_occurred_ns = stmt.column_int64(3);
+  fault.last_occurred_ns = stmt.column_int64(4);
+  fault.occurrence_count = static_cast<uint32_t>(stmt.column_int64(5));
+  fault.status = stmt.column_text(6);
+  fault.reporting_sources = parse_json_array(stmt.column_text(7), sink);
+  fault.last_passed_ns = stmt.column_int64(8);
+  return fault;
+}
+
+std::string read_fault_owner(SqliteStatement & stmt) {
+  return stmt.column_text(9);
+}
+
 }  // namespace
 
 SqliteFaultStorage::SqliteFaultStorage(const std::string & db_path, core::LogSink & log_sink)
@@ -150,9 +262,16 @@ DebounceConfig SqliteFaultStorage::get_debounce_config() const {
 }
 
 void SqliteFaultStorage::initialize_schema() {
+  // A row is one fault RECORD, identified by (fault_code, owner). Uniqueness is the
+  // index below, never a column constraint, per the house rule spelled out at the
+  // rosbag_files table: a column constraint cannot be dropped with ALTER TABLE and
+  // forces a full rebuild the day the identity changes again.
+  //
+  // owner is the shared owner for a code every source feeds, or the source_id for a
+  // per_source code. reporting_sources lists every source that reported the record.
   const char * create_faults_table_sql = R"(
     CREATE TABLE IF NOT EXISTS faults (
-      fault_code TEXT PRIMARY KEY,
+      fault_code TEXT NOT NULL,
       severity INTEGER NOT NULL,
       description TEXT NOT NULL,
       first_occurred_ns INTEGER NOT NULL,
@@ -163,7 +282,8 @@ void SqliteFaultStorage::initialize_schema() {
       debounce_counter INTEGER NOT NULL DEFAULT 0,
       last_failed_ns INTEGER NOT NULL DEFAULT 0,
       last_passed_ns INTEGER NOT NULL DEFAULT 0,
-      confirmed_at_ns INTEGER NOT NULL DEFAULT 0
+      confirmed_at_ns INTEGER NOT NULL DEFAULT 0,
+      owner TEXT NOT NULL
     );
   )";
 
@@ -214,6 +334,7 @@ void SqliteFaultStorage::initialize_schema() {
     CREATE TABLE IF NOT EXISTS snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       fault_code TEXT NOT NULL,
+      owner TEXT NOT NULL DEFAULT '',
       topic TEXT NOT NULL,
       message_type TEXT NOT NULL,
       data TEXT NOT NULL,
@@ -230,11 +351,13 @@ void SqliteFaultStorage::initialize_schema() {
   }
 
   // Create freeze_frames table: one compact JSON dict of captured topic values per fault
-  // code. Unlike snapshots, freeze frames are keyed by fault_code and are NOT removed on
-  // clear_fault, so the confirmed-state record is retained after acknowledgement.
+  // RECORD. Unlike snapshots, freeze frames are keyed by the record identity and are NOT
+  // removed on clear_fault, so the confirmed-state record is retained after acknowledgement.
+  // Uniqueness through the index, not a column constraint, per the house rule.
   const char * create_freeze_frames_table_sql = R"(
     CREATE TABLE IF NOT EXISTS freeze_frames (
-      fault_code TEXT PRIMARY KEY,
+      fault_code TEXT NOT NULL,
+      owner TEXT NOT NULL,
       data TEXT NOT NULL,
       captured_at_ns INTEGER NOT NULL
     );
@@ -272,12 +395,14 @@ void SqliteFaultStorage::initialize_schema() {
   // Create near_misses table: append-only series of FAILED reports that moved the debounce
   // counter without confirming the fault. One row per qualifying report, never updated in
   // place, and NOT removed on clear_fault - acknowledging a fault cycle must not erase how
-  // often that code approached confirmation. Bounded per fault code by the caller-supplied
-  // limit, evicting the oldest rows first.
+  // often that record approached confirmation. A row belongs to the record named by
+  // (fault_code, owner) and keeps the source_id that reported it. Bounded per record by the
+  // caller-supplied limit, evicting the oldest rows first.
   const char * create_near_misses_table_sql = R"(
     CREATE TABLE IF NOT EXISTS near_misses (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       fault_code TEXT NOT NULL,
+      owner TEXT NOT NULL DEFAULT '',
       occurred_at_ns INTEGER NOT NULL,
       debounce_counter INTEGER NOT NULL,
       confirmation_threshold INTEGER NOT NULL,
@@ -285,7 +410,6 @@ void SqliteFaultStorage::initialize_schema() {
       source_id TEXT NOT NULL,
       resulting_status TEXT NOT NULL DEFAULT ''
     );
-    CREATE INDEX IF NOT EXISTS idx_near_misses_fault_code ON near_misses(fault_code, id);
   )";
 
   if (sqlite3_exec(db_, create_near_misses_table_sql, nullptr, nullptr, &err_msg) != SQLITE_OK) {
@@ -315,8 +439,8 @@ void SqliteFaultStorage::initialize_schema() {
     }
   }
 
-  // Create rosbag_files table. One row = one LINK (a fault claiming a recording):
-  // several faults of a burst link to one bag, and one fault links to several bags
+  // Create rosbag_files table. One row = one LINK (a fault record claiming a recording):
+  // several records of a burst link to one bag, and one record links to several bags
   // over time. Bytes belong to file_path, not to the row.
   //
   // House rule, learned the hard way here: uniqueness is expressed with
@@ -328,6 +452,7 @@ void SqliteFaultStorage::initialize_schema() {
     CREATE TABLE IF NOT EXISTS rosbag_files (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       fault_code TEXT NOT NULL,
+      owner TEXT NOT NULL DEFAULT '',
       recording_id TEXT NOT NULL DEFAULT '',
       file_path TEXT NOT NULL,
       format TEXT NOT NULL,
@@ -348,6 +473,40 @@ void SqliteFaultStorage::initialize_schema() {
   migrate_rosbag_files_drop_unique();
   migrate_rosbag_files_add_recording_id();
 
+  // After the rosbag rebuilds, so it sees a rosbag_files whose column set is settled:
+  // the rebuild above copies a fixed column list and would drop an owner column added
+  // before it.
+  migrate_faults_add_owner();
+
+  // After the migration, which adds owner to near_misses and snapshots on a database that predates it.
+  // The per-record trims and reads of both tables go through these.
+  if (sqlite3_exec(db_,
+                   "DROP INDEX IF EXISTS idx_near_misses_fault_code;"
+                   "CREATE INDEX IF NOT EXISTS idx_near_misses_record ON near_misses(fault_code, owner, id);"
+                   "CREATE INDEX IF NOT EXISTS idx_snapshots_record ON snapshots(fault_code, owner, capture_id);",
+                   nullptr, nullptr, &err_msg) != SQLITE_OK) {
+    std::string error = err_msg ? err_msg : "Unknown error";
+    sqlite3_free(err_msg);
+    throw std::runtime_error("Failed to create record indexes: " + error);
+  }
+
+  // The record identity, expressed as an index rather than a PRIMARY KEY so the next
+  // identity change is a DROP INDEX instead of another table rebuild.
+  if (sqlite3_exec(db_, "CREATE UNIQUE INDEX IF NOT EXISTS idx_faults_code_owner ON faults(fault_code, owner)", nullptr,
+                   nullptr, &err_msg) != SQLITE_OK) {
+    std::string error = err_msg ? err_msg : "Unknown error";
+    sqlite3_free(err_msg);
+    throw std::runtime_error("Failed to create faults unique index: " + error);
+  }
+
+  if (sqlite3_exec(db_,
+                   "CREATE UNIQUE INDEX IF NOT EXISTS idx_freeze_frames_code_owner ON freeze_frames(fault_code, owner)",
+                   nullptr, nullptr, &err_msg) != SQLITE_OK) {
+    std::string error = err_msg ? err_msg : "Unknown error";
+    sqlite3_free(err_msg);
+    throw std::runtime_error("Failed to create freeze_frames unique index: " + error);
+  }
+
   // Indexes last, so they serve a fresh table and a rebuilt one alike.
   //
   // idx_rosbag_files_path is capability, not tuning: path_referenced() scans on
@@ -356,7 +515,7 @@ void SqliteFaultStorage::initialize_schema() {
   const char * create_rosbag_files_indexes_sql = R"(
     CREATE INDEX IF NOT EXISTS idx_rosbag_files_fault_code ON rosbag_files(fault_code);
     CREATE INDEX IF NOT EXISTS idx_rosbag_files_created_at ON rosbag_files(created_at_ns);
-    CREATE INDEX IF NOT EXISTS idx_rosbag_files_fault_created ON rosbag_files(fault_code, created_at_ns, id);
+    CREATE INDEX IF NOT EXISTS idx_rosbag_files_fault_created ON rosbag_files(fault_code, owner, created_at_ns, id);
     CREATE INDEX IF NOT EXISTS idx_rosbag_files_recording ON rosbag_files(recording_id);
     CREATE INDEX IF NOT EXISTS idx_rosbag_files_path ON rosbag_files(file_path);
   )";
@@ -376,7 +535,7 @@ void SqliteFaultStorage::initialize_schema() {
   // rows this index would reject.
   if (sqlite3_exec(db_,
                    "DELETE FROM rosbag_files WHERE id NOT IN "
-                   "(SELECT MAX(id) FROM rosbag_files GROUP BY fault_code, file_path)",
+                   "(SELECT MAX(id) FROM rosbag_files GROUP BY fault_code, owner, file_path)",
                    nullptr, nullptr, &err_msg) != SQLITE_OK) {
     std::string error = err_msg ? err_msg : "Unknown error";
     sqlite3_free(err_msg);
@@ -385,7 +544,7 @@ void SqliteFaultStorage::initialize_schema() {
 
   if (sqlite3_exec(db_,
                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_rosbag_files_fault_path "
-                   "ON rosbag_files(fault_code, file_path)",
+                   "ON rosbag_files(fault_code, owner, file_path)",
                    nullptr, nullptr, &err_msg) != SQLITE_OK) {
     std::string error = err_msg ? err_msg : "Unknown error";
     sqlite3_free(err_msg);
@@ -463,6 +622,160 @@ void SqliteFaultStorage::migrate_rosbag_files_drop_unique() {
   }
 }
 
+bool SqliteFaultStorage::table_has_owner(const char * table) const {
+  SqliteStatement info(db_, (std::string("PRAGMA table_info(") + table + ")").c_str());
+  while (info.step() == SQLITE_ROW) {
+    if (info.column_text(1) == "owner") {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SqliteFaultStorage::table_exists(const char * table) const {
+  SqliteStatement stmt(db_, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?");
+  stmt.bind_text(1, table);
+  return stmt.step() == SQLITE_ROW;
+}
+
+void SqliteFaultStorage::drop_scratch_table(const char * table) {
+  // Announced rather than done quietly. Debris under these names means an earlier
+  // rebuild did not finish, or someone repaired the database by hand, and an operator
+  // reading the log after a surprising restart should find out that this open threw
+  // work away. The names are reserved for this procedure, so nothing else loses data.
+  if (table_exists(table)) {
+    core::logf(log_sink_, core::LogLevel::kWarn, "sqlite_fault_storage",
+               "Dropping leftover migration scratch table '%s' from an unfinished earlier rebuild", table);
+  }
+  char * err_msg = nullptr;
+  const std::string sql = std::string("DROP TABLE IF EXISTS ") + table;
+  if (sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err_msg) != SQLITE_OK) {
+    std::string error = err_msg ? err_msg : "Unknown error";
+    sqlite3_free(err_msg);
+    throw std::runtime_error(std::string("fault owner migration failed (drop leftover ") + table + "): " + error);
+  }
+}
+
+void SqliteFaultStorage::migrate_faults_add_owner() {
+  // Probed PER TABLE, not once for the whole migration: the tables come from independent
+  // CREATE TABLE IF NOT EXISTS statements, so a database can hold a legacy faults table next to
+  // a child table this release just created with owner already on it.
+  const bool faults_needs_owner = !table_has_owner("faults");
+  const bool freeze_frames_needs_owner = !table_has_owner("freeze_frames");
+  const bool snapshots_needs_owner = !table_has_owner("snapshots");
+  const bool rosbag_files_needs_owner = !table_has_owner("rosbag_files");
+  const bool near_misses_needs_owner = !table_has_owner("near_misses");
+  if (!faults_needs_owner && !freeze_frames_needs_owner && !snapshots_needs_owner && !rosbag_files_needs_owner &&
+      !near_misses_needs_owner) {
+    return;  // fresh database, or already migrated - safe to re-run on every open
+  }
+
+  // Every row of a legacy database is a shared record: the old schema held one row per fault
+  // code, fed by every source. The row keeps its reporting_sources as written, and every child
+  // row (snapshot, freeze frame, rosbag link, near miss) attaches to that shared record.
+  const std::string shared = std::string("'") + kSharedOwner + "'";
+
+  char * err_msg = nullptr;
+  const auto exec = [this, &err_msg](const std::string & sql, const char * what) {
+    if (sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &err_msg) != SQLITE_OK) {
+      std::string error = err_msg ? err_msg : "Unknown error";
+      sqlite3_free(err_msg);
+      err_msg = nullptr;
+      throw std::runtime_error(std::string("fault owner migration failed (") + what + "): " + error);
+    }
+  };
+
+  exec("BEGIN IMMEDIATE", "begin");
+  try {
+    if (faults_needs_owner) {
+      // faults: SQLite cannot change a PRIMARY KEY in place and CREATE TABLE IF NOT
+      // EXISTS is a no-op on an existing database, so the identity change is the
+      // documented table-rebuild procedure.
+      //
+      // The DROP first because a rebuild that was interrupted by a crash, or a manual
+      // recovery with an external tool, can leave faults_new behind. It is safe because
+      // faults_new is this procedure's scratch table and nothing else ever reads it.
+      drop_scratch_table("faults_new");
+      exec(
+          "CREATE TABLE faults_new ("
+          " fault_code TEXT NOT NULL,"
+          " severity INTEGER NOT NULL,"
+          " description TEXT NOT NULL,"
+          " first_occurred_ns INTEGER NOT NULL,"
+          " last_occurred_ns INTEGER NOT NULL,"
+          " occurrence_count INTEGER NOT NULL,"
+          " status TEXT NOT NULL,"
+          " reporting_sources TEXT NOT NULL,"
+          " debounce_counter INTEGER NOT NULL DEFAULT 0,"
+          " last_failed_ns INTEGER NOT NULL DEFAULT 0,"
+          " last_passed_ns INTEGER NOT NULL DEFAULT 0,"
+          " confirmed_at_ns INTEGER NOT NULL DEFAULT 0,"
+          " owner TEXT NOT NULL)",
+          "create new faults table");
+
+      // A pending row carries a confirmation time from the occurrence before a reactivation,
+      // which earlier releases did not reset.
+      exec(
+          "INSERT INTO faults_new (fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
+          " occurrence_count, status, reporting_sources, debounce_counter, last_failed_ns, last_passed_ns, "
+          " confirmed_at_ns, owner) "
+          "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, occurrence_count, status, "
+          " reporting_sources, debounce_counter, last_failed_ns, last_passed_ns, "
+          " CASE WHEN status IN ('PREFAILED', 'PREPASSED') THEN 0 ELSE confirmed_at_ns END, " +
+              shared + " FROM faults",
+          "copy fault rows");
+
+      exec("DROP TABLE faults", "drop old faults table");
+      exec("ALTER TABLE faults_new RENAME TO faults", "rename faults");
+    }
+
+    if (freeze_frames_needs_owner) {
+      // freeze_frames: same problem, same procedure, same reason for the DROP.
+      drop_scratch_table("freeze_frames_new");
+      exec(
+          "CREATE TABLE freeze_frames_new ("
+          " fault_code TEXT NOT NULL,"
+          " owner TEXT NOT NULL,"
+          " data TEXT NOT NULL,"
+          " captured_at_ns INTEGER NOT NULL)",
+          "create new freeze_frames table");
+      exec("INSERT INTO freeze_frames_new (fault_code, owner, data, captured_at_ns) SELECT fault_code, " + shared +
+               ", data, captured_at_ns FROM freeze_frames",
+           "copy freeze frames");
+      exec("DROP TABLE freeze_frames", "drop old freeze_frames table");
+      exec("ALTER TABLE freeze_frames_new RENAME TO freeze_frames", "rename freeze_frames");
+    }
+
+    // snapshots, rosbag_files and near_misses only gain a column: their identity is a rowid,
+    // not the fault code, so ALTER TABLE is enough.
+    if (snapshots_needs_owner) {
+      exec("ALTER TABLE snapshots ADD COLUMN owner TEXT NOT NULL DEFAULT ''", "add snapshots.owner");
+      exec("UPDATE snapshots SET owner = " + shared, "assign snapshots to shared records");
+    }
+
+    if (rosbag_files_needs_owner) {
+      exec("ALTER TABLE rosbag_files ADD COLUMN owner TEXT NOT NULL DEFAULT ''", "add rosbag_files.owner");
+      exec("UPDATE rosbag_files SET owner = " + shared, "assign rosbag links to shared records");
+
+      // The rosbag indexes that carry fault_code have to widen with it. CREATE INDEX IF
+      // NOT EXISTS in initialize_schema() is a no-op on an index that already exists, so
+      // without these drops the unique index would keep its two-column shape.
+      exec("DROP INDEX IF EXISTS idx_rosbag_files_fault_path", "drop rosbag unique index");
+      exec("DROP INDEX IF EXISTS idx_rosbag_files_fault_created", "drop rosbag fault_created index");
+    }
+
+    if (near_misses_needs_owner) {
+      exec("ALTER TABLE near_misses ADD COLUMN owner TEXT NOT NULL DEFAULT ''", "add near_misses.owner");
+      exec("UPDATE near_misses SET owner = " + shared, "assign near misses to shared records");
+    }
+
+    exec("COMMIT", "commit");
+  } catch (...) {
+    sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+    throw;
+  }
+}
+
 void SqliteFaultStorage::migrate_rosbag_files_add_recording_id() {
   bool has_recording_id = false;
   {
@@ -529,97 +842,6 @@ void SqliteFaultStorage::migrate_rosbag_files_add_recording_id() {
   }
 }
 
-std::vector<std::string> SqliteFaultStorage::parse_json_array(const std::string & json_str) const {
-  std::vector<std::string> result;
-
-  // Simple JSON array parser for ["a", "b", "c"] format
-  if (json_str.size() < 2 || json_str.front() != '[' || json_str.back() != ']') {
-    if (!json_str.empty()) {
-      core::logf(log_sink_, core::LogLevel::kWarn, "sqlite_fault_storage", "Malformed JSON array in database: '%s'",
-                 json_str.c_str());
-    }
-    return result;
-  }
-
-  std::string content = json_str.substr(1, json_str.size() - 2);
-  if (content.empty()) {
-    return result;
-  }
-
-  size_t pos = 0;
-  while (pos < content.size()) {
-    // Skip whitespace
-    while (pos < content.size() && std::isspace(static_cast<unsigned char>(content[pos]))) {
-      ++pos;
-    }
-    if (pos >= content.size()) {
-      break;
-    }
-
-    // Expect opening quote
-    if (content[pos] != '"') {
-      break;
-    }
-    ++pos;
-
-    // Find closing quote (handle escape sequences)
-    std::string value;
-    while (pos < content.size() && content[pos] != '"') {
-      if (content[pos] == '\\' && pos + 1 < content.size()) {
-        ++pos;
-        char escaped = content[pos];
-        switch (escaped) {
-          case '"':
-            value.push_back('"');
-            break;
-          case '\\':
-            value.push_back('\\');
-            break;
-          case '/':
-            value.push_back('/');
-            break;
-          case 'b':
-            value.push_back('\b');
-            break;
-          case 'f':
-            value.push_back('\f');
-            break;
-          case 'n':
-            value.push_back('\n');
-            break;
-          case 'r':
-            value.push_back('\r');
-            break;
-          case 't':
-            value.push_back('\t');
-            break;
-          default:
-            // Unknown escape sequence: preserve character as-is
-            value.push_back(escaped);
-            break;
-        }
-        ++pos;
-        continue;
-      }
-      value.push_back(content[pos]);
-      ++pos;
-    }
-
-    if (pos < content.size()) {
-      ++pos;  // Skip closing quote
-    }
-
-    result.push_back(value);
-
-    // Skip whitespace and comma
-    while (pos < content.size() && (std::isspace(static_cast<unsigned char>(content[pos])) || content[pos] == ',')) {
-      ++pos;
-    }
-  }
-
-  return result;
-}
-
 std::string SqliteFaultStorage::serialize_json_array(const std::vector<std::string> & vec) {
   std::ostringstream oss;
   oss << '[';
@@ -653,7 +875,19 @@ std::string SqliteFaultStorage::serialize_json_array(const std::vector<std::stri
           oss << "\\t";
           break;
         default:
-          oss << c;
+          // Every remaining byte below 0x20 is a control character JSON forbids raw
+          // inside a string and gives no short escape, so it goes out as \u00XX. A
+          // source_id is whatever the reporter put on the wire, and one stray control
+          // byte used to make this column unparseable for every JSON reader, SQLite's
+          // json_extract included. Bytes at or above 0x20 are passed through, UTF-8
+          // sequences included, which JSON allows.
+          if (static_cast<unsigned char>(c) < 0x20) {
+            char escape[7];
+            std::snprintf(escape, sizeof(escape), "\\u%04x", static_cast<unsigned>(static_cast<unsigned char>(c)));
+            oss << escape;
+          } else {
+            oss << c;
+          }
           break;
       }
     }
@@ -663,7 +897,7 @@ std::string SqliteFaultStorage::serialize_json_array(const std::vector<std::stri
   return oss.str();
 }
 
-bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
+bool SqliteFaultStorage::report_fault_event(const FaultId & id, fd::ReportKind kind, uint8_t severity,
                                             const std::string & description, const std::string & source_id,
                                             int64_t timestamp_ns, const DebounceConfig & config) {
   std::lock_guard<std::mutex> lock(mutex_);
@@ -678,13 +912,13 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, fd::
   // heartbeat - including one that turns out to write nothing at all - contend for that lock and
   // fail with SQLITE_BUSY where before it could not.
   if (kind != fd::ReportKind::kFailed) {
-    return report_fault_event_locked(fault_code, kind, severity, description, source_id, timestamp_ns, config);
+    return report_fault_event_locked(id, kind, severity, description, source_id, timestamp_ns, config);
   }
 
   exec_or_throw("BEGIN IMMEDIATE");
   try {
     const bool is_new_occurrence =
-        report_fault_event_locked(fault_code, kind, severity, description, source_id, timestamp_ns, config);
+        report_fault_event_locked(id, kind, severity, description, source_id, timestamp_ns, config);
     exec_or_throw("COMMIT");
     return is_new_occurrence;
   } catch (...) {
@@ -693,20 +927,21 @@ bool SqliteFaultStorage::report_fault_event(const std::string & fault_code, fd::
   }
 }
 
-bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_code, fd::ReportKind kind,
-                                                   uint8_t severity, const std::string & description,
-                                                   const std::string & source_id, int64_t timestamp_ns,
-                                                   const DebounceConfig & config) {
+bool SqliteFaultStorage::report_fault_event_locked(const FaultId & id, fd::ReportKind kind, uint8_t severity,
+                                                   const std::string & description, const std::string & source_id,
+                                                   int64_t timestamp_ns, const DebounceConfig & config) {
   const bool is_failed = (kind == fd::ReportKind::kFailed);
+  const std::string & fault_code = id.fault_code;
 
-  // Check if fault exists
+  // Check if the record exists. Another record of the same code is a different row and is not touched.
   SqliteStatement check_stmt(db_,
                              "SELECT severity, occurrence_count, reporting_sources, status, debounce_counter, "
-                             "confirmed_at_ns, first_occurred_ns FROM faults WHERE fault_code = ?");
+                             "confirmed_at_ns, first_occurred_ns FROM faults WHERE fault_code = ? AND owner = ?");
   check_stmt.bind_text(1, fault_code);
+  check_stmt.bind_text(2, id.owner);
 
   if (check_stmt.step() == SQLITE_ROW) {
-    // Fault exists - update it
+    // Record exists - update it
     int existing_severity = check_stmt.column_int(0);
     int64_t existing_count = check_stmt.column_int64(1);
     std::string sources_json = check_stmt.column_text(2);
@@ -729,16 +964,18 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
       // FAILED event reactivates - reset debounce counter to 0 so FAILED branch
       // decrements it to -1, then reuse the existing FAILED logic below. Also
       // reset first_occurred: this is a new outage cycle, not a continuation
-      // of the one that just cleared.
+      // of the one that just cleared. The new occurrence has no confirmation
+      // time until it confirms.
       debounce_counter = 0;
       first_occurred_ns = timestamp_ns;
+      confirmed_at_ns = 0;
       is_reactivation = true;
     }
 
     if (is_failed) {
       // FAILED event
       // Parse existing sources and add new one
-      std::vector<std::string> sources = parse_json_array(sources_json);
+      std::vector<std::string> sources = parse_json_array(sources_json, log_sink_);
       std::set<std::string> sources_set(sources.begin(), sources.end());
       sources_set.insert(source_id);
       sources.assign(sources_set.begin(), sources_set.end());
@@ -757,9 +994,11 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
       // Decrement towards confirmation, clamped to the thresholds.
       debounce_counter = clamp_debounce_counter(debounce_counter - 1, config);
 
-      // CRITICAL bypasses debounce; otherwise the shared state machine decides (with hysteresis).
+      // CRITICAL bypasses debounce and the HEALED latch. A per-source record decides on its stored severity,
+      // a shared record on the report's. Otherwise the shared state machine decides (with hysteresis).
       std::string new_status;
-      if (config.critical_immediate_confirm && severity == fd::severity::kCritical) {
+      if (config.critical_immediate_confirm &&
+          (id.owner == kSharedOwner ? severity : new_severity) == fd::severity::kCritical) {
         debounce_counter = std::min(debounce_counter, -1);
         new_status = fd::fault_status::kConfirmed;
       } else {
@@ -778,11 +1017,11 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
           db_, description.empty() ? "UPDATE faults SET severity = ?, last_occurred_ns = ?, last_failed_ns = ?, "
                                      "occurrence_count = ?, "
                                      "reporting_sources = ?, status = ?, debounce_counter = ?, confirmed_at_ns = ?, "
-                                     "first_occurred_ns = ? WHERE fault_code = ?"
+                                     "first_occurred_ns = ? WHERE fault_code = ? AND owner = ?"
                                    : "UPDATE faults SET severity = ?, description = ?, last_occurred_ns = ?, "
                                      "last_failed_ns = ?, "
                                      "occurrence_count = ?, reporting_sources = ?, status = ?, debounce_counter = ?, "
-                                     "confirmed_at_ns = ?, first_occurred_ns = ? WHERE fault_code = ?");
+                                     "confirmed_at_ns = ?, first_occurred_ns = ? WHERE fault_code = ? AND owner = ?");
 
       if (description.empty()) {
         update_stmt.bind_int(1, new_severity);
@@ -795,6 +1034,7 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
         update_stmt.bind_int64(8, confirmed_at_ns);
         update_stmt.bind_int64(9, first_occurred_ns);
         update_stmt.bind_text(10, fault_code);
+        update_stmt.bind_text(11, id.owner);
       } else {
         update_stmt.bind_int(1, new_severity);
         update_stmt.bind_text(2, description);
@@ -807,6 +1047,7 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
         update_stmt.bind_int64(9, confirmed_at_ns);
         update_stmt.bind_int64(10, first_occurred_ns);
         update_stmt.bind_text(11, fault_code);
+        update_stmt.bind_text(12, id.owner);
       }
 
       if (update_stmt.step() != SQLITE_DONE) {
@@ -814,7 +1055,7 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
       }
 
       if (is_near_miss(true, new_status)) {
-        record_near_miss_locked(fault_code, timestamp_ns, debounce_counter, config, severity, source_id, new_status);
+        record_near_miss_locked(id, timestamp_ns, debounce_counter, config, severity, source_id, new_status);
       }
     } else {
       // PASSED event - increment towards healing, clamped to the thresholds.
@@ -826,11 +1067,13 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
       // ENDING, not occurring. Bumping it made a long-stale CONFIRMED fault look
       // freshly active. The PASSED instant is recorded in last_passed_ns.
       SqliteStatement update_stmt(
-          db_, "UPDATE faults SET last_passed_ns = ?, status = ?, debounce_counter = ? WHERE fault_code = ?");
+          db_,
+          "UPDATE faults SET last_passed_ns = ?, status = ?, debounce_counter = ? WHERE fault_code = ? AND owner = ?");
       update_stmt.bind_int64(1, timestamp_ns);
       update_stmt.bind_text(2, new_status);
       update_stmt.bind_int(3, debounce_counter);
       update_stmt.bind_text(4, fault_code);
+      update_stmt.bind_text(5, id.owner);
 
       if (update_stmt.step() != SQLITE_DONE) {
         throw std::runtime_error(std::string("Failed to update fault: ") + sqlite3_errmsg(db_));
@@ -840,9 +1083,10 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
     return is_reactivation;  // Reactivation treated as new occurrence for event publishing
   }
 
-  // New fault - only create for FAILED events
+  // New record - only create one for FAILED events. A PASSED event for a record that
+  // does not exist has nothing to heal.
   if (!is_failed) {
-    return false;  // PASSED event for non-existent fault is ignored
+    return false;  // PASSED event for non-existent record is ignored
   }
 
   // Determine initial status based on debounce logic (shared with the in-memory backend).
@@ -854,12 +1098,12 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
     initial_status = compute_debounce_status(initial_counter, "", config);
   }
 
-  // New fault - insert with debounce_counter = -1
+  // New record - insert with debounce_counter = -1
   SqliteStatement insert_stmt(db_,
                               "INSERT INTO faults (fault_code, severity, description, first_occurred_ns, "
                               "last_occurred_ns, occurrence_count, status, reporting_sources, "
-                              "debounce_counter, last_failed_ns, last_passed_ns, confirmed_at_ns) "
-                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                              "debounce_counter, last_failed_ns, last_passed_ns, confirmed_at_ns, owner) "
+                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 
   const bool confirmed_now = initial_status == fd::fault_status::kConfirmed;
   insert_stmt.bind_text(1, fault_code);
@@ -874,20 +1118,21 @@ bool SqliteFaultStorage::report_fault_event_locked(const std::string & fault_cod
   insert_stmt.bind_int64(10, timestamp_ns);  // last_failed_ns
   insert_stmt.bind_int64(11, 0);             // last_passed_ns (never passed)
   insert_stmt.bind_int64(12, confirmed_now ? timestamp_ns : 0);
+  insert_stmt.bind_text(13, id.owner);
 
   if (insert_stmt.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to insert fault: ") + sqlite3_errmsg(db_));
   }
 
   if (is_near_miss(true, initial_status)) {
-    record_near_miss_locked(fault_code, timestamp_ns, initial_counter, config, severity, source_id, initial_status);
+    record_near_miss_locked(id, timestamp_ns, initial_counter, config, severity, source_id, initial_status);
   }
 
   return true;  // New fault created
 }
 
-std::vector<fd::FaultRecord> SqliteFaultStorage::list_faults(bool filter_by_severity, uint8_t severity,
-                                                             const std::vector<std::string> & statuses) const {
+std::vector<FaultEntry> SqliteFaultStorage::list_fault_entries(bool filter_by_severity, uint8_t severity,
+                                                               const std::vector<std::string> & statuses) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   // Determine which statuses to include
@@ -907,9 +1152,7 @@ std::vector<fd::FaultRecord> SqliteFaultStorage::list_faults(bool filter_by_seve
   }
 
   // Build query
-  std::string sql =
-      "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
-      "occurrence_count, status, reporting_sources, last_passed_ns FROM faults WHERE status IN (";
+  std::string sql = std::string("SELECT ") + kFaultColumns + " FROM faults WHERE status IN (";
   for (size_t i = 0; i < status_filter.size(); ++i) {
     if (i > 0) {
       sql += ", ";
@@ -932,81 +1175,72 @@ std::vector<fd::FaultRecord> SqliteFaultStorage::list_faults(bool filter_by_seve
     stmt.bind_int(param_index, static_cast<int>(severity));
   }
 
-  std::vector<fd::FaultRecord> result;
+  std::vector<FaultEntry> result;
   while (stmt.step() == SQLITE_ROW) {
-    fd::FaultRecord fault;
-    fault.fault_code = stmt.column_text(0);
-    fault.severity = static_cast<uint8_t>(stmt.column_int(1));
-    fault.description = stmt.column_text(2);
-
-    int64_t first_ns = stmt.column_int64(3);
-    int64_t last_ns = stmt.column_int64(4);
-    fault.first_occurred_ns = first_ns;
-    fault.last_occurred_ns = last_ns;
-
-    fault.occurrence_count = static_cast<uint32_t>(stmt.column_int64(5));
-    fault.status = stmt.column_text(6);
-    fault.reporting_sources = parse_json_array(stmt.column_text(7));
-    fault.last_passed_ns = stmt.column_int64(8);
-
-    result.push_back(fault);
+    FaultEntry entry;
+    entry.record = read_fault_row(stmt, log_sink_);
+    entry.id = FaultId{entry.record.fault_code, read_fault_owner(stmt)};
+    result.push_back(std::move(entry));
   }
 
   return result;
 }
 
-std::optional<fd::FaultRecord> SqliteFaultStorage::get_fault(const std::string & fault_code) const {
+std::optional<fd::FaultRecord> SqliteFaultStorage::get_fault(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  SqliteStatement stmt(db_,
-                       "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
-                       "occurrence_count, status, reporting_sources, last_passed_ns FROM faults WHERE fault_code = ?");
-  stmt.bind_text(1, fault_code);
+  SqliteStatement stmt(
+      db_, (std::string("SELECT ") + kFaultColumns + " FROM faults WHERE fault_code = ? AND owner = ?").c_str());
+  stmt.bind_text(1, id.fault_code);
+  stmt.bind_text(2, id.owner);
 
   if (stmt.step() != SQLITE_ROW) {
     return std::nullopt;
   }
 
-  fd::FaultRecord fault;
-  fault.fault_code = stmt.column_text(0);
-  fault.severity = static_cast<uint8_t>(stmt.column_int(1));
-  fault.description = stmt.column_text(2);
-
-  int64_t first_ns = stmt.column_int64(3);
-  int64_t last_ns = stmt.column_int64(4);
-  fault.first_occurred_ns = first_ns;
-  fault.last_occurred_ns = last_ns;
-
-  fault.occurrence_count = static_cast<uint32_t>(stmt.column_int64(5));
-  fault.status = stmt.column_text(6);
-  fault.reporting_sources = parse_json_array(stmt.column_text(7));
-  fault.last_passed_ns = stmt.column_int64(8);
-
-  return fault;
+  return read_fault_row(stmt, log_sink_);
 }
 
-bool SqliteFaultStorage::clear_fault(const std::string & fault_code) {
+std::vector<FaultId> SqliteFaultStorage::get_ids_by_code(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // The near_misses rows for this code are deliberately left alone. Clearing acknowledges one
+  // Ordered by owner so an ambiguity message lists the owners the same way every time,
+  // and so the backends answer in the same order.
+  SqliteStatement stmt(db_, "SELECT owner FROM faults WHERE fault_code = ? ORDER BY owner ASC");
+  stmt.bind_text(1, fault_code);
+
+  std::vector<FaultId> result;
+  while (stmt.step() == SQLITE_ROW) {
+    result.push_back(FaultId{fault_code, stmt.column_text(0)});
+  }
+  return result;
+}
+
+bool SqliteFaultStorage::clear_fault(const FaultId & id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  // The near_misses rows of this record are deliberately left alone. Clearing acknowledges one
   // fault cycle; the record of how often the code approached confirmation spans cycles and
   // cannot be reconstructed once deleted.
 
-  // Delete associated snapshots when fault is cleared
-  // Acknowledging a fault drops its value snapshots, unless a history was asked
+  // Delete the record's snapshots when it is cleared.
+  // Acknowledging a record drops its value snapshots, unless a history was asked
   // for: with recordings retained past a clear, deleting the readings that go with
-  // them leaves a fault holding bags whose matching values are gone.
+  // them leaves a record holding bags whose matching values are gone. Scoped to the
+  // owner, so another owner's readings for the same code stay where they are.
   if (!retain_snapshots_on_clear_) {
-    SqliteStatement delete_snapshots(db_, "DELETE FROM snapshots WHERE fault_code = ?");
-    delete_snapshots.bind_text(1, fault_code);
+    SqliteStatement delete_snapshots(db_, "DELETE FROM snapshots WHERE fault_code = ? AND owner = ?");
+    delete_snapshots.bind_text(1, id.fault_code);
+    delete_snapshots.bind_text(2, id.owner);
     if (delete_snapshots.step() != SQLITE_DONE) {
       throw std::runtime_error(std::string("Failed to delete snapshots: ") + sqlite3_errmsg(db_));
     }
   }
 
-  SqliteStatement stmt(db_, "UPDATE faults SET status = ? WHERE fault_code = ?");
+  SqliteStatement stmt(db_, "UPDATE faults SET status = ? WHERE fault_code = ? AND owner = ?");
   stmt.bind_text(1, fd::fault_status::kCleared);
-  stmt.bind_text(2, fault_code);
+  stmt.bind_text(2, id.fault_code);
+  stmt.bind_text(3, id.owner);
 
   if (stmt.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to clear fault: ") + sqlite3_errmsg(db_));
@@ -1015,20 +1249,22 @@ bool SqliteFaultStorage::clear_fault(const std::string & fault_code) {
   return sqlite3_changes(db_) > 0;
 }
 
-std::vector<std::string> SqliteFaultStorage::reclassify_healed_as_cleared(const KeepHealedFn & keep_healed) {
+std::vector<FaultId> SqliteFaultStorage::reclassify_healed_as_cleared(const KeepHealedFn & keep_healed) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Collect the codes that will flip first so the caller can audit each one. Codes the
+  // Collect the records that will flip first so the caller can audit each one. Codes the
   // caller keeps HEALED are left out. Everything runs under the same lock, so the
-  // returned list matches the rows actually reclassified below.
-  std::vector<std::string> reclassified;
+  // returned list matches the rows actually reclassified below. Identities, not codes:
+  // one code can hold a HEALED record for one owner and an untouched CONFIRMED one for
+  // another.
+  std::vector<FaultId> reclassified;
   {
-    SqliteStatement select_stmt(db_, "SELECT fault_code FROM faults WHERE status = ?");
+    SqliteStatement select_stmt(db_, "SELECT fault_code, owner FROM faults WHERE status = ?");
     select_stmt.bind_text(1, fd::fault_status::kHealed);
     while (select_stmt.step() == SQLITE_ROW) {
-      std::string code = select_stmt.column_text(0);
-      if (!(keep_healed && keep_healed(code))) {
-        reclassified.push_back(std::move(code));
+      FaultId id{select_stmt.column_text(0), select_stmt.column_text(1)};
+      if (!(keep_healed && keep_healed(id.fault_code))) {
+        reclassified.push_back(std::move(id));
       }
     }
   }
@@ -1037,26 +1273,28 @@ std::vector<std::string> SqliteFaultStorage::reclassify_healed_as_cleared(const 
     return reclassified;
   }
 
-  // One transaction, so a failure part way does not leave some codes flipped.
+  // One transaction, so a failure part way does not leave some records flipped.
   exec_or_throw("BEGIN IMMEDIATE");
   try {
-    for (const auto & code : reclassified) {
+    for (const auto & id : reclassified) {
       // Drop snapshots for the affected faults so a reclassified row matches CLEARED semantics.
       // clear_fault is not the only place that takes a fault's readings, so retain_snapshots_on_clear_
       // has to reach here too: otherwise the setting holds until the next restart and then the
       // reclassification deletes exactly what it was set to keep.
       if (!retain_snapshots_on_clear_) {
-        SqliteStatement del(db_, "DELETE FROM snapshots WHERE fault_code = ?");
-        del.bind_text(1, code);
+        SqliteStatement del(db_, "DELETE FROM snapshots WHERE fault_code = ? AND owner = ?");
+        del.bind_text(1, id.fault_code);
+        del.bind_text(2, id.owner);
         if (del.step() != SQLITE_DONE) {
           throw std::runtime_error(std::string("Failed to delete snapshots: ") + sqlite3_errmsg(db_));
         }
       }
 
-      SqliteStatement stmt(db_, "UPDATE faults SET status = ? WHERE fault_code = ? AND status = ?");
+      SqliteStatement stmt(db_, "UPDATE faults SET status = ? WHERE fault_code = ? AND owner = ? AND status = ?");
       stmt.bind_text(1, fd::fault_status::kCleared);
-      stmt.bind_text(2, code);
-      stmt.bind_text(3, fd::fault_status::kHealed);
+      stmt.bind_text(2, id.fault_code);
+      stmt.bind_text(3, id.owner);
+      stmt.bind_text(4, fd::fault_status::kHealed);
       if (stmt.step() != SQLITE_DONE) {
         throw std::runtime_error(std::string("Failed to reclassify HEALED faults: ") + sqlite3_errmsg(db_));
       }
@@ -1081,35 +1319,37 @@ size_t SqliteFaultStorage::size() const {
   return static_cast<size_t>(stmt.column_int64(0));
 }
 
-bool SqliteFaultStorage::contains(const std::string & fault_code) const {
+bool SqliteFaultStorage::contains(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  SqliteStatement stmt(db_, "SELECT 1 FROM faults WHERE fault_code = ? LIMIT 1");
-  stmt.bind_text(1, fault_code);
+  SqliteStatement stmt(db_, "SELECT 1 FROM faults WHERE fault_code = ? AND owner = ? LIMIT 1");
+  stmt.bind_text(1, id.fault_code);
+  stmt.bind_text(2, id.owner);
 
   return stmt.step() == SQLITE_ROW;
 }
 
-std::vector<std::string> SqliteFaultStorage::check_time_based_confirmation(int64_t now_ns) {
+std::vector<FaultId> SqliteFaultStorage::check_time_based_confirmation(int64_t now_ns) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  std::vector<std::string> confirmed;
+  std::vector<FaultId> confirmed;
   if (config_.auto_confirm_after_sec <= 0.0) {
     return confirmed;  // Time-based confirmation disabled
   }
+
   int64_t threshold_ns = std::llround(config_.auto_confirm_after_sec * 1e9);
   int64_t cutoff_ns = now_ns - threshold_ns;
 
-  // Collect the codes that will flip first so the caller can audit each one. The
+  // Collect the records that will flip first so the caller can audit each one. The
   // SELECT predicate mirrors the UPDATE exactly, and both run under the same lock,
   // so the returned list matches the rows actually confirmed below.
   {
     SqliteStatement select_stmt(
-        db_, "SELECT fault_code FROM faults WHERE status = ? AND last_failed_ns <= ? AND last_failed_ns > 0");
+        db_, "SELECT fault_code, owner FROM faults WHERE status = ? AND last_failed_ns <= ? AND last_failed_ns > 0");
     select_stmt.bind_text(1, fd::fault_status::kPrefailed);
     select_stmt.bind_int64(2, cutoff_ns);
     while (select_stmt.step() == SQLITE_ROW) {
-      confirmed.push_back(select_stmt.column_text(0));
+      confirmed.push_back(FaultId{select_stmt.column_text(0), select_stmt.column_text(1)});
     }
   }
 
@@ -1157,24 +1397,26 @@ void SqliteFaultStorage::store_snapshots(const std::vector<SnapshotData> & snaps
   }
   std::lock_guard<std::mutex> lock(mutex_);
 
-  const std::string & fault_code = snapshots.front().fault_code;
+  const FaultId id{snapshots.front().fault_code, snapshots.front().owner};
 
   // One transaction for the whole capture: a capture is all-or-nothing, and the
   // old row-at-a-time path could leave a confirmation's values half stored.
   exec_or_throw("BEGIN IMMEDIATE");
   try {
     {
-      SqliteStatement stmt(db_,
-                           "INSERT INTO snapshots (fault_code, topic, message_type, data, captured_at_ns, capture_id) "
-                           "VALUES (?, ?, ?, ?, ?, ?)");
+      SqliteStatement stmt(
+          db_,
+          "INSERT INTO snapshots (fault_code, owner, topic, message_type, data, captured_at_ns, capture_id) "
+          "VALUES (?, ?, ?, ?, ?, ?, ?)");
       for (const auto & snapshot : snapshots) {
         stmt.reset();
         stmt.bind_text(1, snapshot.fault_code);
-        stmt.bind_text(2, snapshot.topic);
-        stmt.bind_text(3, snapshot.message_type);
-        stmt.bind_text(4, snapshot.data);
-        stmt.bind_int64(5, snapshot.captured_at_ns);
-        stmt.bind_int64(6, snapshot.capture_id);
+        stmt.bind_text(2, snapshot.owner);
+        stmt.bind_text(3, snapshot.topic);
+        stmt.bind_text(4, snapshot.message_type);
+        stmt.bind_text(5, snapshot.data);
+        stmt.bind_int64(6, snapshot.captured_at_ns);
+        stmt.bind_int64(7, snapshot.capture_id);
         if (stmt.step() != SQLITE_DONE) {
           throw std::runtime_error(std::string("Failed to store snapshot: ") + sqlite3_errmsg(db_));
         }
@@ -1182,36 +1424,39 @@ void SqliteFaultStorage::store_snapshots(const std::vector<SnapshotData> & snaps
     }
 
     if (max_snapshots_per_fault_ > 0) {
-      // Trim whole capture sets, oldest first, until the fault fits. The old rule
+      // Trim whole capture sets, oldest first, until the record fits. The old rule
       // counted rows and rejected the NEW row once full, so a capture straddling
       // the cap was stored in part - some topics present, the rest silently gone,
       // indistinguishable from "that topic was not publishing". Keep-newest also
       // stops this cap from opposing the rosbag one.
       //
       // The newest capture is never trimmed: if it alone exceeds the cap, the cap
-      // is smaller than this fault's topic count and tearing it would be the very
+      // is smaller than this record's topic count and tearing it would be the very
       // thing being fixed.
-      SqliteStatement newest(db_, "SELECT MAX(capture_id) FROM snapshots WHERE fault_code = ?");
-      newest.bind_text(1, fault_code);
+      SqliteStatement newest(db_, "SELECT MAX(capture_id) FROM snapshots WHERE fault_code = ? AND owner = ?");
+      newest.bind_text(1, id.fault_code);
+      newest.bind_text(2, id.owner);
       int64_t newest_capture = 0;
       if (newest.step() == SQLITE_ROW) {
         newest_capture = newest.column_int64(0);
       }
 
       SqliteStatement trim(db_,
-                           "DELETE FROM snapshots WHERE fault_code = ?1 AND capture_id = "
-                           "(SELECT MIN(capture_id) FROM snapshots WHERE fault_code = ?1) "
-                           "AND capture_id <> ?2");
-      SqliteStatement count(db_, "SELECT COUNT(*) FROM snapshots WHERE fault_code = ?");
+                           "DELETE FROM snapshots WHERE fault_code = ?1 AND owner = ?2 AND capture_id = "
+                           "(SELECT MIN(capture_id) FROM snapshots WHERE fault_code = ?1 AND owner = ?2) "
+                           "AND capture_id <> ?3");
+      SqliteStatement count(db_, "SELECT COUNT(*) FROM snapshots WHERE fault_code = ? AND owner = ?");
       while (true) {
         count.reset();
-        count.bind_text(1, fault_code);
+        count.bind_text(1, id.fault_code);
+        count.bind_text(2, id.owner);
         if (count.step() != SQLITE_ROW || static_cast<size_t>(count.column_int64(0)) <= max_snapshots_per_fault_) {
           break;
         }
         trim.reset();
-        trim.bind_text(1, fault_code);
-        trim.bind_int64(2, newest_capture);
+        trim.bind_text(1, id.fault_code);
+        trim.bind_text(2, id.owner);
+        trim.bind_int64(3, newest_capture);
         if (trim.step() != SQLITE_DONE) {
           throw std::runtime_error(std::string("Failed to trim snapshots: ") + sqlite3_errmsg(db_));
         }
@@ -1228,15 +1473,15 @@ void SqliteFaultStorage::store_snapshots(const std::vector<SnapshotData> & snaps
   }
 }
 
-std::vector<SnapshotData> SqliteFaultStorage::get_snapshots(const std::string & fault_code,
+std::vector<SnapshotData> SqliteFaultStorage::get_snapshots(const FaultId & id,
                                                             const std::string & topic_filter) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<SnapshotData> result;
 
   std::string sql =
-      "SELECT fault_code, topic, message_type, data, captured_at_ns, capture_id FROM snapshots WHERE fault_code "
-      "= ?";
+      "SELECT fault_code, owner, topic, message_type, data, captured_at_ns, capture_id FROM snapshots "
+      "WHERE fault_code = ? AND owner = ?";
   if (!topic_filter.empty()) {
     sql += " AND topic = ?";
   }
@@ -1246,19 +1491,21 @@ std::vector<SnapshotData> SqliteFaultStorage::get_snapshots(const std::string & 
   sql += " ORDER BY capture_id DESC, captured_at_ns DESC";
 
   SqliteStatement stmt(db_, sql.c_str());
-  stmt.bind_text(1, fault_code);
+  stmt.bind_text(1, id.fault_code);
+  stmt.bind_text(2, id.owner);
   if (!topic_filter.empty()) {
-    stmt.bind_text(2, topic_filter);
+    stmt.bind_text(3, topic_filter);
   }
 
   while (stmt.step() == SQLITE_ROW) {
     SnapshotData snapshot;
     snapshot.fault_code = stmt.column_text(0);
-    snapshot.topic = stmt.column_text(1);
-    snapshot.message_type = stmt.column_text(2);
-    snapshot.data = stmt.column_text(3);
-    snapshot.captured_at_ns = stmt.column_int64(4);
-    snapshot.capture_id = stmt.column_int64(5);
+    snapshot.owner = stmt.column_text(1);
+    snapshot.topic = stmt.column_text(2);
+    snapshot.message_type = stmt.column_text(3);
+    snapshot.data = stmt.column_text(4);
+    snapshot.captured_at_ns = stmt.column_int64(5);
+    snapshot.capture_id = stmt.column_int64(6);
     result.push_back(snapshot);
   }
 
@@ -1281,24 +1528,29 @@ int64_t SqliteFaultStorage::get_max_capture_id() const {
 void SqliteFaultStorage::store_freeze_frame(const FreezeFrameData & frame) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Keyed by fault_code (PRIMARY KEY): a re-confirm replaces the previous frame.
+  // Keyed by (fault_code, owner) through idx_freeze_frames_code_owner: a re-confirm of
+  // the same record replaces its frame, and another owner's frame for the same code is
+  // a different row.
   SqliteStatement stmt(db_,
-                       "INSERT OR REPLACE INTO freeze_frames (fault_code, data, captured_at_ns) "
-                       "VALUES (?, ?, ?)");
+                       "INSERT OR REPLACE INTO freeze_frames (fault_code, owner, data, captured_at_ns) "
+                       "VALUES (?, ?, ?, ?)");
   stmt.bind_text(1, frame.fault_code);
-  stmt.bind_text(2, frame.data);
-  stmt.bind_int64(3, frame.captured_at_ns);
+  stmt.bind_text(2, frame.owner);
+  stmt.bind_text(3, frame.data);
+  stmt.bind_int64(4, frame.captured_at_ns);
 
   if (stmt.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to store freeze frame: ") + sqlite3_errmsg(db_));
   }
 }
 
-std::optional<FreezeFrameData> SqliteFaultStorage::get_freeze_frame(const std::string & fault_code) const {
+std::optional<FreezeFrameData> SqliteFaultStorage::get_freeze_frame(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  SqliteStatement stmt(db_, "SELECT fault_code, data, captured_at_ns FROM freeze_frames WHERE fault_code = ?");
-  stmt.bind_text(1, fault_code);
+  SqliteStatement stmt(
+      db_, "SELECT fault_code, owner, data, captured_at_ns FROM freeze_frames WHERE fault_code = ? AND owner = ?");
+  stmt.bind_text(1, id.fault_code);
+  stmt.bind_text(2, id.owner);
 
   if (stmt.step() != SQLITE_ROW) {
     return std::nullopt;
@@ -1306,8 +1558,9 @@ std::optional<FreezeFrameData> SqliteFaultStorage::get_freeze_frame(const std::s
 
   FreezeFrameData frame;
   frame.fault_code = stmt.column_text(0);
-  frame.data = stmt.column_text(1);
-  frame.captured_at_ns = stmt.column_int64(2);
+  frame.owner = stmt.column_text(1);
+  frame.data = stmt.column_text(2);
+  frame.captured_at_ns = stmt.column_int64(3);
   return frame;
 }
 
@@ -1323,12 +1576,12 @@ size_t SqliteFaultStorage::set_max_near_misses_per_fault(size_t max_count) {
   }
 
   // Apply the bound to what is already in the database. Without this, a database that grew under
-  // a larger bound (or none) stays over the new bound until each fault code happens to record
-  // another near miss - and a code that never does keeps its rows for good.
+  // a larger bound (or none) stays over the new bound until each record happens to log
+  // another near miss - and a record that never does keeps its rows for good.
   SqliteStatement trim_stmt(db_,
                             "DELETE FROM near_misses WHERE id IN ("
                             "SELECT id FROM (SELECT id, ROW_NUMBER() OVER "
-                            "(PARTITION BY fault_code ORDER BY id DESC) AS rn FROM near_misses) "
+                            "(PARTITION BY fault_code, owner ORDER BY id DESC) AS rn FROM near_misses) "
                             "WHERE rn > ?)");
   trim_stmt.bind_int64(1, static_cast<int64_t>(max_count));
 
@@ -1342,21 +1595,21 @@ size_t SqliteFaultStorage::set_max_near_misses_per_fault(size_t max_count) {
   return changed > 0 ? static_cast<size_t>(changed) : 0;
 }
 
-void SqliteFaultStorage::record_near_miss_locked(const std::string & fault_code, int64_t occurred_at_ns,
-                                                 int32_t debounce_counter, const DebounceConfig & config,
-                                                 uint8_t severity, const std::string & source_id,
-                                                 const std::string & resulting_status) {
+void SqliteFaultStorage::record_near_miss_locked(const FaultId & id, int64_t occurred_at_ns, int32_t debounce_counter,
+                                                 const DebounceConfig & config, uint8_t severity,
+                                                 const std::string & source_id, const std::string & resulting_status) {
   SqliteStatement insert_stmt(db_,
-                              "INSERT INTO near_misses (fault_code, occurred_at_ns, debounce_counter, "
+                              "INSERT INTO near_misses (fault_code, owner, occurred_at_ns, debounce_counter, "
                               "confirmation_threshold, severity, source_id, resulting_status) "
-                              "VALUES (?, ?, ?, ?, ?, ?, ?)");
-  insert_stmt.bind_text(1, fault_code);
-  insert_stmt.bind_int64(2, occurred_at_ns);
-  insert_stmt.bind_int(3, debounce_counter);
-  insert_stmt.bind_int(4, config.confirmation_threshold);
-  insert_stmt.bind_int(5, static_cast<int>(severity));
-  insert_stmt.bind_text(6, source_id);
-  insert_stmt.bind_text(7, resulting_status);
+                              "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+  insert_stmt.bind_text(1, id.fault_code);
+  insert_stmt.bind_text(2, id.owner);
+  insert_stmt.bind_int64(3, occurred_at_ns);
+  insert_stmt.bind_int(4, debounce_counter);
+  insert_stmt.bind_int(5, config.confirmation_threshold);
+  insert_stmt.bind_int(6, static_cast<int>(severity));
+  insert_stmt.bind_text(7, source_id);
+  insert_stmt.bind_text(8, resulting_status);
 
   if (insert_stmt.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to store near miss: ") + sqlite3_errmsg(db_));
@@ -1376,27 +1629,29 @@ void SqliteFaultStorage::record_near_miss_locked(const std::string & fault_code,
   // by timestamp would then drop the row that was just appended and make the two backends, which
   // append in arrival order, disagree on the same input.
   SqliteStatement trim_stmt(db_,
-                            "DELETE FROM near_misses WHERE fault_code = ?1 AND id NOT IN "
-                            "(SELECT id FROM near_misses WHERE fault_code = ?1 "
-                            "ORDER BY id DESC LIMIT ?2)");
-  trim_stmt.bind_text(1, fault_code);
-  trim_stmt.bind_int64(2, static_cast<int64_t>(max_near_misses_per_fault_));
+                            "DELETE FROM near_misses WHERE fault_code = ?1 AND owner = ?2 AND id NOT IN "
+                            "(SELECT id FROM near_misses WHERE fault_code = ?1 AND owner = ?2 "
+                            "ORDER BY id DESC LIMIT ?3)");
+  trim_stmt.bind_text(1, id.fault_code);
+  trim_stmt.bind_text(2, id.owner);
+  trim_stmt.bind_int64(3, static_cast<int64_t>(max_near_misses_per_fault_));
 
   if (trim_stmt.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to trim near-miss series: ") + sqlite3_errmsg(db_));
   }
 }
 
-std::vector<NearMissRecord> SqliteFaultStorage::get_near_misses(const std::string & fault_code) const {
+std::vector<NearMissRecord> SqliteFaultStorage::get_near_misses(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<NearMissRecord> result;
 
   SqliteStatement stmt(db_,
                        "SELECT fault_code, occurred_at_ns, debounce_counter, confirmation_threshold, "
-                       "severity, source_id, resulting_status FROM near_misses WHERE fault_code = ? "
-                       "ORDER BY id ASC");
-  stmt.bind_text(1, fault_code);
+                       "severity, source_id, resulting_status, owner FROM near_misses "
+                       "WHERE fault_code = ? AND owner = ? ORDER BY id ASC");
+  stmt.bind_text(1, id.fault_code);
+  stmt.bind_text(2, id.owner);
 
   while (stmt.step() == SQLITE_ROW) {
     NearMissRecord record;
@@ -1407,6 +1662,7 @@ std::vector<NearMissRecord> SqliteFaultStorage::get_near_misses(const std::strin
     record.severity = static_cast<uint8_t>(stmt.column_int(4));
     record.source_id = stmt.column_text(5);
     record.resulting_status = stmt.column_text(6);
+    record.owner = stmt.column_text(7);
     result.push_back(std::move(record));
   }
 
@@ -1441,7 +1697,7 @@ void SqliteFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> & 
   std::lock_guard<std::mutex> lock(mutex_);
 
   // One transaction for the whole burst: a crash mid-store must not leave some
-  // faults of the shared recording without their lookup row. Evicted bags are
+  // records of the shared recording without their lookup row. Evicted bags are
   // unlinked only after COMMIT - a ROLLBACK resurrects the rows, which must keep
   // pointing at bags that still exist.
   std::vector<std::string> evicted;
@@ -1458,7 +1714,7 @@ void SqliteFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> & 
   }
 
   // Referencing is re-checked on the committed state, not on the state each
-  // eviction saw: two faults of one burst can link the same bag, and a row-by-row
+  // eviction saw: two records of one burst can link the same bag, and a row-by-row
   // check inside the loop would find it still held by a sibling that a later
   // iteration then evicts, leaking the directory.
   std::set<std::string> unique_paths(evicted.begin(), evicted.end());
@@ -1477,7 +1733,7 @@ std::vector<std::string> SqliteFaultStorage::store_rosbag_file_locked(const Rosb
     row.recording_id = rosbag_recording_id(row.file_path);
   }
 
-  // Upserts on idx_rosbag_files_fault_path, i.e. on the (fault, recording) link.
+  // Upserts on idx_rosbag_files_fault_path, i.e. on the (record, recording) link.
   // Re-storing the SAME link refreshes it; a link to a DIFFERENT recording is a new
   // row now, which is the feature. Nothing is unlinked here - byte lifetime is the
   // cap's business below, and the caller's, after the commit.
@@ -1489,46 +1745,48 @@ std::vector<std::string> SqliteFaultStorage::store_rosbag_file_locked(const Rosb
   // two backends in a different order for a re-stored row inside a tie group.
   SqliteStatement stmt(db_,
                        "INSERT INTO rosbag_files "
-                       "(fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns) "
-                       "VALUES (?, ?, ?, ?, ?, ?, ?) "
-                       "ON CONFLICT(fault_code, file_path) DO UPDATE SET "
+                       "(fault_code, owner, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns) "
+                       "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                       "ON CONFLICT(fault_code, owner, file_path) DO UPDATE SET "
                        "recording_id = excluded.recording_id, format = excluded.format, "
                        "duration_sec = excluded.duration_sec, size_bytes = excluded.size_bytes, "
                        "created_at_ns = excluded.created_at_ns");
 
   stmt.bind_text(1, row.fault_code);
-  stmt.bind_text(2, row.recording_id);
-  stmt.bind_text(3, row.file_path);
-  stmt.bind_text(4, row.format);
+  stmt.bind_text(2, row.owner);
+  stmt.bind_text(3, row.recording_id);
+  stmt.bind_text(4, row.file_path);
+  stmt.bind_text(5, row.format);
   // Bind duration_sec as a double using sqlite3_bind_double directly
-  if (sqlite3_bind_double(stmt.get(), 5, row.duration_sec) != SQLITE_OK) {
+  if (sqlite3_bind_double(stmt.get(), 6, row.duration_sec) != SQLITE_OK) {
     throw std::runtime_error(std::string("Failed to bind duration_sec: ") + sqlite3_errmsg(db_));
   }
-  stmt.bind_int64(6, static_cast<int64_t>(row.size_bytes));
-  stmt.bind_int64(7, row.created_at_ns);
+  stmt.bind_int64(7, static_cast<int64_t>(row.size_bytes));
+  stmt.bind_int64(8, row.created_at_ns);
 
   if (stmt.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to store rosbag file: ") + sqlite3_errmsg(db_));
   }
 
   if (max_rosbags_per_fault_ == 0) {
-    return {};  // unlimited per fault; only the global byte quota bounds this
+    return {};  // unlimited per record, only the global byte quota bounds this
   }
 
-  // Keep the newest N recordings of this fault. Oldest-first eviction, the same
+  // Keep the newest N recordings of this record. Oldest-first eviction, the same
   // direction as evict_bags_over_quota, so the two eviction owners never need a
   // tiebreak. At N = 1 this reproduces the pre-#620 behaviour exactly: the new
   // recording replaces the old and the old bag is unlinked.
   const char * const doomed_sql =
-      "FROM rosbag_files WHERE fault_code = ?1 AND id NOT IN "
-      "(SELECT id FROM rosbag_files WHERE fault_code = ?1 "
-      " ORDER BY created_at_ns DESC, id DESC LIMIT ?2)";
+      "FROM rosbag_files WHERE fault_code = ?1 AND owner = ?2 AND id NOT IN "
+      "(SELECT id FROM rosbag_files WHERE fault_code = ?1 AND owner = ?2 "
+      " ORDER BY created_at_ns DESC, id DESC LIMIT ?3)";
 
   std::vector<std::string> evicted;
   {
     SqliteStatement select(db_, (std::string("SELECT DISTINCT file_path ") + doomed_sql).c_str());
     select.bind_text(1, row.fault_code);
-    select.bind_int64(2, static_cast<int64_t>(max_rosbags_per_fault_));
+    select.bind_text(2, row.owner);
+    select.bind_int64(3, static_cast<int64_t>(max_rosbags_per_fault_));
     while (select.step() == SQLITE_ROW) {
       evicted.push_back(select.column_text(0));
     }
@@ -1539,7 +1797,8 @@ std::vector<std::string> SqliteFaultStorage::store_rosbag_file_locked(const Rosb
 
   SqliteStatement del(db_, (std::string("DELETE ") + doomed_sql).c_str());
   del.bind_text(1, row.fault_code);
-  del.bind_int64(2, static_cast<int64_t>(max_rosbags_per_fault_));
+  del.bind_text(2, row.owner);
+  del.bind_int64(3, static_cast<int64_t>(max_rosbags_per_fault_));
   if (del.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to trim rosbag rows: ") + sqlite3_errmsg(db_));
   }
@@ -1552,27 +1811,30 @@ namespace {
 RosbagFileInfo read_rosbag_row(SqliteStatement & stmt) {
   RosbagFileInfo info;
   info.fault_code = stmt.column_text(0);
-  info.recording_id = stmt.column_text(1);
-  info.file_path = stmt.column_text(2);
-  info.format = stmt.column_text(3);
-  info.duration_sec = sqlite3_column_double(stmt.get(), 4);
-  info.size_bytes = static_cast<size_t>(stmt.column_int64(5));
-  info.created_at_ns = stmt.column_int64(6);
+  info.owner = stmt.column_text(1);
+  info.recording_id = stmt.column_text(2);
+  info.file_path = stmt.column_text(3);
+  info.format = stmt.column_text(4);
+  info.duration_sec = sqlite3_column_double(stmt.get(), 5);
+  info.size_bytes = static_cast<size_t>(stmt.column_int64(6));
+  info.created_at_ns = stmt.column_int64(7);
   return info;
 }
 
 constexpr const char * kRosbagColumns =
-    "fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns";
+    "fault_code, owner, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns";
 
 }  // namespace
 
-std::vector<RosbagFileInfo> SqliteFaultStorage::get_rosbag_files(const std::string & fault_code) const {
+std::vector<RosbagFileInfo> SqliteFaultStorage::get_rosbag_files(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  SqliteStatement stmt(db_, (std::string("SELECT ") + kRosbagColumns +
-                             " FROM rosbag_files WHERE fault_code = ? ORDER BY created_at_ns DESC, id DESC")
-                                .c_str());
-  stmt.bind_text(1, fault_code);
+  SqliteStatement stmt(db_,
+                       (std::string("SELECT ") + kRosbagColumns +
+                        " FROM rosbag_files WHERE fault_code = ? AND owner = ? ORDER BY created_at_ns DESC, id DESC")
+                           .c_str());
+  stmt.bind_text(1, id.fault_code);
+  stmt.bind_text(2, id.owner);
 
   std::vector<RosbagFileInfo> result;
   while (stmt.step() == SQLITE_ROW) {
@@ -1585,7 +1847,7 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::get_rosbag_files_by_recording(co
   std::lock_guard<std::mutex> lock(mutex_);
 
   SqliteStatement stmt(db_, (std::string("SELECT ") + kRosbagColumns +
-                             " FROM rosbag_files WHERE recording_id = ? ORDER BY fault_code ASC")
+                             " FROM rosbag_files WHERE recording_id = ? ORDER BY fault_code ASC, owner ASC")
                                 .c_str());
   stmt.bind_text(1, recording_id);
 
@@ -1644,46 +1906,39 @@ size_t SqliteFaultStorage::delete_rosbag_recording(const std::string & recording
   return removed;
 }
 
-std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_file(const std::string & fault_code) const {
+std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_file(const FaultId & id) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // ORDER BY is load-bearing now that a fault can hold several recordings. Without
+  // ORDER BY is load-bearing now that a record can hold several recordings. Without
   // it SQLite may return any matching row, so the fault detail and the download
   // would serve an arbitrary recording - non-deterministically, which no test
   // catches reliably. id breaks the tie because a burst stamps one created_at_ns
   // across all its rows.
-  SqliteStatement stmt(db_,
-                       "SELECT fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns "
-                       "FROM rosbag_files WHERE fault_code = ? "
-                       "ORDER BY created_at_ns DESC, id DESC LIMIT 1");
-  stmt.bind_text(1, fault_code);
+  SqliteStatement stmt(db_, (std::string("SELECT ") + kRosbagColumns +
+                             " FROM rosbag_files WHERE fault_code = ? AND owner = ? "
+                             "ORDER BY created_at_ns DESC, id DESC LIMIT 1")
+                                .c_str());
+  stmt.bind_text(1, id.fault_code);
+  stmt.bind_text(2, id.owner);
 
   if (stmt.step() != SQLITE_ROW) {
     return std::nullopt;
   }
 
-  RosbagFileInfo info;
-  info.fault_code = stmt.column_text(0);
-  info.recording_id = stmt.column_text(1);
-  info.file_path = stmt.column_text(2);
-  info.format = stmt.column_text(3);
-  info.duration_sec = sqlite3_column_double(stmt.get(), 4);
-  info.size_bytes = static_cast<size_t>(stmt.column_int64(5));
-  info.created_at_ns = stmt.column_int64(6);
-
-  return info;
+  return read_rosbag_row(stmt);
 }
 
-bool SqliteFaultStorage::delete_rosbag_file(const std::string & fault_code) {
+bool SqliteFaultStorage::delete_rosbag_file(const FaultId & id) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Every path, not the first one: a fault holds as many recordings as its cap
+  // Every path, not the first one: a record holds as many recordings as its cap
   // allows, and stepping once would unlink one bag and leak the rest - rows gone,
   // directories left behind, uncounted by a quota that sums rows.
   std::set<std::string> paths;
   {
-    SqliteStatement select_stmt(db_, "SELECT file_path FROM rosbag_files WHERE fault_code = ?");
-    select_stmt.bind_text(1, fault_code);
+    SqliteStatement select_stmt(db_, "SELECT file_path FROM rosbag_files WHERE fault_code = ? AND owner = ?");
+    select_stmt.bind_text(1, id.fault_code);
+    select_stmt.bind_text(2, id.owner);
     while (select_stmt.step() == SQLITE_ROW) {
       paths.insert(select_stmt.column_text(0));
     }
@@ -1694,8 +1949,9 @@ bool SqliteFaultStorage::delete_rosbag_file(const std::string & fault_code) {
   // done, that would leave a surviving row pointing at a bag that is gone -
   // unreadable for good, and still charged against the storage quota, which sums
   // rows. This way the worst case is an orphaned directory instead.
-  SqliteStatement delete_stmt(db_, "DELETE FROM rosbag_files WHERE fault_code = ?");
-  delete_stmt.bind_text(1, fault_code);
+  SqliteStatement delete_stmt(db_, "DELETE FROM rosbag_files WHERE fault_code = ? AND owner = ?");
+  delete_stmt.bind_text(1, id.fault_code);
+  delete_stmt.bind_text(2, id.owner);
 
   if (delete_stmt.step() != SQLITE_DONE) {
     throw std::runtime_error(std::string("Failed to delete rosbag file record: ") + sqlite3_errmsg(db_));
@@ -1703,7 +1959,7 @@ bool SqliteFaultStorage::delete_rosbag_file(const std::string & fault_code) {
 
   const bool deleted = sqlite3_changes(db_) > 0;
 
-  // Unlink only once no fault references the bag any more. These rows are already
+  // Unlink only once no row references the bag any more. These rows are already
   // gone, so path_referenced() sees exactly the siblings of a shared recording.
   for (const auto & path : paths) {
     if (!path_referenced(path)) {
@@ -1716,8 +1972,8 @@ bool SqliteFaultStorage::delete_rosbag_file(const std::string & fault_code) {
   return deleted;
 }
 
-size_t SqliteFaultStorage::delete_rosbag_files(const std::vector<std::string> & fault_codes) {
-  if (fault_codes.empty()) {
+size_t SqliteFaultStorage::delete_rosbag_files(const std::vector<FaultId> & ids) {
+  if (ids.empty()) {
     return 0;
   }
   std::lock_guard<std::mutex> lock(mutex_);
@@ -1729,18 +1985,20 @@ size_t SqliteFaultStorage::delete_rosbag_files(const std::vector<std::string> & 
   size_t deleted = 0;
   exec_or_throw("BEGIN IMMEDIATE");
   try {
-    for (const auto & code : fault_codes) {
+    for (const auto & id : ids) {
       {
-        // while, not if: one fault code can name several recordings now, and the
+        // while, not if: one record can name several recordings now, and the
         // sweep must be able to reclaim every one of their bags.
-        SqliteStatement select_stmt(db_, "SELECT file_path FROM rosbag_files WHERE fault_code = ?");
-        select_stmt.bind_text(1, code);
+        SqliteStatement select_stmt(db_, "SELECT file_path FROM rosbag_files WHERE fault_code = ? AND owner = ?");
+        select_stmt.bind_text(1, id.fault_code);
+        select_stmt.bind_text(2, id.owner);
         while (select_stmt.step() == SQLITE_ROW) {
           paths.insert(select_stmt.column_text(0));
         }
       }
-      SqliteStatement delete_stmt(db_, "DELETE FROM rosbag_files WHERE fault_code = ?");
-      delete_stmt.bind_text(1, code);
+      SqliteStatement delete_stmt(db_, "DELETE FROM rosbag_files WHERE fault_code = ? AND owner = ?");
+      delete_stmt.bind_text(1, id.fault_code);
+      delete_stmt.bind_text(2, id.owner);
       if (delete_stmt.step() != SQLITE_DONE) {
         throw std::runtime_error(std::string("Failed to delete rosbag file record: ") + sqlite3_errmsg(db_));
       }
@@ -1773,7 +2031,7 @@ bool SqliteFaultStorage::path_referenced(const std::string & file_path) const {
 size_t SqliteFaultStorage::get_total_rosbag_storage_bytes() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Sum per bag, not per fault: one recording can back a burst of correlated
+  // Sum per bag, not per record: one recording can back a burst of correlated
   // faults, and double-counting it would evict bags that still fit the quota.
   SqliteStatement stmt(
       db_,
@@ -1792,20 +2050,11 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::get_all_rosbag_files() const {
 
   std::vector<RosbagFileInfo> result;
 
-  SqliteStatement stmt(db_,
-                       "SELECT fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns "
-                       "FROM rosbag_files ORDER BY created_at_ns ASC, id ASC");
+  SqliteStatement stmt(
+      db_, (std::string("SELECT ") + kRosbagColumns + " FROM rosbag_files ORDER BY created_at_ns ASC, id ASC").c_str());
 
   while (stmt.step() == SQLITE_ROW) {
-    RosbagFileInfo info;
-    info.fault_code = stmt.column_text(0);
-    info.recording_id = stmt.column_text(1);
-    info.file_path = stmt.column_text(2);
-    info.format = stmt.column_text(3);
-    info.duration_sec = sqlite3_column_double(stmt.get(), 4);
-    info.size_bytes = static_cast<size_t>(stmt.column_int64(5));
-    info.created_at_ns = stmt.column_int64(6);
-    result.push_back(info);
+    result.push_back(read_rosbag_row(stmt));
   }
 
   return result;
@@ -1816,29 +2065,21 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::list_rosbags_for_entity(const st
 
   std::vector<RosbagFileInfo> result;
 
-  // Join rosbag_files with faults table and filter by reporting_sources containing entity_fqn.
-  // Use json_each() for proper JSON array querying instead of LIKE, which treats
-  // '_' as a single-char wildcard and would produce false positives on ROS names.
+  // Join rosbag_files with the row's record and keep the rows whose record lists the entity among its
+  // reporting sources. json_each() rather than LIKE, which treats '_' as a single-char wildcard and
+  // would produce false positives on ROS names.
   SqliteStatement stmt(db_,
-                       "SELECT r.fault_code, r.recording_id, r.file_path, r.format, r.duration_sec, r.size_bytes, "
-                       "r.created_at_ns "
+                       "SELECT r.fault_code, r.owner, r.recording_id, r.file_path, r.format, r.duration_sec, "
+                       "r.size_bytes, r.created_at_ns "
                        "FROM rosbag_files r "
-                       "JOIN faults f ON r.fault_code = f.fault_code "
+                       "JOIN faults f ON r.fault_code = f.fault_code AND r.owner = f.owner "
                        "JOIN json_each(f.reporting_sources) j ON j.value = ? "
                        "ORDER BY r.created_at_ns DESC, r.id DESC");
 
   stmt.bind_text(1, entity_fqn);
 
   while (stmt.step() == SQLITE_ROW) {
-    RosbagFileInfo info;
-    info.fault_code = stmt.column_text(0);
-    info.recording_id = stmt.column_text(1);
-    info.file_path = stmt.column_text(2);
-    info.format = stmt.column_text(3);
-    info.duration_sec = sqlite3_column_double(stmt.get(), 4);
-    info.size_bytes = static_cast<size_t>(stmt.column_int64(5));
-    info.created_at_ns = stmt.column_int64(6);
-    result.push_back(info);
+    result.push_back(read_rosbag_row(stmt));
   }
 
   return result;
@@ -1847,28 +2088,11 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::list_rosbags_for_entity(const st
 std::vector<fd::FaultRecord> SqliteFaultStorage::get_all_faults() const {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  SqliteStatement stmt(db_,
-                       "SELECT fault_code, severity, description, first_occurred_ns, last_occurred_ns, "
-                       "occurrence_count, status, reporting_sources, last_passed_ns FROM faults");
+  SqliteStatement stmt(db_, (std::string("SELECT ") + kFaultColumns + " FROM faults").c_str());
 
   std::vector<fd::FaultRecord> result;
   while (stmt.step() == SQLITE_ROW) {
-    fd::FaultRecord fault;
-    fault.fault_code = stmt.column_text(0);
-    fault.severity = static_cast<uint8_t>(stmt.column_int(1));
-    fault.description = stmt.column_text(2);
-
-    int64_t first_ns = stmt.column_int64(3);
-    int64_t last_ns = stmt.column_int64(4);
-    fault.first_occurred_ns = first_ns;
-    fault.last_occurred_ns = last_ns;
-
-    fault.occurrence_count = static_cast<uint32_t>(stmt.column_int64(5));
-    fault.status = stmt.column_text(6);
-    fault.reporting_sources = parse_json_array(stmt.column_text(7));
-    fault.last_passed_ns = stmt.column_int64(8);
-
-    result.push_back(fault);
+    result.push_back(read_fault_row(stmt, log_sink_));
   }
 
   return result;

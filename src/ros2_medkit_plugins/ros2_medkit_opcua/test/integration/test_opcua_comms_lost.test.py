@@ -25,6 +25,18 @@ the opcua plugin, and reads the fault over HTTP. A real outage raises the fault.
   * foreign stand-in: a fault another endpoint's gateway raised stays.
   * late nameplate: a fault raised under the nameplate id stays while the device
     serves no nameplate, and is cleared when a later read names the device.
+  * per-source record: PLC_COMMS_LOST configured with one record per source and
+    a second source that reported it. The restored link clears this gateway's own
+    record and leaves the other source's alone.
+  * per-source record under a stand-in: the gateway raises the fault under the stand-in
+    of its endpoint, the PLC comes up and names the component, and the same gateway
+    clears the record it raised under the stand-in.
+  * per-source pinned stand-in: the same, with the gateway restarted in between, so it remembers
+    nothing and the record is found under the stand-in derived from its endpoint.
+  * explicit component id: a gateway whose node map names a component_id leaves the
+    per-source record a default-id bridge holds under 'opcua_device' alone.
+  * explicit component id, stand-in record: the same, for a record held under the
+    endpoint-derived stand-in of a config-less bridge on the same host, per-source and shared.
   * binding directory: a binding file whose directory cannot be looked up is
     reported, and the plugin stays connected. Once at start, and once on the
     poll thread when a rescan adopts a PLC that came up later.
@@ -228,18 +240,24 @@ class Run:
         self.server_logs.append(log)
         return proc, port
 
-    def start_fault_manager(self, name):
+    def start_fault_manager(self, name, per_source_codes=()):
         """Start fault_manager_node with memory storage."""
         log = self.workdir / f'{name}_fault_manager.log'
+        args = ['-p', 'storage_type:=memory']
+        if per_source_codes:
+            thresholds = self.workdir / f'{name}_fault_thresholds.yaml'
+            thresholds.write_text(''.join(f'{code}:\n  per_source: true\n'
+                                          for code in per_source_codes))
+            args += ['-p', f'fault_thresholds.config_file:={thresholds}']
         proc = self._start(['ros2', 'run', 'ros2_medkit_fault_manager', 'fault_manager_node',
-                            '--ros-args', '-p', 'storage_type:=memory'], log, env=self.env)
+                            '--ros-args', *args], log, env=self.env)
         # Logged at the end of the constructor, after the services exist.
         if not wait_log(log, 'FaultManager node started (', 30) or proc.poll() is not None:
             raise AssertionError(f'fault_manager_node did not start (rc={proc.poll()}):\n'
                                  + log.read_text(errors='replace'))
         return proc
 
-    def start_gateway(self, name, endpoint=None, poll_ms=200, extra_env=None):
+    def start_gateway(self, name, endpoint=None, poll_ms=200, extra_env=None, node_map=None):
         """Start gateway_node with the opcua plugin and wait for HTTP."""
         port = free_port()
         params = self.workdir / f'{name}_gateway.yaml'
@@ -256,6 +274,8 @@ class Run:
         ]
         if endpoint is not None:
             lines.append(f'    plugins.opcua.endpoint_url: "{endpoint}"')
+        if node_map is not None:
+            lines.append(f'    plugins.opcua.node_map_path: "{node_map}"')
         params.write_text('\n'.join(lines) + '\n')
         env = dict(self.env)
         env.update(extra_env or {})
@@ -378,6 +398,201 @@ def scenario_late_nameplate(run):
                   'after the device named itself')
 
 
+# Talks to the fault manager as a second source: reports a fault, lists the records.
+FAULT_MANAGER_CLIENT = """
+import json
+import sys
+
+import rclpy
+from ros2_medkit_msgs.msg import Fault
+from ros2_medkit_msgs.srv import ListFaults, ReportFault
+
+rclpy.init()
+node = rclpy.create_node('comms_lost_test_client')
+
+
+def call(client, request):
+    future = client.call_async(request)
+    rclpy.spin_until_future_complete(node, future, timeout_sec=10.0)
+    return future.result()
+
+
+if sys.argv[1] == 'report':
+    client = node.create_client(ReportFault, '/fault_manager/report_fault')
+    client.wait_for_service(timeout_sec=10.0)
+    request = ReportFault.Request()
+    request.fault_code = sys.argv[2]
+    request.event_type = ReportFault.Request.EVENT_FAILED
+    request.severity = Fault.SEVERITY_ERROR
+    request.description = 'second source'
+    request.source_id = sys.argv[3]
+    print(json.dumps({'accepted': call(client, request).accepted}))
+else:
+    client = node.create_client(ListFaults, '/fault_manager/list_faults')
+    client.wait_for_service(timeout_sec=10.0)
+    request = ListFaults.Request()
+    request.statuses = ['PREFAILED', 'PREPASSED', 'CONFIRMED', 'HEALED', 'CLEARED']
+    print(json.dumps([{'code': f.fault_code, 'status': f.status,
+                       'sources': list(f.reporting_sources)}
+                      for f in call(client, request).faults]))
+node.destroy_node()
+rclpy.shutdown()
+"""
+
+
+def fault_manager_client(run, *args):
+    """Run the fault manager client script on the scenario's ROS domain and return its JSON."""
+    result = subprocess.run([sys.executable, '-c', FAULT_MANAGER_CLIENT, *args], env=run.env,
+                            capture_output=True, text=True, timeout=60 * SCALE)
+    if result.returncode != 0:
+        raise AssertionError(f'fault manager client {args} failed:\n{result.stderr}')
+    return json.loads(result.stdout)
+
+
+def comms_lost_records(run):
+    """Return {first reporting source: status} of every PLC_COMMS_LOST record."""
+    return {f['sources'][0]: f['status'] for f in fault_manager_client(run, 'list')
+            if f['code'] == COMMS_LOST and f['sources']}
+
+
+def wait_records(run, accept, deadline):
+    """Poll a scaled deadline until accept(records) holds. Return the last records."""
+    end = time.monotonic() + deadline * SCALE
+    records = {}
+    while time.monotonic() < end:
+        records = comms_lost_records(run)
+        if accept(records):
+            return records
+        time.sleep(0.3)
+    return records
+
+
+def scenario_per_source_record(run):
+    other = '/other_plc'
+    run.start_fault_manager('persrc', per_source_codes=[COMMS_LOST])
+    named, port = run.start_server('persrc_named')
+    endpoint = f'opc.tcp://127.0.0.1:{port}'
+    gateway = run.start_gateway('persrc', endpoint=endpoint)
+    if not wait_log(gateway.log, 'Connected to OPC-UA server', 30):
+        raise AssertionError('the gateway never connected:\n' + tail(gateway))
+
+    # A second source holds a record of the same code before the outage.
+    if not fault_manager_client(run, 'report', COMMS_LOST, other)['accepted']:
+        raise AssertionError('the second source was refused')
+
+    run.stop(named)
+    records = wait_records(
+        run, lambda r: len(r) == 2 and all(s == 'CONFIRMED' for s in r.values()), 60)
+    if len(records) != 2 or any(s != 'CONFIRMED' for s in records.values()):
+        raise AssertionError(f'the outage was never reported as its own record: {records}\n'
+                             + tail(gateway))
+    own = next(source for source in records if source != other)
+
+    # The same device comes back on its port: the link is restored.
+    run.start_server('persrc_back', port=port)
+    records = wait_records(run, lambda r: r.get(own) == 'CLEARED', 60)
+    if records.get(own) != 'CLEARED':
+        raise AssertionError('the restored link did not clear this gateway record: '
+                             f'{records}\n' + tail(gateway))
+    if records.get(other) != 'CONFIRMED':
+        raise AssertionError(f"the other source's record was cleared too: {records}")
+
+
+def scenario_per_source_placeholder_rename(run):
+    run.start_fault_manager('rename', per_source_codes=[COMMS_LOST])
+    port = free_port()
+    gateway = run.start_gateway('rename', endpoint=f'opc.tcp://127.0.0.1:{port}')
+    records = wait_records(run, lambda r: len(r) == 1 and 'CONFIRMED' in r.values(), 60)
+    if len(records) != 1 or 'CONFIRMED' not in records.values():
+        raise AssertionError(f'the outage was never reported: {records}\n' + tail(gateway))
+    stand_in = next(iter(records))
+
+    # The PLC comes up on the endpoint the gateway was pinned to and names the component.
+    run.start_server('rename', port=port)
+    records = wait_records(run, lambda r: r.get(stand_in) == 'CLEARED', 60)
+    if records.get(stand_in) != 'CLEARED':
+        raise AssertionError(f'the record raised under the stand-in {stand_in} was stranded '
+                             f'after the component was renamed: {records}\n' + tail(gateway))
+
+
+def scenario_per_source_pinned_stand_in(run):
+    run.start_fault_manager('persrc_pinned', per_source_codes=[COMMS_LOST])
+    port = free_port()
+    endpoint = f'opc.tcp://127.0.0.1:{port}'
+    gateway = run.start_gateway('persrc_pinned_before', endpoint=endpoint)
+    records = wait_records(run, lambda r: len(r) == 1 and 'CONFIRMED' in r.values(), 60)
+    if len(records) != 1 or 'CONFIRMED' not in records.values():
+        raise AssertionError(f'the outage was never reported: {records}\n' + tail(gateway))
+    stand_in = next(iter(records))
+    run.stop(gateway.proc)
+
+    # The restarted gateway remembers nothing, and the PLC names the component.
+    run.start_server('persrc_pinned', port=port)
+    after = run.start_gateway('persrc_pinned_after', endpoint=endpoint)
+    records = wait_records(run, lambda r: r.get(stand_in) == 'CLEARED', 60)
+    if records.get(stand_in) != 'CLEARED':
+        raise AssertionError(f'the record raised under the stand-in {stand_in} stayed standing '
+                             f'after a restart: {records}\n' + tail(after))
+
+
+def scenario_explicit_component_id_keeps_the_default_id_record(run):
+    run.start_fault_manager('explicit_id', per_source_codes=[COMMS_LOST])
+    default_id = 'opcua_device'
+    # A bridge whose node map names no component_id holds an outage record under the default id.
+    if not fault_manager_client(run, 'report', COMMS_LOST, default_id)['accepted']:
+        raise AssertionError('the seeded record was refused')
+    node_map = run.workdir / 'explicit_id_nodes.yaml'
+    node_map.write_text('area_id: plc_area\ncomponent_id: plc_a\nnodes: []\n')
+    _, port = run.start_server('explicit_id')
+    gateway = run.start_gateway('explicit_id', endpoint=f'opc.tcp://127.0.0.1:{port}',
+                                node_map=node_map)
+    # The gateway asked for its own record, found none, and went through every id it reports under.
+    if not wait_log(gateway.log, 'nothing to clear', 30):
+        raise AssertionError('the gateway never decided on PLC_COMMS_LOST:\n' + tail(gateway))
+    records = comms_lost_records(run)
+    if records != {default_id: 'CONFIRMED'}:
+        raise AssertionError('a bridge with an explicit component_id touched the record of a '
+                             f'default-id bridge: {records}\n' + tail(gateway))
+
+
+def scenario_explicit_component_id_keeps_a_stand_in_record(run):
+    stand_in = 'opcua-127_0_0_1'
+    run.start_fault_manager('stand_in_id', per_source_codes=[COMMS_LOST])
+    # A config-less bridge on the same host holds an outage record under its stand-in.
+    if not fault_manager_client(run, 'report', COMMS_LOST, stand_in)['accepted']:
+        raise AssertionError('the seeded record was refused')
+    node_map = run.workdir / 'stand_in_id_nodes.yaml'
+    node_map.write_text('area_id: plc_area\ncomponent_id: plc_a\nnodes: []\n')
+    _, port = run.start_server('stand_in_id')
+    gateway = run.start_gateway('stand_in_id', endpoint=f'opc.tcp://127.0.0.1:{port}',
+                                node_map=node_map)
+    if not wait_log(gateway.log, 'nothing to clear', 30):
+        raise AssertionError('the gateway never decided on PLC_COMMS_LOST:\n' + tail(gateway))
+    records = comms_lost_records(run)
+    if records != {stand_in: 'CONFIRMED'}:
+        raise AssertionError('a bridge with a node map touched the record of a stand-in bridge: '
+                             f'{records}\n' + tail(gateway))
+
+
+def scenario_explicit_component_id_keeps_a_shared_stand_in_record(run):
+    stand_in = 'opcua-127_0_0_1'
+    run.start_fault_manager('stand_in_shared')
+    if not fault_manager_client(run, 'report', COMMS_LOST, stand_in)['accepted']:
+        raise AssertionError('the seeded record was refused')
+    node_map = run.workdir / 'stand_in_shared_nodes.yaml'
+    node_map.write_text('area_id: plc_area\ncomponent_id: plc_a\nnodes: []\n')
+    _, port = run.start_server('stand_in_shared')
+    gateway = run.start_gateway('stand_in_shared', endpoint=f'opc.tcp://127.0.0.1:{port}',
+                                node_map=node_map)
+    if not wait_log(gateway.log, HELD_BY_OTHERS, 30):
+        raise AssertionError('the gateway never left the shared record standing:\n'
+                             + tail(gateway))
+    records = comms_lost_records(run)
+    if records != {stand_in: 'CONFIRMED'}:
+        raise AssertionError('a bridge with a node map cleared the shared record of a stand-in '
+                             f'bridge: {records}\n' + tail(gateway))
+
+
 def start_discovering_gateway(run, name):
     """Start a config-less gateway whose binding file sits under a symlink loop."""
     loop_a = run.workdir / 'loop_a'
@@ -440,6 +655,14 @@ SCENARIOS = [
     ('pinned stand-in', scenario_pinned_stand_in),
     ('foreign stand-in', scenario_foreign_stand_in),
     ('late nameplate', scenario_late_nameplate),
+    ('per-source record', scenario_per_source_record),
+    ('per-source record under a stand-in', scenario_per_source_placeholder_rename),
+    ('per-source pinned stand-in', scenario_per_source_pinned_stand_in),
+    ('explicit component id', scenario_explicit_component_id_keeps_the_default_id_record),
+    ('explicit component id, stand-in record',
+     scenario_explicit_component_id_keeps_a_stand_in_record),
+    ('explicit component id, shared stand-in record',
+     scenario_explicit_component_id_keeps_a_shared_stand_in_record),
     ('binding directory at start', scenario_binding_directory_at_start),
     ('binding directory on reconnect', scenario_binding_directory_on_reconnect),
 ]
