@@ -227,11 +227,13 @@ class TestCorrelationAcrossOwners(unittest.TestCase):
         for code, node in symptoms:
             self._report(code, node)
 
-        muted = self._list(include_muted=True)
-        muted_records = sorted((m.fault_code, m.source_id) for m in muted.muted_faults)
+        # Cluster members muted by the storm rules are not this root's symptoms.
+        muted = [m for m in self._list(include_muted=True).muted_faults
+                 if m.rule_id.endswith('_estop')]
+        muted_records = sorted((m.fault_code, m.source_id) for m in muted)
         expected = sorted((code, symptom_owner_of_record(code, node)) for code, node in symptoms)
         self.assertEqual(muted_records, expected)
-        for m in muted.muted_faults:
+        for m in muted:
             self.assertEqual(m.root_cause_code, root)
 
         visible = {f.fault_code for f in self._list().faults}
