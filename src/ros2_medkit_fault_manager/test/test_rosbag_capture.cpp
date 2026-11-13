@@ -2385,11 +2385,13 @@ TEST_F(RosbagCaptureIntegrationTest, ZeroMessagePostFaultOnlyBagFinalizesCleanly
     rosbag_config.duration_sec = 2.0;
     rosbag_config.duration_after_sec = 0.5;
     rosbag_config.format = format;
+    // A topic only this test knows, so traffic from the rest of the ROS domain cannot reach the bag.
+    rosbag_config.topics = "/zero_message_post_fault_probe";
     auto snapshot_config = create_snapshot_config();
     RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
 
     capture.start();
-    // No publisher at all: the buffer is empty and the post-roll records nothing.
+    // No publisher on that topic: the buffer is empty and the post-roll records nothing.
     const std::string fault_code = "ZERO_MSG_" + format;
     capture.on_fault_confirmed(rec(fault_code));
 
