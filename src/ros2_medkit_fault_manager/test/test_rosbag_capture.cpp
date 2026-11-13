@@ -2388,15 +2388,38 @@ TEST_F(RosbagCaptureIntegrationTest, ZeroMessagePostFaultOnlyBagFinalizesCleanly
     // A topic only this test knows, so traffic from the rest of the ROS domain cannot reach the bag.
     rosbag_config.topics = "/zero_message_post_fault_probe";
     auto snapshot_config = create_snapshot_config();
+    // The probe topic never publishes. Traffic on another topic must stay out of the bag. Both
+    // publishers exist before the capture, which subscribes to the topics it finds on construction.
+    auto probe_pub = node_->create_publisher<std_msgs::msg::String>(rosbag_config.topics, 10);
+    const std::string unrelated_topic = "/zero_message_unrelated_traffic";
+    auto unrelated_pub = node_->create_publisher<std_msgs::msg::String>(unrelated_topic, 10);
     RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
 
     capture.start();
-    // No publisher on that topic: the buffer is empty and the post-roll records nothing.
+    const auto discovery_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (node_->count_subscribers(rosbag_config.topics) < 1 &&
+           std::chrono::steady_clock::now() < discovery_deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ASSERT_GE(node_->count_subscribers(rosbag_config.topics), 1u) << "the capture never subscribed to its topic";
+    ASSERT_EQ(node_->count_subscribers(unrelated_topic), 0u) << "the capture subscribed to a topic it was not given";
+
+    std::atomic<bool> stop_traffic{false};
+    std::thread traffic([&]() {
+      std_msgs::msg::String msg;
+      msg.data = "unrelated";
+      while (!stop_traffic.load()) {
+        unrelated_pub->publish(msg);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    });
     const std::string fault_code = "ZERO_MSG_" + format;
     capture.on_fault_confirmed(rec(fault_code));
 
-    ASSERT_TRUE(wait_for_row(rec(fault_code), std::chrono::milliseconds(8000)))
-        << "zero-message post-fault-only bag did not finalise on " << format;
+    const bool finalised = wait_for_row(rec(fault_code), std::chrono::milliseconds(8000));
+    stop_traffic.store(true);
+    traffic.join();
+    ASSERT_TRUE(finalised) << "zero-message post-fault-only bag did not finalise on " << format;
     auto row = storage_->get_rosbag_file(rec(fault_code));
     ASSERT_TRUE(row.has_value());
     EXPECT_EQ(row->format, format);
