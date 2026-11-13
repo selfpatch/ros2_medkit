@@ -19,7 +19,7 @@ The relations of a root cause across its re-reports and its clear, through a rea
   * a root cleared with skip_correlation_auto_clear leaves its symptoms standing and unmuted,
     and stops muting later reports;
   * a root reported again while active keeps the symptoms it already muted, so its clear
-    cascades to all of them.
+    cascades only to the ones it still mutes.
 
 Each scenario runs on a default (shared) code and on a per_source code whose root and symptom
 come from different nodes.
@@ -27,6 +27,7 @@ come from different nodes.
 
 import os
 import tempfile
+import time
 import unittest
 
 from launch import LaunchDescription
@@ -43,8 +44,10 @@ ALL_STATUSES = [
     Fault.STATUS_PREFAILED, Fault.STATUS_PREPASSED, Fault.STATUS_CONFIRMED,
     Fault.STATUS_HEALED, Fault.STATUS_CLEARED,
 ]
-KINDS = ('P7', 'P8')
+KINDS = ('P7', 'P8', 'P11')
 MODES = ('SH', 'PS')
+# A short window lets a test move past it by reporting until the symptom is no longer muted.
+WINDOW_MS = {'P11': 200}
 
 THRESHOLDS = ''.join(
     f'CL_{kind}_PS_{role}:\n  per_source: true\n' for kind in KINDS for role in ('ROOT', 'SYM'))
@@ -56,7 +59,7 @@ CORRELATION = 'correlation:\n  enabled: true\n  rules:\n' + ''.join(
         codes: ["CL_{kind}_{mode}_ROOT"]
       symptoms:
         - codes: ["CL_{kind}_{mode}_SYM"]
-      window_ms: 30000
+      window_ms: {WINDOW_MS.get(kind, 30000)}
       mute_symptoms: true
       auto_clear_with_root: true
 """ for kind in KINDS for mode in MODES)
@@ -121,10 +124,10 @@ class TestCorrelationClear(unittest.TestCase):
         self.assertTrue(future.done(), 'service call timed out')
         return future.result()
 
-    def _report(self, code, source):
+    def _report(self, code, source, event=ReportFault.Request.EVENT_FAILED):
         request = ReportFault.Request()
         request.fault_code = code
-        request.event_type = ReportFault.Request.EVENT_FAILED
+        request.event_type = event
         request.severity = Fault.SEVERITY_ERROR
         request.description = f'{code} from {source}'
         request.source_id = source
@@ -194,6 +197,34 @@ class TestCorrelationClear(unittest.TestCase):
         response = self._clear(root, root_owner, skip=False)
         self.assertIn(symptom, list(response.auto_cleared_codes))
         self.assertEqual(self._status(symptom, sym_owner), Fault.STATUS_CLEARED)
+
+    def _list_exact_symptoms(self, mode):
+        root, symptom = f'CL_P11_{mode}_ROOT', f'CL_P11_{mode}_SYM'
+        root_owner, sym_owner, root_source, sym_source = self._scenario_sources(mode)
+        self._report(root, root_source)
+        self._report(symptom, sym_source)
+        self.assertIn(symptom, self._muted())
+        self._clear(symptom, sym_owner, skip=False)
+        self._report(root, root_source)
+        # Report the symptom until it falls outside the root's window and is no longer muted.
+        deadline = time.monotonic() + TIMEOUT_SEC
+        while True:
+            self._report(symptom, sym_source)
+            if symptom not in self._muted():
+                break
+            self.assertLess(time.monotonic(), deadline, 'the symptom stayed muted past its window')
+            self._clear(symptom, sym_owner, skip=False)
+
+        response = self._clear(root, root_owner, skip=False)
+        self.assertEqual(list(response.auto_cleared_codes), [],
+                         'the root cleared a symptom it did not mute')
+        self.assertEqual(self._status(symptom, sym_owner), Fault.STATUS_CONFIRMED)
+
+    def test_p11_default_code_cascade_clears_only_the_muted_symptoms(self):
+        self._list_exact_symptoms('SH')
+
+    def test_p11_per_source_code_cascade_clears_only_the_muted_symptoms(self):
+        self._list_exact_symptoms('PS')
 
     def test_p7_default_code_skip_clear_ends_the_relations(self):
         self._skip_clear_ends_the_relations('SH')

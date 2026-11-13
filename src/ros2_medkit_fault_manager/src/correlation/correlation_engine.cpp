@@ -190,8 +190,15 @@ ProcessClearResult CorrelationEngine::process_clear(const FaultId & id) {
 
   // Remove from muted records if it was a symptom
   muted_faults_.erase(id);
+  forget_symptom(id);
 
   return result;
+}
+
+void CorrelationEngine::forget_symptom(const FaultId & id) {
+  for (auto & [root_id, symptoms] : root_to_symptoms_) {
+    symptoms.erase(std::remove(symptoms.begin(), symptoms.end(), id), symptoms.end());
+  }
 }
 
 std::vector<MutedFaultData> CorrelationEngine::get_muted_faults() const {

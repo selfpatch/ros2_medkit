@@ -156,6 +156,9 @@ class CorrelationEngine {
   /// @return ProcessFaultResult with correlation info if matched
   std::optional<ProcessFaultResult> try_as_symptom(const FaultId & id, std::chrono::steady_clock::time_point timestamp);
 
+  /// Drops a record from the symptom list of every root cause. Caller holds the mutex.
+  void forget_symptom(const FaultId & id);
+
   /// Check if the record's code matches an auto-cluster rule. A cluster holds the records
   /// of any owner that match the rule inside its window.
   /// @return ProcessFaultResult with cluster info if matched
