@@ -33,6 +33,8 @@ the opcua plugin, and reads the fault over HTTP. A real outage raises the fault.
     clears the record it raised under the stand-in.
   * per-source pinned stand-in: the same, with the gateway restarted in between, so it remembers
     nothing and the record is found under the stand-in derived from its endpoint.
+  * explicit component id: a gateway whose node map names a component_id leaves the
+    per-source record a default-id bridge holds under 'opcua_device' alone.
   * binding directory: a binding file whose directory cannot be looked up is
     reported, and the plugin stays connected. Once at start, and once on the
     poll thread when a rescan adopts a PLC that came up later.
@@ -253,7 +255,7 @@ class Run:
                                  + log.read_text(errors='replace'))
         return proc
 
-    def start_gateway(self, name, endpoint=None, poll_ms=200, extra_env=None):
+    def start_gateway(self, name, endpoint=None, poll_ms=200, extra_env=None, node_map=None):
         """Start gateway_node with the opcua plugin and wait for HTTP."""
         port = free_port()
         params = self.workdir / f'{name}_gateway.yaml'
@@ -270,6 +272,8 @@ class Run:
         ]
         if endpoint is not None:
             lines.append(f'    plugins.opcua.endpoint_url: "{endpoint}"')
+        if node_map is not None:
+            lines.append(f'    plugins.opcua.node_map_path: "{node_map}"')
         params.write_text('\n'.join(lines) + '\n')
         env = dict(self.env)
         env.update(extra_env or {})
@@ -529,6 +533,26 @@ def scenario_per_source_pinned_stand_in(run):
                              f'after a restart: {records}\n' + tail(after))
 
 
+def scenario_explicit_component_id_keeps_the_default_id_record(run):
+    run.start_fault_manager('explicit_id', per_source_codes=[COMMS_LOST])
+    default_id = 'opcua_device'
+    # A bridge whose node map names no component_id holds an outage record under the default id.
+    if not fault_manager_client(run, 'report', COMMS_LOST, default_id)['accepted']:
+        raise AssertionError('the seeded record was refused')
+    node_map = run.workdir / 'explicit_id_nodes.yaml'
+    node_map.write_text('area_id: plc_area\ncomponent_id: plc_a\nnodes: []\n')
+    _, port = run.start_server('explicit_id')
+    gateway = run.start_gateway('explicit_id', endpoint=f'opc.tcp://127.0.0.1:{port}',
+                                node_map=node_map)
+    # The gateway asked for its own record, found none, and went through every id it reports under.
+    if not wait_log(gateway.log, 'nothing to clear', 30):
+        raise AssertionError('the gateway never decided on PLC_COMMS_LOST:\n' + tail(gateway))
+    records = comms_lost_records(run)
+    if records != {default_id: 'CONFIRMED'}:
+        raise AssertionError('a bridge with an explicit component_id touched the record of a '
+                             f'default-id bridge: {records}\n' + tail(gateway))
+
+
 def start_discovering_gateway(run, name):
     """Start a config-less gateway whose binding file sits under a symlink loop."""
     loop_a = run.workdir / 'loop_a'
@@ -594,6 +618,7 @@ SCENARIOS = [
     ('per-source record', scenario_per_source_record),
     ('per-source record under a stand-in', scenario_per_source_placeholder_rename),
     ('per-source pinned stand-in', scenario_per_source_pinned_stand_in),
+    ('explicit component id', scenario_explicit_component_id_keeps_the_default_id_record),
     ('binding directory at start', scenario_binding_directory_at_start),
     ('binding directory on reconnect', scenario_binding_directory_on_reconnect),
 ]

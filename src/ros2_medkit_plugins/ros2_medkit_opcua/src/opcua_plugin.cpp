@@ -1600,9 +1600,8 @@ bool OpcuaPlugin::link_state_clear_permitted(bool fault_found, const std::vector
 
 std::unordered_set<std::string> OpcuaPlugin::reporting_ids_of_this_process() const {
   std::unordered_set<std::string> ids(placeholder_ids_.begin(), placeholder_ids_.end());
-  // A node map that names no component_id reports under the NodeMap default, so
-  // a fault carrying it is this bridge's.
-  ids.insert(NodeMap::kDefaultComponentId);
+  // A node map that names no component_id reports under the NodeMap default, which
+  // component_id() then returns. A map that names one does not report under the default.
   const std::string current = node_map_.component_id();
   if (!current.empty()) {
     ids.insert(current);
@@ -1630,6 +1629,7 @@ void OpcuaPlugin::apply_comms_lost_answer(bool found, const std::vector<std::str
                                           const std::string & clear_source) {
   if (!found) {
     // No row, so nothing to clear and nothing standing to report.
+    log_info(std::string("no ") + kCommsLostFaultCode + " record held by this bridge; nothing to clear");
     return;
   }
   const std::unordered_set<std::string> my_ids = reporting_ids_of_this_process();
