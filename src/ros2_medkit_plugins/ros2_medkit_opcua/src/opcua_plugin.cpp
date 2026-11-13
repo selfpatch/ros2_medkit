@@ -1606,13 +1606,15 @@ std::unordered_set<std::string> OpcuaPlugin::reporting_ids_of_this_process() con
   if (!current.empty()) {
     ids.insert(current);
   }
-  // A process that never reached its PLC reported under the stand-in of the
-  // endpoint it started on, or of the one it found and never opened a session
-  // on. This process derives both from the same configuration.
-  for (const std::string & endpoint : {start_endpoint_url_, client_ ? client_->endpoint_url() : std::string{}}) {
-    const std::string stand_in = derive_component_identity(OpcuaClient::DeviceInfo{}, endpoint).id;
-    if (!stand_in.empty()) {
-      ids.insert(stand_in);
+  // A bridge without a node map that never reached its PLC reported under the stand-in of the
+  // endpoint it started on, or of the one it found and never opened a session on. A bridge with a
+  // node map reports under its component_id only.
+  if (node_map_path_.empty()) {
+    for (const std::string & endpoint : {start_endpoint_url_, client_ ? client_->endpoint_url() : std::string{}}) {
+      const std::string stand_in = derive_component_identity(OpcuaClient::DeviceInfo{}, endpoint).id;
+      if (!stand_in.empty()) {
+        ids.insert(stand_in);
+      }
     }
   }
   return ids;
