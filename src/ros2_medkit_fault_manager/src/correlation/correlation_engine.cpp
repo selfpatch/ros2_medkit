@@ -182,6 +182,7 @@ ProcessClearResult CorrelationEngine::process_clear(const FaultId & id) {
         active_cluster_severities_.erase(cluster_id);
       } else if (active_cluster.representative == id) {
         reassign_representative(active_cluster, active_sevs);
+        sync_cluster_muting(active_cluster);
       }
     }
 
@@ -193,6 +194,37 @@ ProcessClearResult CorrelationEngine::process_clear(const FaultId & id) {
   forget_symptom(id);
 
   return result;
+}
+
+void CorrelationEngine::sync_cluster_muting(const Cluster & cluster) {
+  bool show_as_single = false;
+  for (const auto & rule : config_.rules) {
+    if (rule.id == cluster.rule_id) {
+      show_as_single = rule.show_as_single;
+      break;
+    }
+  }
+  if (!show_as_single) {
+    return;
+  }
+  for (const auto & member : cluster.members) {
+    const auto muted_it = muted_faults_.find(member);
+    if (member == cluster.representative) {
+      if (muted_it != muted_faults_.end() && muted_it->second.rule_id == cluster.rule_id) {
+        muted_faults_.erase(muted_it);
+      }
+      continue;
+    }
+    if (muted_it != muted_faults_.end() && muted_it->second.rule_id != cluster.rule_id) {
+      continue;
+    }
+    MutedFaultData muted;
+    muted.fault_code = member.fault_code;
+    muted.owner = member.owner;
+    muted.root_cause_code = cluster.representative.fault_code;
+    muted.rule_id = cluster.rule_id;
+    muted_faults_[member] = muted;
+  }
 }
 
 void CorrelationEngine::forget_symptom(const FaultId & id) {
@@ -419,6 +451,7 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const Faul
         active_cluster.last_at = now_system;
         update_member_severity(rule, active_cluster, active_cluster_severities_[active_cluster.cluster_id], id,
                                severity);
+        sync_cluster_muting(active_cluster);
         if (pending_it != pending_clusters_.end() && pending_it->second.data.cluster_id == active_cluster.cluster_id) {
           pending_it->second.data.last_at = now_system;
           update_member_severity(rule, pending_it->second.data, pending_it->second.fault_severities, id, severity);
@@ -507,6 +540,7 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const Faul
     if (already_active || cluster.members.size() >= rule.min_count) {
       active_clusters_[cluster.cluster_id] = cluster;
       active_cluster_severities_[cluster.cluster_id] = pending.fault_severities;
+      sync_cluster_muting(active_clusters_[cluster.cluster_id]);
 
       // Retroactively mute all non-representative faults added before threshold
       if (!already_active && rule.show_as_single) {
