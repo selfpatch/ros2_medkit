@@ -19,7 +19,8 @@ The relations of a root cause across its re-reports and its clear, through a rea
   * a root cleared with skip_correlation_auto_clear leaves its symptoms standing and unmuted,
     and stops muting later reports;
   * a root reported again while active keeps the symptoms it already muted, so its clear
-    cascades only to the ones it still mutes.
+    cascades to all of them, and only to the ones it still mutes;
+  * every way a record ends (a cascade clear, a heal) releases the symptoms it muted.
 
 Each scenario runs on a default (shared) code and on a per_source code whose root and symptom
 come from different nodes.
@@ -44,7 +45,7 @@ ALL_STATUSES = [
     Fault.STATUS_PREFAILED, Fault.STATUS_PREPASSED, Fault.STATUS_CONFIRMED,
     Fault.STATUS_HEALED, Fault.STATUS_CLEARED,
 ]
-KINDS = ('P7', 'P8', 'P11')
+KINDS = ('P7', 'P8', 'P11', 'P12')
 MODES = ('SH', 'PS')
 # A short window lets a test move past it by reporting until the symptom is no longer muted.
 WINDOW_MS = {'P11': 200}
@@ -62,7 +63,27 @@ CORRELATION = 'correlation:\n  enabled: true\n  rules:\n' + ''.join(
       window_ms: {WINDOW_MS.get(kind, 30000)}
       mute_symptoms: true
       auto_clear_with_root: true
-""" for kind in KINDS for mode in MODES)
+""" for kind in KINDS for mode in MODES) + """    - id: p10_outer
+      name: "P10 outer"
+      mode: hierarchical
+      root_cause:
+        codes: ["CL_P10_OUTER"]
+      symptoms:
+        - codes: ["CL_P10_MID"]
+      window_ms: 30000
+      mute_symptoms: true
+      auto_clear_with_root: true
+    - id: p10_inner
+      name: "P10 inner"
+      mode: hierarchical
+      root_cause:
+        codes: ["CL_P10_MID"]
+      symptoms:
+        - codes: ["CL_P10_LEAF"]
+      window_ms: 30000
+      mute_symptoms: true
+      auto_clear_with_root: true
+"""
 
 
 def _temp_file(prefix, content):
@@ -85,7 +106,8 @@ def generate_test_description():
         parameters=[{
             'storage_type': 'memory',
             'confirmation_threshold': -1,
-            'healing_enabled': False,
+            'healing_enabled': True,
+            'healing_threshold': 0,
             'fault_thresholds.config_file': THRESHOLDS_FILE,
             'correlation.config_file': CORRELATION_FILE,
             'snapshots.enabled': False,
@@ -225,6 +247,41 @@ class TestCorrelationClear(unittest.TestCase):
 
     def test_p11_per_source_code_cascade_clears_only_the_muted_symptoms(self):
         self._list_exact_symptoms('PS')
+
+    def test_p10_a_cascade_cleared_root_releases_its_own_symptoms(self):
+        self._report('CL_P10_MID', '/node')
+        self._report('CL_P10_LEAF', '/node')
+        self._report('CL_P10_OUTER', '/node')
+        self._report('CL_P10_MID', '/node')
+        self.assertIn('CL_P10_MID', self._muted())
+        self.assertIn('CL_P10_LEAF', self._muted())
+
+        response = self._clear('CL_P10_OUTER', '*', skip=False)
+        self.assertEqual(
+            list(response.auto_cleared_codes), ['CL_P10_MID'], 'the cascade is one level')
+        self.assertEqual(self._status('CL_P10_MID', '*'), Fault.STATUS_CLEARED)
+        self.assertEqual(self._status('CL_P10_LEAF', '*'), Fault.STATUS_CONFIRMED)
+        self.assertNotIn('CL_P10_LEAF', self._muted())
+        self.assertIn('CL_P10_LEAF', self._visible())
+
+    def _healed_root_releases_its_symptoms(self, mode):
+        root, symptom = f'CL_P12_{mode}_ROOT', f'CL_P12_{mode}_SYM'
+        root_owner, sym_owner, root_source, sym_source = self._scenario_sources(mode)
+        self._report(root, root_source)
+        self._report(symptom, sym_source)
+        self.assertIn(symptom, self._muted())
+
+        self._report(root, root_source, event=ReportFault.Request.EVENT_PASSED)
+        self.assertEqual(self._status(root, root_owner), Fault.STATUS_HEALED)
+        self.assertEqual(self._status(symptom, sym_owner), Fault.STATUS_CONFIRMED)
+        self.assertNotIn(symptom, self._muted())
+        self.assertIn(symptom, self._visible(), 'the symptom stayed muted after its root healed')
+
+    def test_p10_default_code_healed_root_releases_its_symptoms(self):
+        self._healed_root_releases_its_symptoms('SH')
+
+    def test_p10_per_source_code_healed_root_releases_its_symptoms(self):
+        self._healed_root_releases_its_symptoms('PS')
 
     def test_p7_default_code_skip_clear_ends_the_relations(self):
         self._skip_clear_ends_the_relations('SH')
