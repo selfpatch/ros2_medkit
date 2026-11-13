@@ -110,9 +110,10 @@ class TestSnapshotQueue(unittest.TestCase):
             GetSnapshots, '/fault_manager/get_snapshots')
         for client in (cls.report_client, cls.clear_client, cls.snapshots_client):
             assert client.wait_for_service(timeout_sec=TIMEOUT_SEC)
-        cls.fast = cls.node.create_publisher(Int32, FAST, 10)
         # Nothing is ever published here, so a capture of this topic runs for its whole timeout.
+        # Created first: the fault manager has processed it once it has discovered FAST.
         cls.slow = cls.node.create_publisher(Int32, SLOW, 10)
+        cls.fast = cls.node.create_publisher(Int32, FAST, 10)
         cls.stop = threading.Event()
         cls.publisher_thread = threading.Thread(target=cls._publish)
         cls.publisher_thread.start()
@@ -264,6 +265,12 @@ class TestSnapshotQueue(unittest.TestCase):
 
 @launch_testing.post_shutdown_test()
 class TestSnapshotQueueShutdown(unittest.TestCase):
+
+    def test_the_silent_topic_was_discovered(self, proc_output, fault_manager_node):
+        for text in proc_output[fault_manager_node]:
+            self.assertNotIn(
+                f"Topic '{SLOW}' not found", text.text.decode(errors='replace'),
+                'a capture skipped the silent topic, so nothing was kept busy')
 
     def test_exit_code(self, proc_info):
         launch_testing.asserts.assertExitCodes(proc_info)
