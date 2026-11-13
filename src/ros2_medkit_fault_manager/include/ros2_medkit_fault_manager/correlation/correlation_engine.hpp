@@ -189,6 +189,10 @@ class CorrelationEngine {
   /// Reassign cluster representative from the remaining members and their severities
   void reassign_representative(Cluster & cluster, const std::map<FaultId, std::string> & severities) const;
 
+  /// Mutes every member of a show_as_single cluster except its representative and unmutes the
+  /// representative. Records muted by another rule are left alone. Caller holds the mutex.
+  void sync_cluster_muting(const Cluster & cluster);
+
   static ClusterData to_cluster_data(const Cluster & cluster);
 
   CorrelationConfig config_;

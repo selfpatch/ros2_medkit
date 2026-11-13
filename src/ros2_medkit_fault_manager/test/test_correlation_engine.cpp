@@ -538,8 +538,9 @@ TEST_F(CorrelationEngineTest, HierarchicalAndClusterCoexist) {
   engine.process_fault(rec("SENSOR_IMU"), "ERROR");
   EXPECT_EQ(1u, engine.get_cluster_count());
 
-  // Both should coexist
-  EXPECT_EQ(1u, engine.get_muted_count());    // MOTOR_COMM_FL
+  // Both should coexist: the symptom and the cluster member that is not the representative are muted
+  EXPECT_EQ(2u, engine.get_muted_count());
+  EXPECT_TRUE(engine.is_muted(rec("MOTOR_COMM_FL")));
   EXPECT_EQ(1u, engine.get_cluster_count());  // SENSOR cluster
 }
 

@@ -317,7 +317,15 @@ Auto-cluster mode groups similar faults into clusters.
 1. First ``SENSOR_*`` fault starts a potential cluster
 2. Additional ``SENSOR_*`` faults within 2000ms join the cluster
 3. When 3+ faults accumulate, cluster becomes active
-4. Only the representative fault is shown; others are muted
+4. Only the representative fault is shown; the other members are muted. They are hidden
+   from the default listing and show under ``include_muted``. Muting is display only:
+   the record of a muted member, as ``GetFault`` returns it, is the record it has unmuted.
+5. When the representative changes, the current representative is shown and the previous
+   one is muted. A member that escalates under ``highest_severity``, or a newer member
+   under ``most_recent``, becomes the shown one. When the shown member is cleared, the
+   next representative the policy selects is shown.
+6. A cluster ends when its last member is cleared. A member that stops being muted keeps
+   its status: nothing is cleared for the operator.
 
 Querying Correlation Data
 -------------------------
