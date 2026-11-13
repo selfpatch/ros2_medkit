@@ -125,6 +125,9 @@ ProcessClearResult CorrelationEngine::process_clear(const FaultId & id) {
     // The symptoms stay muted while another root cause or an active cluster still mutes them
     const std::vector<FaultId> released = it->second;
     root_to_symptoms_.erase(it);
+    for (auto delay_it = relation_delay_ms_.begin(); delay_it != relation_delay_ms_.end();) {
+      delay_it = delay_it->first.first == id ? relation_delay_ms_.erase(delay_it) : std::next(delay_it);
+    }
     for (const auto & symptom_id : released) {
       reconcile_muting(symptom_id);
     }
@@ -220,21 +223,22 @@ void CorrelationEngine::reconcile_muting(const FaultId & id) {
     if (std::find(symptoms.begin(), symptoms.end(), id) == symptoms.end()) {
       continue;
     }
+    // A root is bound to the first rule its code matches. That rule decides whether it mutes.
+    const auto root_rule_id = try_as_root_cause(root_id.fault_code);
+    if (!root_rule_id) {
+      continue;
+    }
     for (const auto & rule : config_.rules) {
-      if (rule.mode != CorrelationMode::HIERARCHICAL || !rule.mute_symptoms ||
-          !matcher_->matches_any(root_id.fault_code, rule.root_cause_codes) || !matches_symptom(rule, id.fault_code)) {
+      if (rule.id != *root_rule_id || !rule.mute_symptoms || !matches_symptom(rule, id.fault_code)) {
         continue;
       }
       MutedFaultData muted;
-      const auto existing = muted_faults_.find(id);
-      if (existing != muted_faults_.end() && existing->second.rule_id == rule.id &&
-          existing->second.root_cause_code == root_id.fault_code) {
-        muted = existing->second;
-      }
       muted.fault_code = id.fault_code;
       muted.owner = id.owner;
       muted.root_cause_code = root_id.fault_code;
       muted.rule_id = rule.id;
+      const auto delay_it = relation_delay_ms_.find({root_id, id});
+      muted.delay_ms = delay_it != relation_delay_ms_.end() ? delay_it->second : 0;
       muted_faults_[id] = muted;
       return;
     }
@@ -262,6 +266,9 @@ void CorrelationEngine::reconcile_muting(const FaultId & id) {
 }
 
 void CorrelationEngine::forget_symptom(const FaultId & id) {
+  for (auto delay_it = relation_delay_ms_.begin(); delay_it != relation_delay_ms_.end();) {
+    delay_it = delay_it->first.second == id ? relation_delay_ms_.erase(delay_it) : std::next(delay_it);
+  }
   for (auto & [root_id, symptoms] : root_to_symptoms_) {
     symptoms.erase(std::remove(symptoms.begin(), symptoms.end(), id), symptoms.end());
   }
@@ -401,6 +408,7 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_as_symptom(const FaultI
       if (std::find(symptoms.begin(), symptoms.end(), id) == symptoms.end()) {
         symptoms.push_back(id);
       }
+      relation_delay_ms_[{prc.fault_id, id}] = result.delay_ms;
 
       if (rule.mute_symptoms) {
         MutedFaultData muted;

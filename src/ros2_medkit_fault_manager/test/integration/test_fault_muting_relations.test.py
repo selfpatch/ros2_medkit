@@ -50,7 +50,8 @@ def _code(variant, mode, role):
 THRESHOLDS = ''.join(
     f'{_code(v, "PS", role)}:\n  per_source: true\n'
     for v in VARIANTS for role in ('ROOT', 'T_X')) + ''.join(
-    f'CL_TR_PS_{role}:\n  per_source: true\n' for role in ('R1', 'R2', 'S'))
+    f'CL_TR_PS_{role}:\n  per_source: true\n' for role in ('R1', 'R2', 'S')) + ''.join(
+    f'CL_F5_PS_{role}:\n  per_source: true\n' for role in ('X', 'Y', 'S_1'))
 CORRELATION = 'correlation:\n  enabled: true\n  patterns:\n' + ''.join(
     f'    mx_{v.lower()}_{m.lower()}:\n      codes: ["{_code(v, m, "T")}_*"]\n'
     for v in VARIANTS for m in MODES) + '  rules:\n' + ''.join(
@@ -81,6 +82,37 @@ CORRELATION = 'correlation:\n  enabled: true\n  patterns:\n' + ''.join(
         codes: ["CL_TR_{m}_R1", "CL_TR_{m}_R2"]
       symptoms:
         - codes: ["CL_TR_{m}_S", "CL_TR_{m}_SENT_*"]
+      window_ms: 300
+      mute_symptoms: true
+      auto_clear_with_root: true
+""" for m in MODES) + ''.join(
+    f"""    - id: f5_a_{m.lower()}
+      name: "F5 A {m}"
+      mode: hierarchical
+      root_cause:
+        codes: ["CL_F5_{m}_X"]
+      symptoms:
+        - codes: ["CL_F5_{m}_S_*"]
+      window_ms: 30000
+      mute_symptoms: false
+      auto_clear_with_root: true
+    - id: f5_b_{m.lower()}
+      name: "F5 B {m}"
+      mode: hierarchical
+      root_cause:
+        codes: ["CL_F5_{m}_X"]
+      symptoms:
+        - codes: ["CL_F5_{m}_S_*"]
+      window_ms: 30000
+      mute_symptoms: true
+      auto_clear_with_root: true
+    - id: f5_c_{m.lower()}
+      name: "F5 C {m}"
+      mode: hierarchical
+      root_cause:
+        codes: ["CL_F5_{m}_Y"]
+      symptoms:
+        - codes: ["CL_F5_{m}_S_*", "CL_F5_{m}_Z_*"]
       window_ms: 300
       mute_symptoms: true
       auto_clear_with_root: true
@@ -248,6 +280,70 @@ class TestMutingRelations(unittest.TestCase):
 
     def test_a_cleared_root_leaves_the_mute_of_another_root(self):
         self._each_mode(self._two_roots)
+
+    def _muted_info(self, codes):
+        """Return {(code, owner): (root_cause_code, delay_ms)} of include_muted among codes."""
+        request = ListFaults.Request()
+        request.include_muted = True
+        muted = self._call(self.list_client, request).muted_faults
+        return {(m.fault_code, m.source_id): (m.root_cause_code, m.delay_ms) for m in muted
+                if m.fault_code in codes}
+
+    def _cross_window(self, prefix, source):
+        """Report fresh symptoms until one is no longer muted: the window of the root passed."""
+        deadline = time.monotonic() + TIMEOUT_SEC
+        index = 0
+        while True:
+            index += 1
+            sentinel = f'{prefix}_{index}'
+            self._report(sentinel, source)
+            if not self._muted({sentinel}):
+                return
+            self.assertLess(time.monotonic(), deadline, 'the window of the root never ended')
+
+    def _root_bound_to_its_own_rule(self, mode):
+        x, y = f'CL_F5_{mode}_X', f'CL_F5_{mode}_Y'
+        symptom = f'CL_F5_{mode}_S_1'
+        owner = '/s' if mode == 'PS' else '*'
+        self._report(y, '/y')
+        self._report(symptom, '/s')
+        self.assertEqual(self._muted({symptom}), {(symptom, owner): y})
+        self._cross_window(f'CL_F5_{mode}_Z', '/s')
+        # X is bound to its first rule, which does not mute. The later rule for X never applies.
+        self._report(x, '/x')
+        self._report(symptom, '/s')
+
+        self._clear(y, '/y' if mode == 'PS' else '*', skip=True)
+        self.assertEqual(self._muted({symptom}), {}, 'a rule the root is not bound to muted it')
+        self.assertEqual(self._shown({symptom}), {(symptom, '/s')})
+
+    def test_a_root_mutes_only_through_its_own_rule(self):
+        self._each_mode(self._root_bound_to_its_own_rule)
+
+    def _delay_follows_the_relation(self, mode):
+        r1, r2 = f'CL_TR_{mode}_R1', f'CL_TR_{mode}_R2'
+        symptom = f'CL_TR_{mode}_S'
+        owner = '/s' if mode == 'PS' else '*'
+        self._report(r1, '/r1')
+        # Report again until the delay behind the first root is more than a millisecond.
+        deadline = time.monotonic() + TIMEOUT_SEC
+        while True:
+            self._report(symptom, '/s')
+            root, delay = self._muted_info({symptom})[(symptom, owner)]
+            if delay > 0:
+                break
+            self.assertLess(time.monotonic(), deadline, 'the delay behind the first root stayed 0')
+        self.assertEqual(root, r1)
+        self._cross_window(f'CL_TR_{mode}_SENT', '/s')
+        self._report(r2, '/r2')
+        self._report(symptom, '/s')
+        self.assertEqual(self._muted({symptom}), {(symptom, owner): r2})
+
+        self._clear(r2, '/r2' if mode == 'PS' else '*', skip=True)
+        self.assertEqual(self._muted_info({symptom}), {(symptom, owner): (r1, delay)})
+
+    def test_the_delay_moves_with_the_mute(self):
+        self._each_mode(self._delay_follows_the_relation)
 
 
 @launch_testing.post_shutdown_test()
