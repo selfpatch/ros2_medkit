@@ -35,6 +35,8 @@ the opcua plugin, and reads the fault over HTTP. A real outage raises the fault.
     nothing and the record is found under the stand-in derived from its endpoint.
   * explicit component id: a gateway whose node map names a component_id leaves the
     per-source record a default-id bridge holds under 'opcua_device' alone.
+  * explicit component id, stand-in record: the same, for a record held under the
+    endpoint-derived stand-in of a config-less bridge on the same host, per-source and shared.
   * binding directory: a binding file whose directory cannot be looked up is
     reported, and the plugin stays connected. Once at start, and once on the
     poll thread when a rescan adopts a PLC that came up later.
@@ -553,6 +555,44 @@ def scenario_explicit_component_id_keeps_the_default_id_record(run):
                              f'default-id bridge: {records}\n' + tail(gateway))
 
 
+def scenario_explicit_component_id_keeps_a_stand_in_record(run):
+    stand_in = 'opcua-127_0_0_1'
+    run.start_fault_manager('stand_in_id', per_source_codes=[COMMS_LOST])
+    # A config-less bridge on the same host holds an outage record under its stand-in.
+    if not fault_manager_client(run, 'report', COMMS_LOST, stand_in)['accepted']:
+        raise AssertionError('the seeded record was refused')
+    node_map = run.workdir / 'stand_in_id_nodes.yaml'
+    node_map.write_text('area_id: plc_area\ncomponent_id: plc_a\nnodes: []\n')
+    _, port = run.start_server('stand_in_id')
+    gateway = run.start_gateway('stand_in_id', endpoint=f'opc.tcp://127.0.0.1:{port}',
+                                node_map=node_map)
+    if not wait_log(gateway.log, 'nothing to clear', 30):
+        raise AssertionError('the gateway never decided on PLC_COMMS_LOST:\n' + tail(gateway))
+    records = comms_lost_records(run)
+    if records != {stand_in: 'CONFIRMED'}:
+        raise AssertionError('a bridge with a node map touched the record of a stand-in bridge: '
+                             f'{records}\n' + tail(gateway))
+
+
+def scenario_explicit_component_id_keeps_a_shared_stand_in_record(run):
+    stand_in = 'opcua-127_0_0_1'
+    run.start_fault_manager('stand_in_shared')
+    if not fault_manager_client(run, 'report', COMMS_LOST, stand_in)['accepted']:
+        raise AssertionError('the seeded record was refused')
+    node_map = run.workdir / 'stand_in_shared_nodes.yaml'
+    node_map.write_text('area_id: plc_area\ncomponent_id: plc_a\nnodes: []\n')
+    _, port = run.start_server('stand_in_shared')
+    gateway = run.start_gateway('stand_in_shared', endpoint=f'opc.tcp://127.0.0.1:{port}',
+                                node_map=node_map)
+    if not wait_log(gateway.log, HELD_BY_OTHERS, 30):
+        raise AssertionError('the gateway never left the shared record standing:\n'
+                             + tail(gateway))
+    records = comms_lost_records(run)
+    if records != {stand_in: 'CONFIRMED'}:
+        raise AssertionError('a bridge with a node map cleared the shared record of a stand-in '
+                             f'bridge: {records}\n' + tail(gateway))
+
+
 def start_discovering_gateway(run, name):
     """Start a config-less gateway whose binding file sits under a symlink loop."""
     loop_a = run.workdir / 'loop_a'
@@ -619,6 +659,10 @@ SCENARIOS = [
     ('per-source record under a stand-in', scenario_per_source_placeholder_rename),
     ('per-source pinned stand-in', scenario_per_source_pinned_stand_in),
     ('explicit component id', scenario_explicit_component_id_keeps_the_default_id_record),
+    ('explicit component id, stand-in record',
+     scenario_explicit_component_id_keeps_a_stand_in_record),
+    ('explicit component id, shared stand-in record',
+     scenario_explicit_component_id_keeps_a_shared_stand_in_record),
     ('binding directory at start', scenario_binding_directory_at_start),
     ('binding directory on reconnect', scenario_binding_directory_on_reconnect),
 ]
