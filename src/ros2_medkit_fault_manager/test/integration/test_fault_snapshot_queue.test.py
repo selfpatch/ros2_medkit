@@ -65,7 +65,9 @@ SNAPSHOTS_FILE = _temp_file(
     f'  XQ.QUEUE:\n    - {FAST}\n'
     f'  XQ.PRUNE:\n    - {FAST}\n    - {SLOW}\n'
     f'  XQ.PRUNE.TRIGGER:\n    - {FAST}\n'
-    f'  XQ.AGAIN:\n    - {FAST}\n    - {SLOW}\n')
+    f'  XQ.AGAIN:\n    - {FAST}\n    - {SLOW}\n'
+    'patterns:\n'
+    f'  "XQ_PROBE_.*":\n    - {FAST}\n')
 
 
 def generate_test_description():
@@ -114,6 +116,36 @@ class TestSnapshotQueue(unittest.TestCase):
         cls.stop = threading.Event()
         cls.publisher_thread = threading.Thread(target=cls._publish)
         cls.publisher_thread.start()
+        cls._wait_for_discovery('XQ_PROBE_')
+
+    @classmethod
+    def _wait_for_discovery(cls, topic_probe_prefix):
+        """Report fresh probe codes until the fault manager has discovered the probed topic."""
+        deadline = time.monotonic() + TIMEOUT_SEC
+        index = 0
+        while time.monotonic() < deadline:
+            index += 1
+            code = f'{topic_probe_prefix}{index}'
+            report = ReportFault.Request()
+            report.fault_code = code
+            report.event_type = ReportFault.Request.EVENT_FAILED
+            report.severity = Fault.SEVERITY_CRITICAL
+            report.description = 'discovery probe'
+            report.source_id = '/probe'
+            future = cls.report_client.call_async(report)
+            rclpy.spin_until_future_complete(cls.node, future, timeout_sec=10.0)
+            request = GetSnapshots.Request()
+            request.fault_code = code
+            attempt_end = time.monotonic() + 1.5
+            while time.monotonic() < attempt_end:
+                future = cls.snapshots_client.call_async(request)
+                rclpy.spin_until_future_complete(cls.node, future, timeout_sec=10.0)
+                response = future.result()
+                if response is not None and response.success and response.data:
+                    if json.loads(response.data).get('topics'):
+                        return
+                rclpy.spin_once(cls.node, timeout_sec=0.1)
+        raise AssertionError('the fault manager never discovered the published topic')
 
     @classmethod
     def _publish(cls):
