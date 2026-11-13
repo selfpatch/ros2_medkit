@@ -193,6 +193,14 @@ class CorrelationEngine {
   /// representative. Records muted by another rule are left alone. Caller holds the mutex.
   void sync_cluster_muting(const Cluster & cluster);
 
+  /// Sets the muted entry of a record from the relations that are still live: a root cause that
+  /// lists it under a muting rule, else its active show_as_single cluster. With none, the entry
+  /// goes. Caller holds the mutex.
+  void reconcile_muting(const FaultId & id);
+
+  /// Whether a fault code is one of the symptoms of a hierarchical rule.
+  bool matches_symptom(const CorrelationRule & rule, const std::string & fault_code) const;
+
   static ClusterData to_cluster_data(const Cluster & cluster);
 
   CorrelationConfig config_;
