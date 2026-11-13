@@ -130,7 +130,10 @@ reported within ``window_ms`` of the latest report of the root cause, and it sta
 until the root cause is cleared. A new report of a root cause that is still active renews
 that window and keeps the symptoms it already muted. Clearing the root cause ends its
 relations: with ``skip_correlation_auto_clear`` its symptoms are not cleared, they are
-unmuted and show in the default listing again. For any other code there is one shared
+unmuted and show in the default listing again. Every other end of a record does the
+same: a root cause that heals, or that a cascade clears, releases the symptoms it muted
+and they keep their status. Only a ``ClearFault`` without the flag cascades, and it goes
+one level. For any other code there is one shared
 record, and that record is what is muted or cleared.
 
 Quick Start

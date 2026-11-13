@@ -516,6 +516,10 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
     // an acknowledged clear.
     if (just_healed) {
       publish_event(fd::fault_event_type::kCleared, *fault_after);
+      // A healed record has ended: its muted symptoms are unmuted and keep their status.
+      if (correlation_) {
+        correlation_->process_clear(id);
+      }
     }
 
     // Append tamper-evident audit records for the transitions that just happened.
@@ -634,6 +638,8 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, const std:
       return outcome;
     }
     auto_cleared_codes.push_back(symptom_id.fault_code);
+    // The cascade goes one level: a cleared symptom that was itself a root releases its own symptoms.
+    correlation_->process_clear(symptom_id);
     if (audit_) {
       std::optional<fd::FaultRecord> symptom;
       try {
