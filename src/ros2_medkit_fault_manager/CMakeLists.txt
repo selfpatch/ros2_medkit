@@ -332,6 +332,9 @@ endif()
   medkit_add_launch_test(test_fault_cluster_muting
     test/integration/test_fault_cluster_muting.test.py TIMEOUT 120 LABELS "integration")
 
+  medkit_add_launch_test(test_fault_muting_relations
+    test/integration/test_fault_muting_relations.test.py TIMEOUT 120 LABELS "integration")
+
   medkit_add_launch_test(test_fault_identity_restart
     test/integration/test_fault_identity_restart.test.py TIMEOUT 180 LABELS "integration")
 
