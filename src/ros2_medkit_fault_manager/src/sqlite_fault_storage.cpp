@@ -208,6 +208,7 @@ fd::FaultRecord read_fault_row(SqliteStatement & stmt, core::LogSink & sink) {
   fault.status = stmt.column_text(6);
   fault.reporting_sources = parse_json_array(stmt.column_text(7), sink);
   fault.last_passed_ns = stmt.column_int64(8);
+  fault.owner = stmt.column_text(9);
   return fault;
 }
 

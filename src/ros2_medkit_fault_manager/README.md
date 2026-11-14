@@ -24,6 +24,10 @@ knows only a reporting source still reaches the shared record of a default code.
 unscoped and applies only when exactly one record carries the `fault_code`, otherwise the call fails
 with a message beginning `ambiguous:` that lists the owners and changes nothing.
 
+Every `Fault` the node sends (`~/list_faults`, `~/get_fault`, `~/list_faults_for_entity` and
+`~/events`) carries the record's `owner`: the reporting source of a per-source record, `*` for a
+shared one. It is the `source_id` that addresses exactly that record.
+
 ### Identity per fault code
 
 ```yaml
