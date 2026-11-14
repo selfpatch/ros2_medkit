@@ -295,6 +295,39 @@ class TestFaultIdentityRestart(unittest.TestCase):
             ('N.PER', '*'), ('N.PER', '/a'), ('N.PER', '/b'),
         ])
 
+    def test_the_owner_tells_a_kept_shared_record_from_a_new_per_source_one(self):
+        """After the switch, the kept shared record of /s and the new one differ by owner."""
+        db_path = self._path('owner_switch.db')
+        process = self._start(db_path, 'O.SWITCH:\n  confirmation_threshold: -1\n')
+        try:
+            self._report('O.SWITCH', '/s')
+            request = ClearFault.Request()
+            request.fault_code = 'O.SWITCH'
+            self.assertTrue(self._call(self.clear, request).success)
+            self.assertEqual(
+                [(r.owner, list(r.reporting_sources)) for r in self._records('O.SWITCH')],
+                [('*', ['/s'])])
+        finally:
+            self._stop(process)
+
+        process = self._start(
+            db_path, 'O.SWITCH:\n  per_source: true\n  confirmation_threshold: -1\n')
+        try:
+            self._report('O.SWITCH', '/s')
+            expected = [('*', Fault.STATUS_CLEARED), ('/s', Fault.STATUS_CONFIRMED)]
+            listed = sorted(
+                (r.owner, r.status) for r in self._records('O.SWITCH')
+                if list(r.reporting_sources) == ['/s'])
+            self.assertEqual(listed, expected)
+            for owner, status in expected:
+                with self.subTest(owner=owner):
+                    record = self._get('O.SWITCH', owner)
+                    self.assertTrue(record.success, record.error_message)
+                    self.assertEqual(record.fault.owner, owner)
+                    self.assertEqual(record.fault.status, status)
+        finally:
+            self._stop(process)
+
     def test_a_malformed_per_source_value_rejects_the_whole_file(self):
         thresholds = 'A:\n  per_source: true\nB:\n  per_source: "yes"\n'
         process = self._start(self._path('malformed.db'), thresholds)

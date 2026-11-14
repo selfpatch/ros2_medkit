@@ -23,6 +23,10 @@ the ``source_id`` of the ``ReportFault`` call. Every other code has one record s
 its sources, owned by the reserved id ``*``. Each record has its own status, debounce counter,
 ``occurrence_count``, severity and timestamps, and is cleared on its own.
 
+``owner`` names the record a ``Fault`` describes. Passed back as ``source_id``, it addresses exactly
+that record, also when a stored shared record and a per-source record of one source carry the same
+``reporting_sources`` after the code changed from shared to ``per_source``.
+
 .. code-block:: text
 
    # Global fault identifier (e.g., "MOTOR_OVERHEAT", "SENSOR_FAILURE_001")
@@ -58,6 +62,10 @@ its sources, owned by the reserved id ``*``. Each record has its own status, deb
    # Every source that reported this record: one for a per-source record, all of
    # them for a shared one.
    string[] reporting_sources
+
+   # Owner of the record this Fault describes: the reporting source of a
+   # per-source record, "*" for a shared record.
+   string owner
 
 **Severity Constants:**
 

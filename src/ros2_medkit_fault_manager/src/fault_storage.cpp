@@ -94,6 +94,7 @@ fd::FaultRecord FaultState::to_record() const {
   msg.occurrence_count = occurrence_count;
   msg.status = status;
   msg.reporting_sources.assign(reporting_sources.begin(), reporting_sources.end());
+  msg.owner = owner;
   return msg;
 }
 

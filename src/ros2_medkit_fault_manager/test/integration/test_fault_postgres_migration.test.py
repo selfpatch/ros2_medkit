@@ -20,6 +20,7 @@ The tables are created with that release's layout and rows, the fault manager is
 with storage_type: postgres, and the migrated records are read over its services: every code is one
 shared record (owner '*') with its reporting sources, and its snapshot, freeze frame and recording
 link attach to it. A report from a new source joins the record, and a restart changes nothing.
+Every record names its owner: '*' for the shared ones, the source for a per_source code.
 Needs a server: ROS2_MEDKIT_TEST_PG_CONN, as for the storage tests.
 """
 
@@ -177,6 +178,9 @@ class TestPostgresMigration(unittest.TestCase):
 
     def _start(self):
         self._wait_until_service_is_gone()
+        thresholds = os.path.join(self.tmp.name, 'thresholds.yaml')
+        with open(thresholds, 'w') as f:
+            f.write('PG.PER:\n  per_source: true\n')
         params = os.path.join(self.tmp.name, 'params.yaml')
         with open(params, 'w') as f:
             f.write('fault_manager:\n  ros__parameters:\n'
@@ -184,7 +188,8 @@ class TestPostgresMigration(unittest.TestCase):
                     f'    database_url: "{self.conn}"\n'
                     '    confirmation_threshold: -1\n'
                     '    snapshots.enabled: false\n'
-                    '    snapshots.rosbag.enabled: false\n')
+                    '    snapshots.rosbag.enabled: false\n'
+                    f'    fault_thresholds.config_file: {thresholds}\n')
         process = FaultManagerProcess(self.exe, params)
         self.addCleanup(process.kill)
         self.clients = {
@@ -228,6 +233,7 @@ class TestPostgresMigration(unittest.TestCase):
     def _check_migrated(self, sources):
         records = self._records('MIG.CODE')
         self.assertEqual([list(r.reporting_sources) for r in records], [sources])
+        self.assertEqual([r.owner for r in records], ['*'])
         for source in ('', '*', '/s1'):
             request = GetFault.Request()
             request.fault_code = 'MIG.CODE'
@@ -236,6 +242,7 @@ class TestPostgresMigration(unittest.TestCase):
             self.assertTrue(record.success, f'source {source!r}: {record.error_message}')
             self.assertEqual(record.fault.status, Fault.STATUS_CONFIRMED)
             self.assertEqual(list(record.fault.reporting_sources), sources)
+            self.assertEqual(record.fault.owner, '*')
         self.assertEqual([list(r.reporting_sources) for r in self._records('MIG.OLD')], [['/s3']])
 
         snapshots = GetSnapshots.Request()
@@ -252,6 +259,17 @@ class TestPostgresMigration(unittest.TestCase):
         self.assertTrue(bag.success, bag.error_message)
         self.assertEqual(list(bag.fault_codes), ['MIG.CODE'])
         self.assertEqual(list(bag.owners), ['*'])
+
+    def _check_per_source_owners(self, sources):
+        listed = sorted((r.owner, list(r.reporting_sources)) for r in self._records('PG.PER'))
+        self.assertEqual(listed, [(s, [s]) for s in sources])
+        for source in sources:
+            request = GetFault.Request()
+            request.fault_code = 'PG.PER'
+            request.source_id = source
+            record = self._call('get', request)
+            self.assertTrue(record.success, f'source {source!r}: {record.error_message}')
+            self.assertEqual(record.fault.owner, source)
 
     def test_a_database_written_with_one_record_per_code_is_migrated_by_the_node(self):
         bag_path = os.path.join(self.tmp.name, 'fault_MIG.CODE_1')
@@ -275,11 +293,16 @@ INSERT INTO rosbag_files (fault_code, recording_id, file_path, format, duration_
             # A new source joins the shared record.
             self._report('MIG.CODE', '/s4')
             self._check_migrated(['/s1', '/s2', '/s4'])
+            # A per_source code gets one record per source, each owned by its source.
+            for source in ('/p1', '/p2'):
+                self._report('PG.PER', source)
+            self._check_per_source_owners(['/p1', '/p2'])
         finally:
             self._stop(process)
 
         process = self._start()
         try:
             self._check_migrated(['/s1', '/s2', '/s4'])
+            self._check_per_source_owners(['/p1', '/p2'])
         finally:
             self._stop(process)

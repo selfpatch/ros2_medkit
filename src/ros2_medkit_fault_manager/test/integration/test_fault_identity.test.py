@@ -64,6 +64,9 @@ ID.CRIT_SHARED:
 ID.CRIT_PER:
   per_source: true
   confirmation_threshold: -3
+ID.PER_OWNER:
+  per_source: true
+  confirmation_threshold: -1
 """
 
 THRESHOLDS_FILE = tempfile.NamedTemporaryFile(
@@ -284,6 +287,44 @@ class TestFaultIdentity(unittest.TestCase):
         self.assertEqual(record.severity, Fault.SEVERITY_CRITICAL)
         self.assertEqual(record.occurrence_count, 2)
         self.assertEqual(len(self._confirmed_events(code)), 2)
+
+    def _wait_for_confirmed_events(self, code, count):
+        deadline = time.monotonic() + TIMEOUT_SEC
+        while time.monotonic() < deadline and len(self._confirmed_events(code)) < count:
+            rclpy.spin_once(self.node, timeout_sec=0.1)
+        self.assertEqual(
+            len(self._confirmed_events(code)), count, f'fault_confirmed events of {code}')
+
+    def test_every_fault_names_the_record_it_describes(self):
+        """ListFaults, GetFault and the confirmation event carry the owner of the record."""
+        sources = ['/owner/a', '/owner/b']
+        for source in sources:
+            self.assertTrue(self._report('ID.PER_OWNER', source))
+            self.assertTrue(self._report('ID.SHARED_OWNER', source))
+
+        # A per_source code: one record per source, each owned by its source.
+        listed = sorted(
+            (r.owner, list(r.reporting_sources)) for r in self._records('ID.PER_OWNER'))
+        self.assertEqual(listed, [(s, [s]) for s in sources])
+        for source in sources:
+            with self.subTest(per_source_get=source):
+                response = self._get('ID.PER_OWNER', source)
+                self.assertTrue(response.success, response.error_message)
+                self.assertEqual(response.fault.owner, source)
+        self._wait_for_confirmed_events('ID.PER_OWNER', 2)
+        self.assertEqual(
+            sorted(e.fault.owner for e in self._confirmed_events('ID.PER_OWNER')), sources)
+
+        # A shared code: one record owned by '*', whichever source addresses it.
+        listed = [(r.owner, list(r.reporting_sources)) for r in self._records('ID.SHARED_OWNER')]
+        self.assertEqual(listed, [('*', sources)])
+        for source in ['', '*'] + sources:
+            with self.subTest(shared_get=source):
+                response = self._get('ID.SHARED_OWNER', source)
+                self.assertTrue(response.success, response.error_message)
+                self.assertEqual(response.fault.owner, '*')
+        self._wait_for_confirmed_events('ID.SHARED_OWNER', 1)
+        self.assertEqual(self._confirmed_events('ID.SHARED_OWNER')[0].fault.owner, '*')
 
     def test_the_shared_owner_is_not_a_source_id(self):
         """A report claiming the reserved owner is refused and creates nothing."""

@@ -61,6 +61,10 @@ string status
 # the owner, or any source listed here.
 string[] reporting_sources
 
+# Owner of the record this Fault describes: the reporting source of a per-source record,
+# "*" for a shared record. The source_id that addresses exactly this record.
+string owner
+
 # Severity level constants
 # Informational message: No action required, used for logging or tracking.
 uint8 SEVERITY_INFO = 0

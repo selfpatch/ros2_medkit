@@ -645,6 +645,7 @@ fd::FaultRecord PgFaultStorage::read_fault_row(const pqxx::row & r) const {
   fault.status = r["status"].as<std::string>();
   fault.reporting_sources = parse_json_array(r["reporting_sources"].as<std::string>());
   fault.last_passed_ns = r["last_passed_ns"].as<int64_t>();
+  fault.owner = r["owner"].as<std::string>();
   return fault;
 }
 
