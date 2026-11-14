@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -2833,15 +2834,14 @@ nodes:
   EXPECT_NE(warning.find("source 'tank'"), std::string::npos) << "the warning must name the owner: " << warning;
 }
 
-// The ClearFault reply is handled on an executor thread whenever it arrives,
-// which can be while the plugin is being destroyed, so the reply callback must
-// hold nothing of the plugin. The observable half of that: the callback logs
-// through the sink the plugin had when the clear was sent, and never reads the
-// plugin again when the reply comes back. The stub answers only when told, the
-// plugin's sink is swapped in between, and the first refusal still lands on the
-// first sink. A second clear sent after the swap is the positive control: the
-// second sink does receive a refusal it was wired for, so its silence about the
-// first one is not a sink that hears nothing.
+// A ClearFault reply that comes back after the plugin is gone must not reach
+// the plugin. shutdown() joins the plugin's fault-client executor and drops the
+// clients with their pending requests, so a reply in flight at shutdown is
+// dropped. The test holds one clear in flight, shuts the plugin down, destroys
+// it, then has the stub answer: the sink the plugin had receives nothing. Two
+// controls: a refusal answered while the plugin lives reaches that sink, and a
+// test-owned request answered after the dropped one gets its reply, so the stub
+// did send it.
 TEST(OpcuaPluginFaultIdentity, AClearReplyNeverReadsThePluginAgain) {
   ScopedRclcpp rclcpp_scope;
   auto node = std::make_shared<rclcpp::Node>("opcua_reply_lifetime_plugin");
@@ -2860,8 +2860,7 @@ TEST(OpcuaPluginFaultIdentity, AClearReplyNeverReadsThePluginAgain) {
                                         const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & res) {
         res->accepted = true;
       });
-  // Deferred: the request is held and answered by the test, so the reply
-  // arrives only after the test has changed the plugin's sink.
+  // Deferred: the request is held and answered by the test.
   auto clear_srv = fault_manager->create_service<ClearFault>(
       "/fault_manager/clear_fault",
       [&pending, &pending_mutex](const std::shared_ptr<rclcpp::Service<ClearFault>> & /*service*/,
@@ -2870,6 +2869,8 @@ TEST(OpcuaPluginFaultIdentity, AClearReplyNeverReadsThePluginAgain) {
         std::lock_guard<std::mutex> lock(pending_mutex);
         pending.push_back(Pending{header, req->fault_code});
       });
+  // A refusal for the held request of `fault_code`. The requester may be gone:
+  // the response is sent all the same.
   auto answer = [&](const std::string & fault_code) {
     std::lock_guard<std::mutex> lock(pending_mutex);
     for (auto it = pending.begin(); it != pending.end(); ++it) {
@@ -2877,7 +2878,11 @@ TEST(OpcuaPluginFaultIdentity, AClearReplyNeverReadsThePluginAgain) {
         ClearFault::Response response;
         response.success = false;
         response.message = "Fault not found: " + fault_code;
-        clear_srv->send_response(*it->header, response);
+        try {
+          clear_srv->send_response(*it->header, response);
+        } catch (const std::exception &) {
+          // A requester that is gone can make the send fail. That is a dropped reply too.
+        }
         pending.erase(it);
         return true;
       }
@@ -2899,6 +2904,8 @@ TEST(OpcuaPluginFaultIdentity, AClearReplyNeverReadsThePluginAgain) {
     }
     return false;
   };
+  // The control requester, on the test's executor. Created before it spins.
+  auto control = node->create_client<ClearFault>("/fault_manager/clear_fault");
 
   const std::string yaml_path = "/tmp/test_opcua_reply_lifetime_nodemap.yaml";
   {
@@ -2914,19 +2921,18 @@ nodes:
 )";
   }
 
-  WarningLog at_dispatch;
-  WarningLog after_swap;
-  SinkedOpcuaPlugin plugin;
-  plugin.set_logger(at_dispatch.sink());  // before any plugin thread starts
+  WarningLog log;
+  auto plugin = std::make_unique<SinkedOpcuaPlugin>();
+  plugin->set_logger(log.sink());  // before any plugin thread starts
   nlohmann::json config;
   config["node_map_path"] = yaml_path;
   config["endpoint_url"] = "opc.tcp://127.0.0.1:1";
   config["poll_interval_ms"] = 100;
-  plugin.configure(config);
+  plugin->configure(config);
 
   RealNodePluginContext ctx(node.get());
   ctx.entities["tank"] = {SovdEntityType::APP, "tank", "/lifetime_plc", "/lifetime_plc/lifetime_runtime/tank"};
-  plugin.set_context(ctx);
+  plugin->set_context(ctx);
 
   ScopedExecutorSpin spinner({node, fault_manager});
 
@@ -2937,30 +2943,36 @@ nodes:
   }
   ASSERT_TRUE(probe->service_is_ready()) << "stub ReportFault server never became discoverable";
 
-  static_cast<void>(plugin.clear_fault_record("tank", "FIRST_CODE", "tank"));
-  ASSERT_TRUE(wait_received("FIRST_CODE")) << "the first clear never reached the stub";
+  // Control: while the plugin lives, a refusal reaches its sink.
+  static_cast<void>(plugin->clear_fault_record("tank", "LIVE_CODE", "tank"));
+  ASSERT_TRUE(wait_received("LIVE_CODE")) << "the live clear never reached the stub";
+  ASSERT_TRUE(answer("LIVE_CODE"));
+  ASSERT_FALSE(log.wait_for("'LIVE_CODE'", std::chrono::seconds(10)).empty())
+      << "positive control: a refusal answered while the plugin lives never reached its sink";
 
-  // Stop the plugin's own threads, then swap the sink while no plugin thread
-  // logs. What is in flight now is only the reply to the first clear.
-  plugin.shutdown();
-  plugin.set_logger(after_swap.sink());
+  // The clear under test is in flight when the plugin goes.
+  static_cast<void>(plugin->clear_fault_record("tank", "LATE_CODE", "tank"));
+  ASSERT_TRUE(wait_received("LATE_CODE")) << "the late clear never reached the stub";
+  plugin->shutdown();
+  plugin.reset();
 
-  static_cast<void>(plugin.clear_fault_record("tank", "SECOND_CODE", "tank"));
-  ASSERT_TRUE(wait_received("SECOND_CODE")) << "the second clear never reached the stub";
-
-  ASSERT_TRUE(answer("FIRST_CODE"));
-  ASSERT_TRUE(answer("SECOND_CODE"));
-  const std::string first = at_dispatch.wait_for("'FIRST_CODE'", std::chrono::seconds(10));
-  const std::string second = after_swap.wait_for("'SECOND_CODE'", std::chrono::seconds(10));
+  // Control: a request answered after LATE_CODE's reply gets its own, so the stub
+  // sent LATE_CODE's reply before this one.
+  auto control_request = std::make_shared<ClearFault::Request>();
+  control_request->fault_code = "CONTROL_CODE";
+  control_request->source_id = "tank";
+  auto control_reply = control->async_send_request(control_request);
+  ASSERT_TRUE(wait_received("CONTROL_CODE")) << "the control request never reached the stub";
+  ASSERT_TRUE(answer("LATE_CODE"));
+  ASSERT_TRUE(answer("CONTROL_CODE"));
+  ASSERT_EQ(control_reply.wait_for(std::chrono::seconds(10)), std::future_status::ready)
+      << "the stub's reply to the control request never arrived";
 
   spinner.stop();
   std::remove(yaml_path.c_str());
 
-  EXPECT_FALSE(first.empty()) << "the first refusal did not reach the sink the plugin had when it sent the clear";
-  EXPECT_TRUE(after_swap.find("'FIRST_CODE'").empty())
-      << "the first reply read the plugin's sink when it arrived, so the callback still holds the plugin";
-  EXPECT_FALSE(second.empty()) << "positive control: the swapped-in sink never received its own refusal";
-  EXPECT_TRUE(at_dispatch.find("'SECOND_CODE'").empty());
+  EXPECT_TRUE(log.find("'LATE_CODE'").empty())
+      << "a reply that arrived after the plugin was destroyed reached the plugin's sink";
 }
 
 // The SOVD DELETE /faults/{code} route lands on FaultProvider::clear_fault_record(),
