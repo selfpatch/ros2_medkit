@@ -231,9 +231,9 @@ it. There is no server-level `/faults/{code}` route either, so the flat `/faults
 was the only place these faults existed.
 
 Hanging each fault on the FQN of the node it is ABOUT is a different design, not an
-impossible one: a record is (`fault_code`, reporting source), so raising
-`GRAPH_NODE_DISAPPEARED` under each dead node's FQN would give each of them its own
-record on its own `/apps/<fqn>/faults` page. This detector aggregates by choice. A
+impossible one: with the code configured `per_source`, a record is (`fault_code`,
+reporting source), so raising `GRAPH_NODE_DISAPPEARED` under each dead node's FQN would
+give each of them its own record on its own `/apps/<fqn>/faults` page. This detector aggregates by choice. A
 graph-level condition is one condition however many nodes it names, the affected set
 changes every tick, and per-node records would make the operator reconstruct the graph
 view from a list raising and clearing under them. One owned entity per code keeps the
@@ -1546,7 +1546,7 @@ rosbag store is unique on `(fault_code, owner, file_path)`, so one record keeps 
 recordings and the cap governs how many. The freeze frame is one row per record
 (`(fault_code, owner)`), overwritten on every capture, so a fifth occurrence's captured
 values overwrite the first's. Both are per record, so another source reporting the same
-code keeps its own.
+`per_source` code keeps its own.
 What survives every occurrence by default is the count itself; a hash-chained record of
 every raise/clear/heal transition also exists, but only once the fault manager's own
 `audit_log.enabled` is turned on, which it is not by default. Recordings and the freeze
