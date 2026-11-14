@@ -18,7 +18,7 @@
 #include <pqxx/pqxx>
 
 #include <iostream>
-#include <iterator>
+#include <sstream>
 #include <string>
 
 int main(int argc, char ** argv) {
@@ -27,10 +27,11 @@ int main(int argc, char ** argv) {
     return 2;
   }
   try {
-    const std::string sql((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>());
+    std::ostringstream sql;
+    sql << std::cin.rdbuf();
     pqxx::connection connection(argv[1]);
     pqxx::nontransaction tx(connection);
-    tx.exec(sql);
+    tx.exec(sql.str());
   } catch (const std::exception & e) {
     std::cerr << "pg_exec failed: " << e.what() << "\n";
     return 1;

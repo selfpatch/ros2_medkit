@@ -127,10 +127,16 @@ TEST(StatusWordRule, NamedBitDecode) {
   // 0b1001 -> bit 0 and bit 3 set, bit 7 clear.
   auto out = fd::evaluate(fd::Value{static_cast<std::int64_t>(0b1001)}, r);
   ASSERT_EQ(out.size(), 3u);
-  EXPECT_TRUE(find(out, "E_STOP")->active);
-  EXPECT_TRUE(find(out, "PUMP_OVERLOAD")->active);
-  EXPECT_FALSE(find(out, "FILTER_DIRTY")->active);
-  EXPECT_EQ(find(out, "PUMP_OVERLOAD")->message, "Pump overload");
+  const auto * e_stop = find(out, "E_STOP");
+  const auto * pump = find(out, "PUMP_OVERLOAD");
+  const auto * filter = find(out, "FILTER_DIRTY");
+  ASSERT_NE(e_stop, nullptr);
+  ASSERT_NE(pump, nullptr);
+  ASSERT_NE(filter, nullptr);
+  EXPECT_TRUE(e_stop->active);
+  EXPECT_TRUE(pump->active);
+  EXPECT_FALSE(filter->active);
+  EXPECT_EQ(pump->message, "Pump overload");
 }
 
 TEST(StatusWordRule, AllClearWhenZero) {
@@ -174,13 +180,20 @@ TEST(StatusWordRule, WidthMasksSignExtendedHighBits) {
 
   const auto sign_extended = static_cast<std::int64_t>(0xFFFFFFFFFFFF8000ULL);
   auto out = fd::evaluate(fd::Value{sign_extended}, r);
-  EXPECT_TRUE(find(out, "REAL_FAULT")->active);
-  EXPECT_FALSE(find(out, "SPURIOUS")->active);
+  const auto * real = find(out, "REAL_FAULT");
+  const auto * spurious = find(out, "SPURIOUS");
+  ASSERT_NE(real, nullptr);
+  ASSERT_NE(spurious, nullptr);
+  EXPECT_TRUE(real->active);
+  EXPECT_FALSE(spurious->active);
 
   // Without a width the same value would spuriously fire bit 20.
   fd::StatusWordRule wide;
   wide.bits = {{20u, {"SPURIOUS", "ERROR", "spurious"}}};
-  EXPECT_TRUE(find(fd::evaluate(fd::Value{sign_extended}, wide), "SPURIOUS")->active);
+  const auto wide_out = fd::evaluate(fd::Value{sign_extended}, wide);
+  const auto * wide_spurious = find(wide_out, "SPURIOUS");
+  ASSERT_NE(wide_spurious, nullptr);
+  EXPECT_TRUE(wide_spurious->active);
 }
 
 // -- Fault-code enum ---------------------------------------------------------
@@ -196,10 +209,16 @@ TEST(EnumMapRule, CodeMapsToFaultAndText) {
 
   auto out = fd::evaluate(fd::Value{static_cast<std::int64_t>(11)}, r);
   ASSERT_EQ(out.size(), 3u);
-  EXPECT_FALSE(find(out, "VFD_OVERVOLTAGE")->active);
-  EXPECT_TRUE(find(out, "VFD_OVERCURRENT")->active);
-  EXPECT_EQ(find(out, "VFD_OVERCURRENT")->message, "Output overcurrent");
-  EXPECT_FALSE(find(out, "VFD_OVERTEMP")->active);
+  const auto * overvoltage = find(out, "VFD_OVERVOLTAGE");
+  const auto * overcurrent = find(out, "VFD_OVERCURRENT");
+  const auto * overtemp = find(out, "VFD_OVERTEMP");
+  ASSERT_NE(overvoltage, nullptr);
+  ASSERT_NE(overcurrent, nullptr);
+  ASSERT_NE(overtemp, nullptr);
+  EXPECT_FALSE(overvoltage->active);
+  EXPECT_TRUE(overcurrent->active);
+  EXPECT_EQ(overcurrent->message, "Output overcurrent");
+  EXPECT_FALSE(overtemp->active);
 }
 
 TEST(EnumMapRule, OkValueRaisesNothing) {
@@ -221,18 +240,29 @@ TEST(EnumMapRule, UnmappedNonOkRaisesCatchAll) {
 
   auto out = fd::evaluate(fd::Value{static_cast<std::int64_t>(99)}, r);
   ASSERT_EQ(out.size(), 3u);
-  EXPECT_FALSE(find(out, "OVERVOLT")->active);
-  EXPECT_FALSE(find(out, "OVERCURR")->active);
+  const auto * overvolt = find(out, "OVERVOLT");
+  const auto * overcurr = find(out, "OVERCURR");
   const auto * unk = find(out, "VFD_UNMAPPED");
+  ASSERT_NE(overvolt, nullptr);
+  ASSERT_NE(overcurr, nullptr);
   ASSERT_NE(unk, nullptr);
+  EXPECT_FALSE(overvolt->active);
+  EXPECT_FALSE(overcurr->active);
   EXPECT_TRUE(unk->active);
   EXPECT_EQ(unk->message, "unmapped fault code 99");
 
   // ok and mapped values keep the catch-all inactive so the tracker clears it.
-  EXPECT_FALSE(find(fd::evaluate(fd::Value{static_cast<std::int64_t>(0)}, r), "VFD_UNMAPPED")->active);
+  const auto ok = fd::evaluate(fd::Value{static_cast<std::int64_t>(0)}, r);
+  const auto * ok_unk = find(ok, "VFD_UNMAPPED");
+  ASSERT_NE(ok_unk, nullptr);
+  EXPECT_FALSE(ok_unk->active);
   auto mapped = fd::evaluate(fd::Value{static_cast<std::int64_t>(10)}, r);
-  EXPECT_TRUE(find(mapped, "OVERVOLT")->active);
-  EXPECT_FALSE(find(mapped, "VFD_UNMAPPED")->active);
+  const auto * mapped_overvolt = find(mapped, "OVERVOLT");
+  const auto * mapped_unk = find(mapped, "VFD_UNMAPPED");
+  ASSERT_NE(mapped_overvolt, nullptr);
+  ASSERT_NE(mapped_unk, nullptr);
+  EXPECT_TRUE(mapped_overvolt->active);
+  EXPECT_FALSE(mapped_unk->active);
 }
 
 TEST(EnumMapRule, NonFiniteValueHoldsState) {
@@ -314,8 +344,12 @@ TEST(TransitionTracker, EnumCodeChangeClearsOldRaisesNew) {
   // Code switches 10 -> 11: clear OVERVOLT, raise OVERCURR in one step.
   auto changes = tracker.apply(fd::evaluate(fd::Value{static_cast<std::int64_t>(11)}, r));
   ASSERT_EQ(changes.size(), 2u);
-  EXPECT_FALSE(find(changes, "OVERVOLT")->active);
-  EXPECT_TRUE(find(changes, "OVERCURR")->active);
+  const auto * overvolt = find(changes, "OVERVOLT");
+  const auto * overcurr = find(changes, "OVERCURR");
+  ASSERT_NE(overvolt, nullptr);
+  ASSERT_NE(overcurr, nullptr);
+  EXPECT_FALSE(overvolt->active);
+  EXPECT_TRUE(overcurr->active);
 }
 
 // -- Raise qualifier ---------------------------------------------------------
