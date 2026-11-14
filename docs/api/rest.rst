@@ -1871,8 +1871,9 @@ in the entity's fault scope (see Faults Endpoints), whatever the record's status
 and including a muted record. An entity whose scope resolves no reporting
 source at all, for example a manifest component that hosts no app, matches
 owners against its own node FQN, or its namespace when it has no FQN, instead.
-A function that hosts nothing lists no recording. When the fault manager does
-not answer, the listing answers ``503`` rather than an empty or partial list.
+A function that hosts nothing lists no recording. The listing reads the fault
+list first, then the recordings of each owner in scope. When either read fails,
+it answers ``503`` rather than an empty or partial list.
 
 ``x-medkit.storage_files`` is how many storage files the recording is held in,
 read from the recording's own metadata. A ``1`` is the normal case and says the
