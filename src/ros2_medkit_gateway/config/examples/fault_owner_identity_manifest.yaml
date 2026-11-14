@@ -1,20 +1,19 @@
-# SOVD System Manifest: two owners of one fault code
-# ==================================================
-# Hybrid-mode manifest with TWO external apps hosted by one component. Both
-# report the same fault_code to the fault_manager under their own entity ids.
-# With that code configured per_source, that makes two records of it inside one
-# component's fault scope.
+# SOVD System Manifest: several reporters of one fault code
+# =========================================================
+# Hybrid-mode manifest with three external apps hosted by one component in one
+# area. They report the same fault_code to the fault_manager under their own
+# entity ids. With that code configured per_source, each is a record of its own
+# inside the component's and the area's fault scope.
 #
-# That shape is what the per-record identity has to answer for: each app's own
-# route addresses its own record, the component's list shows both, and the
-# component's per-code detail route has no single record to name and says so
-# rather than picking one.
+# owner-a2 extends owner-a's id, so a prefix match would hand it owner-a's
+# sub-sources (owner-a/x). It owns none of them.
 #
-# Both apps are external: they report under their bare entity ids rather than a
+# The apps are external: they report under their bare entity ids rather than a
 # ROS FQN, which is also how a non-ROS asset bridged in by a protocol plugin
 # reports.
 #
-# Used by: test/features/test_faults_owner_identity.test.py
+# Used by: test/features/test_faults_owner_identity.test.py,
+# test_faults_entity_clear_failure.test.py, test_rosbag_owner_download.test.py
 
 manifest_version: "1.0"
 
@@ -38,7 +37,7 @@ components:
     name: "Shared Code Hub"
     type: "controller"
     area: shared-code-cell
-    description: "Hosts both reporting assets, so both records land in one scope"
+    description: "Hosts every reporting asset, so every record lands in one scope"
 
 apps:
   - id: owner-a
@@ -52,3 +51,9 @@ apps:
     external: true
     is_located_on: shared-code-hub
     description: "Reports the same SHARED_CODE under its own entity id"
+
+  - id: owner-a2
+    name: "Owner A2"
+    external: true
+    is_located_on: shared-code-hub
+    description: "Its id extends owner-a's; it owns none of owner-a's sources"

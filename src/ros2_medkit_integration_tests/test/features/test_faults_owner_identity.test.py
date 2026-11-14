@@ -13,33 +13,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Two owners of one fault code, over the whole HTTP stack.
+"""Fault records of one code under SOVD entities, over the whole HTTP stack.
 
-A fault record is the pair (``fault_code``, reporting source). The source is the
-``source_id`` the reporter used and it owns the record, so two apps reporting one
-code are two records with their own status, timestamps and clear.
+A fault record is the pair (``fault_code``, owner). A per_source code has one
+record per reporting source; any other code has one shared record that every
+source reports into. An entity shows each code once:
 
-The unit layers cover the pieces separately: the record selection and its 404 /
-409 mapping (``SelectScopedFaultTest``), the scope resolution
-(``ResolveEntitySourceFqnsTest``), the wire fields (``FaultListItemSchema``) and
-the owner reaching the service request (``FaultManagerTest.*SendsTheOwningSource*``).
-None of them runs a real fault manager behind a real gateway, which is where the
-model either holds or collapses back to one record per code.
+* An App shows the records of its own source and of its sub-sources
+  (``<app>/<suffix>``) as one entry. A Component or an Area shows every record
+  of the code under it as one entry.
+* An entry of several records is their merge, and ``x-medkit.records`` names
+  each record: its App, its source and its status. A shared record is named by
+  its ``reporting_sources``, never by an owner.
+* An entry of one record is that record, as the global list shows it. A shared
+  record looks as it always has: no owner field anywhere.
+* DELETE of a code clears every record of it under the entity.
+* The global list ``GET /faults`` is not an entity: one item per record.
 
-The topology is two external apps under one component, so both records land in
-one component's fault scope. What this pins:
-
-* ``GET /faults`` lists two items with the same code and distinct ``source_id``.
-* Each app's own detail route serves its own record and nothing else.
-* ``DELETE`` on one app's record leaves the other app's record CONFIRMED. Under
-  a code-keyed store one clear took both.
-* The component owns both, so its per-code detail route names neither: ``409``
-  ``x-medkit-ambiguous-fault`` listing both owners, instead of serving whichever
-  record the store happened to list first.
-* ``DELETE /components/<host>/faults`` clears both, one record at a time.
-* Every stream frame carries the entity hint for the record it describes, and
-  the two records resolve to their own owners.
-* The served OpenAPI declares what the routes now do.
+Every scenario runs for a per_source code and for a shared one.
 
 @verifies REQ_INTEROP_012
 @verifies REQ_INTEROP_013
@@ -71,15 +62,37 @@ from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
 OWNER_A = 'owner-a'
 OWNER_B = 'owner-b'
+# Its id extends OWNER_A's, so a prefix match would give it OWNER_A's sub-sources.
+NEAR_A = 'owner-a2'
+SUB_X = f'{OWNER_A}/x'
+SUB_Y = f'{OWNER_A}/y'
 HOST_COMPONENT = 'shared-code-hub'
+CELL_AREA = 'shared-code-cell'
+# per_source codes. SHARED_CODE keeps its name for the recording and stream cases.
 SHARED_CODE = 'SHARED_OVERFLOW'
+PER_SOURCE = {
+    'app': 'APP_PER_SOURCE',
+    'sub': 'SUB_PER_SOURCE',
+    'merge': 'MERGE_PER_SOURCE',
+    'bulk': 'BULK_PER_SOURCE',
+    'global': 'GLOBAL_PER_SOURCE',
+}
+# Default codes: one shared record whatever the number of sources.
+SHARED = {
+    'pair': 'PAIR_SHARED',
+    'solo': 'SOLO_SHARED',
+    'sub': 'SUB_SHARED',
+    'merge': 'MERGE_SHARED',
+    'bulk': 'BULK_SHARED',
+}
 PRIME_CODE = 'OWNER_IDENTITY_PRIME'
 FAULT_TIMEOUT = 30.0
-# SHARED_CODE is per_source: without it the fault manager keeps one record that
-# both owners share.
+REPORT_TIMEOUT = 2.0
 CONFIG_DIR = tempfile.mkdtemp(prefix='medkit_owner_identity_')
 atexit.register(shutil.rmtree, CONFIG_DIR, True)
 THRESHOLDS_PATH = os.path.join(CONFIG_DIR, 'fault_thresholds.yaml')
+# Keys a shared record never carries.
+OWNER_KEYS = ('source_id', 'owner', 'x-medkit')
 
 
 def generate_test_description():
@@ -88,12 +101,13 @@ def generate_test_description():
         'config', 'examples', 'fault_owner_identity_manifest.yaml',
     )
     with open(THRESHOLDS_PATH, 'w') as f:
-        f.write(f'{SHARED_CODE}:\n  per_source: true\n')
+        for code in (SHARED_CODE, *PER_SOURCE.values()):
+            f.write(f'{code}:\n  per_source: true\n')
     return create_test_launch(
         demo_nodes=[],
         fault_manager=True,
-        # Negative threshold: a record confirms after a couple of FAILED events,
-        # and each owner debounces on its own reports.
+        # Negative threshold: a record confirms on its second FAILED event, and
+        # each owner debounces on its own reports.
         fault_manager_params={
             'confirmation_threshold': -2,
             'fault_thresholds.config_file': THRESHOLDS_PATH,
@@ -103,20 +117,17 @@ def generate_test_description():
             'discovery.manifest_path': manifest_path,
             'discovery.manifest_strict_validation': False,
             # Locking off, so the per-code DELETE publishes no lock contract and
-            # the only 409 its document can carry is the ambiguous-fault one the
-            # route declares itself. With locking on, the lock marker adds a 409
-            # of its own and the DELETE check in test_07 could never fail.
-            # Nothing else here takes a lock.
+            # test_07 reads a 409 on it only if the route declares one itself.
             'locking.enabled': False,
         },
     )
 
 
 class TestFaultsOwnerIdentity(GatewayTestCase):
-    """Two sources reporting one code are two independently addressable records."""
+    """Each entity shows a code once; the global list shows each record."""
 
-    MIN_EXPECTED_APPS = 2
-    REQUIRED_APPS = {OWNER_A, OWNER_B}
+    MIN_EXPECTED_APPS = 3
+    REQUIRED_APPS = {OWNER_A, OWNER_B, NEAR_A}
 
     @classmethod
     def setUpClass(cls):
@@ -136,12 +147,14 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
 
     def _report(self, source_id, *, fault_code=SHARED_CODE,
                 event_type=ReportFault.Request.EVENT_FAILED, times=4):
-        """Report under one owner, fire and forget.
+        """Report under one source, one request at a time.
 
-        Same shape as the production fault_reporter client: the reply path is
-        not discovery-matched by wait_for_service, so an early round trip can
-        lose its response even though the record was written. The behavioural
-        assertion is the HTTP poll, which retries.
+        Each report waits for its answer, so a burst cannot overrun the
+        service's request queue, which drops the oldest requests. The reply
+        path is not discovery-matched by wait_for_service, so an early answer
+        can be lost even though the record was written: a report that gets no
+        answer in time is not an error. The behavioural assertion is the HTTP
+        poll, which retries.
         """
         for _ in range(times):
             req = ReportFault.Request()
@@ -150,8 +163,59 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
             req.severity = Fault.SEVERITY_ERROR
             req.description = f'reported by {source_id}'
             req.source_id = source_id
-            self._report_client.call_async(req)
-            rclpy.spin_once(self._reporter, timeout_sec=0.1)
+            future = self._report_client.call_async(req)
+            rclpy.spin_until_future_complete(self._reporter, future, timeout_sec=REPORT_TIMEOUT)
+
+    def _records(self, code, *, status='all'):
+        """Items of the global list for `code`."""
+        body = self.get_json(f'/faults?status={status}')
+        return [item for item in body.get('items', []) if item.get('fault_code') == code]
+
+    def _wait_records(self, code, statuses):
+        """Wait until the global list holds one record of `code` per expected status.
+
+        `statuses` maps a record's first reporting source to the status it must
+        reach. Returns those records keyed the same way.
+        """
+        deadline = time.monotonic() + FAULT_TIMEOUT
+        found = {}
+        while time.monotonic() < deadline:
+            found = {item['reporting_sources'][0]: item for item in self._records(code)}
+            if all(found.get(src, {}).get('status') == want for src, want in statuses.items()):
+                return found
+            time.sleep(0.2)
+        self.fail(f'{code}: records {statuses} not reached; global list has {found}')
+
+    def _raise(self, code, sources, *, confirmed=True):
+        times = 4 if confirmed else 1
+        for source in sources:
+            self._report(source, fault_code=code, times=times)
+
+    def _entries(self, entity, code, *, status=None):
+        query = f'?status={status}' if status else ''
+        body = self.get_json(f'/{entity}/faults{query}')
+        return [item for item in body.get('items', []) if item.get('fault_code') == code]
+
+    def _assert_record_view_of_shared(self, item, sources):
+        for key in OWNER_KEYS:
+            self.assertNotIn(key, item, f'a shared record carries no {key}: {item}')
+        self.assertEqual(sorted(item['reporting_sources']), sorted(sources), item)
+
+    def _assert_detail_of_shared(self, detail, sources):
+        self.assertNotIn('owner', detail['x-medkit'], detail)
+        self.assertNotIn('records', detail['x-medkit'], detail)
+        self.assertEqual(sorted(detail['x-medkit']['reporting_sources']), sorted(sources))
+
+    def _wait_status(self, code, source, want):
+        deadline = time.monotonic() + FAULT_TIMEOUT
+        status = None
+        while time.monotonic() < deadline:
+            status = next((item['status'] for item in self._records(code)
+                           if source in item['reporting_sources']), None)
+            if status == want:
+                return
+            time.sleep(0.2)
+        self.fail(f'{code} of {source}: status {status}, expected {want}')
 
     def _raise_both(self):
         self._report(OWNER_A)
@@ -159,137 +223,203 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
         self.wait_for_fault(f'/apps/{OWNER_A}', SHARED_CODE, max_wait=FAULT_TIMEOUT)
         self.wait_for_fault(f'/apps/{OWNER_B}', SHARED_CODE, max_wait=FAULT_TIMEOUT)
 
-    def _records_of_shared_code(self):
-        body = self.get_json('/faults')
-        items = body.get('items', body.get('faults', []))
-        return [item for item in items if item.get('fault_code') == SHARED_CODE]
+    # Method order is alphabetical. Each case raises codes of its own.
 
-    def _status_on(self, app_id):
-        """Status of that app's own record, or None when it holds none."""
-        body = self.get_json(f'/apps/{app_id}/faults?status=all')
-        for item in body.get('items', []):
-            if item.get('fault_code') == SHARED_CODE:
-                return item.get('status')
-        return None
-
-    # Method order is alphabetical, and the clearing cases consume the records
-    # the reading cases assert on, so the names carry the order.
-
-    def test_01_the_global_list_shows_one_item_per_owner(self):
-        """One code, two sources, two items - each naming its own owner.
+    def test_01_a_shared_code_shows_no_owner(self):
+        """A shared record looks the same on an App, a Component and the global list.
 
         @verifies REQ_INTEROP_012
-        """
-        self._raise_both()
-
-        records = self._records_of_shared_code()
-
-        self.assertEqual(
-            len(records), 2,
-            f'two sources reporting {SHARED_CODE} must be two records, got: {records}',
-        )
-        owners = sorted(r.get('source_id') for r in records)
-        self.assertEqual(owners, [OWNER_A, OWNER_B])
-        for record in records:
-            self.assertEqual(
-                record.get('reporting_sources'), [record.get('source_id')],
-                'a record names exactly its own owner',
-            )
-
-    def test_02_each_app_detail_serves_its_own_record(self):
-        """The app route addresses the record that app owns.
-
         @verifies REQ_INTEROP_013
         """
-        self._raise_both()
+        pair, solo = SHARED['pair'], SHARED['solo']
+        self._raise(pair, [OWNER_A, OWNER_B])
+        self._raise(solo, [OWNER_A])
+        self.poll_endpoint_until(
+            '/faults', lambda d: d if sum(
+                1 for i in d.get('items', [])
+                if i.get('fault_code') == pair and sorted(i.get('reporting_sources', []))
+                == [OWNER_A, OWNER_B]) == 1 else None, timeout=FAULT_TIMEOUT)
+        self.wait_for_fault(f'/apps/{OWNER_A}', solo, max_wait=FAULT_TIMEOUT)
 
-        for owner in (OWNER_A, OWNER_B):
-            detail = self.get_json(f'/apps/{owner}/faults/{SHARED_CODE}')
-            self.assertEqual(detail['item']['code'], SHARED_CODE)
-            self.assertEqual(
-                detail['x-medkit']['owner'], owner,
-                f"/apps/{owner} served another owner's record",
-            )
-            self.assertNotIn(
-                'source_id', detail['x-medkit'],
-                "the detail must not reuse the list's source_id key for the owner",
-            )
-            self.assertEqual(detail['x-medkit']['reporting_sources'], [owner])
+        records = self._records(pair)
+        self.assertEqual(len(records), 1, records)
+        self._assert_record_view_of_shared(records[0], [OWNER_A, OWNER_B])
 
-    def test_03_the_component_detail_refuses_to_pick_an_owner(self):
-        """Both records are in the component's scope, so the code names neither.
+        entries = self._entries(f'components/{HOST_COMPONENT}', pair)
+        self.assertEqual(len(entries), 1, entries)
+        self._assert_record_view_of_shared(entries[0], [OWNER_A, OWNER_B])
+        self._assert_detail_of_shared(
+            self.get_json(f'/components/{HOST_COMPONENT}/faults/{pair}'), [OWNER_A, OWNER_B])
 
-        @verifies REQ_INTEROP_013
-        """
-        self._raise_both()
+        # An App holds a shared record only when every source is its own.
+        self.assertEqual(self._entries(f'apps/{OWNER_A}', pair), [])
+        self.get_json(f'/apps/{OWNER_A}/faults/{pair}', expected_status=404)
+        entries = self._entries(f'apps/{OWNER_A}', solo)
+        self.assertEqual(len(entries), 1, entries)
+        self._assert_record_view_of_shared(entries[0], [OWNER_A])
+        self._assert_detail_of_shared(self.get_json(f'/apps/{OWNER_A}/faults/{solo}'), [OWNER_A])
 
-        response = requests.get(
-            f'{self.BASE_URL}/components/{HOST_COMPONENT}/faults/{SHARED_CODE}',
-            timeout=10,
-        )
-
-        self.assertEqual(response.status_code, 409, response.text)
-        body = response.json()
-        self.assertEqual(body.get('vendor_code', body.get('error_code')),
-                         'x-medkit-ambiguous-fault', body)
-        owners = sorted(body.get('parameters', body).get('owners', []))
-        self.assertEqual(owners, [OWNER_A, OWNER_B], body)
-
-    def test_04_the_component_list_still_shows_both(self):
-        """Ambiguous to address by code is not invisible: the list has both.
+    def test_02_an_app_addresses_the_record_of_its_source(self):
+        """Two sources of a per_source code: each App sees, reads and clears its own.
 
         @verifies REQ_INTEROP_012
-        """
-        self._raise_both()
-
-        body = self.get_json(f'/components/{HOST_COMPONENT}/faults')
-        owners = sorted(
-            item.get('source_id') for item in body.get('items', [])
-            if item.get('fault_code') == SHARED_CODE
-        )
-
-        self.assertEqual(owners, [OWNER_A, OWNER_B], body)
-
-    def test_05_clearing_one_owners_record_leaves_the_other(self):
-        """The clear addresses one record. Under a code key it took both.
-
+        @verifies REQ_INTEROP_013
         @verifies REQ_INTEROP_015
         """
-        self._raise_both()
+        code = PER_SOURCE['app']
+        self._raise(code, [OWNER_A])
+        self._raise(code, [OWNER_B], confirmed=False)
+        records = self._wait_records(code, {OWNER_A: 'CONFIRMED', OWNER_B: 'PREFAILED'})
 
-        self.delete_request(f'/apps/{OWNER_A}/faults/{SHARED_CODE}')
+        entries = self._entries(f'apps/{OWNER_A}', code)
+        self.assertEqual(len(entries), 1, entries)
+        self.assertEqual(entries[0]['source_id'], OWNER_A)
+        self.assertEqual(entries[0]['reporting_sources'], [OWNER_A])
+        self.assertEqual(entries[0]['occurrence_count'], records[OWNER_A]['occurrence_count'])
+        self.assertEqual(entries[0]['x-medkit']['records'],
+                         [{'app_id': OWNER_A, 'source_id': OWNER_A, 'status': 'CONFIRMED'}])
 
-        deadline = time.monotonic() + FAULT_TIMEOUT
-        while time.monotonic() < deadline:
-            if self._status_on(OWNER_A) == 'CLEARED':
-                break
-            time.sleep(0.2)
-        self.assertEqual(self._status_on(OWNER_A), 'CLEARED')
-        self.assertEqual(
-            self._status_on(OWNER_B), 'CONFIRMED',
-            f"clearing {OWNER_A}'s record must not touch {OWNER_B}'s record of the same code",
-        )
+        detail = self.get_json(f'/apps/{OWNER_A}/faults/{code}')
+        self.assertEqual(detail['x-medkit']['owner'], OWNER_A)
+        self.assertEqual(detail['x-medkit']['reporting_sources'], [OWNER_A])
+        self.assertEqual(detail['x-medkit']['status_raw'], 'CONFIRMED')
+        self.assertEqual(detail['x-medkit']['occurrence_count'],
+                         records[OWNER_A]['occurrence_count'])
+        # B's record is PREFAILED, so a detail that merged both or served B's says so.
+        detail_b = self.get_json(f'/apps/{OWNER_B}/faults/{code}')
+        self.assertEqual(detail_b['x-medkit']['owner'], OWNER_B)
+        self.assertEqual(detail_b['x-medkit']['status_raw'], 'PREFAILED')
 
-    def test_06_the_component_bulk_clear_takes_every_record(self):
-        """Per-entity DELETE clears each in-scope record with its own owner.
+        self.delete_request(f'/apps/{OWNER_A}/faults/{code}')
+        self._wait_status(code, OWNER_A, 'CLEARED')
+        self._wait_status(code, OWNER_B, 'PREFAILED')
+
+    def test_03_sub_sources_of_one_app_are_one_entry(self):
+        """Records under <app>/<suffix> merge into the App's one entry, not a neighbour's.
+
+        @verifies REQ_INTEROP_012
+        @verifies REQ_INTEROP_013
+        @verifies REQ_INTEROP_015
+        """
+        code, shared = PER_SOURCE['sub'], SHARED['sub']
+        self._raise(code, [SUB_X])
+        self._raise(code, [SUB_Y], confirmed=False)
+        self._raise(shared, [SUB_X, SUB_Y])
+        records = self._wait_records(code, {SUB_X: 'CONFIRMED', SUB_Y: 'PREFAILED'})
+        self.wait_for_fault(f'/apps/{OWNER_A}', shared, max_wait=FAULT_TIMEOUT)
+        total = sum(r['occurrence_count'] for r in records.values())
+
+        entries = self._entries(f'apps/{OWNER_A}', code)
+        self.assertEqual(len(entries), 1, entries)
+        entry = entries[0]
+        self.assertEqual(entry['status'], 'CONFIRMED')
+        self.assertEqual(entry['occurrence_count'], total)
+        self.assertEqual(entry['reporting_sources'], [SUB_X, SUB_Y])
+        self.assertNotIn('source_id', entry)
+        self.assertEqual(entry['x-medkit']['records'], [
+            {'app_id': OWNER_A, 'source_id': SUB_X, 'status': 'CONFIRMED'},
+            {'app_id': OWNER_A, 'source_id': SUB_Y, 'status': 'PREFAILED'},
+        ])
+
+        detail = self.get_json(f'/apps/{OWNER_A}/faults/{code}')
+        self.assertEqual(detail['item']['status']['aggregatedStatus'], 'active')
+        self.assertEqual(detail['x-medkit']['occurrence_count'], total)
+        self.assertEqual(detail['x-medkit']['status_raw'], 'CONFIRMED')
+        self.assertNotIn('owner', detail['x-medkit'])
+        self.assertEqual(len(detail['x-medkit']['records']), 2, detail)
+
+        shared_entries = self._entries(f'apps/{OWNER_A}', shared)
+        self.assertEqual(len(shared_entries), 1, shared_entries)
+        self._assert_record_view_of_shared(shared_entries[0], [SUB_X, SUB_Y])
+
+        for listed in (code, shared):
+            self.assertEqual(self._entries(f'apps/{NEAR_A}', listed, status='all'), [],
+                             f'{NEAR_A} must not list a record under {OWNER_A}')
+
+        self.delete_request(f'/apps/{OWNER_A}/faults/{code}')
+        self._wait_status(code, SUB_X, 'CLEARED')
+        self._wait_status(code, SUB_Y, 'CLEARED')
+
+    def test_04_a_component_and_an_area_merge_every_app(self):
+        """Three Apps and a sub-source: one entry per code on the Component and the Area.
+
+        @verifies REQ_INTEROP_012
+        @verifies REQ_INTEROP_013
+        @verifies REQ_INTEROP_015
+        """
+        code, shared = PER_SOURCE['merge'], SHARED['merge']
+        sources = [OWNER_A, OWNER_B, NEAR_A, SUB_X]
+        self._raise(code, sources)
+        self._raise(shared, sources)
+        records = self._wait_records(code, dict.fromkeys(sources, 'CONFIRMED'))
+        self.poll_endpoint_until(
+            f'/components/{HOST_COMPONENT}/faults', lambda d: d if any(
+                i.get('fault_code') == shared and len(i.get('reporting_sources', [])) == 4
+                for i in d.get('items', [])) else None, timeout=FAULT_TIMEOUT)
+        total = sum(r['occurrence_count'] for r in records.values())
+        expected_records = sorted([
+            {'app_id': OWNER_A, 'source_id': OWNER_A, 'status': 'CONFIRMED'},
+            {'app_id': OWNER_A, 'source_id': SUB_X, 'status': 'CONFIRMED'},
+            {'app_id': OWNER_B, 'source_id': OWNER_B, 'status': 'CONFIRMED'},
+            {'app_id': NEAR_A, 'source_id': NEAR_A, 'status': 'CONFIRMED'},
+        ], key=lambda r: r['source_id'])
+
+        for entity in (f'components/{HOST_COMPONENT}', f'areas/{CELL_AREA}'):
+            entries = self._entries(entity, code)
+            self.assertEqual(len(entries), 1, f'{entity}: {entries}')
+            self.assertEqual(entries[0]['occurrence_count'], total, entity)
+            self.assertEqual(entries[0]['reporting_sources'], sorted(sources), entity)
+            self.assertEqual(sorted(entries[0]['x-medkit']['records'],
+                                    key=lambda r: r['source_id']), expected_records, entity)
+            shared_entries = self._entries(entity, shared)
+            self.assertEqual(len(shared_entries), 1, f'{entity}: {shared_entries}')
+            self._assert_record_view_of_shared(shared_entries[0], sources)
+
+        detail = self.get_json(f'/components/{HOST_COMPONENT}/faults/{code}')
+        self.assertEqual(detail['x-medkit']['occurrence_count'], total)
+        self.assertEqual(len(detail['x-medkit']['records']), 4, detail)
+        self._assert_detail_of_shared(
+            self.get_json(f'/areas/{CELL_AREA}/faults/{shared}'), sources)
+
+        self.delete_request(f'/components/{HOST_COMPONENT}/faults/{code}')
+        for source in sources:
+            self._wait_status(code, source, 'CLEARED')
+        self.delete_request(f'/areas/{CELL_AREA}/faults/{shared}')
+        self._wait_status(shared, OWNER_B, 'CLEARED')
+
+    def test_05_the_bulk_clear_takes_every_record_under_the_entity(self):
+        """DELETE /apps/{id}/faults clears its records and its sub-sources', nobody else's.
 
         @verifies REQ_INTEROP_014
         """
-        self._raise_both()
+        code, shared = PER_SOURCE['bulk'], SHARED['bulk']
+        self._raise(code, [OWNER_A, SUB_X, OWNER_B])
+        self._raise(shared, [OWNER_A])
+        self._wait_records(code, {OWNER_A: 'CONFIRMED', SUB_X: 'CONFIRMED', OWNER_B: 'CONFIRMED'})
+        self._wait_records(shared, {OWNER_A: 'CONFIRMED'})
 
-        self.delete_request(f'/components/{HOST_COMPONENT}/faults')
+        self.delete_request(f'/apps/{OWNER_A}/faults')
 
-        deadline = time.monotonic() + FAULT_TIMEOUT
-        while time.monotonic() < deadline:
-            if (self._status_on(OWNER_A) == 'CLEARED'
-                    and self._status_on(OWNER_B) == 'CLEARED'):
-                break
-            time.sleep(0.2)
-        self.assertEqual(self._status_on(OWNER_A), 'CLEARED')
-        self.assertEqual(
-            self._status_on(OWNER_B), 'CLEARED',
-            'the bulk clear stopped after one record of the shared code',
-        )
+        self._wait_status(code, OWNER_A, 'CLEARED')
+        self._wait_status(code, SUB_X, 'CLEARED')
+        self._wait_status(shared, OWNER_A, 'CLEARED')
+        self._wait_status(code, OWNER_B, 'CONFIRMED')
+
+    def test_06_the_global_list_shows_one_item_per_record(self):
+        """GET /faults: a record of a per_source code names its App and source.
+
+        @verifies REQ_INTEROP_012
+        """
+        code = PER_SOURCE['global']
+        self._raise(code, [OWNER_A, OWNER_B])
+        records = self._wait_records(code, {OWNER_A: 'CONFIRMED', OWNER_B: 'CONFIRMED'})
+
+        self.assertEqual(len(self._records(code)), 2)
+        for source, item in records.items():
+            self.assertEqual(item['source_id'], source)
+            self.assertEqual(item['x-medkit']['records'],
+                             [{'app_id': source, 'source_id': source, 'status': 'CONFIRMED'}])
+            self.assertNotIn('owner', item)
 
     def test_07_the_openapi_document_declares_the_record_contract(self):
         """The served spec says what the routes now do.
@@ -299,49 +429,23 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
         spec = self.poll_endpoint_until('/docs', lambda d: d if 'openapi' in d else None)
 
         item = spec['components']['schemas']['FaultListItem']
-        self.assertIn(
-            'source_id', item['properties'],
-            'the published fault item must declare the owner it carries',
-        )
+        for key in ('source_id', 'x-medkit'):
+            self.assertIn(key, item['properties'], f'the published fault item must declare {key}')
 
         route = spec['paths']['/apps/{app_id}/faults/{fault_code}']
-        # The document has one response object per status, so a lock 409 and an
-        # ambiguous-fault 409 on the DELETE cannot be told apart. This gateway
-        # runs with locking off, which drops the lock contract from the document
-        # altogether. Ground that first: with it in place, a 409 on either
-        # method is there only because the route declares the ambiguous-fault
-        # refusal, and both checks below can fail.
+        # With locking off the DELETE carries no lock contract, so a 409 on
+        # either method would be the route's own.
         root = self.get_json('')
         self.assertIs(
             root['capabilities']['locking'], False,
             'this launch must run with locking off, or the DELETE 409 below may be the lock one',
         )
-        self.assertNotIn(
-            'x-medkit-lock-guarded', route['delete'],
-            'with locking off the DELETE must carry no lock contract',
-        )
+        self.assertNotIn('x-medkit-lock-guarded', route['delete'])
         for method in ('get', 'delete'):
-            self.assertIn(
+            self.assertNotIn(
                 '409', route[method]['responses'],
-                f'the per-entity fault {method} answers 409 on an ambiguous code '
-                'and has to declare it',
+                f'the per-entity fault {method} never answers 409 for a code',
             )
-
-    def test_075_the_detail_names_the_owner_and_not_the_lists_source_id(self):
-        """x-medkit.owner is the record's owner, source_id belongs to a list.
-
-        @verifies REQ_INTEROP_013
-        """
-        self._raise_both()
-
-        detail = self.get_json(f'/apps/{OWNER_A}/faults/{SHARED_CODE}')
-
-        self.assertEqual(detail['x-medkit']['owner'], OWNER_A)
-        self.assertNotIn('source_id', detail['x-medkit'])
-
-        # The list-level key is the other meaning, and it is still there.
-        listing = self.get_json(f'/apps/{OWNER_A}/faults')
-        self.assertIn('source_id', listing['x-medkit'])
 
     def test_076_every_recording_download_declares_its_409(self):
         """The download routes answer 409 on an ambiguous code and say so.

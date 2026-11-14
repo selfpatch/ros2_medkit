@@ -15,6 +15,8 @@
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 
 #include <algorithm>
+#include <optional>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -106,6 +108,39 @@ bool source_matches_scope(const std::string & src, const std::set<std::string> &
   return std::any_of(scope_fqns.begin(), scope_fqns.end(), [&src](const std::string & fqn) {
     return source_in_scope(src, fqn);
   });
+}
+
+/// The owner the fault manager gives a shared record (Fault.msg `owner`).
+constexpr const char * kSharedOwner = "*";
+
+/// Rank of a record status: the higher, the more advanced the fault.
+int status_rank(const std::string & status) {
+  if (status == "CONFIRMED") {
+    return 5;
+  }
+  if (status == "PREFAILED") {
+    return 4;
+  }
+  if (status == "PREPASSED") {
+    return 3;
+  }
+  if (status == "HEALED") {
+    return 2;
+  }
+  if (status == "CLEARED") {
+    return 1;
+  }
+  return 0;
+}
+
+double number_or(const nlohmann::json & j, const char * key, double fallback) {
+  const auto it = j.find(key);
+  return it != j.end() && it->is_number() ? it->get<double>() : fallback;
+}
+
+std::string owner_field(const nlohmann::json & fault) {
+  const auto it = fault.find("owner");
+  return it != fault.end() && it->is_string() ? it->get<std::string>() : std::string{};
 }
 
 }  // namespace
@@ -221,11 +256,7 @@ std::vector<ScopedFault> records_of_code_in_scope(const nlohmann::json & faults_
       continue;
     }
     // The scope predicate the list routes filter with. It decides which entity
-    // a record belongs to, not whether that entity's list shows it: the list
-    // also leaves muted, cleared and healed records out, which is why a
-    // per-record route resolves a code through addressable_records (the records
-    // the list shows first, then muted ones, then cleared or healed ones)
-    // rather than over this result as it stands.
+    // a record belongs to, not whether that entity's list shows it.
     if (!fault_in_source_scope(fault, source_fqns)) {
       continue;
     }
@@ -283,6 +314,149 @@ std::vector<ScopedFault> addressable_records(const nlohmann::json & listing, con
     return muted;
   }
   return inactive;
+}
+
+std::string stored_owner(const nlohmann::json & fault) {
+  auto owner = owner_field(fault);
+  return owner.empty() ? record_owner(fault) : owner;
+}
+
+bool is_shared_record(const nlohmann::json & fault) {
+  const auto owner = owner_field(fault);
+  return owner.empty() || owner == kSharedOwner;
+}
+
+nlohmann::json record_ref(const nlohmann::json & record, const AppOfSource & app_of) {
+  nlohmann::json ref = nlohmann::json::object();
+  if (is_shared_record(record)) {
+    ref["reporting_sources"] = record.value("reporting_sources", nlohmann::json::array());
+  } else {
+    const auto owner = stored_owner(record);
+    auto app_id = app_of ? app_of(owner) : std::string{};
+    if (!app_id.empty()) {
+      ref["app_id"] = std::move(app_id);
+    }
+    ref["source_id"] = owner;
+  }
+  ref["status"] = record.value("status", std::string{});
+  return ref;
+}
+
+nlohmann::json record_item(const nlohmann::json & record, const AppOfSource & app_of) {
+  nlohmann::json item = record;
+  item.erase("owner");
+  if (is_shared_record(record)) {
+    item.erase("source_id");
+    return item;
+  }
+  item["source_id"] = stored_owner(record);
+  item["x-medkit"] = {{"records", nlohmann::json::array({record_ref(record, app_of)})}};
+  return item;
+}
+
+const nlohmann::json & representative_record(const std::vector<nlohmann::json> & records) {
+  const nlohmann::json * best = &records.front();
+  const auto better = [](const nlohmann::json & a, const nlohmann::json & b) {
+    const bool a_confirmed = a.value("status", std::string{}) == "CONFIRMED";
+    const bool b_confirmed = b.value("status", std::string{}) == "CONFIRMED";
+    if (a_confirmed != b_confirmed) {
+      return a_confirmed;
+    }
+    return number_or(a, "last_occurred", 0.0) > number_or(b, "last_occurred", 0.0);
+  };
+  for (const auto & record : records) {
+    if (better(record, *best)) {
+      best = &record;
+    }
+  }
+  return *best;
+}
+
+nlohmann::json entry_item(const std::vector<nlohmann::json> & records, const AppOfSource & app_of) {
+  if (records.size() == 1) {
+    return record_item(records.front(), app_of);
+  }
+  const auto & representative = representative_record(records);
+  const nlohmann::json * most_severe = &records.front();
+  const nlohmann::json * most_advanced = &records.front();
+  std::set<std::string> sources;
+  uint64_t occurrences = 0;
+  std::optional<double> first_occurred;
+  std::optional<double> last_occurred;
+  std::optional<double> last_passed;
+  nlohmann::json refs = nlohmann::json::array();
+  for (const auto & record : records) {
+    if (record.value("severity", 0) > most_severe->value("severity", 0)) {
+      most_severe = &record;
+    }
+    if (status_rank(record.value("status", std::string{})) >
+        status_rank(most_advanced->value("status", std::string{}))) {
+      most_advanced = &record;
+    }
+    occurrences += record.value("occurrence_count", uint64_t{0});
+    for (const auto & source : record.value("reporting_sources", nlohmann::json::array())) {
+      if (source.is_string()) {
+        sources.insert(source.get<std::string>());
+      }
+    }
+    if (record.contains("first_occurred")) {
+      const double t = number_or(record, "first_occurred", 0.0);
+      first_occurred = first_occurred ? std::min(*first_occurred, t) : t;
+    }
+    if (record.contains("last_occurred")) {
+      const double t = number_or(record, "last_occurred", 0.0);
+      last_occurred = last_occurred ? std::max(*last_occurred, t) : t;
+    }
+    if (record.contains("last_passed")) {
+      const double t = number_or(record, "last_passed", 0.0);
+      last_passed = last_passed ? std::max(*last_passed, t) : t;
+    }
+    refs.push_back(record_ref(record, app_of));
+  }
+
+  nlohmann::json item = nlohmann::json::object();
+  item["fault_code"] = representative.value("fault_code", std::string{});
+  item["description"] = representative.value("description", std::string{});
+  item["severity"] = most_severe->value("severity", 0);
+  item["severity_label"] = most_severe->value("severity_label", std::string{"UNKNOWN"});
+  item["status"] = most_advanced->value("status", std::string{});
+  item["occurrence_count"] = occurrences;
+  item["reporting_sources"] = std::vector<std::string>(sources.begin(), sources.end());
+  if (first_occurred) {
+    item["first_occurred"] = *first_occurred;
+  }
+  if (last_occurred) {
+    item["last_occurred"] = *last_occurred;
+  }
+  if (last_passed) {
+    item["last_passed"] = *last_passed;
+  }
+  item["x-medkit"] = {{"records", std::move(refs)}};
+  return item;
+}
+
+std::vector<std::vector<nlohmann::json>> group_by_code(const nlohmann::json & faults) {
+  std::vector<std::vector<nlohmann::json>> groups;
+  if (!faults.is_array()) {
+    return groups;
+  }
+  std::unordered_map<std::string, size_t> index;
+  for (const auto & fault : faults) {
+    if (!fault.is_object()) {
+      continue;
+    }
+    const auto [it, inserted] = index.emplace(fault.value("fault_code", std::string{}), groups.size());
+    if (inserted) {
+      groups.emplace_back();
+    }
+    groups[it->second].push_back(fault);
+  }
+  for (auto & group : groups) {
+    std::stable_sort(group.begin(), group.end(), [](const nlohmann::json & a, const nlohmann::json & b) {
+      return stored_owner(a) < stored_owner(b);
+    });
+  }
+  return groups;
 }
 
 std::string AppSourceIndex::find_owner(const ThreadSafeEntityCache & cache, const std::string & owner) {

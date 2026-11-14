@@ -390,6 +390,7 @@ class PluginClearOwnerTest : public ::testing::Test {
     fault.status = ros2_medkit_msgs::msg::Fault::STATUS_CONFIRMED;
     fault.severity = ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR;
     fault.reporting_sources = {owner};
+    fault.owner = owner;
     return fault;
   }
 
@@ -606,10 +607,10 @@ TEST_F(PluginClearOwnerTest, AppClearHandsItsOwnOwnerToThePlugin) {
   EXPECT_EQ(plugin->clears[0].owner, kHostedApp);
 }
 
-// Two hosted apps report the code, so the component's URL names neither record
-// and the plugin must not be asked to clear anything.
+// Two hosted apps report the code, so the component's URL covers both records
+// and the plugin clears each with its own owner.
 // @verifies REQ_INTEROP_015
-TEST_F(PluginClearOwnerTest, AmbiguousComponentClearReachesNoProvider) {
+TEST_F(PluginClearOwnerTest, ComponentClearHandsEachRecordsOwnerToThePlugin) {
   auto * plugin = seed_topology();
   store_record(kCode, kHostedApp);
   store_record(kCode, kOtherApp);
@@ -622,9 +623,11 @@ TEST_F(PluginClearOwnerTest, AmbiguousComponentClearReachesNoProvider) {
 
   auto result = handlers_->clear_fault(typed);
 
-  ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().http_status, 409);
-  EXPECT_TRUE(plugin->clears.empty()) << "an ambiguous address must not reach the provider";
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  ASSERT_EQ(plugin->clears.size(), 2u);
+  // Ordered by owner.
+  EXPECT_EQ(plugin->clears[0].owner, std::min<std::string>(kHostedApp, kOtherApp));
+  EXPECT_EQ(plugin->clears[1].owner, std::max<std::string>(kHostedApp, kOtherApp));
 }
 
 // The bulk clear walks the plugin's own listing, and each item names its own
@@ -777,21 +780,20 @@ TEST_F(PluginClearOwnerTest, ATwoArgumentClearProviderStillReceivesTheClear) {
 }
 
 // ---------------------------------------------------------------------------
-// Which record a code in the URL names when muted records are in scope.
+// Muted records under a code in the URL.
 //
-// Every per-entity fault list leaves muted records out, so the records it shows
-// are the ones a client can read a code off. A code resolves over those first.
-// Only when the list shows no record of the code does a muted one answer, so a
-// record hidden as a symptom stays reachable without turning a shown record
-// into an ambiguous address. Each route that resolves a code gets its own case,
-// because each reads the fault manager on its own.
+// Every per-entity fault list leaves muted records out. The per-code fault
+// routes act on every record of the code, muted or not. A recording URL
+// carrying a code resolves it over the records the list shows first, then the
+// muted ones. Each route gets its own case, because each reads the fault
+// manager on its own.
 // ---------------------------------------------------------------------------
 
 // The component's list shows tank's record only, because pump's record of the
-// same code is muted. Resolving over both answered 409 naming pump as well, and
-// pointed the client at a list that could never show it pump's record.
+// same code is muted. The per-code DELETE still clears every record of the code
+// under the component, the muted one too.
 // @verifies REQ_INTEROP_015
-TEST_F(PluginClearOwnerTest, NativeComponentClearTakesTheShownRecordOverAMutedOne) {
+TEST_F(PluginClearOwnerTest, NativeComponentClearTakesTheMutedRecordToo) {
   seed_native_topology();
   store_record(kCode, kHostedApp);
   store_muted_record(kCode, kOtherApp);
@@ -803,18 +805,19 @@ TEST_F(PluginClearOwnerTest, NativeComponentClearTakesTheShownRecordOverAMutedOn
 
   auto result = handlers_->clear_fault(typed);
 
-  ASSERT_TRUE(result.has_value()) << "the shown record is the one the code names: " << result.error().message;
+  ASSERT_TRUE(result.has_value()) << result.error().message;
   EXPECT_TRUE(std::holds_alternative<ros2_medkit_gateway::http::NoContent>(*result));
-  const auto cleared = cleared_snapshot();
-  ASSERT_EQ(cleared.size(), 1u) << "exactly the shown record is cleared, and pump's muted record is left alone";
-  EXPECT_EQ(cleared[0].first, kCode);
-  EXPECT_EQ(cleared[0].second, kHostedApp);
+  auto cleared = cleared_snapshot();
+  std::sort(cleared.begin(), cleared.end());
+  ASSERT_EQ(cleared.size(), 2u) << "both records of the code are cleared";
+  EXPECT_EQ(cleared[0], std::make_pair(std::string(kCode), std::min<std::string>(kHostedApp, kOtherApp)));
+  EXPECT_EQ(cleared[1], std::make_pair(std::string(kCode), std::max<std::string>(kHostedApp, kOtherApp)));
 }
 
-// The same scenario on a plugin-owned component: the plugin clear resolves the
-// owner on its own read of the fault manager, so it needs its own case.
+// The same scenario on a plugin-owned component: the plugin clear reads the
+// fault manager on its own, so it needs its own case.
 // @verifies REQ_INTEROP_015
-TEST_F(PluginClearOwnerTest, PluginComponentClearTakesTheShownRecordOverAMutedOne) {
+TEST_F(PluginClearOwnerTest, PluginComponentClearTakesTheMutedRecordToo) {
   auto * plugin = seed_topology();
   store_record(kCode, kHostedApp);
   store_muted_record(kCode, kOtherApp);
@@ -826,9 +829,10 @@ TEST_F(PluginClearOwnerTest, PluginComponentClearTakesTheShownRecordOverAMutedOn
 
   auto result = handlers_->clear_fault(typed);
 
-  ASSERT_TRUE(result.has_value()) << "the shown record is the one the code names: " << result.error().message;
-  ASSERT_EQ(plugin->clears.size(), 1u);
-  EXPECT_EQ(plugin->clears[0].owner, kHostedApp) << "the plugin must be handed the shown record's owner";
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  ASSERT_EQ(plugin->clears.size(), 2u) << "the plugin must be handed each record's owner";
+  EXPECT_EQ(plugin->clears[0].owner, std::min<std::string>(kHostedApp, kOtherApp));
+  EXPECT_EQ(plugin->clears[1].owner, std::max<std::string>(kHostedApp, kOtherApp));
 }
 
 // A muted record with no shown record of its code is still the record the code
@@ -936,10 +940,9 @@ TEST_F(PluginClearOwnerTest, ARecordingCodeTakesTheShownRecordOverAMutedOne) {
   EXPECT_EQ(asked[0], kHostedApp);
 }
 
-// Two muted records and no shown one: the code names neither, the route says so
-// and names both owners, and it points at where each can be addressed.
+// Two muted records and no shown one: the per-code DELETE clears both.
 // @verifies REQ_INTEROP_015
-TEST_F(PluginClearOwnerTest, TwoMutedRecordsAloneAreAmbiguous) {
+TEST_F(PluginClearOwnerTest, TwoMutedRecordsAloneAreBothCleared) {
   seed_native_topology();
   store_muted_record(kCode, kHostedApp);
   store_muted_record(kCode, kOtherApp);
@@ -951,13 +954,8 @@ TEST_F(PluginClearOwnerTest, TwoMutedRecordsAloneAreAmbiguous) {
 
   auto result = handlers_->clear_fault(typed);
 
-  ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().http_status, 409);
-  EXPECT_EQ(result.error().params["owners"], json::array({kOtherApp, kHostedApp}));
-  const std::string details = result.error().params.value("details", "");
-  EXPECT_NE(details.find("parameters.owners"), std::string::npos) << details;
-  EXPECT_NE(details.find("/apps/{app_id}/faults/{fault_code}"), std::string::npos) << details;
-  EXPECT_TRUE(cleared_snapshot().empty()) << "an ambiguous address must clear nothing";
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  EXPECT_EQ(cleared_snapshot().size(), 2u) << "each muted record of the code is cleared";
 }
 
 // @verifies REQ_INTEROP_072
@@ -1057,9 +1055,10 @@ TEST_F(PluginClearOwnerTest, TheAmbiguousRecordingCodeNamesWhereEachRecordingIsL
   }
 }
 
-// Two sources report one code and one of them clears its record. The component
-// now lists one record of the code, and its per-code routes act on that record
-// instead of answering 409 for as long as the cleared record is kept.
+// Two sources report one code and one of them clears its record. The
+// component's detail merges both, the active one deciding the status and the
+// environment data, its DELETE clears both, and the bag URL by code resolves to
+// the active record's recording.
 // @verifies REQ_INTEROP_013
 TEST_F(PluginClearOwnerTest, AClearedRecordLeavesTheComponentRoutesToTheActiveOne) {
   seed_native_topology();
@@ -1070,14 +1069,18 @@ TEST_F(PluginClearOwnerTest, AClearedRecordLeavesTheComponentRoutesToTheActiveOn
   set_status(kCode, kOtherApp, ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
   ASSERT_TRUE(wait_for_store());
 
-  // Each route is checked on its own, so one that still answers 409 does not
-  // hide the others.
+  // Each route is checked on its own, so one that fails does not hide the others.
   RoutedRequest get_req(component_fault_path(), kComponentFaultPattern, "GET");
   ASSERT_TRUE(get_req.matched());
   auto got = handlers_->get_fault(ros2_medkit_gateway::http::TypedRequest(get_req.raw()));
-  EXPECT_TRUE(got.has_value()) << "GET: the active record is the one the code names: " << got.error().message;
+  EXPECT_TRUE(got.has_value()) << "GET: " << got.error().message;
   if (got.has_value()) {
-    EXPECT_EQ(got->content["x-medkit"]["owner"], kHostedApp);
+    EXPECT_FALSE(got->content["x-medkit"].contains("owner")) << "a merge of two records has no single owner";
+    EXPECT_EQ(got->content["x-medkit"]["status_raw"], "CONFIRMED");
+    EXPECT_EQ(got->content["x-medkit"]["records"].size(), 2u);
+    const auto reads = get_requests_snapshot();
+    ASSERT_EQ(reads.size(), 1u);
+    EXPECT_EQ(reads[0].second, kHostedApp) << "the environment data comes from the active record";
   }
 
   RoutedRequest bag_req(component_bag_path(kCode), kComponentBagPattern, "GET");
@@ -1092,20 +1095,15 @@ TEST_F(PluginClearOwnerTest, AClearedRecordLeavesTheComponentRoutesToTheActiveOn
   RoutedRequest del_req(component_fault_path(), kComponentFaultPattern);
   ASSERT_TRUE(del_req.matched());
   auto cleared = handlers_->clear_fault(ros2_medkit_gateway::http::TypedRequest(del_req.raw()));
-  EXPECT_TRUE(cleared.has_value()) << "DELETE: the active record is the one the code clears: "
-                                   << cleared.error().message;
-  const auto clears = cleared_snapshot();
-  ASSERT_EQ(clears.size(), cleared.has_value() ? 1u : 0u);
-  if (cleared.has_value()) {
-    EXPECT_EQ(clears[0].second, kHostedApp) << "the clear must name the active record's owner";
-    EXPECT_EQ(status_of(kCode, kHostedApp), "CLEARED");
-  }
+  EXPECT_TRUE(cleared.has_value()) << "DELETE: " << cleared.error().message;
+  EXPECT_EQ(cleared_snapshot().size(), cleared.has_value() ? 2u : 0u) << "the DELETE clears both records of the code";
+  EXPECT_EQ(status_of(kCode, kHostedApp), "CLEARED");
 }
 
-// With every record of the code cleared, none is preferred, so two of them name
-// neither and the route says so rather than picking one.
+// With every record of the code cleared, the detail is their merge, still
+// cleared, and its environment data comes from one of them.
 // @verifies REQ_INTEROP_013
-TEST_F(PluginClearOwnerTest, TwoClearedRecordsAloneAreAmbiguous) {
+TEST_F(PluginClearOwnerTest, TwoClearedRecordsAloneAreMerged) {
   seed_native_topology();
   store_record(kCode, kHostedApp);
   store_record(kCode, kOtherApp);
@@ -1117,10 +1115,10 @@ TEST_F(PluginClearOwnerTest, TwoClearedRecordsAloneAreAmbiguous) {
   ASSERT_TRUE(req.matched());
   auto result = handlers_->get_fault(ros2_medkit_gateway::http::TypedRequest(req.raw()));
 
-  ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().http_status, 409);
-  EXPECT_EQ(result.error().params["owners"], json::array({kOtherApp, kHostedApp}));
-  EXPECT_TRUE(get_requests_snapshot().empty()) << "an ambiguous address must read no record";
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  EXPECT_EQ(result->content["x-medkit"]["status_raw"], "CLEARED");
+  EXPECT_EQ(result->content["x-medkit"]["records"].size(), 2u);
+  EXPECT_EQ(get_requests_snapshot().size(), 1u) << "one record's environment data is read";
 }
 
 // One cleared record and nothing else: the code still names it, and the detail

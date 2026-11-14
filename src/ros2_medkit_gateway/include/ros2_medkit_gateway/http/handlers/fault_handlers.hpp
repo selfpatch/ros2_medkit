@@ -144,7 +144,8 @@ class FaultHandlers {
    *   the handler appends `bulk_data_uri = entity_path + "/bulk-data/rosbags/" + fault_code`.
    * - "x-medkit" extensions with occurrence_count, severity_label, etc.
    *
-   * @param fault_json Per-fault JSON (as produced by the transport adapter).
+   * @param fault_json A fault item, `faults::record_item` or `faults::entry_item`:
+   *        its `source_id` becomes `x-medkit.owner`, its `x-medkit.records` is kept.
    * @param env_data_json Environment-data JSON (as produced by the transport).
    * @param entity_path Entity path used to construct rosbag bulk_data_uri.
    * @return SOVD-compliant FaultDetail DTO
@@ -161,18 +162,15 @@ class FaultHandlers {
    * or is a strict path-child (i.e. `<fqn>/<...>`), so similarly named nodes
    * like `/ns/node` and `/ns/node_extra` are not conflated.
    *
-   * A record names one reporting source, its owner, so in practice this asks
-   * whether that owner is in scope. The "all sources must match" form is kept
-   * because the gateway also serves records relayed from peers and read back
-   * from older stores, and a record that somehow carries a source outside the
-   * entity must stay invisible to it rather than half-visible.
+   * A per_source record names one reporting source; a shared record names
+   * every source that reported it, and is in the entity's scope only when all
+   * of them are.
    *
    * An empty scope set, an empty `reporting_sources` array, a missing
    * `reporting_sources` field, or any non-string source entry all return
    * false - there is no vacuous "all match" case.
    *
-   * Public for direct unit testing. Called by `resolve_scoped_fault` and
-   * indirectly via the per-entity collection routes.
+   * Public for direct unit testing. Called through the per-entity routes.
    */
   static bool fault_in_source_scope(const nlohmann::json & fault, const std::set<std::string> & source_fqns);
 
@@ -228,42 +226,32 @@ class FaultHandlers {
   static std::unordered_map<std::string, std::set<std::string>>
   build_source_entity_map(const ThreadSafeEntityCache & cache);
 
-  /**
-   * @brief Turn the candidate records of one code into the single record a
-   * per-record route may act on, or the error it answers instead.
-   *
-   * `records` are the candidates `faults::addressable_records` yields: the
-   * records of the code the entity's fault list shows, else the muted ones,
-   * else the cleared or healed ones. A fault code addresses as many records as
-   * there are sources reporting it, so two candidates mean the entity has not
-   * named one. The route answers 409 `x-medkit-ambiguous-fault` with those owners in
-   * `parameters.owners` rather than acting on whichever record the store
-   * happened to list first: picking one is the failure the per-record identity
-   * exists to remove, and the caller cannot tell from the response which one it
-   * got. No candidate is the 404 the routes have always answered.
-   *
-   * Public static for direct unit testing. Called by `resolve_scoped_fault` and
-   * by the plugin clear.
-   */
-  static tl::expected<faults::ScopedFault, ErrorInfo> select_scoped_fault(std::vector<faults::ScopedFault> records,
-                                                                          const std::string & fault_code,
-                                                                          const std::string & id_field,
-                                                                          const std::string & entity_id);
-
  private:
   /**
-   * @brief Resolve the one record of `fault_code` that `entity` owns.
+   * @brief Every record of `fault_code` in `entity`'s scope, ordered by owner.
    *
-   * Lists every status with muted records included, narrows them to this
-   * code's candidates with `faults::addressable_records` (the records the
-   * entity's list shows, else its muted ones, else its cleared or healed ones)
-   * and hands those to `select_scoped_fault`. The owner it returns is what the
-   * per-record services are then called with.
+   * Lists every status with muted records included: the per-code routes act
+   * on the code's records whatever their status. An empty result is not an
+   * error; the caller answers 404. A fault manager that cannot be read is the
+   * error, classified with `failure_summary`.
    */
-  tl::expected<faults::ScopedFault, ErrorInfo> resolve_scoped_fault(const EntityInfo & entity_info,
-                                                                    const std::string & fault_code);
+  tl::expected<std::vector<nlohmann::json>, ErrorInfo>
+  records_of_code(const EntityInfo & entity_info, const std::string & fault_code, const std::string & failure_summary);
+
+  /**
+   * @brief The detail of the entry `records` form (not empty, one code): the
+   * record itself, or their merge with the environment data of
+   * `faults::representative_record`. Fails as the fault manager's read fails.
+   */
+  tl::expected<dto::FaultDetailResult, FaultResult> fault_detail(const std::vector<nlohmann::json> & records,
+                                                                 const std::string & fault_code,
+                                                                 const std::string & entity_path);
+
+  /// Names the app whose scope holds a reporting source, for `x-medkit.records`.
+  faults::AppOfSource app_of_source();
 
   HandlerContext & ctx_;
+  faults::AppSourceIndex app_index_;
 };
 
 }  // namespace handlers

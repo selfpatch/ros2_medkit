@@ -27,10 +27,11 @@ Plugins implement the ``GatewayPlugin`` C++ base class plus one or more typed pr
   the same per-entity routing model as DataProvider.
 - **FaultProvider** - per-entity fault backend (list faults, get fault details, clear
   faults). Uses the same per-entity routing model as DataProvider. A fault record is
-  the pair (``fault_code``, owner), and the gateway clears one record
-  at a time through ``clear_fault_record(entity_id, fault_code, owner)``, where
-  ``owner`` is the source the gateway resolved in the entity's fault scope (for a
-  component, one of its hosted apps). Its default implementation calls
+  the pair (``fault_code``, owner). The gateway clears a code by calling
+  ``clear_fault_record(entity_id, fault_code, owner)`` once for each record of the
+  code in the entity's fault scope, with that record's owner: the reporting source
+  of a ``per_source`` record (for a component, often one of its hosted apps), ``*``
+  for a shared one. Its default implementation calls
   ``clear_fault(entity_id, fault_code)``, so a provider that overrides only the
   two-argument clear keeps compiling and keeps receiving clears by code. Override
   ``clear_fault_record`` to clear exactly the record the owner names.

@@ -1203,8 +1203,8 @@ void RESTServer::setup_routes() {
     // path while the typed router still owns wire framing. The single-fault
     // DELETE uses `del_alternates<NoContent, FaultClearResult>` so the ROS
     // path returns 204 while the plugin path keeps its 200 + ack-body shape.
-    // The bulk-clear DELETE returns NoContent unconditionally - the legacy
-    // plugin branch also emitted 204 after iterating the per-fault clears.
+    // The bulk-clear DELETE returns NoContent, or 500 with `failed_codes` when
+    // the clear of a record fails.
     reg.get<dto::FaultListResult>(entity_path + "/faults",
                                   [this](http::TypedRequest req) -> http::Result<dto::FaultListResult> {
                                     return fault_handlers_->list_faults(req);
@@ -1230,12 +1230,9 @@ void RESTServer::setup_routes() {
         .requires_role(UserRole::VIEWER)
         .summary(std::string("Get specific fault for ") + et.singular)
         .description("Returns fault details including SOVD status, environment data, and rosbag snapshots.")
-        // 409 (x-medkit-ambiguous-fault) when several sources this entity owns
-        // report the code and none of their records ranks above the others:
-        // each is its own record, so the code does not name one. 503 when the
-        // fault store cannot be read - same branch as the
-        // list routes, and equally out of the recorder's reach.
-        .errors({409, 503})
+        // 503 when the fault store cannot be read - same branch as the list
+        // routes, and equally out of the recorder's reach.
+        .errors({503})
         .operation_id(std::string("get") + capitalize(et.singular) + "Fault");
 
     reg.del_alternates<http::NoContent, dto::FaultClearResult>(
@@ -1250,13 +1247,9 @@ void RESTServer::setup_routes() {
         .description(std::string("Clears a specific fault for this ") + et.singular + ".")
         // FaultHandlers::clear_fault -> validate_lock_access("faults").
         .lock_guarded()
-        // 409 twice over, from two unrelated causes: lock_guarded() declares the
-        // locked-entity refusal, and x-medkit-ambiguous-fault answers a code
-        // that addresses several of this entity's records. Read `vendor_code`
-        // to tell them apart. 503 when the fault store cannot be read -
-        // clear_fault reads the record before clearing it, so it answers the
-        // same status the read does.
-        .errors({409, 503})
+        // 503 when the fault store cannot be read - clear_fault reads the
+        // records before clearing them, so it answers the status the read does.
+        .errors({503})
         .operation_id(std::string("clear") + capitalize(et.singular) + "Fault");
 
     reg.del<http::NoContent>(entity_path + "/faults",

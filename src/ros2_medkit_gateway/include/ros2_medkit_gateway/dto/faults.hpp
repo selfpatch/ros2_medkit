@@ -37,13 +37,51 @@ namespace ros2_medkit_gateway {
 namespace dto {
 
 // =============================================================================
-// FaultListItem - flat fault list item emitted by fault_msg_conversions.cpp
-// (fault_to_json shape), wrapped in Collection<FaultListItem> for list endpoints.
+// FaultRecordRef - one fault record an entry covers, in x-medkit.records
+// (faults::record_ref). A per_source record has app_id and source_id, a shared
+// record has reporting_sources.
+// =============================================================================
+struct FaultRecordRef {
+  /// The app whose scope holds the record's source. Absent when no app does.
+  std::optional<std::string> app_id;
+  /// The owner of a per_source record.
+  std::optional<std::string> source_id;
+  /// The sources of a shared record.
+  std::optional<std::vector<std::string>> reporting_sources;
+  std::string status;
+};
+
+template <>
+inline constexpr auto dto_fields<FaultRecordRef> =
+    std::make_tuple(field("app_id", &FaultRecordRef::app_id), field("source_id", &FaultRecordRef::source_id),
+                    field("reporting_sources", &FaultRecordRef::reporting_sources),
+                    field("status", &FaultRecordRef::status));
+
+template <>
+inline constexpr std::string_view dto_name<FaultRecordRef> = "FaultRecordRef";
+
+// =============================================================================
+// FaultListItemXMedkit - x-medkit of a fault list item: the records it covers
+// =============================================================================
+struct FaultListItemXMedkit {
+  std::optional<std::vector<FaultRecordRef>> records;
+};
+
+template <>
+inline constexpr auto dto_fields<FaultListItemXMedkit> =
+    std::make_tuple(field("records", &FaultListItemXMedkit::records));
+
+template <>
+inline constexpr std::string_view dto_name<FaultListItemXMedkit> = "FaultListItemXMedkit";
+
+// =============================================================================
+// FaultListItem - flat fault list item emitted by faults::record_item and
+// faults::entry_item, wrapped in Collection<FaultListItem> for list endpoints.
 //
-// Wire keys (exact, from fault_msg_conversions.cpp):
+// Wire keys:
 //   fault_code, severity, description, first_occurred, last_occurred,
 //   last_passed (absent = never passed), occurrence_count, status,
-//   reporting_sources, source_id, severity_label
+//   reporting_sources, source_id, severity_label, x-medkit
 // =============================================================================
 struct FaultListItem {
   std::string fault_code;
@@ -55,11 +93,11 @@ struct FaultListItem {
   std::optional<int64_t> occurrence_count;
   std::string status;
   std::optional<std::vector<std::string>> reporting_sources;
-  /// The first entry of `reporting_sources`: the owner of a per_source record,
-  /// or a source that reports into a shared one. Together with `fault_code` it
-  /// addresses the record on the per-record routes.
+  /// The owner of a per_source record. Absent for a shared record and for an
+  /// entry of several records.
   std::optional<std::string> source_id;
-  std::optional<std::string> severity_label;  // enum: INFO|WARN|ERROR|CRITICAL|UNKNOWN
+  std::optional<std::string> severity_label;     // enum: INFO|WARN|ERROR|CRITICAL|UNKNOWN
+  std::optional<FaultListItemXMedkit> x_medkit;  // wire key: "x-medkit"
 };
 
 template <>
@@ -69,7 +107,8 @@ inline constexpr auto dto_fields<FaultListItem> = std::make_tuple(
     field("last_occurred", &FaultListItem::last_occurred), field("last_passed", &FaultListItem::last_passed),
     field("occurrence_count", &FaultListItem::occurrence_count), field("status", &FaultListItem::status),
     field("reporting_sources", &FaultListItem::reporting_sources), field("source_id", &FaultListItem::source_id),
-    field_enum("severity_label", &FaultListItem::severity_label, kFaultSeverityLabelValues));
+    field_enum("severity_label", &FaultListItem::severity_label, kFaultSeverityLabelValues),
+    field("x-medkit", &FaultListItem::x_medkit));
 
 template <>
 inline constexpr std::string_view dto_name<FaultListItem> = "FaultListItem";
@@ -246,20 +285,19 @@ inline constexpr std::string_view dto_name<FaultListAggXMedkit> = "FaultListAggX
 // FaultXMedkit - x-medkit vendor extension inside FaultDetail
 //
 // Wire keys (from build_sovd_fault_response):
-//   occurrence_count, reporting_sources, owner, severity_label, status_raw
+//   occurrence_count, reporting_sources, owner, records, severity_label, status_raw
 //
-// The key is `owner`, not `source_id`, deliberately. A fault LIST's x-medkit
-// already carries `source_id` meaning the addressed entity's namespace path
-// (FaultListXMedkit below), so reusing that name here for the record's
-// reporting source would give one key two meanings inside one API.
+// The key is `owner`, not `source_id`: a fault LIST's x-medkit carries
+// `source_id` for the addressed entity's namespace path (FaultListXMedkit).
 // =============================================================================
 struct FaultXMedkit {
   std::optional<int64_t> occurrence_count;
   std::optional<std::vector<std::string>> reporting_sources;
-  /// The first entry of `reporting_sources`: the owner of a per_source record,
-  /// or a source that reports into a shared one. It is what the per-record
-  /// routes take as their `source_id` request field.
+  /// The owner of a per_source record. Absent for a shared record and for an
+  /// entry of several records.
   std::optional<std::string> owner;
+  /// The records the detail covers.
+  std::optional<std::vector<FaultRecordRef>> records;
   std::optional<std::string> severity_label;
   std::optional<std::string> status_raw;
 };
@@ -268,7 +306,7 @@ template <>
 inline constexpr auto dto_fields<FaultXMedkit> =
     std::make_tuple(field("occurrence_count", &FaultXMedkit::occurrence_count),
                     field("reporting_sources", &FaultXMedkit::reporting_sources), field("owner", &FaultXMedkit::owner),
-                    field("severity_label", &FaultXMedkit::severity_label),
+                    field("records", &FaultXMedkit::records), field("severity_label", &FaultXMedkit::severity_label),
                     field("status_raw", &FaultXMedkit::status_raw));
 
 template <>
