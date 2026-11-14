@@ -881,7 +881,9 @@ logs) use real-time **fan-out** via ``fan_out_get()``, reached through the
 ``fan_out_helpers.hpp``: the primary gateway sends the same request to all
 healthy peers, collects the responses, and merges the ``items`` arrays. If some
 peers fail, the response body includes ``x-medkit.partial: true`` and
-``x-medkit.failed_peers``. Fan-out requests carry an ``X-Medkit-No-Fan-Out``
+``x-medkit.failed_peers``. A peer marked unhealthy is not asked, and it is a
+failed peer with reason ``unreachable``: a fan-out never answers complete
+while it left out a peer it should have asked. Fan-out requests carry an ``X-Medkit-No-Fan-Out``
 header, and both helpers return early when the incoming request has it, so a
 peer that aggregates back never fans out a second time. These routes and the
 global fault list below are the ones that declare the header in the OpenAPI
@@ -909,8 +911,9 @@ reads the request:
   Answer ``200`` with an empty list, since this gateway's faults are already
   in the answer the first pass is building.
 - A path of 16 ids, or one holding an id longer than 64 characters: answer
-  locally, do not extend it, and report every healthy peer as failed with
-  reason ``too-deep``, so a truncated list is not reported complete.
+  locally, do not extend it, and report every peer as failed, with reason
+  ``too-deep`` or, for a peer marked unhealthy, ``unreachable``, so a truncated
+  list is not reported complete.
 - ``X-Medkit-No-Fan-Out`` alone: answer locally only. That is a client opting
   out, or a gateway that predates the visited path.
 
@@ -969,7 +972,7 @@ with ``entity-not-found`` - one that stopped holding the entity since the
 tables were built - contributes nothing and is not counted as failed either
 (``PeerFailureKind::kEntityNotFound``). Global endpoints (paths with no
 entity id, e.g. ``GET /api/v1/faults``) pass a ``nullptr`` filter and keep
-fan-out-to-all-healthy behavior.
+fan-out-to-every-peer behavior.
 
 Each targeted peer is asked about the entity by the id it knows it by
 (``PeerTarget::id``, from ``peer_entity_id``): an entity the merge renamed is
@@ -1000,11 +1003,10 @@ re-enabling the spurious ``partial: true`` path.
 
    Fan-out is synchronous on the httplib handler thread. Each request blocks
    for up to ``timeout_ms`` (default 2000ms) waiting for the slowest healthy
-   peer (parallel via ``std::async``, so max-not-sum across peers).
-   ``merge_peer_items()`` skips fan-out when ``healthy_peer_count() == 0`` to
-   avoid blocking after a peer outage is detected by health checks, but during
-   the window between a peer going down and the next health check cycle, handler
-   threads can block. Under concurrent load, this could exhaust httplib's thread
+   peer (parallel via ``std::async``, so max-not-sum across peers). A peer
+   marked unhealthy is not asked, so a request does not wait for an outage the
+   health checks have found. During the window between a peer going down and
+   the next health check cycle, handler threads can block. Under concurrent load, this could exhaust httplib's thread
    pool. Consider reducing ``aggregation.timeout_ms`` for deployments with many
    per-entity fan-out consumers.
 
@@ -1053,7 +1055,9 @@ refresh cycle. Refresh is primarily driven by rclcpp graph events (polled
 every 100 ms), with ``refresh_interval_ms`` (default: 30000 ms) providing a
 safety backstop for the case a graph event is missed. Each ``PeerClient``
 GETs ``/api/v1/health`` on its peer. If the health check fails, the peer is
-marked unhealthy and excluded from fan-out queries and entity fetching.
+marked unhealthy and not fetched. A fan-out does not ask it either, and names it
+in ``failed_peers`` with reason ``unreachable``, as the entity refresh records
+it unreachable.
 
 When a peer recovers (health check succeeds again), it is automatically
 re-included: the next refresh fetches it like any other healthy peer, and since
