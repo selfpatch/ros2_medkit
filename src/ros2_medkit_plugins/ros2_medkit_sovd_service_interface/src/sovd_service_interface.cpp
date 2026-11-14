@@ -218,12 +218,16 @@ void SovdServiceInterface::handle_list_entity_faults(
             }
           }
         }
-        // The fault manager's owner of the record. A peer gateway's HTTP item
-        // names a per_source record's owner as source_id instead.
+        // The fault manager's owner of the record. A peer gateway's HTTP item of
+        // one per_source record names it in x-medkit.records instead.
         if (fault_json.contains("owner") && fault_json["owner"].is_string()) {
           fault.owner = fault_json["owner"].get<std::string>();
-        } else if (fault_json.contains("source_id") && fault_json["source_id"].is_string()) {
-          fault.owner = fault_json["source_id"].get<std::string>();
+        } else if (const auto xm = fault_json.find("x-medkit"); xm != fault_json.end() && xm->is_object()) {
+          const auto records = xm->value("records", nlohmann::json::array());
+          if (records.is_array() && records.size() == 1 && records[0].is_object() && records[0].contains("source_id") &&
+              records[0]["source_id"].is_string()) {
+            fault.owner = records[0]["source_id"].get<std::string>();
+          }
         }
         response->faults.push_back(std::move(fault));
       }

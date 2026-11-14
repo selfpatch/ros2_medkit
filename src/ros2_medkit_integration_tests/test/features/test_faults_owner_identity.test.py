@@ -273,7 +273,7 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
 
         entries = self._entries(f'apps/{OWNER_A}', code)
         self.assertEqual(len(entries), 1, entries)
-        self.assertEqual(entries[0]['source_id'], OWNER_A)
+        self.assertNotIn('source_id', entries[0], 'vendor fields live inside x-medkit only')
         self.assertEqual(entries[0]['reporting_sources'], [OWNER_A])
         self.assertEqual(entries[0]['occurrence_count'], records[OWNER_A]['occurrence_count'])
         self.assertEqual(entries[0]['x-medkit']['records'],
@@ -285,7 +285,8 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
         self.assertEqual(detail['x-medkit']['status_raw'], 'CONFIRMED')
         self.assertEqual(detail['x-medkit']['occurrence_count'],
                          records[OWNER_A]['occurrence_count'])
-        # B's record is PREFAILED, so a detail that merged both or served B's says so.
+        # B's record is PREFAILED: a detail of B that merged both records or
+        # served A's says CONFIRMED.
         detail_b = self.get_json(f'/apps/{OWNER_B}/faults/{code}')
         self.assertEqual(detail_b['x-medkit']['owner'], OWNER_B)
         self.assertEqual(detail_b['x-medkit']['status_raw'], 'PREFAILED')
@@ -416,7 +417,7 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
 
         self.assertEqual(len(self._records(code)), 2)
         for source, item in records.items():
-            self.assertEqual(item['source_id'], source)
+            self.assertNotIn('source_id', item, 'vendor fields live inside x-medkit only')
             self.assertEqual(item['x-medkit']['records'],
                              [{'app_id': source, 'source_id': source, 'status': 'CONFIRMED'}])
             self.assertNotIn('owner', item)
@@ -429,8 +430,10 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
         spec = self.poll_endpoint_until('/docs', lambda d: d if 'openapi' in d else None)
 
         item = spec['components']['schemas']['FaultListItem']
-        for key in ('source_id', 'x-medkit'):
-            self.assertIn(key, item['properties'], f'the published fault item must declare {key}')
+        self.assertIn('x-medkit', item['properties'],
+                      'the published fault item must declare x-medkit')
+        self.assertNotIn('source_id', item['properties'],
+                         'a fault item carries vendor fields only inside x-medkit')
 
         route = spec['paths']['/apps/{app_id}/faults/{fault_code}']
         # With locking off the DELETE carries no lock contract, so a 409 on

@@ -543,17 +543,17 @@ dto::FaultDetail FaultHandlers::build_sovd_fault_response(const json & fault_jso
   if (!reporting_sources.empty()) {
     xm.reporting_sources = std::move(reporting_sources);
   }
-  // Only a per_source record's item carries source_id. Named `owner` here
-  // because a fault LIST's x-medkit uses `source_id` for the entity's namespace.
-  if (const auto it = fault_json.find("source_id"); it != fault_json.end() && it->is_string()) {
-    xm.owner = it->get<std::string>();
-  }
   if (const auto it = fault_json.find("x-medkit"); it != fault_json.end() && it->is_object()) {
     std::vector<dto::FaultRecordRef> records;
     for (const auto & ref : it->value("records", json::array())) {
       if (auto parsed = dto::JsonReader<dto::FaultRecordRef>::read(ref)) {
         records.push_back(std::move(*parsed));
       }
+    }
+    // A detail of one per_source record names its owner. Named `owner`, not
+    // `source_id`: a fault LIST's x-medkit uses `source_id` for the entity's namespace.
+    if (records.size() == 1 && records.front().source_id) {
+      xm.owner = records.front().source_id;
     }
     if (!records.empty()) {
       xm.records = std::move(records);

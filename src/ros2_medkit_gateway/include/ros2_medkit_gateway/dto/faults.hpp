@@ -81,7 +81,7 @@ inline constexpr std::string_view dto_name<FaultListItemXMedkit> = "FaultListIte
 // Wire keys:
 //   fault_code, severity, description, first_occurred, last_occurred,
 //   last_passed (absent = never passed), occurrence_count, status,
-//   reporting_sources, source_id, severity_label, x-medkit
+//   reporting_sources, severity_label, x-medkit
 // =============================================================================
 struct FaultListItem {
   std::string fault_code;
@@ -93,9 +93,6 @@ struct FaultListItem {
   std::optional<int64_t> occurrence_count;
   std::string status;
   std::optional<std::vector<std::string>> reporting_sources;
-  /// The owner of a per_source record. Absent for a shared record and for an
-  /// entry of several records.
-  std::optional<std::string> source_id;
   std::optional<std::string> severity_label;     // enum: INFO|WARN|ERROR|CRITICAL|UNKNOWN
   std::optional<FaultListItemXMedkit> x_medkit;  // wire key: "x-medkit"
 };
@@ -106,7 +103,7 @@ inline constexpr auto dto_fields<FaultListItem> = std::make_tuple(
     field("description", &FaultListItem::description), field("first_occurred", &FaultListItem::first_occurred),
     field("last_occurred", &FaultListItem::last_occurred), field("last_passed", &FaultListItem::last_passed),
     field("occurrence_count", &FaultListItem::occurrence_count), field("status", &FaultListItem::status),
-    field("reporting_sources", &FaultListItem::reporting_sources), field("source_id", &FaultListItem::source_id),
+    field("reporting_sources", &FaultListItem::reporting_sources),
     field_enum("severity_label", &FaultListItem::severity_label, kFaultSeverityLabelValues),
     field("x-medkit", &FaultListItem::x_medkit));
 
