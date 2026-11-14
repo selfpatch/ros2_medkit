@@ -51,6 +51,7 @@ import launch_testing
 import launch_testing.actions
 from rcl_interfaces.msg import Log
 import rclpy
+from rclpy.duration import Duration
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 import requests
 
@@ -216,6 +217,11 @@ def _poll(predicate, *, what, timeout=DISCOVERY_TIMEOUT_SEC):
     raise AssertionError(f'timed out after {timeout}s waiting for {what}; last={last!r}')
 
 
+def _at_least(items, count):
+    """Return `items` when it holds `count` or more entries, else None."""
+    return items if len(items) >= count else None
+
+
 def _status(url):
     return requests.get(url, timeout=HTTP_TIMEOUT_SEC).status_code
 
@@ -309,6 +315,10 @@ class RosoutProbe:
         msg.line = 1
         self.pub.publish(msg)
 
+    def wait_delivered(self):
+        """Return True once every subscriber has acknowledged every published entry."""
+        return self.pub.wait_for_all_acked(Duration(seconds=DELIVERY_TIMEOUT_SEC))
+
     def close(self):
         self.node.destroy_node()
         rclpy.shutdown(context=self.context)
@@ -378,7 +388,8 @@ class TestLogsTriggerRestoreBeforeDiscovery(unittest.TestCase):
                                  f'{app_id} must not exist before its node starts')
             probe.publish('owner-early', OWNER_LOGGER)
             probe.publish('namesake-early', NAMESAKE_APP)
-            time.sleep(2.0)
+            self.assertTrue(probe.wait_delivered(),
+                            'the gateway did not receive the early entries')
             for app_id in (NAMESAKE_APP, OWNER_APP):
                 self.assertEqual(_status(f'{BASE_URL_RESTARTED}/apps/{app_id}'), 404,
                                  f'{app_id} appeared before the early entries were logged')
@@ -400,23 +411,31 @@ class TestLogsTriggerRestoreBeforeDiscovery(unittest.TestCase):
                                 f'{app_id}: {marker} not delivered: {reader.markers()}, '
                                 f'stream error {reader.error!r}')
 
-            # Time for a marker to reach a trigger, if one could.
-            time.sleep(2.0)
+            # The root app lists its own markers, one per firing.
+            own_markers = _poll(
+                lambda: _at_least(
+                    _listed(BASE_URL_RESTARTED, NAMESAKE_APP).get(f'ls-{NAMESAKE_APP}', []), 2),
+                what=f'GET /apps/{NAMESAKE_APP}/logs to list a marker per firing')
+            # Each trigger delivers in log order, so once an entry logged after the
+            # others arrives, no earlier entry or marker can still reach it.
+            probe.publish('owner-done', OWNER_LOGGER)
+            probe.publish('namesake-done', NAMESAKE_APP)
+            for app_id, marker in ((OWNER_APP, 'owner-done'), (NAMESAKE_APP, 'namesake-done')):
+                self.assertTrue(readers[app_id].wait_for(marker, DELIVERY_TIMEOUT_SEC),
+                                f'{app_id}: {marker} not delivered: {readers[app_id].markers()}')
             owner = readers[OWNER_APP].markers()
             namesake = readers[NAMESAKE_APP].markers()
             problems = []
-            # The root app lists its own markers, one per firing.
-            own_markers = _listed(BASE_URL_RESTARTED, NAMESAKE_APP).get(f'ls-{NAMESAKE_APP}', [])
             if len(own_markers) != 2:
                 problems.append(f'{NAMESAKE_APP}: GET lists {len(own_markers)} of its markers, '
                                 f'expected 2')
             if [i for m, i in owner if m == 'owner-early'] != listed[OWNER_APP]:
                 problems.append(f'{OWNER_APP}: early entry listed as {listed[OWNER_APP]}, '
                                 f'delivered {owner}')
-            if [m for m, _ in owner] != ['owner-early', 'owner-late']:
+            if [m for m, _ in owner] != ['owner-early', 'owner-late', 'owner-done']:
                 problems.append(f'{OWNER_APP}: expected each own entry once, in log order, '
                                 f'got {owner}')
-            if [m for m, _ in namesake] != ['namesake-early', 'namesake-late']:
+            if [m for m, _ in namesake] != ['namesake-early', 'namesake-late', 'namesake-done']:
                 problems.append(f'{NAMESAKE_APP}: expected only its own entries, once, in log '
                                 f'order, got {namesake}')
             self.assertFalse(problems, '; '.join(problems))

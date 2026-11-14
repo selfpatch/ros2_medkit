@@ -20,11 +20,13 @@ marker is logged under the trigger's entity id, so GET /{entity}/logs lists it
 where that logger name is in the entity's log. It fires no logs trigger: not
 its own, not another one on the same entity, not one above or below it.
 
-Each case creates its triggers, publishes five real /rosout entries one second
-apart under a logger its entities list, and then compares per trigger the
-events it delivered with what its entity's GET lists: one event per real
-entry, none for a marker, and one marker per event wherever the entity lists
-the trigger's markers.
+Each case creates its triggers, publishes five real /rosout entries under a
+logger its entities list, each listed before the next is logged, then one
+closing entry. A trigger delivers in log order, so once the closing entry
+arrives no earlier marker can still fire it. The case then compares per
+trigger the events it delivered with what its entity's GET lists: one event per
+real entry, none for a marker, and one marker per event wherever the entity
+lists the trigger's markers.
 
 Two gateways share one ROS graph: runtime (runtime_only) and manifest
 (manifest_only), with a fault manager for the faults trigger case. The graph
@@ -72,8 +74,6 @@ DELIVERY_TIMEOUT_SEC = 20.0 * TIME_SCALE
 POLL_INTERVAL_SEC = 0.5
 
 REAL_ENTRIES = 5
-REAL_SPACING_SEC = 1.0
-MIN_WINDOW_SEC = 5.0
 
 RUN = uuid.uuid4().hex[:10]
 HOST = '{host}'
@@ -202,6 +202,11 @@ def _listing(base_url, path):
     r = requests.get(f'{base_url}/{path}/logs', timeout=HTTP_TIMEOUT_SEC)
     r.raise_for_status()
     return r.json().get('items', [])
+
+
+def _count(base_url, path, message):
+    """Return how many entries GET /{path}/logs lists with exactly this message."""
+    return sum(1 for i in _listing(base_url, path) if i.get('message') == message)
 
 
 def _num(entry_id):
@@ -483,31 +488,37 @@ class TestLogSettingsMarkers(unittest.TestCase):
                 stream = next(s for s in streams if s.label == lookalike_of[0])
                 lookalike = (stream.marker_message(), stream.path, stream.label, lookalike_of[1])
 
-            started = time.monotonic()
             for n in range(REAL_ENTRIES):
+                message = f'{RUN}:real-{case}-{n}'
                 for kick in kicks:
-                    self.probe.publish(kick, f'{RUN}:real-{case}-{n}')
+                    self.probe.publish(kick, message)
                 if lookalike and n == REAL_ENTRIES // 2:
                     # Same logger, level, message and empty source as a marker.
                     self.probe.publish(lookalike[3], lookalike[0], source=False,
                                        stamp_sec=LOOKALIKE_STAMP_SEC)
-                time.sleep(REAL_SPACING_SEC)
+                _poll(lambda m=message: all(_count(url, p, m) == len(kicks) for p in paths),
+                      what=f'every listing to hold {message}')
 
+            closing = f'{RUN}:done-{case}'
+            for kick in kicks:
+                self.probe.publish(kick, closing)
             deadline = time.monotonic() + SETTLE_TIMEOUT_SEC
             clean_polls = 0
             problems = []
             while time.monotonic() < deadline and clean_polls < 2:
                 time.sleep(POLL_INTERVAL_SEC)
-                problems = self._measure(url, streams, lists, watermarks, case, kicks, lookalike)
+                if all(_count(url, p, closing) == len(kicks) for p in paths):
+                    problems = self._measure(url, streams, lists, watermarks, case, kicks,
+                                             lookalike)
+                else:
+                    problems = [f'{closing} is not listed everywhere yet']
                 clean_polls = clean_polls + 1 if not problems else 0
-            window = time.monotonic() - started
             same = []
             if lookalike:
                 same = [i for i in _listing(url, lookalike[1]) if i.get('message') == lookalike[0]]
         finally:
             for stream in streams:
                 stream.close()
-        self.assertGreaterEqual(window, MIN_WINDOW_SEC)
         self.assertFalse(problems, '; '.join(problems))
         if lookalike:
             shapes = {json.dumps([i.get('severity'), i.get('context')], sort_keys=True)

@@ -50,6 +50,7 @@ import launch_testing
 import launch_testing.actions
 from rcl_interfaces.msg import Log
 import rclpy
+from rclpy.duration import Duration
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 import requests
 
@@ -472,6 +473,10 @@ class RosoutProbe:
         msg.line = 1
         self.pub.publish(msg)
 
+    def wait_delivered(self):
+        """Return True once every gateway has acknowledged every published entry."""
+        return self.pub.wait_for_all_acked(Duration(seconds=DELIVERY_TIMEOUT_SEC))
+
     def wait_for_gateways(self, count):
         _poll(lambda: self.pub.get_subscription_count() >= count,
               what=f'{count} /rosout subscribers')
@@ -520,9 +525,8 @@ class TestCappedRingBuffer(unittest.TestCase):
         # Cap is 3 x 10 = 30 distinct logger names; 40 new ones reach it.
         for i in range(40):
             self.probe.publish(f'junk-{i}', f'junk/n{i}')
-            if i % 10 == 9:
-                time.sleep(0.2)
-        time.sleep(0.5)
+        self.assertTrue(self.probe.wait_delivered(),
+                        'the gateways did not receive the junk entries')
         self.probe.publish('cap-drop', 'capped/cap_probe')
         self.probe.publish('cap-sentinel', 'capped.cap_probe')
 
