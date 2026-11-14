@@ -624,7 +624,8 @@ were last cached.
 
 Per-entity resource collection endpoints perform real-time fan-out via
 ``fan_out_get()`` to collect items from all healthy peers and merge them
-into the local response. This applies to:
+into the local response. A peer whose last health check failed is not asked,
+and the answer names it as failed. This applies to:
 
 - ``GET /api/v1/{entity_type}/{id}/data``
 - ``GET /api/v1/{entity_type}/{id}/operations``
@@ -642,7 +643,8 @@ A's answer is partial and names ``subsystem_b/subsystem_c`` in
 ``failed_peers``.
 
 If a peer request fails during fan-out (peer unreachable or non-2xx response),
-the response body includes:
+or a peer is not asked because its last health check failed, the response body
+includes:
 
 - ``x-medkit.partial: true`` in the JSON response body
 - ``x-medkit.failed_peers`` listing which peers failed

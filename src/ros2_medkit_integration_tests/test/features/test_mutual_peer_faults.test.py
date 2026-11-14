@@ -247,7 +247,15 @@ class TestMutualPeerFaults(GatewayTestCase):
 
     def test_middle_of_chain_lists_every_gateway_once(self):
         """B asks A and C, and A does not ask B back."""
-        r = requests.get(f'{B_URL}/faults', timeout=30)
+        # Under load B can mark A unhealthy for a refresh cycle. B then answers
+        # partial and names A; completeness is asserted on the next full answer.
+        deadline = time.monotonic() + DISCOVERY_TIMEOUT
+        while True:
+            r = requests.get(f'{B_URL}/faults', timeout=30)
+            partial = r.status_code == 200 and r.json().get('x-medkit', {}).get('partial')
+            if not partial or time.monotonic() >= deadline:
+                break
+            time.sleep(0.5)
         self._assert_complete(r, [A_URL, B_URL, C_URL])
 
     def test_status_filter_reaches_every_peer(self):

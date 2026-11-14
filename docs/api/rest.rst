@@ -70,7 +70,7 @@ operations that read them.
    other do not ask each other twice. It takes precedence over
    ``X-Medkit-No-Fan-Out``, which the same request also carries. A path of 16
    ids is not extended: the gateway answers for itself and reports its peers
-   as ``too-deep``. Clients do not send it (see :ref:`the fan-out design note
+   as ``too-deep``, a peer marked unhealthy as ``unreachable``. Clients do not send it (see :ref:`the fan-out design note
    <aggregation-fan-out>`).
 
 Server Capabilities
@@ -4289,6 +4289,8 @@ endpoint. ``GET /api/v1/faults/stream`` also reaches every healthy peer, but it
 is not an ``items`` merge: it holds one connection open per peer for as long as
 a client is attached. See the fault-streaming section below. The gateway sends the same request to all healthy peers, merges their
 ``items`` arrays into the local response, and returns the combined result.
+A peer whose last health check failed is not asked: the answer names it as a
+failed peer with reason ``unreachable``.
 
 If some peer requests fail during fan-out (peer unreachable or non-2xx
 response), the response includes vendor metadata indicating partial results:
@@ -4321,7 +4323,8 @@ why, one entry per name, with ``reason`` one of:
        had not finished when the request's deadline came.
    * - ``unreachable``
      - No usable answer arrived: connection refused, no route, TLS or redirect
-       failure, or the peer died while the answer was arriving.
+       failure, or the peer died while the answer was arriving. Also a peer
+       whose last health check failed, which the gateway did not ask.
    * - ``canceled``
      - This gateway stopped the call, which happens during its own shutdown.
    * - ``error-status``
