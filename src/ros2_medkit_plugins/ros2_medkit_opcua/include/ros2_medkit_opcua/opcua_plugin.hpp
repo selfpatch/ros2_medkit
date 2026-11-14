@@ -35,6 +35,7 @@
 #include <ros2_medkit_gateway/dto/faults.hpp>
 #include <ros2_medkit_gateway/plugins/ros_plugin_context.hpp>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -889,6 +890,12 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // lock. Read handlers on the HTTP thread take a shared lock for as long as
   // they hold pointers/refs into node_map_.
   mutable std::shared_mutex node_map_mutex_;
+
+  // Component ids the last two introspect() calls returned. The gateway lists a
+  // new id only after it merges that result, so the older id stays served until
+  // then. Guarded by exposed_components_mutex_.
+  mutable std::mutex exposed_components_mutex_;
+  std::array<std::string, 2> exposed_component_ids_;
 
   // OpcuaClient::connection_generation the last auto_browse walk ran against (0
   // = never walked). The poll thread re-walks when the live generation differs,
