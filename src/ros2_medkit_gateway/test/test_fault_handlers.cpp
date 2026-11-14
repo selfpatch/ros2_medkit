@@ -42,8 +42,9 @@ namespace dto = ros2_medkit_gateway::dto;
 
 class FaultHandlersTest : public ::testing::Test {
  protected:
+  /// The item the detail route builds a single record's response from.
   static json fault_json(const ros2_medkit_msgs::msg::Fault & f) {
-    return conversions::fault_to_json(f);
+    return ros2_medkit_gateway::faults::record_item(conversions::fault_to_json(f), nullptr);
   }
   static json env_json(const ros2_medkit_msgs::msg::EnvironmentData & e) {
     return conversions::environment_data_to_json(e);
@@ -440,6 +441,7 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseNamesTheOwningSource) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "SHARED_CODE";
   fault.reporting_sources = {"/perception/lidar"};
+  fault.owner = "/perception/lidar";
 
   ros2_medkit_msgs::msg::EnvironmentData env_data;
 
@@ -456,6 +458,13 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseNamesTheOwningSource) {
   // API is the thing this avoids.
   EXPECT_FALSE(response["x-medkit"].contains("source_id"))
       << "the detail must not reuse the list's source_id key for the record owner";
+
+  // A shared record names no owner, as before records had owners.
+  fault.owner = "*";
+  auto shared = to_json(FaultHandlers::build_sovd_fault_response(fault_json(fault), env_json(env_data), "/apps/test"));
+  EXPECT_FALSE(shared["x-medkit"].contains("owner"));
+  EXPECT_FALSE(shared["x-medkit"].contains("records"));
+  EXPECT_EQ(shared["x-medkit"]["reporting_sources"], json::array({"/perception/lidar"}));
 }
 
 // The other owner of the same code is a different record, and its detail says
@@ -465,9 +474,11 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseSeparatesOwnersOfOneCode) {
   ros2_medkit_msgs::msg::Fault first;
   first.fault_code = "SHARED_CODE";
   first.reporting_sources = {"/perception/lidar"};
+  first.owner = "/perception/lidar";
   ros2_medkit_msgs::msg::Fault second;
   second.fault_code = "SHARED_CODE";
   second.reporting_sources = {"/control/motor"};
+  second.owner = "/control/motor";
 
   ros2_medkit_msgs::msg::EnvironmentData env_data;
 
@@ -654,11 +665,8 @@ TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsPrefixCollision) {
 // reporting_sources=[bare id] + a freeze-frame snapshot under a plugin entity
 // path.
 // =============================================================================
-// select_scoped_fault - which record a per-record route acts on
-//
-// A fault code is half of a record's identity. These pin what the per-entity
-// GET and DELETE do when the entity's own scope holds none, one, or several
-// records of the code the URL named.
+// records_of_code_in_scope / addressable_records - which record a recording
+// URL carrying a fault code resolves to
 // =============================================================================
 namespace {
 
@@ -672,51 +680,6 @@ std::vector<ros2_medkit_gateway::faults::ScopedFault> in_scope(const json & faul
 }
 
 }  // namespace
-
-// @verifies REQ_INTEROP_013
-TEST(SelectScopedFaultTest, OneRecordInScopeIsTheRecordAndNamesItsOwner) {
-  const json faults =
-      json::array({record("SHARED_CODE", "app_a"), record("SHARED_CODE", "app_b"), record("OTHER_CODE", "app_a")});
-
-  auto picked =
-      FaultHandlers::select_scoped_fault(in_scope(faults, "SHARED_CODE", {"app_a"}), "SHARED_CODE", "app_id", "app_a");
-
-  ASSERT_TRUE(picked.has_value()) << picked.error().message;
-  EXPECT_EQ(picked->owner, "app_a");
-  EXPECT_EQ(picked->fault["fault_code"], "SHARED_CODE");
-}
-
-// @verifies REQ_INTEROP_013
-TEST(SelectScopedFaultTest, NoRecordInScopeIs404) {
-  const json faults = json::array({record("SHARED_CODE", "app_b")});
-
-  auto picked =
-      FaultHandlers::select_scoped_fault(in_scope(faults, "SHARED_CODE", {"app_a"}), "SHARED_CODE", "app_id", "app_a");
-
-  ASSERT_FALSE(picked.has_value());
-  EXPECT_EQ(picked.error().http_status, 404);
-  EXPECT_EQ(picked.error().code, ros2_medkit_gateway::ERR_RESOURCE_NOT_FOUND);
-}
-
-// Two of this component's own apps report the code, so the URL names two
-// records. Acting on either would clear or disclose a record the caller did
-// not ask for and could not tell apart in the response.
-// @verifies REQ_INTEROP_015
-TEST(SelectScopedFaultTest, SeveralRecordsInScopeIs409NamingEveryOwner) {
-  const json faults = json::array({record("SHARED_CODE", "app_b"), record("SHARED_CODE", "app_a")});
-
-  auto picked = FaultHandlers::select_scoped_fault(in_scope(faults, "SHARED_CODE", {"app_a", "app_b"}), "SHARED_CODE",
-                                                   "component_id", "host");
-
-  ASSERT_FALSE(picked.has_value());
-  EXPECT_EQ(picked.error().http_status, 409);
-  EXPECT_EQ(picked.error().code, ros2_medkit_gateway::ERR_AMBIGUOUS_FAULT);
-  ASSERT_TRUE(picked.error().params.contains("owners"));
-  // Ordered by owner, so the answer does not depend on the store's listing order.
-  EXPECT_EQ(picked.error().params["owners"], json::array({"app_a", "app_b"}));
-  EXPECT_EQ(picked.error().params["fault_code"], "SHARED_CODE");
-  EXPECT_EQ(picked.error().params["component_id"], "host");
-}
 
 // The records of ONE code only: a second code the entity also owns is a
 // different resource and must not make its sibling ambiguous.
@@ -897,14 +860,13 @@ TEST_F(FaultHandlersTest, BuildSovdFaultResponseExternalEntityFreezeFrame) {
 }
 
 // =============================================================================
-// FaultListItem schema <-> fault_to_json producer contract.
+// FaultListItem schema <-> producer contract.
 //
-// The fault list endpoints emit items verbatim from fault_to_json inside the
-// opaque FaultListResult envelope (never through JsonWriter<FaultListItem>), so
-// the published FaultListItem schema is otherwise an unverified claim about that
-// wire. These tests pin the schema to its real in-tree producer: any field key,
-// type, or enum drift in fault_to_json now fails here instead of silently
-// diverging the spec from the wire (the drift the DTO contract exists to kill).
+// The fault list endpoints emit faults::record_item(fault_to_json(...)) items
+// verbatim inside the opaque FaultListResult envelope (never through
+// JsonWriter<FaultListItem>), so the published FaultListItem schema is otherwise
+// an unverified claim about that wire. These tests pin the schema to that
+// producer: any field key, type, or enum drift now fails here.
 // =============================================================================
 TEST(FaultListItemSchema, FaultToJsonConformsAndRoundTrips) {
   ros2_medkit_msgs::msg::Fault fault;
@@ -913,44 +875,53 @@ TEST(FaultListItemSchema, FaultToJsonConformsAndRoundTrips) {
   fault.description = "Brake pressure below threshold";
   fault.occurrence_count = 3;
   fault.status = "active";
-  fault.reporting_sources = {"brake_ecu"};  // a record carries its one owner
-  fault.last_passed.sec = 1200;             // absent-when-zero covered separately below
+  fault.reporting_sources = {"brake_ecu"};
+  fault.last_passed.sec = 1200;  // absent-when-zero covered separately below
 
-  const json wire = conversions::fault_to_json(fault);
+  // A per_source record, then a shared one.
+  for (const std::string owner : {"brake_ecu", "*"}) {
+    fault.owner = owner;
+    const json wire = ros2_medkit_gateway::faults::record_item(conversions::fault_to_json(fault), nullptr);
 
-  // The published FaultListItem schema must accept the verbatim wire ...
-  const auto parsed = dto::JsonReader<dto::FaultListItem>::read(wire);
-  ASSERT_TRUE(parsed.has_value()) << "fault_to_json output does not conform to FaultListItem";
-  // ... and round-trip back to identical wire (no field added or dropped).
-  EXPECT_EQ(dto::JsonWriter<dto::FaultListItem>::write(parsed.value()), wire);
+    // The published FaultListItem schema must accept the verbatim wire ...
+    const auto parsed = dto::JsonReader<dto::FaultListItem>::read(wire);
+    ASSERT_TRUE(parsed.has_value()) << owner << ": the item does not conform to FaultListItem";
+    // ... and round-trip back to identical wire (no field added or dropped).
+    EXPECT_EQ(dto::JsonWriter<dto::FaultListItem>::write(parsed.value()), wire) << owner;
+  }
 }
 
 TEST(FaultListItemSchema, FlatItemNamesTheOwningSource) {
-  // The flat list item addresses its own record: source_id is the owner, and it
-  // is the single entry of reporting_sources. A client filtering or clearing
-  // from a list never has to reach into the array to find out whose record it
-  // is holding.
+  // A per_source record's item addresses its own record: source_id is the
+  // owner, and x-medkit.records names it.
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "SHARED_CODE";
   fault.status = "CONFIRMED";
   fault.reporting_sources = {"app_a"};
+  fault.owner = "app_a";
 
-  const json wire = conversions::fault_to_json(fault);
+  const json wire = ros2_medkit_gateway::faults::record_item(conversions::fault_to_json(fault), nullptr);
 
   ASSERT_TRUE(wire.contains("source_id")) << "flat fault item must name the record owner";
   EXPECT_EQ(wire["source_id"], "app_a");
-  ASSERT_EQ(wire["reporting_sources"].size(), 1u);
-  EXPECT_EQ(wire["reporting_sources"][0], "app_a");
+  EXPECT_EQ(wire["x-medkit"]["records"], json::array({json{{"source_id", "app_a"}, {"status", "CONFIRMED"}}}));
+  EXPECT_FALSE(wire.contains("owner")) << "the internal owner key must not reach the wire";
 }
 
 TEST(FaultListItemSchema, FlatItemOmitsSourceIdWithoutAnOwner) {
-  // A record always has an owner, but the conversion is fed straight from the
-  // wire and must not invent one: no reporting source, no source_id key.
+  // A shared record names no owner: no source_id, no x-medkit, as before records
+  // had owners.
   ros2_medkit_msgs::msg::Fault fault;
-  fault.fault_code = "ORPHANED";
+  fault.fault_code = "SHARED";
   fault.status = "CONFIRMED";
+  fault.reporting_sources = {"app_a", "app_b"};
+  fault.owner = "*";
 
-  EXPECT_FALSE(conversions::fault_to_json(fault).contains("source_id"));
+  const json wire = ros2_medkit_gateway::faults::record_item(conversions::fault_to_json(fault), nullptr);
+
+  EXPECT_FALSE(wire.contains("source_id"));
+  EXPECT_FALSE(wire.contains("owner"));
+  EXPECT_FALSE(wire.contains("x-medkit"));
 }
 
 TEST(FaultListItemSchema, LastPassedOmittedWhenNeverPassed) {

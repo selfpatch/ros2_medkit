@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <set>
@@ -84,17 +85,13 @@ std::string record_owner(const nlohmann::json & fault);
 
 /// Every record of `fault_code` in `faults_array` whose owner lies inside
 /// `source_fqns`, ordered by owner so the answer does not depend on the order
-/// the store listed them in.
-///
-/// Returns the records rather than a count or a single pick, because the
-/// consumers disagree about what several of them mean: a per-entity fault route
-/// refuses to act on an ambiguous address, while a rosbag download asks each of
-/// their owners whether it holds the recording.
+/// the store listed them in. A rosbag download asks each of their owners
+/// whether it holds the recording.
 std::vector<ScopedFault> records_of_code_in_scope(const nlohmann::json & faults_array, const std::string & fault_code,
                                                   const std::set<std::string> & source_fqns);
 
-/// The records of `fault_code` inside `source_fqns` that a per-entity route
-/// resolves a code in its URL over.
+/// The records of `fault_code` inside `source_fqns` that a recording URL
+/// carrying a fault code resolves over.
 ///
 /// `listing` is a fault-manager listing read with every status and with muted
 /// records included: its `faults` array holds every record, and each
@@ -115,6 +112,46 @@ std::vector<ScopedFault> records_of_code_in_scope(const nlohmann::json & faults_
 /// read off the list ambiguous.
 std::vector<ScopedFault> addressable_records(const nlohmann::json & listing, const std::string & fault_code,
                                              const std::set<std::string> & source_fqns);
+
+/// The owner the fault manager keeps a record under: a per_source record's
+/// reporting source, or "*" for a shared record. An item that names no owner
+/// (an older fault manager, a peer gateway) is addressed by its first
+/// reporting source.
+std::string stored_owner(const nlohmann::json & fault);
+
+/// True for a shared record, the one record of a code that every source
+/// reports into. An item that names no owner is shared.
+bool is_shared_record(const nlohmann::json & fault);
+
+/// Names the App whose scope holds a reporting source, "" when none does.
+using AppOfSource = std::function<std::string(const std::string & source)>;
+
+/// One record of an entity's fault entry, as `x-medkit.records` lists it: the
+/// App and source of a per_source record, the reporting sources of a shared
+/// one, and its status.
+nlohmann::json record_ref(const nlohmann::json & record, const AppOfSource & app_of);
+
+/// One record as a fault item. The fault manager's item without the internal
+/// `owner`. A per_source record carries its owner as `source_id` and names
+/// itself in `x-medkit.records`; a shared record carries neither.
+nlohmann::json record_item(const nlohmann::json & record, const AppOfSource & app_of);
+
+/// The record whose environment data an entry of several records serves: the
+/// CONFIRMED record that occurred last, else the record that occurred last.
+/// `records` must not be empty.
+const nlohmann::json & representative_record(const std::vector<nlohmann::json> & records);
+
+/// One fault entry of an entity: `record_item` of its only record, else the
+/// merge of its records. The merge takes the most advanced status, the highest
+/// severity, the summed occurrence count, the earliest first and the latest
+/// last occurrence, the union of reporting sources and the representative
+/// record's description, and lists every record in `x-medkit.records`.
+/// `records` must not be empty and must share one fault code.
+nlohmann::json entry_item(const std::vector<nlohmann::json> & records, const AppOfSource & app_of);
+
+/// The records of `faults` grouped by fault code, in the order each code first
+/// appears, each group ordered by owner.
+std::vector<std::vector<nlohmann::json>> group_by_code(const nlohmann::json & faults);
 
 /// Owned source of every cached app, rebuilt when the cache generation moves.
 /// Thread-safe. One instance per caller that resolves record owners per event.

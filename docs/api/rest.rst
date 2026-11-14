@@ -1389,10 +1389,11 @@ Query and manage faults.
    ``per_source`` (see ``fault_thresholds.yaml``), the owner is the ``source_id``
    the reporter used and the single entry of the record's ``reporting_sources``,
    so two apps reporting one such ``fault_code`` are two records, each with its
-   own status, occurrence count and timestamps, and each cleared on its own. A
-   record is in scope for an entity when its owner equals one of the entity's
-   owned sources or is a path child of one (``<owned>/...``). The owned sources
-   are:
+   own status, occurrence count and timestamps, and each cleared on its own. Any
+   other code has one shared record that every source reports into. A record is
+   in scope for an entity when each of its reporting sources equals one of the
+   entity's owned sources or is a path child of one (``<owned>/...``). The owned
+   sources are:
 
    - an app: its node FQN, or its own id when the app is external
    - a component: the owned sources of its hosted apps, plus its own id when the
@@ -1408,48 +1409,55 @@ Query and manage faults.
    one fallback, see List Bulk Data Items). The last path segment of an owner is
    never read as an entity id.
 
+   An entity shows each ``fault_code`` once. The entry of a code covers every
+   record of it in the entity's scope: on an app, the record of its own source
+   and the records of its sub-sources (``<owned>/<suffix>``); on a component, an
+   area or a function, every record of the code under it. An entry of one record
+   is that record. An entry of several records is their merge:
+
+   - ``status``: the most advanced, ``CONFIRMED`` > ``PREFAILED`` > ``PREPASSED``
+     > ``HEALED`` > ``CLEARED``
+   - ``severity``: the highest
+   - ``occurrence_count``: the sum
+   - ``first_occurred``: the earliest; ``last_occurred`` and ``last_passed``: the
+     latest
+   - ``reporting_sources``: the union
+   - ``description`` and the detail's environment data: from the ``CONFIRMED``
+     record that occurred last, else from the record that occurred last
+
+   ``x-medkit.records`` on a list item and on a detail names each record the
+   entry covers: ``app_id`` and ``source_id`` (the owner) for a ``per_source``
+   record, ``reporting_sources`` for a shared one, and its ``status``. A
+   ``per_source`` record also carries its owner as the item's top-level
+   ``source_id`` and as the detail's ``x-medkit.owner``. A shared record names no
+   owner anywhere: alone in an entry, its item and its detail look as they did
+   before records had owners.
+
    A ``per_source`` ``SENSOR_TIMEOUT`` reported by both the lidar app and the
    temperature sensor app therefore appears on each app's own ``/faults`` page as
-   that app's record, and on the component hosting both as two items with
-   distinct ``source_id``.
+   that app's record, and on the component hosting both as one entry with two
+   ``x-medkit.records``.
 
-   A ``fault_code`` in a URL names a record only when it resolves to exactly one
-   record in the entity's scope. The candidates come in three tiers, and the
-   first tier holding any record of the code decides:
+   ``GET /{entity-path}/faults/{fault_code}`` serves the entry of the code over
+   every record of it in scope, whatever its status and muted or not, and
+   ``DELETE /{entity-path}/faults/{fault_code}`` clears each of those records
+   with its own owner. ``DELETE /{entity-path}/faults`` clears each record the
+   entity's fault list shows, with its own owner. Like that list, it leaves muted
+   records alone; the per-code ``DELETE`` clears a muted record. When the fault
+   manager refuses to clear a record, the bulk route answers ``500`` with the
+   codes it could not clear in ``parameters.failed_codes``, and so does the
+   per-code route when the code covers several records. The records it could
+   clear stay cleared.
 
-   1. the records the entity's fault list shows without a ``status`` parameter,
-      which are the ``PREFAILED`` and ``CONFIRMED`` records that are not muted
-   2. the muted records of those statuses, which that list leaves out only
-      because the correlation engine muted them
-   3. the records the list shows only for ``status=cleared``, ``status=healed``
-      or ``status=all``: ``CLEARED``, ``HEALED`` and ``PREPASSED``
-
-   So a muted symptom, or a record its source cleared, stays addressable by its
-   code while nothing ranks above it, and it never makes the record a client read
-   off the list ambiguous. Once one of two sources has cleared its record, the
-   code names the other one. ``GET`` and ``DELETE`` on
-   ``/{entity-path}/faults/{fault_code}`` and the recording download
-   ``GET /{entity-path}/bulk-data/rosbags/{fault_code}`` all resolve this way.
-   One candidate, and the route acts on it with its owner. Several, and it
-   answers ``409`` with vendor error code ``x-medkit-ambiguous-fault`` and
-   ``parameters.owners`` naming them, rather than acting on whichever record the
-   store listed first. Address one of them through the route of the app that
-   owns it, ``/apps/{app_id}/faults/{fault_code}``. None, and it answers ``404``.
-   Per-entity ``DELETE /{entity-path}/faults`` clears the records the entity's
-   fault list shows, each individually with its own owner. Like that list, it
-   leaves muted records alone. A muted record is cleared by its own per-code
-   ``DELETE /{entity-path}/faults/{fault_code}``, which resolves it as above.
-
-   Two nearby keys carry the record's owner and they are deliberately not the
-   same name. A flat fault item's top-level ``source_id`` is the owner, and the
-   detail response's ``x-medkit.owner`` is the same value. A fault LIST's
-   ``x-medkit.source_id`` is something else entirely: the addressed entity's own
-   namespace path, which is empty for an external app. Read ``source_id`` on an
-   item, ``owner`` on a detail, and never the list-level ``source_id`` as an
-   owner.
+   A fault LIST's ``x-medkit.source_id`` is something else: the addressed
+   entity's own namespace path, which is empty for an external app. Never read it
+   as an owner.
 
 ``GET /api/v1/faults``
-   List all faults across the system.
+   List all faults across the system, one item per record. A ``per_source`` code
+   reported by two sources is two items, each with its owner as ``source_id`` and
+   an ``x-medkit.records`` entry naming its app. A shared record is one item that
+   names no owner.
 
 ``GET /api/v1/components/{id}/faults``
    List all faults for an entity.
@@ -1543,6 +1551,13 @@ Query and manage faults.
           "occurrence_count": 3,
           "reporting_sources": ["/powertrain/motor_controller"],
           "owner": "/powertrain/motor_controller",
+          "records": [
+            {
+              "app_id": "motor_controller",
+              "source_id": "/powertrain/motor_controller",
+              "status": "CONFIRMED"
+            }
+          ],
           "severity_label": "ERROR"
         }
       }
@@ -1612,8 +1627,6 @@ Query and manage faults.
    - **400:** ``fault_code`` empty or longer than 256 characters
    - **404:** Fault not found, reported by an app outside this entity's scope,
      or declined by the fault manager
-   - **409:** ``x-medkit-ambiguous-fault``, the code names several records in
-     this entity's scope
    - **503:** Fault manager unavailable
 
 ``DELETE /api/v1/components/{id}/faults/{fault_code}``
@@ -1625,8 +1638,9 @@ Query and manage faults.
    - **400:** ``fault_code`` empty or longer than 256 characters
    - **404:** Fault not found, reported by an app outside this entity's scope,
      or declined by the fault manager
-   - **409:** ``x-medkit-ambiguous-fault``, the code names several records in
-     this entity's scope, or the entity is locked by another client
+   - **409:** The entity is locked by another client
+   - **500:** The code covers several records and the fault manager refused to
+     clear at least one; ``parameters.failed_codes`` names the code
    - **503:** Fault manager unavailable. This holds for an entity whose faults a
      plugin serves as well: the gateway reads the fault manager to learn which
      record the code names before it asks the plugin, and when that read fails
@@ -1656,6 +1670,8 @@ Query and manage faults.
 
    - **204:** Faults cleared (or none to clear)
    - **400:** Invalid status parameter
+   - **500:** The fault manager refused to clear at least one record;
+     ``parameters.failed_codes`` names their codes
    - **503:** Fault manager unavailable
 
 ``DELETE /api/v1/faults``
@@ -2042,9 +2058,12 @@ ranged request carries the whole error document.
   recording none of this entity's records is attached to
 - **409 Conflict**: ``x-medkit-ambiguous-fault``. A ``rosbags`` URL whose last
   segment is a fault code rather than a recording id resolves that code to one
-  record the way the per-code fault routes do (see the fault record note under
-  Faults Endpoints), and several candidate records in the entity's scope name
-  none of them. ``parameters.owners`` names the owners. Address the recording by
+  record in the entity's scope. The candidates come in three tiers, and the
+  first tier holding any record of the code decides: the ``PREFAILED`` and
+  ``CONFIRMED`` records that are not muted, then the muted ones of those
+  statuses, then the ``CLEARED``, ``HEALED`` and ``PREPASSED`` ones. Several
+  candidates in that tier name none of them, and ``parameters.owners`` names
+  their owners. Address the recording by
   its own id instead: the ``rosbags`` listing of this entity carries it as each
   descriptor's ``id``, and a fault detail links it as
   ``environment_data.snapshots[].bulk_data_uri``.
@@ -3780,11 +3799,10 @@ Vendor-specific ``x-medkit-*`` codes are enveloped: the response carries
      - A vendor-specific failure; read ``vendor_code`` for the real code
    * - ``x-medkit-ambiguous-fault``
      - 409
-     - The ``fault_code`` in the URL addresses several fault records inside the
-       addressed entity, because several of its reporting sources report that
-       code and each is its own record. ``parameters.owners`` names them.
-       Address one of them through the route of the app that owns it,
-       ``/apps/{app_id}/faults/{fault_code}``.
+     - The fault code in a ``rosbags`` URL addresses several fault records
+       inside the addressed entity, because several of its reporting sources
+       report that code and each is its own record. ``parameters.owners`` names
+       them. Address the recording by its own id.
    * - ``x-medkit-plugin-error``
      - 400-599
      - Plugin provider returned an error. Status varies by plugin. Message truncated to 512 chars.
