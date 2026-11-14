@@ -345,12 +345,10 @@ nlohmann::json record_ref(const nlohmann::json & record, const AppOfSource & app
 nlohmann::json record_item(const nlohmann::json & record, const AppOfSource & app_of) {
   nlohmann::json item = record;
   item.erase("owner");
-  if (is_shared_record(record)) {
-    item.erase("source_id");
-    return item;
+  item.erase("source_id");
+  if (!is_shared_record(record)) {
+    item["x-medkit"] = {{"records", nlohmann::json::array({record_ref(record, app_of)})}};
   }
-  item["source_id"] = stored_owner(record);
-  item["x-medkit"] = {{"records", nlohmann::json::array({record_ref(record, app_of)})}};
   return item;
 }
 

@@ -144,8 +144,9 @@ class FaultHandlers {
    *   the handler appends `bulk_data_uri = entity_path + "/bulk-data/rosbags/" + fault_code`.
    * - "x-medkit" extensions with occurrence_count, severity_label, etc.
    *
-   * @param fault_json A fault item, `faults::record_item` or `faults::entry_item`:
-   *        its `source_id` becomes `x-medkit.owner`, its `x-medkit.records` is kept.
+   * @param fault_json A fault item, `faults::record_item` or `faults::entry_item`.
+   *        Its `x-medkit.records` is kept; the source of a single per_source
+   *        record becomes `x-medkit.owner`.
    * @param env_data_json Environment-data JSON (as produced by the transport).
    * @param entity_path Entity path used to construct rosbag bulk_data_uri.
    * @return SOVD-compliant FaultDetail DTO

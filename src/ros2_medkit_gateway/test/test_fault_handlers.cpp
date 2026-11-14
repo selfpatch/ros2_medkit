@@ -892,8 +892,8 @@ TEST(FaultListItemSchema, FaultToJsonConformsAndRoundTrips) {
 }
 
 TEST(FaultListItemSchema, FlatItemNamesTheOwningSource) {
-  // A per_source record's item addresses its own record: source_id is the
-  // owner, and x-medkit.records names it.
+  // A per_source record's item names its source inside x-medkit only: SOVD
+  // keeps vendor fields under x-medkit, so the item has no top-level source_id.
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "SHARED_CODE";
   fault.status = "CONFIRMED";
@@ -902,9 +902,8 @@ TEST(FaultListItemSchema, FlatItemNamesTheOwningSource) {
 
   const json wire = ros2_medkit_gateway::faults::record_item(conversions::fault_to_json(fault), nullptr);
 
-  ASSERT_TRUE(wire.contains("source_id")) << "flat fault item must name the record owner";
-  EXPECT_EQ(wire["source_id"], "app_a");
   EXPECT_EQ(wire["x-medkit"]["records"], json::array({json{{"source_id", "app_a"}, {"status", "CONFIRMED"}}}));
+  EXPECT_FALSE(wire.contains("source_id"));
   EXPECT_FALSE(wire.contains("owner")) << "the internal owner key must not reach the wire";
 }
 

@@ -1004,13 +1004,13 @@ Faults represent errors or warnings reported by system components. The gateway p
 
 One record is the pair (`fault_code`, owner). For a code the fault manager keeps `per_source` (see `fault_thresholds.yaml`), the owner is the `source_id` the reporter used and the one entry of `reporting_sources`, so two sources reporting one such `fault_code` are two records, each with its own status, occurrence count and timestamps, and each cleared on its own. Any other code has one shared record that every source reports into.
 
-An entity shows each `fault_code` once. The entry of a code covers every record of it in the entity's scope: on an app, the record of its own source and of its sub-sources (`<source>/<suffix>`); on a component, an area or a function, every record of the code under it. An entry of several records is their merge: the most advanced status (`CONFIRMED` > `PREFAILED` > `PREPASSED` > `HEALED` > `CLEARED`), the highest severity, the summed occurrence count, the earliest first and the latest last occurrence, the union of reporting sources, and the description and environment data of the `CONFIRMED` record that occurred last (else of the record that occurred last). `x-medkit.records` names each record of an entry: `app_id` and `source_id` for a `per_source` record, `reporting_sources` for a shared one, and its `status`. A `per_source` record also carries its owner as the item's `source_id` and the detail's `x-medkit.owner`; a shared record names no owner anywhere. `GET /api/v1/faults` is not an entity and lists one item per record.
+An entity shows each `fault_code` once. The entry of a code covers every record of it in the entity's scope: on an app, the record of its own source and of its sub-sources (`<source>/<suffix>`); on a component, an area or a function, every record of the code under it. An entry of several records is their merge: the most advanced status (`CONFIRMED` > `PREFAILED` > `PREPASSED` > `HEALED` > `CLEARED`), the highest severity, the summed occurrence count, the earliest first and the latest last occurrence, the union of reporting sources, and the description and environment data of the `CONFIRMED` record that occurred last (else of the record that occurred last). `x-medkit.records` names each record of an entry: `app_id` and `source_id` for a `per_source` record, `reporting_sources` for a shared one, and its `status`. A fault item carries vendor fields only inside `x-medkit`, so it has no top-level `source_id`. The detail of one `per_source` record also names its owner as `x-medkit.owner`; a shared record names no owner anywhere. `GET /api/v1/faults` is not an entity and lists one item per record.
 
 `GET` and `DELETE` on `/api/v1/{entity-path}/faults/{fault_code}` act on every record of the code in the entity's scope, whatever its status and muted or not; the `DELETE` clears each with its own owner. `DELETE /api/v1/{entity-path}/faults` clears each record the entity's fault list shows. Like that list, it leaves muted records alone. When the fault manager refuses to clear a record, the bulk route, and the per-code route for a code that covers several records, answer `500` with `parameters.failed_codes`.
 
 A recording belongs to the fault records it is attached to, each a (`fault_code`, owner) pair. `GET /api/v1/{entity-path}/bulk-data/rosbags/{recording_id}` serves it when the owner of one of those records is in the entity's fault scope, the scope its fault list uses. Owning a record of the same code is not enough: two apps reporting one `per_source` code each download only their own recording, cleared or not, and the component hosting both serves both. When the fault manager does not answer a call that decides this, the download answers `503`, not `404`.
 
-A fault list's `x-medkit.source_id` is a different thing from an item's `source_id`: the addressed entity's own namespace path.
+A fault list's `x-medkit.source_id` is not an owner: it is the addressed entity's own namespace path.
 
 - `GET /api/v1/faults` - List all faults across the system (convenience API for dashboards)
 - `GET /api/v1/faults/stream` - Real-time fault event stream via Server-Sent Events (SSE)
@@ -1038,20 +1038,20 @@ curl http://localhost:8080/api/v1/faults?status=all
 **Response (200 OK):**
 ```json
 {
-  "faults": [
+  "items": [
     {
       "fault_code": "NAVIGATION_PATH_BLOCKED",
       "severity": 2,
       "severity_label": "ERROR",
       "description": "Navigation failed - cannot find valid path to goal",
-      "source_id": "/nav2_fault_reporter",
-      "status": "pending",
+      "reporting_sources": ["/nav2_fault_reporter"],
+      "status": "PREFAILED",
       "first_occurred": 1735830000,
       "last_occurred": 1735830000,
       "occurrence_count": 1
     }
   ],
-  "count": 1
+  "x-medkit": {"count": 1, "muted_count": 0, "cluster_count": 0}
 }
 ```
 
@@ -1118,7 +1118,7 @@ This replays any buffered events with ID > 5, then continues streaming new event
 
 #### GET /api/v1/components/{component_id}/faults
 
-List every fault record the component owns, through the apps it hosts plus, for an external component, its own id.
+List one entry per fault code the component owns, through the apps it hosts plus, for an external component, its own id.
 
 **Query Parameters:**
 - `status` - Filter by fault status: `pending`, `confirmed`, `cleared`, `all` (default: `pending` + `confirmed`)
@@ -1131,10 +1131,8 @@ curl http://localhost:8080/api/v1/components/nav2_controller/faults
 **Response (200 OK):**
 ```json
 {
-  "component_id": "nav2_controller",
-  "source_id": "/nav2_controller",
-  "faults": [...],
-  "count": 1
+  "items": [...],
+  "x-medkit": {"entity_id": "nav2_controller", "aggregation_level": "component", "aggregated": true, "count": 1}
 }
 ```
 

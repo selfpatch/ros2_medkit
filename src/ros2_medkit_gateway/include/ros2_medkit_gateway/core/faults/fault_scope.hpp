@@ -128,9 +128,9 @@ using AppOfSource = std::function<std::string(const std::string & source)>;
 /// one, and its status.
 nlohmann::json record_ref(const nlohmann::json & record, const AppOfSource & app_of);
 
-/// One record as a fault item. The fault manager's item without the internal
-/// `owner`. A per_source record carries its owner as `source_id` and names
-/// itself in `x-medkit.records`; a shared record carries neither.
+/// One record as a fault item: the fault manager's item without its internal
+/// `owner` and `source_id`. A per_source record names its app and source in
+/// `x-medkit.records`; a shared record has no `x-medkit`.
 nlohmann::json record_item(const nlohmann::json & record, const AppOfSource & app_of);
 
 /// The record whose environment data an entry of several records serves: the

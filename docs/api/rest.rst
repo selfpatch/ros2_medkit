@@ -1427,11 +1427,11 @@ Query and manage faults.
 
    ``x-medkit.records`` on a list item and on a detail names each record the
    entry covers: ``app_id`` and ``source_id`` (the owner) for a ``per_source``
-   record, ``reporting_sources`` for a shared one, and its ``status``. A
-   ``per_source`` record also carries its owner as the item's top-level
-   ``source_id`` and as the detail's ``x-medkit.owner``. A shared record names no
-   owner anywhere: alone in an entry, its item and its detail look as they did
-   before records had owners.
+   record, ``reporting_sources`` for a shared one, and its ``status``. A fault
+   item carries vendor fields only inside ``x-medkit``, so it has no top-level
+   ``source_id``. The detail of one ``per_source`` record also names its owner as
+   ``x-medkit.owner``. A shared record names no owner anywhere: alone in an
+   entry, its item and its detail look as they did before records had owners.
 
    A ``per_source`` ``SENSOR_TIMEOUT`` reported by both the lidar app and the
    temperature sensor app therefore appears on each app's own ``/faults`` page as
@@ -1455,9 +1455,8 @@ Query and manage faults.
 
 ``GET /api/v1/faults``
    List all faults across the system, one item per record. A ``per_source`` code
-   reported by two sources is two items, each with its owner as ``source_id`` and
-   an ``x-medkit.records`` entry naming its app. A shared record is one item that
-   names no owner.
+   reported by two sources is two items, each with an ``x-medkit.records`` entry
+   naming its app and source. A shared record is one item that names no owner.
 
 ``GET /api/v1/components/{id}/faults``
    List all faults for an entity.
