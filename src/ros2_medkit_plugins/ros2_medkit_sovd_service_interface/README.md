@@ -13,6 +13,8 @@ Gateway plugin exposing medkit entity data via ROS 2 services. Enables ROS 2 nod
 
 Service prefix is configurable via `plugins.sovd_service_interface.service_prefix` parameter (default: `/medkit`).
 
+`list_entity_faults` answers one `Fault` per fault record in the entity's scope. Each carries the record's `owner` as the fault manager sets it: the reporting source of a `per_source` record, `*` for a shared one. Pass it as `source_id` to the fault manager's single-record services.
+
 ## Usage
 
 Load as a gateway plugin:

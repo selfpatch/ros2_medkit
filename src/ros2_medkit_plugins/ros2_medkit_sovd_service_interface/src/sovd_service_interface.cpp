@@ -218,6 +218,13 @@ void SovdServiceInterface::handle_list_entity_faults(
             }
           }
         }
+        // The fault manager's owner of the record. A peer gateway's HTTP item
+        // names a per_source record's owner as source_id instead.
+        if (fault_json.contains("owner") && fault_json["owner"].is_string()) {
+          fault.owner = fault_json["owner"].get<std::string>();
+        } else if (fault_json.contains("source_id") && fault_json["source_id"].is_string()) {
+          fault.owner = fault_json["source_id"].get<std::string>();
+        }
         response->faults.push_back(std::move(fault));
       }
     }
