@@ -1060,6 +1060,11 @@ IntrospectionResult OpcuaPlugin::introspect(const IntrospectionInput & /*input*/
     comp.identity = device_identity_;
   }
 
+  {
+    std::lock_guard<std::mutex> lock(exposed_components_mutex_);
+    exposed_component_ids_[1] = std::move(exposed_component_ids_[0]);
+    exposed_component_ids_[0] = comp.id;
+  }
   result.new_entities.components.push_back(std::move(comp));
 
   // Register x-plc-status on the PLC runtime component only, so non-PLC
@@ -1288,11 +1293,18 @@ void OpcuaPlugin::handle_plc_status(const PluginRequest & req, PluginResponse & 
   }
 
   std::shared_lock<std::shared_mutex> node_map_lock(node_map_mutex_);
-  // Everything below describes this plugin's own OPC UA session, which belongs
-  // to the one component the plugin introspects. Another component in the same
-  // entity tree exists but has no session here, so it gets the same 404 the
-  // data route gives an entity with no mapped points.
-  if (component_id != node_map_.component_id()) {
+  // Everything below describes this plugin's own OPC UA session, so it is served
+  // for the components the plugin exposes: its node map's id and the ids its last
+  // two introspect() calls returned. A re-derived id keeps answering under the id
+  // /components still lists. Any other component gets the 404 the data route
+  // gives an entity with no mapped points.
+  bool own_component = component_id == node_map_.component_id();
+  if (!own_component) {
+    std::lock_guard<std::mutex> lock(exposed_components_mutex_);
+    own_component = std::find(exposed_component_ids_.begin(), exposed_component_ids_.end(), component_id) !=
+                    exposed_component_ids_.end();
+  }
+  if (!own_component) {
     res.send_error(404, ERR_RESOURCE_NOT_FOUND, "No PLC status for component: " + component_id);
     return;
   }

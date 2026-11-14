@@ -256,7 +256,9 @@ build, `true` only in one built with `-DMEDKIT_OPCUA_READ_ONLY=OFF`. An absent
 build whose node map marks nothing writable shows the same absence.
 
 The status describes the plugin's own OPC UA session, so it is served only under
-the component the plugin introspects (`openplc_runtime` above). Any other
+the component the plugin introspects (`openplc_runtime` above). When the plugin
+re-derives its component id from the device, the id `/components` still lists
+keeps answering until the next discovery refresh lists the new one. Any other
 component in the gateway, for example one another plugin introspects, answers
 404 `resource-not-found`, the same answer the data route gives an entity with no
 mapped points.
