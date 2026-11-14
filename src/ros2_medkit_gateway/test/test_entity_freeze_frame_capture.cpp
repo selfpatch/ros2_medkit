@@ -17,11 +17,14 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -38,6 +41,7 @@ using ros2_medkit_gateway::DataProvider;
 using ros2_medkit_gateway::DataProviderError;
 using ros2_medkit_gateway::DataProviderErrorInfo;
 using ros2_medkit_gateway::EntityFreezeFrameCapture;
+using ros2_medkit_gateway::FreezeFrameCapture;
 using ros2_medkit_gateway::handlers::FaultHandlers;
 using ros2_medkit_gateway::ros2_common::Ros2SubscriptionExecutor;
 using ros2_medkit_msgs::msg::Fault;
@@ -112,6 +116,69 @@ class StaticContentDataProvider : public DataProvider {
  private:
   std::string entity_id_;
   json content_;
+};
+
+/// The capture EntityFreezeFrameCapture builds, with a second subscriber on its
+/// feed. The feed calls its subscribers in order on one thread and the capture
+/// subscribes first, so the probe sees a confirm once the capture has queued it.
+/// The standing-fault lister waits for that before it answers.
+class ObservedCapture {
+ public:
+  ObservedCapture(rclcpp::Node * node, Ros2SubscriptionExecutor & exec,
+                  EntityFreezeFrameCapture::RouteDataFetcher route_fetcher, std::string queued_code,
+                  std::vector<EntityFreezeFrameCapture::StandingFault> standing)
+    : events_(node, exec)
+    , capture_(std::make_unique<FreezeFrameCapture>(
+          events_, ros2_medkit_gateway::FreezeFrameCaptureConfig{true, 256},
+          FreezeFrameCapture::Hooks{ros2_medkit_gateway::PluginDataReaders{[](const std::string &) -> DataProvider * {
+                                                                             return nullptr;
+                                                                           },
+                                                                           std::move(route_fetcher)},
+                                    [this, code = std::move(queued_code),
+                                     standing = std::move(standing)](const std::function<bool()> & should_abort) {
+                                      wait_queued(code, should_abort);
+                                      return standing;
+                                    },
+                                    [this](const std::function<bool()> & should_abort) {
+                                      events_.wait_for_publisher(should_abort);
+                                    }}))
+    , probe_(events_.subscribe([this](const ros2_medkit::fault_detection::FaultEventRecord & event) {
+      if (event.event_type != ros2_medkit::fault_detection::fault_event_type::kConfirmed) {
+        return;
+      }
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queued_.insert(event.fault.fault_code);
+      }
+      cv_.notify_all();
+    })) {
+  }
+
+  ~ObservedCapture() = default;
+  ObservedCapture(const ObservedCapture &) = delete;
+  ObservedCapture & operator=(const ObservedCapture &) = delete;
+  ObservedCapture(ObservedCapture &&) = delete;
+  ObservedCapture & operator=(ObservedCapture &&) = delete;
+
+  std::vector<FreezeFrameCapture::Frame> frames_for(const std::string & fault_code, const std::string & owner) const {
+    return capture_->frames_for(fault_code, owner);
+  }
+
+ private:
+  void wait_queued(const std::string & code, const std::function<bool()> & should_abort) {
+    const auto deadline = std::chrono::steady_clock::now() + 5s;
+    std::unique_lock<std::mutex> lock(mutex_);
+    while (queued_.count(code) == 0 && !should_abort() && std::chrono::steady_clock::now() < deadline) {
+      cv_.wait_for(lock, 10ms);
+    }
+  }
+
+  ros2_medkit_gateway::ros2_capture_detail::SlotFaultEvents events_;
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::set<std::string> queued_;
+  std::unique_ptr<FreezeFrameCapture> capture_;
+  ros2_medkit_gateway::FaultEventSubscription probe_;
 };
 
 FaultEvent make_confirmed_event(const std::string & fault_code, const std::vector<std::string> & sources) {
@@ -288,50 +355,33 @@ TEST_F(EntityFreezeFrameCaptureTest, QueuedLiveConfirmDedupesTheSameStandingReco
   // confirm is already queued when the catch-up snapshots the queue: the
   // catch-up must skip that record (one plugin read per confirm, no double
   // capture) and the drain loop's live frame is the one that lands.
-  std::atomic<bool> published{false};
   std::atomic<int> route_reads{0};
-  EntityFreezeFrameCapture capture(
-      node_.get(), *sub_exec_,
-      [](const std::string &) -> DataProvider * {
-        return nullptr;
-      },
-      [&route_reads](const std::string & entity_id) -> std::optional<json> {
-        if (entity_id != "route_live_app") {
-          return std::nullopt;
-        }
-        route_reads.fetch_add(1);
-        return json{{"connected", true}, {"items", json::array({{{"name", "level"}, {"value", 99.0}}})}};
-      },
-      256,
-      [&published](const std::function<bool()> &) -> std::vector<EntityFreezeFrameCapture::StandingFault> {
-        // Hold the catch-up until the live confirm has reached the queue so
-        // the standing entry and the queued event genuinely overlap.
-        const auto deadline = std::chrono::steady_clock::now() + 5s;
-        while (!published.load() && std::chrono::steady_clock::now() < deadline) {
-          std::this_thread::sleep_for(10ms);
-        }
-        std::this_thread::sleep_for(500ms);  // let the event reach the queue
-        return {{"PLC_BOTH_PATHS", {"route_live_app"}}};
-      });
+  ObservedCapture capture(node_.get(), *sub_exec_,
+                          [&route_reads](const std::string & entity_id) -> std::optional<json> {
+                            if (entity_id != "route_live_app") {
+                              return std::nullopt;
+                            }
+                            route_reads.fetch_add(1);
+                            return json{{"connected", true},
+                                        {"items", json::array({{{"name", "level"}, {"value", 99.0}}})}};
+                          },
+                          "PLC_BOTH_PATHS", {{"PLC_BOTH_PATHS", {"route_live_app"}}});
 
   ASSERT_TRUE(wait_for_match());
-  const auto live = make_confirmed_event("PLC_BOTH_PATHS", {"route_live_app"});
-  publisher_->publish(live);
-  published.store(true);
+  publisher_->publish(make_confirmed_event("PLC_BOTH_PATHS", {"route_live_app"}));
 
+  // The catch-up runs before the drain loop, so once the live frame is there a
+  // second read by the catch-up would already have happened.
   const auto deadline = std::chrono::steady_clock::now() + 10s;
   std::vector<EntityFreezeFrameCapture::Frame> frames;
   while (std::chrono::steady_clock::now() < deadline) {
     frames = capture.frames_for("PLC_BOTH_PATHS", "route_live_app");
-    if (!frames.empty()) {
+    if (!frames.empty() && !frames[0].startup_catchup) {
       break;
     }
     std::this_thread::sleep_for(20ms);
   }
 
-  // The queued confirm dedupes the catch-up: the record was read once and
-  // holds the live frame.
-  std::this_thread::sleep_for(300ms);  // would be enough for a second read
   EXPECT_EQ(route_reads.load(), 1);
   ASSERT_EQ(frames.size(), 1u);
   EXPECT_EQ(frames[0].entity_id, "route_live_app");
@@ -344,36 +394,23 @@ TEST_F(EntityFreezeFrameCaptureTest, QueuedLiveConfirmDedupesTheSameStandingReco
 /// dropping it on the code alone left that record's detail page blank.
 /// @verifies REQ_INTEROP_088
 TEST_F(EntityFreezeFrameCaptureTest, QueuedConfirmDoesNotDedupeAnotherOwnerOfTheSameCode) {
-  std::atomic<bool> published{false};
-  EntityFreezeFrameCapture capture(
-      node_.get(), *sub_exec_,
-      [](const std::string &) -> DataProvider * {
-        return nullptr;
-      },
-      [](const std::string & entity_id) -> std::optional<json> {
-        double level = 0.0;
-        if (entity_id == "route_live_app") {
-          level = 99.0;
-        } else if (entity_id == "route_standing_app") {
-          level = 1.0;
-        } else {
-          return std::nullopt;
-        }
-        return json{{"connected", true}, {"items", json::array({{{"name", "level"}, {"value", level}}})}};
-      },
-      256,
-      [&published](const std::function<bool()> &) -> std::vector<EntityFreezeFrameCapture::StandingFault> {
-        const auto deadline = std::chrono::steady_clock::now() + 5s;
-        while (!published.load() && std::chrono::steady_clock::now() < deadline) {
-          std::this_thread::sleep_for(10ms);
-        }
-        std::this_thread::sleep_for(500ms);  // let the event reach the queue
-        return {{"PLC_TWO_OWNERS", {"route_standing_app"}}};
-      });
+  ObservedCapture capture(node_.get(), *sub_exec_,
+                          [](const std::string & entity_id) -> std::optional<json> {
+                            double level = 0.0;
+                            if (entity_id == "route_live_app") {
+                              level = 99.0;
+                            } else if (entity_id == "route_standing_app") {
+                              level = 1.0;
+                            } else {
+                              return std::nullopt;
+                            }
+                            return json{{"connected", true},
+                                        {"items", json::array({{{"name", "level"}, {"value", level}}})}};
+                          },
+                          "PLC_TWO_OWNERS", {{"PLC_TWO_OWNERS", {"route_standing_app"}}});
 
   ASSERT_TRUE(wait_for_match());
   publisher_->publish(make_confirmed_event("PLC_TWO_OWNERS", {"route_live_app"}));
-  published.store(true);
 
   const auto deadline = std::chrono::steady_clock::now() + 10s;
   std::vector<EntityFreezeFrameCapture::Frame> live_frames;
