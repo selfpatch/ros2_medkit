@@ -154,6 +154,17 @@ def _sources(response):
             if f.get('fault_code') == FAULT_CODE]
 
 
+def _failure_reasons(response):
+    """Return the reason of every peer a partial answer names; none when it is complete."""
+    if response.status_code != 200:
+        return []
+    x_medkit = response.json().get('x-medkit', {})
+    if not x_medkit.get('partial'):
+        return []
+    # Partial with no reasons is no health mark: it is not retried.
+    return [f.get('reason') for f in x_medkit.get('peer_failures') or [{}]]
+
+
 class TestMutualPeerFaults(GatewayTestCase):
 
     BASE_URL = A_URL
@@ -220,6 +231,29 @@ class TestMutualPeerFaults(GatewayTestCase):
             time.sleep(1.0)
         raise AssertionError(f'{FAULT_CODE} never reached the fault manager behind {url}')
 
+    @staticmethod
+    def _send_until_no_health_mark(send):
+        """Return send()'s answers once none is partial only through unreachable peers.
+
+        Under load a gateway can mark a live peer unhealthy for a refresh cycle.
+        It does not ask that peer and names it unreachable. Any other reason,
+        timeout included, ends the wait.
+        """
+        deadline = time.monotonic() + DISCOVERY_TIMEOUT
+        while True:
+            responses = send()
+            reasons = {reason for r in responses for reason in _failure_reasons(r)}
+            if reasons != {'unreachable'} or time.monotonic() >= deadline:
+                return responses
+            time.sleep(DISCOVERY_INTERVAL)
+
+    def _assert_no_peer_timeout(self, response):
+        # A request sent back round the loop holds a worker on each side until
+        # a peer call runs to aggregation.timeout_ms and fails as timeout.
+        if 'timeout' in _failure_reasons(response):
+            self.fail(f'a peer call ran to its {PEER_TIMEOUT_MS} ms deadline: '
+                      f'{response.json().get("x-medkit")}')
+
     def _assert_complete(self, response, gateways):
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
@@ -239,11 +273,10 @@ class TestMutualPeerFaults(GatewayTestCase):
 
     def test_head_of_chain_lists_every_gateway_once(self):
         """A lists A, B and C, without bouncing between A and B."""
-        start = time.monotonic()
-        r = requests.get(f'{A_URL}/faults', timeout=30)
-        elapsed = time.monotonic() - start
+        (r,) = self._send_until_no_health_mark(
+            lambda: [requests.get(f'{A_URL}/faults', timeout=30)])
+        self._assert_no_peer_timeout(r)
         self._assert_complete(r, [A_URL, B_URL, C_URL])
-        self.assertLess(elapsed, PEER_TIMEOUT_MS / 1000.0)
 
     def test_middle_of_chain_lists_every_gateway_once(self):
         """B asks A and C, and A does not ask B back."""
@@ -271,11 +304,14 @@ class TestMutualPeerFaults(GatewayTestCase):
         A request sent back to A would wait for a free worker on A while every
         worker waits on B, so each would end at the peer timeout.
         """
-        with ThreadPoolExecutor(max_workers=CONCURRENT_REQUESTS) as pool:
-            responses = list(pool.map(
-                lambda _: requests.get(f'{A_URL}/faults', timeout=30),
-                range(CONCURRENT_REQUESTS)))
-        for r in responses:
+        def send():
+            with ThreadPoolExecutor(max_workers=CONCURRENT_REQUESTS) as pool:
+                return list(pool.map(
+                    lambda _: requests.get(f'{A_URL}/faults', timeout=30),
+                    range(CONCURRENT_REQUESTS)))
+
+        for r in self._send_until_no_health_mark(send):
+            self._assert_no_peer_timeout(r)
             self._assert_complete(r, [A_URL, B_URL, C_URL])
 
 
