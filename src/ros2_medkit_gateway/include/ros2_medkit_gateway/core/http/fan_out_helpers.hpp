@@ -260,9 +260,6 @@ inline void merge_peer_items(AggregationManager * agg, const httplib::Request & 
   if (req.has_header("X-Medkit-No-Fan-Out")) {
     return;
   }
-  if (agg->healthy_peer_count() == 0) {
-    return;
-  }
   auto requests = plan_fan_out(req, entity_targets);
   if (requests.empty()) {
     return;
@@ -321,13 +318,14 @@ struct FanOutResult {
 /// that returns parsed `T` items instead of mutating a raw JSON document.
 ///
 /// Behavior parity with merge_peer_items:
-///   - null `agg`, `X-Medkit-No-Fan-Out` header, or zero healthy peers all
-///     short-circuit to an empty result (no fan-out attempted).
+///   - null `agg` or an `X-Medkit-No-Fan-Out` header short-circuits to an
+///     empty result (no fan-out attempted).
 ///   - per-entity paths ask only `entity_targets`, the peers of the entity
 ///     the request was validated against, each by the id it knows the entity
 ///     by (see plan_fan_out); global paths fan out to all healthy peers.
 ///   - peer failures are surfaced via `partial` + `failed_peers`, and the
-///     reason for each via `peer_failures`.
+///     reason for each via `peer_failures`. A peer marked unhealthy is not
+///     asked and is a failed peer, reason `unreachable`.
 ///
 /// New behavior:
 ///   - peer items are parsed via `dto::JsonReader<T>` rather than copied as
@@ -343,9 +341,6 @@ inline FanOutResult<T> fan_out_collection(AggregationManager * agg, const httpli
     return result;
   }
   if (req.has_header("X-Medkit-No-Fan-Out")) {
-    return result;
-  }
-  if (agg->healthy_peer_count() == 0) {
     return result;
   }
 

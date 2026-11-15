@@ -264,15 +264,16 @@ TEST(AggregationManager, fan_out_returns_partial_when_peers_unreachable) {
   auto config = make_config(2);
   AggregationManager manager(config);
 
-  // No peers are healthy, so fan-out should return empty merged_items
-  // with no failed_peers (they are simply not included as targets)
+  // No peer is healthy. None is asked, and each is a failed peer.
   auto result = manager.fan_out_get("/api/v1/components", "");
 
   EXPECT_TRUE(result.merged_items.is_array());
   EXPECT_TRUE(result.merged_items.empty());
-  // No healthy peers means no targets, so no failures
-  EXPECT_FALSE(result.is_partial);
-  EXPECT_TRUE(result.failed_peers.empty());
+  EXPECT_TRUE(result.is_partial);
+  EXPECT_EQ(result.failed_peers, (std::vector<std::string>{"peer_0", "peer_1"}));
+  ASSERT_EQ(result.peer_failures.size(), 2u);
+  EXPECT_EQ(result.peer_failures[0].reason, "unreachable");
+  EXPECT_EQ(result.peer_failures[1].reason, "unreachable");
 }
 
 TEST(AggregationManager, fan_out_returns_empty_array_with_no_peers) {

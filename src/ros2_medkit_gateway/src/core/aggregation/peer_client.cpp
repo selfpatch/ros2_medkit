@@ -1205,14 +1205,13 @@ void PeerClient::check_health() {
   // is not read, and a peer that sends one is unhealthy. Text that is not JSON
   // is judged the same way and stays a healthy 200, as before.
   const bool healthy = result && result->status == 200 && judge_peer_json(result->body) == PeerJsonShape::kAcceptable;
-  std::string instance_id;
+  // A failed check keeps the id: a fan-out still knows the peer on a visited path.
   if (healthy) {
+    std::string instance_id;
     auto body = nlohmann::json::parse(result->body, nullptr, false);
     if (body.is_object() && body.contains("x-medkit-instance-id") && body["x-medkit-instance-id"].is_string()) {
       instance_id = body["x-medkit-instance-id"].get<std::string>();
     }
-  }
-  {
     std::lock_guard<std::mutex> id_lock(instance_id_mutex_);
     instance_id_ = std::move(instance_id);
   }

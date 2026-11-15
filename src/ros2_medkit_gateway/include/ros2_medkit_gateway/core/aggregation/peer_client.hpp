@@ -289,16 +289,16 @@ class PeerClient {
   /// Check if the peer was healthy at last health check
   bool is_healthy() const;
 
-  /// The peer's `x-medkit-instance-id` from its last health check, empty if it
-  /// sent none. Lets a fan-out skip a peer already on the visited path.
+  /// The peer's `x-medkit-instance-id` from its last successful health check,
+  /// empty if it sent none. Lets a fan-out skip a peer already on the visited path.
   std::string instance_id() const;
 
   /**
    * @brief Perform a health check against the peer
    *
    * GETs /api/v1/health on the peer. Sets the internal healthy_ flag
-   * based on whether a 200 response was received, and records the peer's
-   * instance id. The call is made on its own client, so shutdown() stops it
+   * based on whether a 200 response was received, and on a 200 records the
+   * peer's instance id. The call is made on its own client, so shutdown() stops it
    * like any other, and it ends at its deadline, its capped connect and read
    * budgets added up, however steadily the peer keeps sending.
    */

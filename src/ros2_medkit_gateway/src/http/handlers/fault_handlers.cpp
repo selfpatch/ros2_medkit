@@ -28,6 +28,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_client.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/faults/freeze_frame_source.hpp"
 #include "ros2_medkit_gateway/core/http/entity_path_utils.hpp"
@@ -519,15 +520,19 @@ http::Result<dto::FaultListResult> FaultHandlers::list_all_faults(const http::Ty
     }
     if (agg && fan_out.mode == GlobalFaultFanOut::Mode::kTooDeep) {
       // The path is at its limit, so the peers behind this gateway were not
-      // asked. Saying nothing would report a truncated list as complete.
-      for (const auto & peer : agg->healthy_peer_endpoints()) {
+      // asked. Saying nothing would report a truncated list as complete. A peer
+      // marked unhealthy is unreachable, as on every fan-out.
+      for (const auto & peer : agg->get_peer_status()) {
+        const auto name = peer.value("name", std::string{});
+        const bool online = peer.value("status", std::string{}) == "online";
         xm.partial = true;
         if (!xm.failed_peers) {
           xm.failed_peers.emplace();
           xm.peer_failures.emplace();
         }
-        xm.failed_peers->push_back(peer.name);
-        xm.peer_failures->push_back(dto::PeerFailure{peer.name, "too-deep"});
+        xm.failed_peers->push_back(name);
+        xm.peer_failures->push_back(
+            dto::PeerFailure{name, online ? "too-deep" : peer_failure_reason(PeerFailureKind::kUnreachable)});
       }
     }
     xm.count = static_cast<int64_t>(response["items"].size());
