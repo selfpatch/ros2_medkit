@@ -907,8 +907,8 @@ bool NodeMap::load(const std::string & yaml_path) {
             auto_alarms_.severity_bands.warning_min = read_band("warning", auto_alarms_.severity_bands.warning_min);
             warn_unknown_keys(bands_node, "auto_alarms.severity_bands", {"critical", "error", "warning"});
           }
-          if (!(auto_alarms_.severity_bands.critical_min >= auto_alarms_.severity_bands.error_min &&
-                auto_alarms_.severity_bands.error_min >= auto_alarms_.severity_bands.warning_min)) {
+          if (auto_alarms_.severity_bands.critical_min < auto_alarms_.severity_bands.error_min ||
+              auto_alarms_.severity_bands.error_min < auto_alarms_.severity_bands.warning_min) {
             RCLCPP_WARN(logger,
                         "auto_alarms.severity_bands must satisfy critical >= error >= warning - "
                         "resetting to the default bands (801/501/201)");
