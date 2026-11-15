@@ -249,8 +249,10 @@ service is not ready is dropped at once (DEBUG log, WARN for a high-severity FAI
 Responses and retries are processed when the node is spun. Every constructor puts the retry timer on
 the node; without a timers interface it goes to the node's default callback group. A retry is sent
 whether or not the service is ready and counts toward ``max_attempts``, so a manager that restarts
-within the attempt budget receives the pending reports. If a request arrived and only its response
-was lost, the manager gets the event twice. A repeated FAILED counts toward the manager's debounce.
+within the attempt budget receives the pending reports. If the manager answers too late (the timer
+resends between 1 and 1.5 times ``ack_timeout_sec`` after a send), or a response is lost, the report
+is sent again and the manager processes every copy it receives. A repeated FAILED counts toward the
+manager's debounce.
 
 A destroyed reporter leaves its pending reports to its delivery, which the ROS context holds until
 the last one is confirmed or dropped. When the context shuts down, each report still waiting is

@@ -145,8 +145,9 @@ retry covers that gap.
 - **Cap:** at most `max_pending` reports wait for a response, all codes of one reporter together. A
   report past the cap is dropped with a warning and the older ones are kept.
 - **Not ready:** a report made while the service is not ready is dropped at once, as before.
-- **Duplicates:** if a request arrived and only its response was lost, the manager gets the event
-  twice. A repeated FAILED counts toward the manager's debounce.
+- **Duplicates:** if the manager answers too late (the retry timer resends between 1 and 1.5 times
+  `ack_timeout_sec` after a send), or a response is lost, the report is sent again and the manager
+  processes every copy it receives. A repeated FAILED counts toward the manager's debounce.
 - **Spinning:** responses and retries need the node to be spun. Every constructor puts the retry
   timer on the node; the raw interfaces constructor without a timers interface uses the node's
   default callback group.

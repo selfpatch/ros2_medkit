@@ -27,6 +27,7 @@
 #include <sstream>
 #include <stdexcept>
 
+#include "rclcpp/version.h"
 #include "ros2_medkit_fault_manager/core/fault_manager_startup.hpp"
 #include "ros2_medkit_fault_manager/core/rosbag_served_size.hpp"
 #include "ros2_medkit_fault_manager/ros2/fault_msg_conversions.hpp"
@@ -71,6 +72,23 @@ std::string validate_recording_id(const std::string & recording_id) {
     return "recording_id cannot contain '..'";
   }
   return "";  // Valid
+}
+
+/// Requests ~/report_fault holds until the executor reads them. 100 holds many reporters reporting at
+/// once; the default of 10 does not. Past that the middleware drops requests without an answer and
+/// FaultReporter sends them again. Not KEEP_ALL: the response writer shares this QoS, and a client
+/// that stops acknowledging would fill its history.
+constexpr size_t kReportFaultQueueDepth = 100;
+
+/// Service QoS for ~/report_fault, in the type the linked rclcpp takes.
+auto report_fault_qos() {
+#if defined(RCLCPP_VERSION_MAJOR) && RCLCPP_VERSION_MAJOR >= 28
+  return rclcpp::ServicesQoS().keep_last(kReportFaultQueueDepth);
+#else
+  rmw_qos_profile_t qos = rmw_qos_profile_services_default;
+  qos.depth = kReportFaultQueueDepth;
+  return qos;
+#endif
 }
 
 }  // namespace
@@ -131,10 +149,12 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
 
   // Create service servers
   report_fault_srv_ = create_service<ros2_medkit_msgs::srv::ReportFault>(
-      "~/report_fault", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
-                               const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response) {
+      "~/report_fault",
+      [this](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
+             const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response) {
         handle_report_fault(request, response);
-      });
+      },
+      report_fault_qos());
 
   list_faults_srv_ = create_service<ros2_medkit_msgs::srv::ListFaults>(
       "~/list_faults", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> & request,

@@ -252,6 +252,9 @@ Reports a new fault or updates an existing one.
 - **Debounce**: FAILED events decrement counter, PASSED events increment counter
 - **Aggregation**: Same fault_code from different sources creates a single fault entry
 - **Severity escalation**: Fault severity is updated if a higher severity is reported
+- **Request queue**: Holds 100 requests until the executor reads them (the default service QoS
+  holds 10). Past that the middleware drops requests without an answer, and FaultReporter sends
+  them again.
 - **Returns**: ``accepted=true`` if event was processed
 
 ~/list_faults
