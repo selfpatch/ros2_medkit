@@ -187,9 +187,9 @@ class TestMutualPeerFaults(GatewayTestCase):
 
     @staticmethod
     def _wait_for_peers_online(url, names):
-        # A skips a peer it holds as unhealthy without marking the answer
-        # partial, so a test that runs before its health check lands would
-        # fail on correct code.
+        # A does not ask a peer it holds as unhealthy and answers partial, so
+        # a test that runs before its health check lands would fail on
+        # correct code.
         deadline = time.monotonic() + DISCOVERY_TIMEOUT
         last = None
         while time.monotonic() < deadline:

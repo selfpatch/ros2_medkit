@@ -937,15 +937,15 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
     visited = split_fan_out_visited(it->second);
   }
 
-  // Snapshot healthy peers under lock, release before network I/O.
+  // Snapshot the peers to ask under lock, release before network I/O.
   // When target_peers is non-null, restrict the snapshot to matching peers.
   std::vector<std::shared_ptr<PeerClient>> snapshot;
+  // Peers this request should reach that are marked unhealthy. They are not
+  // asked, and each is a failed peer: the answer must not look complete.
+  std::vector<std::string> unhealthy;
   {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     for (const auto & peer : peers_) {
-      if (!peer->is_healthy()) {
-        continue;
-      }
       if (target_peers != nullptr &&
           std::find(target_peers->begin(), target_peers->end(), peer->name()) == target_peers->end()) {
         continue;
@@ -958,6 +958,10 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
         if (!peer_id.empty() && std::find(visited.begin(), visited.end(), peer_id) != visited.end()) {
           continue;
         }
+      }
+      if (!peer->is_healthy()) {
+        unhealthy.push_back(peer->name());
+        continue;
       }
       snapshot.push_back(peer);
     }
@@ -1068,6 +1072,11 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
   // Merge results from all peers
   FanOutResult fan_out_result;
   fan_out_result.merged_items = nlohmann::json::array();
+  for (auto & name : unhealthy) {
+    fan_out_result.is_partial = true;
+    fan_out_result.peer_failures.push_back(dto::PeerFailure{name, peer_failure_reason(PeerFailureKind::kUnreachable)});
+    fan_out_result.failed_peers.push_back(std::move(name));
+  }
   for (auto & f : futures) {
     auto pr = f.get();
     if (!pr.success) {
