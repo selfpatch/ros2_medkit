@@ -1208,9 +1208,8 @@ stored. The fault manager log is inside the container:
 docker exec gateway cat /var/lib/ros2_medkit/fault_manager.log
 ```
 
-The tank temperature rises about 0.025 C per second from 25 C, so
-`PLC_HIGH_TEMP` (80 C) raises on its own only after about 35 minutes. With the
-write-capable variant you can raise it at once:
+The tank heats slowly, so `PLC_HIGH_TEMP` (80 C) takes a long time to raise on
+its own. With the write-capable variant you can raise it at once:
 
 ```bash
 curl -s -X PUT http://localhost:8080/api/v1/apps/tank_process/data/tank_temperature \
