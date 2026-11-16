@@ -3,9 +3,16 @@
 # Usage: from the ros2_medkit repo root, run
 #     bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/start.sh
 #
+# The gateway container also runs a fault_manager_node, so an alarm the PLC
+# raises becomes a fault the SOVD API serves instead of a 503.
+#
 # MEDKIT_OPCUA_VARIANT=write-capable brings up an image with the OPC-UA write
 # path compiled in. The default, read-only, is what ships.
 set -eo pipefail
+
+# Printed by the gateway container once fault_manager_node advertises its
+# services. The host waits for it.
+FM_READY_MARKER="fault_manager ready: /fault_manager/report_fault"
 
 VARIANT="${MEDKIT_OPCUA_VARIANT:-read-only}"
 if [ "$VARIANT" = "read-only" ]; then
@@ -57,6 +64,27 @@ docker run -d --name gateway --network plc-demo -p 8080:8080 \
       mkdir -p /var/lib/ros2_medkit/rosbags /config
       echo 'manifest_version: \"1.0\"' > /config/manifest.yaml
       source /opt/ros/jazzy/setup.bash && source /root/ws/install/setup.bash
+      # fault_manager_node starts before gateway_node, so its services exist
+      # before the plugin reports a fault.
+      ros2 run ros2_medkit_fault_manager fault_manager_node --ros-args \
+        -p database_path:=/var/lib/ros2_medkit/faults.db \
+        -p snapshots.rosbag.storage_path:=/var/lib/ros2_medkit/rosbags \
+        > /var/lib/ros2_medkit/fault_manager.log 2>&1 &
+      # Poll before gateway_node starts: 'ros2 service list' also lists names
+      # that only a client opened, and the gateway opens such clients.
+      for _ in \$(seq 1 50); do
+        if ros2 service list 2>/dev/null | grep -q '/fault_manager/report_fault'; then
+          break
+        fi
+        sleep 0.2
+      done
+      if ! ros2 service list 2>/dev/null | grep -q '/fault_manager/report_fault'; then
+        echo 'ERROR: fault_manager_node did not advertise /fault_manager/report_fault within 10s.' >&2
+        echo 'Last lines of /var/lib/ros2_medkit/fault_manager.log:' >&2
+        tail -n 20 /var/lib/ros2_medkit/fault_manager.log >&2 || true
+        exit 1
+      fi
+      echo '$FM_READY_MARKER'
       PLUGIN_PATH=\$(find /root/ws/install -name 'libros2_medkit_opcua_plugin.so' | head -1)
       ros2 run ros2_medkit_gateway gateway_node \
         --ros-args --params-file /config/gateway_params.yaml \
@@ -64,6 +92,28 @@ docker run -d --name gateway --network plc-demo -p 8080:8080 \
         -p discovery.mode:=hybrid \
         -p discovery.manifest_path:=/config/manifest.yaml \
         -p discovery.manifest_strict_validation:=false"
+
+echo "Fault manager starting..."
+fm_ready=0
+for _ in $(seq 1 60); do
+    # Substring match: under pipefail, grep -q on a pipe can fail on SIGPIPE.
+    if [[ "$(docker logs gateway 2>&1)" == *"$FM_READY_MARKER"* ]]; then
+        fm_ready=1
+        echo "  Fault manager ready (log: /var/lib/ros2_medkit/fault_manager.log)"
+        break
+    fi
+    # The container exits when its own wait timed out.
+    if [ -z "$(docker ps -q --filter 'name=^gateway$')" ]; then
+        break
+    fi
+    sleep 1
+done
+if [ "$fm_ready" -eq 0 ]; then
+    echo "ERROR: the fault manager never advertised /fault_manager/report_fault." >&2
+    echo "Gateway container log:" >&2
+    docker logs gateway 2>&1 | tail -20 >&2
+    exit 1
+fi
 
 echo "Gateway starting..."
 
@@ -76,6 +126,8 @@ for _ in $(seq 1 30); do
         echo ""
         echo "Stop:  bash scripts/stop.sh"
         echo "Tests: bash scripts/run_integration_tests.sh"
+        echo "Faults: fault_manager_node runs in the gateway container"
+        echo "        (log: docker exec gateway cat /var/lib/ros2_medkit/fault_manager.log)"
         exit 0
     fi
     sleep 2
