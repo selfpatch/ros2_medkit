@@ -30,6 +30,12 @@ namespace ros2_medkit_fault_reporter {
 namespace {
 using Clock = std::chrono::steady_clock;
 using ReportFault = ros2_medkit_msgs::srv::ReportFault;
+
+/// Requests and responses the client holds. Each fault code has one request in flight. The
+/// responses include answers to the other clients of the service, dropped when read. Past the
+/// depth the oldest is dropped, and its report waits for a resend. Same depth as the manager's
+/// default request queue.
+constexpr size_t kClientQueueDepth = 100;
 }  // namespace
 
 // Confirms delivery. Per fault code the reports form a queue and only the front is in flight, so the
@@ -310,11 +316,13 @@ FaultReporter::FaultReporter(const rclcpp::node_interfaces::NodeBaseInterface::S
   // ROS context and the node interfaces staying valid - reporting after node teardown / rclcpp shutdown
   // is not safe.
 #if RCLCPP_VERSION_GTE(29, 0, 0)  // Kilted and later
-  client_ = rclcpp::create_client<ros2_medkit_msgs::srv::ReportFault>(node_base, node_graph, node_services,
-                                                                      service_name, rclcpp::ServicesQoS());
-#else  // Humble, Jazzy
   client_ = rclcpp::create_client<ros2_medkit_msgs::srv::ReportFault>(
-      node_base, node_graph, node_services, service_name, rmw_qos_profile_services_default, nullptr);
+      node_base, node_graph, node_services, service_name, rclcpp::ServicesQoS().keep_last(kClientQueueDepth));
+#else  // Humble, Jazzy
+  rmw_qos_profile_t qos = rmw_qos_profile_services_default;
+  qos.depth = kClientQueueDepth;
+  client_ = rclcpp::create_client<ros2_medkit_msgs::srv::ReportFault>(node_base, node_graph, node_services,
+                                                                      service_name, qos, nullptr);
 #endif
 
   delivery_ = std::make_shared<Delivery>(client_, logger_, delivery_config_, node_base->get_context());

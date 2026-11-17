@@ -96,6 +96,16 @@ std::vector<ConfigNotice> FaultManagerConfig::validate() {
     auto_confirm_after_sec = 0.0;
   }
 
+  const bool report_queue_in_range =
+      report_fault_queue_depth >= 1 && report_fault_queue_depth <= kMaxReportFaultQueueDepth;
+  if (!report_queue_in_range) {
+    const int64_t clamped = report_fault_queue_depth < 1 ? 1 : kMaxReportFaultQueueDepth;
+    logf(sink, LogLevel::kWarn, logger_name,
+         "report_fault_queue_depth must be in [1, %" PRId64 "], got %" PRId64 ". Clamping to %" PRId64,
+         kMaxReportFaultQueueDepth, report_fault_queue_depth, clamped);
+    report_fault_queue_depth = clamped;
+  }
+
   const bool cooldown_in_range =
       std::isfinite(snapshots_recapture_cooldown_sec) && snapshots_recapture_cooldown_sec >= 0.0;
   if (!cooldown_in_range) {

@@ -118,6 +118,42 @@ reclassification of HEALED faults run only at startup, so they are skipped when 
 be reached then. Snapshot capture starts with the first answer of the server. The bags of a fault
 cleared while the server cannot be reached are not deleted then.
 
+Report Queue
+~~~~~~~~~~~~
+
+.. code-block:: yaml
+
+   fault_manager:
+     ros__parameters:
+       report_fault_queue_depth: 100       # Requests ~/report_fault holds until read (1-65536)
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 15 60
+
+   * - Parameter
+     - Default
+     - Description
+   * - ``report_fault_queue_depth``
+     - ``100``
+     - Requests ``~/report_fault`` holds until the node reads them. The same depth applies to the
+       answers that clients have not acknowledged yet. Read once at startup; setting it on a
+       running node is refused. A value outside 1 to 65536 is clamped to the nearest end with a
+       warning.
+
+Past the depth the middleware drops requests without an answer. Size it for the requests that
+can arrive at once: a FaultReporter has one request in flight per fault code, and the OPC UA plugin
+sends up to 256 buffered reports at once when the fault manager becomes reachable.
+
+- ``FaultReporter`` sends a dropped report again after ``ack_timeout_sec``.
+- graph_watchdog and the gateway's fault triggers report again on their next tick while the
+  condition holds.
+- The OPC UA plugin reports once per alarm transition, so a dropped report is lost.
+
+A deep queue that the node reads slowly also costs duplicates: a FaultReporter request that waits
+longer than ``ack_timeout_sec`` is sent again while the first copy is still in the queue, and the
+manager processes both. A repeated FAILED counts toward the debounce.
+
 Debounce Settings
 ~~~~~~~~~~~~~~~~~
 

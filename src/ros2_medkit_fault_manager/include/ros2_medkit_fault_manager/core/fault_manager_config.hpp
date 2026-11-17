@@ -30,6 +30,9 @@ inline constexpr double kAutoConfirmPeriodSec = 1.0;
 inline constexpr int64_t kMaxCapturePoolSize = 64;
 inline constexpr int64_t kMaxCaptureQueueDepth = 65536;
 
+/// Upper bound of `report_fault_queue_depth`. A queue entry is one ReportFault request.
+inline constexpr int64_t kMaxReportFaultQueueDepth = 65536;
+
 /// One line `FaultManagerConfig::validate()` wants logged.
 struct ConfigNotice {
   LogLevel level;
@@ -52,6 +55,10 @@ struct FaultManagerConfig {
   bool healing_enabled{false};
   int64_t healing_threshold{3};
   double auto_confirm_after_sec{0.0};
+
+  /// Requests ~/report_fault holds until the executor reads them. A reporter has one request in
+  /// flight per fault code. Past the depth the middleware drops requests without an answer.
+  int64_t report_fault_queue_depth{100};
 
   double snapshots_recapture_cooldown_sec{60.0};
   int64_t snapshots_capture_pool_size{2};

@@ -74,19 +74,14 @@ std::string validate_recording_id(const std::string & recording_id) {
   return "";  // Valid
 }
 
-/// Requests ~/report_fault holds until the executor reads them. 100 holds many reporters reporting at
-/// once; the default of 10 does not. Past that the middleware drops requests without an answer and
-/// FaultReporter sends them again. Not KEEP_ALL: the response writer shares this QoS, and a client
-/// that stops acknowledging would fill its history.
-constexpr size_t kReportFaultQueueDepth = 100;
-
-/// Service QoS for ~/report_fault, in the type the linked rclcpp takes.
-auto report_fault_qos() {
+/// Service QoS for ~/report_fault, in the type the linked rclcpp takes. Not KEEP_ALL: the response
+/// writer shares this QoS, and a client that stops acknowledging would fill its history.
+auto report_fault_qos(size_t depth) {
 #if defined(RCLCPP_VERSION_MAJOR) && RCLCPP_VERSION_MAJOR >= 28
-  return rclcpp::ServicesQoS().keep_last(kReportFaultQueueDepth);
+  return rclcpp::ServicesQoS().keep_last(depth);
 #else
   rmw_qos_profile_t qos = rmw_qos_profile_services_default;
-  qos.depth = kReportFaultQueueDepth;
+  qos.depth = depth;
   return qos;
 #endif
 }
@@ -154,7 +149,8 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
              const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response) {
         handle_report_fault(request, response);
       },
-      report_fault_qos());
+      report_fault_qos(static_cast<size_t>(config_.report_fault_queue_depth)));
+  RCLCPP_INFO(get_logger(), "Report queue depth: %" PRId64, config_.report_fault_queue_depth);
 
   list_faults_srv_ = create_service<ros2_medkit_msgs::srv::ListFaults>(
       "~/list_faults", [this](const std::shared_ptr<ros2_medkit_msgs::srv::ListFaults::Request> & request,
@@ -456,6 +452,11 @@ core::FaultManagerConfig FaultManagerNode::declare_config() {
   c.healing_enabled = declare_parameter<bool>("healing_enabled", c.healing_enabled);
   c.healing_threshold = declare_parameter<int64_t>("healing_threshold", c.healing_threshold);
   c.auto_confirm_after_sec = declare_parameter<double>("auto_confirm_after_sec", c.auto_confirm_after_sec);
+  // Read once, when the service is created.
+  rcl_interfaces::msg::ParameterDescriptor read_only;
+  read_only.read_only = true;
+  c.report_fault_queue_depth =
+      declare_parameter<int64_t>("report_fault_queue_depth", c.report_fault_queue_depth, read_only);
   c.snapshots_recapture_cooldown_sec =
       declare_parameter<double>("snapshots.recapture_cooldown_sec", c.snapshots_recapture_cooldown_sec);
   c.snapshots_capture_pool_size =

@@ -145,6 +145,11 @@ retry covers that gap.
 - **Cap:** at most `max_pending` reports wait for a response, all codes of one reporter together. A
   report past the cap is dropped with a warning and the older ones are kept.
 - **Not ready:** a report made while the service is not ready is dropped at once, as before.
+- **Client queue:** the client holds 100 requests and 100 responses (the default service QoS holds
+  10). The responses include answers to every other client of the service, which the client drops
+  when it reads them. If more than 100 requests wait for the manager, or more than 100 answers
+  arrive while the node is not spun, the oldest are dropped. Their reports are sent again after
+  `ack_timeout_sec`. The FaultManager's request queue is `report_fault_queue_depth`.
 - **Duplicates:** if the manager answers too late (the retry timer resends between 1 and 1.5 times
   `ack_timeout_sec` after a send), or a response is lost, the report is sent again and the manager
   processes every copy it receives. A repeated FAILED counts toward the manager's debounce.

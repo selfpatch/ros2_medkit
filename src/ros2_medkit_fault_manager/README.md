@@ -69,6 +69,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 | `healing_enabled`               | bool   | `false`                            | Enable automatic healing via PASSED events                                      |
 | `healing_threshold`             | int    | `3`                                | Counter value at which faults are healed                                        |
 | `auto_confirm_after_sec`        | double | `0.0`                              | Auto-confirm PREFAILED faults after timeout (0 = disabled)                      |
+| `report_fault_queue_depth`      | int    | `100`                              | Requests `~/report_fault` holds until read (1-65536, read-only); past it they are dropped without an answer |
 | `entity_thresholds.config_file` | string | `""`                               | Path to YAML file with per-entity debounce threshold overrides                  |
 | `fault_thresholds.config_file`  | string | `""`                               | Path to YAML file with per-fault_code debounce threshold overrides, applied on top of the entity ones |
 | `near_miss.max_per_fault`       | int    | `200`                              | Near-miss entries retained per fault code, oldest evicted first (0 = unlimited) |
