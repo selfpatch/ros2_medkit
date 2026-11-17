@@ -821,7 +821,7 @@ ros2_medkit_gateway:
 | `auto_alarms` | `false` | Boolean or object; subscribe a server EventNotifier and auto-derive a fault per AlarmCondition with no per-alarm `event_alarms` mapping - the zero-config native A&C surface (see above) |
 | `poll_interval_ms` | `1000` | Polling interval in ms (clamped to [100, 60000]) |
 | `prefer_subscriptions` | `false` | Use OPC-UA subscriptions instead of polling |
-| `subscription_interval_ms` | `500` | Publishing interval for OPC-UA subscriptions when `prefer_subscriptions: true`. Between two polls the client is also iterated at this interval (at least 20 ms apart, at most once per poll), so changes arrive at this cadence and not once per `poll_interval_ms` |
+| `subscription_interval_ms` | `500` | Publishing interval for OPC-UA subscriptions when `prefer_subscriptions: true`. Between two polls the client is also iterated at this interval (at least 20 ms apart, at most once per poll), so changes arrive at this cadence and not once per `poll_interval_ms`. Before the plugin creates its data subscription, at start and after every reconnect, it reads every subscribed point once, so values are served as soon as the session is up. No subscription exists during the read, so no publish can carry a newer value. For `raise_after_*` the read counts as a data change |
 | `condition_replay_strategy` | `auto` | Active-condition replay on reconnect: `method`, `read`, `auto`, `off` (see below) |
 | `require_confirm_for_clear` | `true` | Require both Acknowledge AND Confirm before a native alarm auto-clears. Set `false` for Confirm-less servers (e.g. Siemens S7-1500) so alarms clear on Acknowledge alone (see below) |
 | `comms_lost_fault_enabled` | `true` | Raise a component-scoped `PLC_COMMS_LOST` fault when the connection stays down, and clear it on every successful connect (issue #496) |
@@ -1326,8 +1326,23 @@ MEDKIT_OPCUA_VARIANT=write-capable bash scripts/run_integration_tests.sh
 bash scripts/test_all.sh
 MEDKIT_OPCUA_VARIANT=write-capable bash scripts/test_all.sh
 
-# Stop
+# Stop (keeps the gateway's state)
 bash scripts/stop.sh
+```
+
+`start.sh` mounts the named volume `ros2-medkit-opcua-state` at
+`/var/lib/ros2_medkit` in the gateway container. It holds `faults.db`, the
+entity freeze-frames (`entity_freeze_frames.db`, set by
+`entity_freeze_frame.storage.path` in `docker/gateway_params.yaml`) and the
+rosbags. `stop.sh` removes the containers and keeps the volume, so a fault
+raised before `stop.sh` is still there after the next `start.sh`, and its
+detail serves the values frozen when it confirmed, with the same
+`captured_at`. Set `OPCUA_DEMO_STATE_VOLUME` to use another volume. To start
+from a clean state, purge the volume:
+
+```bash
+bash scripts/stop.sh
+docker volume rm ros2-medkit-opcua-state
 ```
 
 `start.sh` runs a `fault_manager_node` inside the gateway container, on the same
@@ -1357,6 +1372,27 @@ the gateway adopts it without a restart:
 
 ```bash
 bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_discovery_race_test.sh
+```
+
+Another scenario runs `fault_manager_node` and `gateway_node` in one container
+against the `test_alarm_server` fixture, with the state on a named volume. It
+checks that:
+
+- a restart serves the frame captured at confirmation, also for a fault cleared
+  while the gateway ran;
+- a frame of an earlier occurrence is discarded with a warning that names the
+  fault and the entity, and a startup frame replaces it when the fault is
+  confirmed and the server answers;
+- a fault manager that lists no fault drops nothing, and one that does not hold
+  a fault drops its frame with the warning `Entity freeze-frame: dropped the reloaded frames of <N> fault(s) the fault manager no longer holds: <codes>`;
+- subscription mode with a 60 s publishing interval serves values right after
+  start, right after a server that was down at start comes up, and right after
+  a server restart that changed a value;
+- each `entity_freeze_frame.storage.path` case works: a path, empty with
+  `triggers.storage.path`, both empty, and a path that cannot be opened.
+
+```bash
+bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_freeze_frame_restart_tests.sh
 ```
 
 ### Test Coverage

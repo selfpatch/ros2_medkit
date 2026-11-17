@@ -8,7 +8,13 @@
 #
 # MEDKIT_OPCUA_VARIANT=write-capable brings up an image with the OPC-UA write
 # path compiled in. The default, read-only, is what ships.
+#
+# The gateway's state (faults.db, entity freeze-frames, rosbags) is on a named
+# volume: ros2-medkit-opcua-state, or OPCUA_DEMO_STATE_VOLUME. It survives
+# stop.sh and the next start.sh. stop.sh prints the purge command.
 set -eo pipefail
+
+STATE_VOLUME="${OPCUA_DEMO_STATE_VOLUME:-ros2-medkit-opcua-state}"
 
 # Printed by the gateway container once fault_manager_node advertises its
 # services. The host waits for it.
@@ -44,6 +50,8 @@ echo ""
 echo "=== Starting containers ==="
 docker rm -f openplc gateway 2>/dev/null || true
 docker network create plc-demo 2>/dev/null || true
+# stop.sh removes the container, so state in its writable layer would go with it.
+docker volume create "$STATE_VOLUME" >/dev/null
 
 docker run -d --name openplc --network plc-demo -p 4840:4840 openplc-tank
 echo "OpenPLC starting..."
@@ -56,6 +64,7 @@ for _ in $(seq 1 45); do
 done
 
 docker run -d --name gateway --network plc-demo -p 8080:8080 \
+    -v "$STATE_VOLUME":/var/lib/ros2_medkit \
     -e ROS_DOMAIN_ID=60 \
     -e OPCUA_ENDPOINT_URL="opc.tcp://openplc:4840/openplc/opcua" \
     -e OPCUA_NODE_MAP_PATH="/config/tank_nodes.yaml" \
@@ -131,6 +140,7 @@ for _ in $(seq 1 30); do
         echo "Tests: bash scripts/run_integration_tests.sh"
         echo "Faults: fault_manager_node runs in the gateway container"
         echo "        (log: docker exec gateway cat /var/lib/ros2_medkit/fault_manager.log)"
+        echo "State: volume '$STATE_VOLUME' (kept across stop/start)"
         exit 0
     fi
     sleep 2
