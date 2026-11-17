@@ -223,20 +223,71 @@ values) when the fault confirms, and merges them into the fault detail's
 after the entity - unless the fault manager already captured a freeze-frame
 for that fault (explicit config wins). When the entity reports its link down
 (the loss-of-comms case), the frozen values are the plugin's last known ones
-and may predate the confirmation by the length of the outage; the entry's
-``x-medkit`` block then carries ``connected: false`` and, when the plugin's
-payload includes one, ``source_timestamp`` (the payload's own timestamp)
-alongside ``captured_at``.
+and may predate the confirmation by the length of the outage. The entry's
+``x-medkit`` block carries ``connected: false`` only when the plugin's payload
+has a link flag. The OPC UA plugin's ``DataProvider`` payload has none. When
+the payload has its own timestamp, the block also carries it as
+``source_timestamp``, next to ``captured_at``.
+
+A frame stays after the fault is cleared, and a new confirmation of the
+fault reads the entity again and replaces it. When that read gets no values,
+a confirmation of a new occurrence drops the previous occurrence's frame and
+logs a warning, so the fault has no frame; a confirmation of the same
+occurrence keeps it. With
+``entity_freeze_frame.storage.path`` set, a frame also survives a gateway
+restart: the gateway writes it to that SQLite file when it captures it, loads
+it at start, and serves it exactly as it was captured, with its original
+``captured_at`` and its ``capture_origin``. Put the file on a volume that
+outlives the container, or leave the path empty and the frames go in
+``entity_freeze_frames.db`` next to the trigger store
+(``triggers.storage.path``). With neither set the frames are process memory
+only, and a restart loses them. The file belongs to one gateway. Do not share
+it between gateways: at start, each gateway drops the frames of faults its own
+fault manager does not hold.
+
+Each stored frame carries the fault manager's occurrence of the fault at
+capture: the fault's ``occurrence_count`` and ``first_occurred``. The fault
+manager changes both only when a cleared fault fails again. At startup the
+gateway asks the fault manager once for its faults of every status, muted ones
+included, and judges every reloaded frame by that one answer. Until then the
+fault detail serves no reloaded frame. When the fault manager cannot be asked
+or answers with an empty list, the reloaded frames are kept and served
+unjudged.
+
+- The fault lists the stored occurrence: the frame is kept as it is, with no
+  read. Clocks play no part, so a gateway clock that differs from the fault
+  manager's changes nothing.
+- The fault lists another occurrence (it cleared and failed again while the
+  gateway was down): the frame is discarded, and the gateway logs a warning
+  with the fault code, the entity, both occurrence counts and the status. A
+  confirmed fault then gets a startup frame from the catch-up below; any other
+  fault has no frame, since a read now would not show the values at that
+  occurrence's confirmation.
+- The fault manager no longer holds the fault in any status (its storage was
+  replaced or wiped): the frame is dropped, and the gateway logs one warning
+  that names up to 10 of those faults. When the fault manager cannot be asked,
+  or lists no fault at all, nothing is dropped: a fault manager that lost its
+  storage connection answers with an empty list. Such a frame leaves by
+  eviction or by the next capture of its fault.
+- A frame stored without an occurrence is kept, since nothing can be told
+  from it.
 
 Faults that are already confirmed when the gateway starts are caught up at
-startup: the gateway lists the confirmed faults and captures a frame for each
-plugin-backed one, so a device standing in fault across a gateway restart
-still gets a frame. Catch-up frames carry ``"capture_origin": "startup"`` in
-their ``x-medkit`` block because their values were read at gateway start, not
-when the fault confirmed (which may be long before, since the fault manager
-persists faults); ``captured_at`` always stamps the moment the values were
-read. Frames without the marker were captured on the confirm edge. Disable
-with:
+startup: from the same answer the gateway captures a frame for each confirmed,
+plugin-backed fault that has no frame, so a device standing in fault across a
+gateway restart still gets a frame. A fault whose frame of the same occurrence
+was reloaded is not read: that frame is served as captured. A fault muted by
+correlation is not framed at start, as live capture does not frame it either:
+the fault manager publishes no confirm event for it. Catch-up frames carry
+``"capture_origin": "startup"`` in their ``x-medkit`` block because their
+values were read at gateway start. The fault may have confirmed long before,
+since the fault manager persists faults. ``captured_at`` always stamps the
+moment the values were read. Frames without the marker were
+captured on the confirm edge. The gateway keeps frames for at most 256
+faults, reloaded and captured together, and evicts the fault whose frame was
+captured longest ago; a fault confirmed again counts from its new capture.
+The catch-up does not evict a frame to make room, and its warning names up
+to 10 of the faults it left without one. Disable with:
 
 .. code-block:: bash
 
@@ -345,7 +396,8 @@ Snapshots are included inline in the fault response as ``environment_data``:
   frames caught up for faults that predate the gateway are captured at
   gateway start instead, marked ``x-medkit.capture_origin: startup``; a
   plugin entity that reports its link down contributes its last known values,
-  marked ``connected: false`` in ``x-medkit``
+  marked ``connected: false`` in ``x-medkit`` when the plugin's payload carries
+  a link flag
 - ``rosbag``: Recording file available via bulk-data endpoint (binary format).
   One entry per recording the fault kept, newest first, each addressed by its own
   ``bulk_data_uri``. With the default ``max_bags_per_fault`` of ``1`` there is at

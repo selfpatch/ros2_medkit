@@ -245,7 +245,7 @@ void OpcuaPoller::start(const PollerConfig & config) {
   if (session_accepted) {
     // Try subscription mode first
     if (config_.prefer_subscriptions) {
-      setup_subscriptions();
+      read_and_subscribe();
     }
 
     // Issue #386: subscribe to native AlarmConditionType events. Independent
@@ -353,6 +353,19 @@ void OpcuaPoller::set_poll_callback(PollCallback callback) {
     throw std::logic_error("set_poll_callback must be called before start()");
   }
   poll_callback_ = std::move(callback);
+}
+
+void OpcuaPoller::read_and_subscribe() {
+  // A subscription publishes its first values up to one subscription_interval_ms
+  // after it is created. The read fills the cache before the subscription exists,
+  // so no publish can carry a newer value than the read.
+  if (client_.is_connected()) {
+    // Set first, so detection takes the read as a data change.
+    // setup_subscriptions() clears it when subscribing fails.
+    using_subscriptions_ = true;
+    do_poll();
+  }
+  setup_subscriptions();
 }
 
 void OpcuaPoller::setup_subscriptions() {
@@ -1364,7 +1377,7 @@ void OpcuaPoller::poll_loop() {
         comms_lost_raised_ = false;
         comms_down_since_.reset();
         if (config_.prefer_subscriptions) {
-          setup_subscriptions();
+          read_and_subscribe();
         }
         // Re-subscribe to AlarmCondition events on the new session and re-fire
         // ConditionRefresh so conditions that changed state while the link was

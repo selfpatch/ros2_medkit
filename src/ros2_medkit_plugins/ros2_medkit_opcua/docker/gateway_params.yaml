@@ -12,3 +12,8 @@ ros2_medkit_gateway:
       allowed_origins: ["*"]
     plugins: ["opcua"]
     plugins.opcua.poll_interval_ms: 1000
+    # The PLC entities' freeze-frames, next to faults.db. scripts/start.sh mounts a
+    # named volume at /var/lib/ros2_medkit, so a frame outlives stop.sh.
+    entity_freeze_frame:
+      storage:
+        path: "/var/lib/ros2_medkit/entity_freeze_frames.db"

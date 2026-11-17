@@ -408,6 +408,10 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   void refresh_cache();
   void start_rest_server();
 
+  /// Opens the store at `entity_freeze_frame.storage.path`, else `entity_freeze_frames.db`
+  /// next to `triggers.storage.path`. Null when no path resolves or the file cannot be opened.
+  std::shared_ptr<EntityFreezeFrameStore> open_entity_freeze_frame_store();
+
   /// Log a one-time discovery summary shortly after startup: discovered node /
   /// topic / entity counts, the REST URL and a sample curl. When no application
   /// nodes are visible, also warn loudly with the active ROS environment
