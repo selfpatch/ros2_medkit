@@ -17,9 +17,11 @@
 
 import os
 import queue
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -28,8 +30,10 @@ from ament_index_python.packages import get_package_prefix
 from launch import LaunchDescription
 import launch_ros.actions
 import launch_testing.actions
+from rcl_interfaces.srv import SetParameters
 import rclpy
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import ListFaults
 
@@ -58,57 +62,10 @@ def probe_path():
                         'lib', 'ros2_medkit_fault_reporter', 'delivery_probe_node')
 
 
-class Manager:
-    """A fault_manager_node process named name, so its services are /<name>/..."""
+class Output:
+    """A process with its stdout and stderr read on a thread."""
 
-    def __init__(self, name):
-        args = [os.path.join(get_package_prefix('ros2_medkit_fault_manager'),
-                             'lib', 'ros2_medkit_fault_manager', 'fault_manager_node'),
-                '--ros-args', '-r', f'__node:={name}']
-        for key, value in MANAGER_PARAMS.items():
-            args += ['-p', f'{key}:={value}']
-        self.proc = subprocess.Popen(args)
-
-    def kill(self):
-        """SIGKILL, which also ends a stopped process: requests it has not read are lost."""
-        if self.proc.poll() is None:
-            self.proc.kill()
-        self.proc.wait()
-
-    def stop(self):
-        if self.proc.poll() is None:
-            self.proc.send_signal(signal.SIGINT)
-        try:
-            self.proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            self.kill()
-
-
-def find_pid(name):
-    """PID of the process of this test's ROS domain whose command line holds name."""
-    domain = b'ROS_DOMAIN_ID=' + os.environ['ROS_DOMAIN_ID'].encode()
-    for entry in os.listdir('/proc'):
-        if not entry.isdigit():
-            continue
-        try:
-            with open(f'/proc/{entry}/cmdline', 'rb') as f:
-                cmd = f.read()
-            with open(f'/proc/{entry}/environ', 'rb') as f:
-                env = f.read().split(b'\0')
-        except OSError:
-            continue
-        if name.encode() in cmd and domain in env:
-            return int(entry)
-    raise AssertionError(f'{name} not found')
-
-
-class Probe:
-    """A delivery_probe_node process with its stdout read on a thread."""
-
-    def __init__(self, **params):
-        args = [probe_path(), '--ros-args']
-        for key, value in params.items():
-            args += ['-p', f'{key.replace("__", ".")}:={value}']
+    def __init__(self, args):
         self.proc = subprocess.Popen(
             args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         self.lines = queue.Queue()
@@ -141,6 +98,67 @@ class Probe:
             except queue.Empty:
                 break
         return sum(1 for line in self.seen if text in line)
+
+
+class Manager(Output):
+    """A fault_manager_node process named name, so its services are /<name>/..."""
+
+    def __init__(self, name, **params):
+        args = [os.path.join(get_package_prefix('ros2_medkit_fault_manager'),
+                             'lib', 'ros2_medkit_fault_manager', 'fault_manager_node'),
+                '--ros-args', '-r', f'__node:={name}']
+        for key, value in {**MANAGER_PARAMS, **params}.items():
+            args += ['-p', f'{key}:={value}']
+        super().__init__(args)
+
+    def kill(self):
+        """SIGKILL, which also ends a stopped process: requests it has not read are lost."""
+        if self.proc.poll() is None:
+            self.proc.kill()
+        self.proc.wait()
+
+    def stop(self):
+        if self.proc.poll() is None:
+            self.proc.send_signal(signal.SIGINT)
+        try:
+            self.proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.kill()
+
+
+def resends(probe, prefix):
+    """Count the requests for codes <prefix>_<n> the probe's reporter sent again (DEBUG log)."""
+    return probe.count(f"No response for the report for '{prefix}_")
+
+
+def find_pid(name):
+    """PID of the process of this test's ROS domain whose command line holds name."""
+    domain = b'ROS_DOMAIN_ID=' + os.environ['ROS_DOMAIN_ID'].encode()
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f'/proc/{entry}/cmdline', 'rb') as f:
+                cmd = f.read()
+            with open(f'/proc/{entry}/environ', 'rb') as f:
+                env = f.read().split(b'\0')
+        except OSError:
+            continue
+        if name.encode() in cmd and domain in env:
+            return int(entry)
+    raise AssertionError(f'{name} not found')
+
+
+class Probe(Output):
+    """A delivery_probe_node process."""
+
+    def __init__(self, log_level=None, **params):
+        args = [probe_path(), '--ros-args']
+        if log_level is not None:
+            args += ['--log-level', f'delivery_probe:={log_level}']
+        for key, value in params.items():
+            args += ['-p', f'{key.replace("__", ".")}:={value}']
+        super().__init__(args)
 
     def stop(self, exits_alone=False):
         if exits_alone:
@@ -178,9 +196,12 @@ class TestDelivery(unittest.TestCase):
         cls.lister = cls.node.create_client(ListFaults, '/fault_manager/list_faults')
         assert cls.lister.wait_for_service(timeout_sec=20.0)
         cls.manager_pid = find_pid('fault_manager_node')
+        # Go files of this run only: runs in other worktrees share /tmp.
+        cls.tmp = tempfile.mkdtemp(prefix='delivery_')
 
     @classmethod
     def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
         cls.node.destroy_node()
         rclpy.shutdown()
 
@@ -231,7 +252,7 @@ class TestDelivery(unittest.TestCase):
             self.assertTrue(lister.wait_for_service(timeout_sec=20.0))
             # A budget of 30 s, well past the start of a new manager.
             probe = stalled_probe(
-                first.proc.pid, f'/tmp/delivery_go_{name}', count=count, prefix=prefix,
+                first.proc.pid, os.path.join(self.tmp, f'go_{name}'), count=count, prefix=prefix,
                 service=f'/{name}/report_fault',
                 fault_reporter__delivery__ack_timeout_sec=0.3,
                 fault_reporter__delivery__max_attempts=100, **params)
@@ -279,8 +300,8 @@ class TestDelivery(unittest.TestCase):
                 probe = None
                 try:
                     probe = stalled_probe(
-                        self.manager_pid, f'/tmp/delivery_go_down_{destroy}', count=count,
-                        prefix=prefix, destroy=destroy,
+                        self.manager_pid, os.path.join(self.tmp, f'go_down_{destroy}'),
+                        count=count, prefix=prefix, destroy=destroy,
                         fault_reporter__delivery__ack_timeout_sec=60.0)
                     probe.wait_for(lambda line: line == f'REPORTED pending={count}')
                     if destroy == 'true':
@@ -329,13 +350,128 @@ class TestDelivery(unittest.TestCase):
         wrong = sorted(c for c, f in found.items() if f.status != Fault.STATUS_HEALED)
         self.assertEqual(wrong, [], f'{len(wrong)} codes not healed: {wrong[:5]}')
 
+    def test_one_reporter_reads_every_answer_to_a_burst(self):
+        """Answers to a burst of codes wait in the client until the reporter is spun."""
+        count = 100  # the client depth; the default service queue holds 10
+        go_file = os.path.join(self.tmp, 'go_held')
+        # The timeout outlasts the hold: once spun, a due timer resends before answers are read.
+        probe = Probe(mode='held', count=count, prefix='HELD', go_file=go_file, log_level='debug',
+                      fault_reporter__delivery__ack_timeout_sec=10.0)
+        try:
+            probe.wait_for(lambda line: line == f'REPORTED pending={count}')
+            found = self.wait_faults('HELD_', lambda f: len(f) == count)
+            self.assertEqual(len(found), count)
+            open(go_file, 'w').close()
+            probe.wait_for(lambda line: line == 'PENDING 0', timeout=30)
+            self.assertEqual(resends(probe, 'HELD'), 0)
+        finally:
+            probe.stop()
+
+    def burst_to_stopped_manager(self, name, count, ack_timeout_sec, check, **manager_params):
+        """
+        Send count reports of one reporter to a stopped manager, which then reads them at once.
+
+        The reporter is warmed up first, so the manager knows its request writer and the burst
+        waits in the manager's socket. check(probe, prefix, lister) runs after the manager resumes.
+        """
+        prefix = name.upper()
+        lister = self.node.create_client(ListFaults, f'/{name}/list_faults')
+        manager = Manager(name, **manager_params)
+        probe = None
+        try:
+            self.assertTrue(lister.wait_for_service(timeout_sec=20.0))
+            probe = stalled_probe(
+                manager.proc.pid, os.path.join(self.tmp, f'go_{name}'), count=count, reporters=1,
+                prefix=prefix, service=f'/{name}/report_fault', warm='true', log_level='debug',
+                fault_reporter__delivery__ack_timeout_sec=ack_timeout_sec)
+            probe.wait_for(lambda line: line == f'REPORTED pending={count}')
+            os.kill(manager.proc.pid, signal.SIGCONT)
+            check(probe, prefix, lister)
+        finally:
+            os.kill(manager.proc.pid, signal.SIGCONT)
+            if probe is not None:
+                probe.stop()
+            manager.stop()
+            self.node.destroy_client(lister)
+
+    def test_a_burst_of_one_reporter_fits_the_request_queue(self):
+        """The manager's default queue holds a burst that the default service queue of 10 drops."""
+        count = 100  # the default depth of both queues
+
+        def check(probe, prefix, lister):
+            found = self.wait_faults(prefix + '_', lambda f: len(f) == count, lister=lister)
+            self.assertEqual(len(found), count)
+            probe.wait_for(lambda line: line == 'PENDING 0')
+            self.assertEqual(resends(probe, prefix), 0)
+
+        self.burst_to_stopped_manager('fm_queue', count, 10.0, check)
+
+    def test_a_burst_past_the_queues_is_delivered(self):
+        """Past the client depth the oldest requests are dropped, sent again and delivered."""
+        count = 150
+
+        def check(probe, prefix, lister):
+            found = self.wait_faults(prefix + '_', lambda f: len(f) == count, lister=lister)
+            self.assertEqual(len(found), count)
+            probe.wait_for(lambda line: line == 'PENDING 0')
+            self.assertGreater(resends(probe, prefix), 0)
+
+        self.burst_to_stopped_manager('fm_past', count, 1.0, check)
+
+    def test_report_queue_depth_sets_the_request_queue(self):
+        """With report_fault_queue_depth below the burst, the oldest requests are dropped."""
+        count = 50
+
+        def check(probe, prefix, lister):
+            # Every request is sent again until answered, so PENDING 0 ends the resends.
+            probe.wait_for(lambda line: line == 'PENDING 0')
+            self.assertGreater(resends(probe, prefix), 0)
+            # A late answer would resend the newest report too. A full queue keeps it.
+            self.assertEqual(probe.count(f"for '{prefix}_{count - 1}'"), 0)
+
+        self.burst_to_stopped_manager('fm_queue_small', count, 3.0, check,
+                                      report_fault_queue_depth=10)
+
+    def test_report_queue_depth_parameter(self):
+        """The depth defaults to 100, is accepted at both ends of its range, clamped past them."""
+        cases = [(None, 100), (1, 1), (65536, 65536), (0, 1), (-1, 1), (65537, 65536),
+                 (4294967297, 65536)]
+        for value, effective in cases:
+            with self.subTest(value=value):
+                params = {} if value is None else {'report_fault_queue_depth': value}
+                manager = Manager('fm_depth', **params)
+                try:
+                    line = manager.wait_for(lambda line: 'Report queue depth:' in line, timeout=30)
+                    self.assertTrue(line.endswith(f'Report queue depth: {effective}'), line)
+                    self.assertEqual(manager.count('report_fault_queue_depth must be in'),
+                                     0 if value in (None, effective) else 1)
+                finally:
+                    manager.stop()
+
+    def test_report_queue_depth_is_read_only(self):
+        """Setting the depth on a running manager is refused."""
+        setter = self.node.create_client(SetParameters, '/fault_manager/set_parameters')
+        try:
+            self.assertTrue(setter.wait_for_service(timeout_sec=20.0))
+            req = SetParameters.Request()
+            depth = Parameter('report_fault_queue_depth', Parameter.Type.INTEGER, 5)
+            req.parameters = [depth.to_parameter_msg()]
+            fut = setter.call_async(req)
+            rclpy.spin_until_future_complete(self.node, fut, timeout_sec=10.0)
+            result = fut.result()
+            self.assertIsNotNone(result)
+            self.assertFalse(result.results[0].successful)
+            self.assertIn('read-only', result.results[0].reason)
+        finally:
+            self.node.destroy_client(setter)
+
     def test_reports_wait_for_an_unresponsive_manager(self):
         """Reports made while the manager does not answer arrive once it does."""
         count = 6
         probe = None
         try:
             probe = stalled_probe(
-                self.manager_pid, '/tmp/delivery_go_wait', count=count,
+                self.manager_pid, os.path.join(self.tmp, 'go_wait'), count=count,
                 fault_reporter__delivery__ack_timeout_sec=0.2,
                 fault_reporter__delivery__max_attempts=100, prefix='WAIT')
             probe.wait_for(lambda line: line.startswith('REPORTED'))
@@ -352,7 +488,7 @@ class TestDelivery(unittest.TestCase):
         probe = None
         try:
             probe = stalled_probe(
-                self.manager_pid, '/tmp/delivery_go_budget', count=count,
+                self.manager_pid, os.path.join(self.tmp, 'go_budget'), count=count,
                 fault_reporter__delivery__ack_timeout_sec=0.1,
                 fault_reporter__delivery__max_attempts=3, prefix='BUDGET')
             probe.wait_for(lambda line: line.startswith('REPORTED'))
@@ -371,7 +507,7 @@ class TestDelivery(unittest.TestCase):
         probe = None
         try:
             probe = stalled_probe(
-                self.manager_pid, '/tmp/delivery_go_cap', count=count, reporters=1,
+                self.manager_pid, os.path.join(self.tmp, 'go_cap'), count=count, reporters=1,
                 fault_reporter__delivery__max_pending=cap,
                 fault_reporter__delivery__ack_timeout_sec=60.0, prefix='CAP')
             probe.wait_for(lambda line: line == f'REPORTED pending={cap}')

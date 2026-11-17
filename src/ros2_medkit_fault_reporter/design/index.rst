@@ -246,6 +246,13 @@ events of one code in the order they were reported. At most ``max_pending`` repo
 response, all codes together. A report past that is dropped with a warning. A report made while the
 service is not ready is dropped at once (DEBUG log, WARN for a high-severity FAILED).
 
+The client holds 100 requests and 100 responses, where the default service QoS holds 10: one
+reporter has a request in flight for each of its fault codes, and the answers wait in the client
+until the node is spun. The responses include answers to every other client of the service, which
+the client drops when it reads them. If more than 100 requests wait for the manager, or more than
+100 answers arrive while the node is not spun, the oldest are dropped. Their reports are sent again
+after ``ack_timeout_sec``.
+
 Responses and retries are processed when the node is spun. Every constructor puts the retry timer on
 the node; without a timers interface it goes to the node's default callback group. A retry is sent
 whether or not the service is ready and counts toward ``max_attempts``, so a manager that restarts

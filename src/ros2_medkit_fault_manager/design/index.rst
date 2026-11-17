@@ -252,9 +252,14 @@ Reports a new fault or updates an existing one.
 - **Debounce**: FAILED events decrement counter, PASSED events increment counter
 - **Aggregation**: Same fault_code from different sources creates a single fault entry
 - **Severity escalation**: Fault severity is updated if a higher severity is reported
-- **Request queue**: Holds 100 requests until the executor reads them (the default service QoS
-  holds 10). Past that the middleware drops requests without an answer, and FaultReporter sends
-  them again.
+- **Request queue**: Holds ``report_fault_queue_depth`` requests (default 100) until the executor
+  reads them. The default service QoS holds 10. A reporter has one request in flight per fault code,
+  so one reporter can fill the queue alone. Past the depth the middleware drops requests without an
+  answer. FaultReporter sends a dropped request again. graph_watchdog and the gateway's fault
+  triggers report again on their next tick while the condition holds. The OPC UA plugin reports
+  once per alarm transition, so for it a dropped report is lost. A FaultReporter request that
+  waits longer than ``ack_timeout_sec`` is sent again while the first copy is still in the queue,
+  and the manager processes both.
 - **Returns**: ``accepted=true`` if event was processed
 
 ~/list_faults

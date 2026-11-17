@@ -75,6 +75,35 @@ size_t total_pending(const std::vector<std::unique_ptr<FaultReporter>> & reporte
   return n;
 }
 
+// Each reporter reports WARM_<prefix>_<i> and waits for the answer: the manager then knows the
+// request writer and the client knows the response writer.
+void warm_up(const rclcpp::Node::SharedPtr & node, const std::vector<std::unique_ptr<FaultReporter>> & reporters,
+             const std::string & prefix) {
+  for (size_t i = 0; i < reporters.size(); ++i) {
+    // ERROR bypasses the local filter.
+    reporters[i]->report("WARM_" + prefix + "_" + std::to_string(i), ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                         "warm-up");
+  }
+  poll_until(node, std::chrono::seconds(60), [&]() {
+    return total_pending(reporters) == 0;
+  });
+}
+
+// Spins until shutdown and prints PENDING <n> whenever the pending count changes from last.
+void spin_printing_pending(const rclcpp::Node::SharedPtr & node,
+                           const std::vector<std::unique_ptr<FaultReporter>> & reporters, size_t last) {
+  while (rclcpp::ok()) {
+    rclcpp::spin_some(node);
+    const size_t now = total_pending(reporters);
+    if (now != last) {
+      last = now;
+      std::printf("PENDING %zu\n", now);
+      std::fflush(stdout);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+}
+
 }  // namespace
 
 int run(int argc, char * argv[]) {
@@ -128,6 +157,25 @@ int run(int argc, char * argv[]) {
       return total_pending(reporters) == 0;
     });
     std::printf("DONE pending=%zu\n", total_pending(reporters));
+  } else if (mode == "held") {
+    // One reporter reports every code and is not spun until the test creates go_file, so the
+    // manager's answers wait in the client.
+    const auto go_file = node->declare_parameter<std::string>("go_file", "");
+    auto reporters = fresh_reporters(node, 1);
+    poll_until(node, kLimit, [&]() {
+      return all_ready(reporters);
+    });
+    warm_up(node, reporters, prefix);
+    for (size_t i = 0; i < count; ++i) {
+      reporters[0]->report(prefix + "_" + std::to_string(i), severity, "held");
+    }
+    std::printf("REPORTED pending=%zu\n", total_pending(reporters));
+    std::fflush(stdout);
+    const auto deadline = Clock::now() + kLimit;
+    while (rclcpp::ok() && !std::ifstream(go_file).good() && Clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    spin_printing_pending(node, reporters, total_pending(reporters));
   } else if (mode == "stalled") {
     // The manager is stopped by the test: report and then log the pending count as it changes.
     // Code i goes to reporter i % reporters. With `destroy` the reporters are destroyed after reporting.
@@ -136,11 +184,15 @@ int run(int argc, char * argv[]) {
     const auto ctor = node->declare_parameter<std::string>("ctor", "node");
     const auto service = node->declare_parameter<std::string>("service", "/fault_manager/report_fault");
     const bool destroy = node->declare_parameter<bool>("destroy", false);
+    const bool warm = node->declare_parameter<bool>("warm", false);
     auto reporters = fresh_reporters(node, reporter_count, ctor, service);
     const auto go_file = node->declare_parameter<std::string>("go_file", "");
     poll_until(node, kLimit, [&]() {
       return all_ready(reporters);
     });
+    if (warm) {
+      warm_up(node, reporters, prefix);
+    }
     // The test stops the manager after READY and then creates go_file.
     std::printf("READY\n");
     std::fflush(stdout);
@@ -159,16 +211,7 @@ int run(int argc, char * argv[]) {
       std::printf("DESTROYED\n");
       std::fflush(stdout);
     }
-    while (rclcpp::ok()) {
-      rclcpp::spin_some(node);
-      const size_t now = total_pending(reporters);
-      if (now != last) {
-        last = now;
-        std::printf("PENDING %zu\n", now);
-        std::fflush(stdout);
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
+    spin_printing_pending(node, reporters, last);
   }
   std::fflush(stdout);
   rclcpp::shutdown();
