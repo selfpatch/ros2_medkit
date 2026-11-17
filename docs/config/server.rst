@@ -382,13 +382,35 @@ Configure how the gateway connects to the fault manager services and event topic
        by its plugin's DataProvider and merge them into the fault detail's
        ``environment_data.snapshots``. Faults already confirmed at gateway start
        are caught up at startup; those frames read the values at start time (not
-       confirm time) and are marked ``x-medkit.capture_origin: startup``. For an
-       entity that reports its link down these are the plugin's last known
-       values, marked ``connected: false`` in the snapshot's ``x-medkit`` block.
+       confirm time) and are marked ``x-medkit.capture_origin: startup``. A fault
+       whose frame of the same occurrence was reloaded from the freeze-frame
+       store (see ``entity_freeze_frame.storage.path`` below) is not read at
+       start. The reloaded frame is served as captured. For an entity that
+       reports its link down these are the plugin's last known values.
+       ``connected: false`` marks them in the snapshot's ``x-medkit``
+       block only when the plugin's payload carries a link flag; the OPC UA
+       plugin's ``DataProvider`` payload carries none.
        Explicit snapshot config in the fault manager always wins when present.
        Only active when plugins are loaded.
        A program that hosts the gateway core without ROS sets the same switch
        as ``FreezeFrameCaptureConfig::enabled`` (see the gateway README).
+   * - ``entity_freeze_frame.storage.path``
+     - string
+     - ``""``
+     - SQLite file of the captured entity frames. A restart serves the values
+       frozen when the fault confirmed. When empty, the frames go in
+       ``entity_freeze_frames.db`` in the directory of ``triggers.storage.path``.
+       With that empty too, the frames stay in memory and a restart loses them
+       (logged at startup). A file that cannot be opened is logged as an error,
+       and the frames stay in memory. Each row stores the fault's
+       ``occurrence_count`` and ``first_occurred``. At startup one fault list
+       judges the reloaded frames, and none is served before that. A frame of
+       another occurrence, or of a fault the fault manager does not hold, is
+       dropped with a warning. When the fault manager cannot be asked or lists
+       no fault, every frame is kept. A kept frame is served as captured, with
+       its ``captured_at`` and ``capture_origin``. The 256-fault bound counts
+       reloaded and captured frames together. One file belongs to one gateway.
+       See :doc:`/tutorials/snapshots` for each case.
 
 When ``fault_manager.namespace`` is set, the gateway also subscribes to the matching
 fault event topic (for example ``/robot1/fault_manager/events`` instead of the default

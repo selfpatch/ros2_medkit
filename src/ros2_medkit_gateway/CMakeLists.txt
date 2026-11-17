@@ -737,6 +737,14 @@ if(BUILD_TESTING)
   target_link_libraries(test_entity_freeze_frame_capture gateway_ros2)
   medkit_target_dependencies(test_entity_freeze_frame_capture rclcpp ros2_medkit_msgs)
 
+  # Freeze-frame store and the core capture with a store (gateway_core only, no ROS node)
+  medkit_add_gtest(test_entity_freeze_frame_store test/test_entity_freeze_frame_store.cpp)
+  target_link_libraries(test_entity_freeze_frame_store gateway_core)
+  medkit_test_needs_no_domain(test_entity_freeze_frame_store)
+  medkit_add_gtest(test_freeze_frame_capture_persistence test/test_freeze_frame_capture_persistence.cpp)
+  target_link_libraries(test_freeze_frame_capture_persistence gateway_core)
+  medkit_test_needs_no_domain(test_freeze_frame_capture_persistence)
+
   # Add update manager tests
   medkit_add_gtest(test_update_manager test/test_update_manager.cpp)
   target_link_libraries(test_update_manager gateway_ros2)

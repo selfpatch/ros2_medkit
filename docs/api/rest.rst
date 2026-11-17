@@ -1527,7 +1527,11 @@ Query and manage faults.
    - ``freeze_frame``: Data captured at fault confirmation. Entity frames for
      faults that were already confirmed when the gateway started are captured
      at gateway start instead and carry ``"capture_origin": "startup"`` in
-     their ``x-medkit`` block. An entity frame also carries ``source`` in
+     their ``x-medkit`` block, unless a frame of the same occurrence was
+     reloaded from the freeze-frame store (see
+     ``entity_freeze_frame.storage.path`` in the server configuration). That
+     frame is served as it was captured. An entity frame also carries
+     ``source`` in
      ``x-medkit``, naming the path that read the values
      (``plugin_data_provider`` for the owning plugin's DataProvider,
      ``plugin_x_plc_data_route`` for its ``x-plc-data`` route). These values

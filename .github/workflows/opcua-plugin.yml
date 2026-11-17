@@ -4,7 +4,9 @@ permissions:
   contents: read
 
 # Runs the OpenPLC-based Docker integration suite for ros2_medkit_opcua.
-# Triggers only when the plugin itself, the gateway plugin/provider API, or
+# Triggers only when the plugin itself, the gateway plugin/provider API, the
+# entity freeze-frame capture and its store, the gateway node that wires the
+# capture in, the fault scope code that gates which entity serves a fault, or
 # ros2_medkit_msgs change. A nightly cron provides a safety net against silent
 # breaks that slip past the path filter.
 
@@ -16,6 +18,14 @@ on:
       - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/plugins/**'
       - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/providers/**'
       - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/http/error_codes.hpp'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/core/faults/*freeze_frame*'
+      - 'src/ros2_medkit_gateway/src/core/faults/*freeze_frame*'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/entity_freeze_frame_capture.hpp'
+      - 'src/ros2_medkit_gateway/src/entity_freeze_frame_capture.cpp'
+      - 'src/ros2_medkit_gateway/src/gateway_node.cpp'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/gateway_node.hpp'
+      - 'src/ros2_medkit_gateway/src/core/faults/fault_scope.cpp'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/core/faults/fault_scope.hpp'
       - 'src/ros2_medkit_msgs/**'
       - '.github/workflows/opcua-plugin.yml'
   push:
@@ -25,6 +35,14 @@ on:
       - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/plugins/**'
       - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/providers/**'
       - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/http/error_codes.hpp'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/core/faults/*freeze_frame*'
+      - 'src/ros2_medkit_gateway/src/core/faults/*freeze_frame*'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/entity_freeze_frame_capture.hpp'
+      - 'src/ros2_medkit_gateway/src/entity_freeze_frame_capture.cpp'
+      - 'src/ros2_medkit_gateway/src/gateway_node.cpp'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/gateway_node.hpp'
+      - 'src/ros2_medkit_gateway/src/core/faults/fault_scope.cpp'
+      - 'src/ros2_medkit_gateway/include/ros2_medkit_gateway/core/faults/fault_scope.hpp'
       - 'src/ros2_medkit_msgs/**'
       - '.github/workflows/opcua-plugin.yml'
   schedule:
@@ -255,7 +273,7 @@ jobs:
     # Runs start.sh as a user would. The write-capable image is used because the
     # check needs an alarm and the read-only image refuses the write that raises one.
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -295,6 +313,56 @@ jobs:
           curl -s "$api/faults" | jq . || true
           exit 1
 
+      - name: The fault's freeze frame survives stop.sh and start.sh
+        timeout-minutes: 20
+        env:
+          MEDKIT_OPCUA_VARIANT: write-capable
+        run: |
+          api=http://localhost:8080/api/v1
+          scripts=src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts
+          frame_of() {
+            curl -sf "$api/apps/tank_process/faults/$1" |
+              jq -c '[.environment_data.snapshots[]? | select(.type == "freeze_frame")] | first // empty'
+          }
+          # Polls until the frame of $1 has no capture_origin, and prints it.
+          edge_frame_of() {
+            for _ in $(seq 1 60); do
+              f=$(frame_of "$1" || true)
+              if [ -n "$f" ] && jq -e '.["x-medkit"] | has("capture_origin") | not' <<<"$f" >/dev/null; then
+                echo "$f"
+                return 0
+              fi
+              sleep 2
+            done
+            echo "FAIL: $1 has no freeze frame from its confirmation" >&2
+            return 1
+          }
+          before=$(edge_frame_of PLC_HIGH_TEMP)
+          echo "before stop.sh: $before"
+          captured=$(jq -r '.["x-medkit"].captured_at' <<<"$before")
+          bash "$scripts/stop.sh"
+          bash "$scripts/start.sh"
+          reloaded=""
+          for _ in $(seq 1 30); do
+            reloaded=$(docker logs gateway 2>&1 | grep -F "Entity freeze-frame: reloaded frames for" || true)
+            [ -n "$reloaded" ] && break
+            sleep 2
+          done
+          [ -n "$reloaded" ] || { echo "FAIL: the gateway reloaded no freeze frame"; exit 1; }
+          echo "$reloaded"
+          # A second alarm: its frame comes from the drain loop, which runs after the startup catch-up.
+          code=$(curl -s -o /tmp/put.json -w '%{http_code}' -X PUT \
+            "$api/apps/tank_process/data/tank_level" \
+            -H 'Content-Type: application/json' -d '{"value": 50.0}')
+          [ "$code" = "200" ] || { echo "FAIL: PUT tank_level -> $code"; cat /tmp/put.json; exit 1; }
+          edge_frame_of PLC_LOW_LEVEL >/dev/null
+          after=$(frame_of PLC_HIGH_TEMP)
+          echo "after start.sh: $after"
+          jq -e --arg c "$captured" \
+            '.["x-medkit"].captured_at == $c and (.["x-medkit"] | has("capture_origin") | not)' <<<"$after" >/dev/null ||
+            { echo "FAIL: PLC_HIGH_TEMP lost the frame from its confirmation ($captured)"; exit 1; }
+          echo "PLC_HIGH_TEMP keeps captured_at $captured across stop.sh and start.sh"
+
       - name: Dump container logs on failure
         if: failure()
         run: |
@@ -310,6 +378,20 @@ jobs:
         run: |
           docker rm -f gateway openplc 2>/dev/null || true
           docker network rm plc-demo 2>/dev/null || true
+          docker volume rm ros2-medkit-opcua-state 2>/dev/null || true
+
+  freeze-frame-restart:
+    name: Freeze frame across gateway restarts
+    # Gateway restarts against test_alarm_server. The script header lists the
+    # scenarios. The script builds its own images.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run freeze-frame restart suite
+        run: bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_freeze_frame_restart_tests.sh
 
   integration-alarms:
     name: Integration (AlarmConditionType, ${{ matrix.variant }})
