@@ -35,6 +35,7 @@
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/core/discovery/refresh_debounce.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/faults/sqlite_entity_freeze_frame_store.hpp"
 #include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
@@ -1577,7 +1578,11 @@ void GatewayNode::init_entity_freeze_frame_capture(ros2_common::Ros2Subscription
         }
         return std::move(*parsed);
       },
-      std::move(frame_store));
+      std::move(frame_store),
+      // A bridge reports loss of comms under its component; the frames come from the apps it hosts.
+      [this](const std::string & source_id) {
+        return faults::hosted_entities_of(get_thread_safe_cache(), source_id);
+      });
 }
 
 std::shared_ptr<EntityFreezeFrameStore> GatewayNode::open_entity_freeze_frame_store() {

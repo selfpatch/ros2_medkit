@@ -225,9 +225,22 @@ for that fault (explicit config wins). When the entity reports its link down
 (the loss-of-comms case), the frozen values are the plugin's last known ones
 and may predate the confirmation by the length of the outage. The entry's
 ``x-medkit`` block carries ``connected: false`` only when the plugin's payload
-has a link flag. The OPC UA plugin's ``DataProvider`` payload has none. When
-the payload has its own timestamp, the block also carries it as
-``source_timestamp``, next to ``captured_at``.
+has a link flag. When the payload has its own timestamp, the block also carries
+it as ``source_timestamp``, next to ``captured_at``. The OPC UA plugin's
+``DataProvider`` payload has neither, so its frames carry neither.
+
+A fault reported under a component id (a bridge reports loss of comms under the
+PLC runtime component's own id) is framed from the apps that component hosts
+when the component yields no frame of its own: the gateway reads each app the
+component hosts, by the app's entity id, and keeps one frame per app that has
+values, named after the app and none for the component. An entity gets at most one
+frame per fault, also when the fault lists both the component and the app as
+reporting sources. An app with no values, such as one that only hosts
+alarms, adds no frame, and a component hosting only such apps gets none. A
+source that yields its own frame is not descended into, and the descent goes
+one level only. These frames are stored, reloaded and judged at start like any
+other frame, and a confirmed fault with no frame is read through the same
+descent by the catch-up below.
 
 A frame stays after the fault is cleared, and a new confirmation of the
 fault reads the entity again and replaces it. When that read gets no values,

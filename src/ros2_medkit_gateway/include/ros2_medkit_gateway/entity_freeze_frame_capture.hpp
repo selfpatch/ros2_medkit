@@ -110,11 +110,13 @@ class EntityFreezeFrameCapture : public FreezeFrameSource {
    * @param max_faults retained-frame bound; oldest fault's frames evicted past it
    * @param standing_lister every fault at start, any status; may be null
    * @param store frame persistence; null keeps the frames in memory only
+   * @param hosted entities a source hosts, see FreezeFrameCapture::Hooks::hosted; may be null
    */
   EntityFreezeFrameCapture(rclcpp::Node * node, ros2_common::Ros2SubscriptionExecutor & exec,
                            DataProviderResolver resolver, RouteDataFetcher route_fetcher = nullptr,
                            size_t max_faults = 256, StandingFaultLister standing_lister = nullptr,
-                           std::shared_ptr<EntityFreezeFrameStore> store = nullptr);
+                           std::shared_ptr<EntityFreezeFrameStore> store = nullptr,
+                           FreezeFrameCapture::HostedEntitiesResolver hosted = nullptr);
 
   ~EntityFreezeFrameCapture() override;
   EntityFreezeFrameCapture(const EntityFreezeFrameCapture &) = delete;

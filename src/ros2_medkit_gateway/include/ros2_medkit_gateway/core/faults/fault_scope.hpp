@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
 
@@ -48,6 +49,9 @@ std::string resolve_app_source_fqn(const ThreadSafeEntityCache & cache, const st
 /// plugin-context fault path so both agree on entity -> source-set resolution.
 std::set<std::string> resolve_entity_source_fqns(const ThreadSafeEntityCache & cache, SovdEntityType type,
                                                  const std::string & entity_id);
+
+/// Ids of the apps that component `source_id` hosts. Empty when `source_id` is not a component.
+std::vector<std::string> hosted_entities_of(const ThreadSafeEntityCache & cache, const std::string & source_id);
 
 /// True when `fault` has at least one reporting source and *every* reporting
 /// source is within `source_fqns` (exact match or a path-boundary prefix).

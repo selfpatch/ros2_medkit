@@ -439,6 +439,11 @@ jobs:
           python3 src/ros2_medkit_plugins/ros2_medkit_opcua/test/inspect_build_variant.py \
             ./plugin-from-image.so --expect ${{ matrix.variant }}
 
+      # Does not depend on the write surface, so it runs once.
+      - name: Run loss-of-comms freeze-frame scenario
+        if: matrix.variant == 'read-only'
+        run: bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_comms_lost_frame_test.sh
+
       - name: Dump container logs on failure
         if: failure()
         run: |
