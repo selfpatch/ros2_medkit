@@ -1176,12 +1176,15 @@ the expectations applied to it, so the two cannot drift. CI runs both legs.
 ```bash
 cd src/ros2_medkit_plugins/ros2_medkit_opcua/docker
 
-# Start OpenPLC + gateway (builds everything). Default: the read-only image.
+# Start OpenPLC + gateway + fault manager (builds everything). Default: the read-only image.
 bash scripts/start.sh
 MEDKIT_OPCUA_VARIANT=write-capable bash scripts/start.sh
 
 # Manual testing
 curl -s http://localhost:8080/api/v1/apps/tank_process/x-plc-data | jq .
+
+# The faults the PLC's alarms raise
+curl -s http://localhost:8080/api/v1/apps/tank_process/faults | jq .
 
 # Automated tests against a running pair
 bash scripts/run_integration_tests.sh
@@ -1193,6 +1196,25 @@ MEDKIT_OPCUA_VARIANT=write-capable bash scripts/test_all.sh
 
 # Stop
 bash scripts/stop.sh
+```
+
+`start.sh` runs a `fault_manager_node` inside the gateway container, on the same
+ROS domain. It starts before `gateway_node`, and the script waits until
+`/fault_manager/report_fault` is advertised. Without a fault manager,
+`GET /api/v1/faults` answers 503 and the alarms the plugin detects are not
+stored. The fault manager log is inside the container:
+
+```bash
+docker exec gateway cat /var/lib/ros2_medkit/fault_manager.log
+```
+
+The tank heats slowly, so `PLC_HIGH_TEMP` (80 C) takes a long time to raise on
+its own. With the write-capable variant you can raise it at once:
+
+```bash
+curl -s -X PUT http://localhost:8080/api/v1/apps/tank_process/data/tank_temperature \
+  -H 'Content-Type: application/json' -d '{"value": 90.0}'
+curl -s http://localhost:8080/api/v1/faults | jq .
 ```
 
 A separate scenario covers the config-less discovery start-up race, which the
