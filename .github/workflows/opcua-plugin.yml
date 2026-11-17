@@ -261,6 +261,67 @@ jobs:
           docker rm -f gateway openplc 2>/dev/null || true
           docker network rm plc-demo 2>/dev/null || true
 
+  demo-faults:
+    name: Demo start.sh serves faults
+    # Runs start.sh as a user would. The write-capable image is used because the
+    # check needs an alarm and the read-only image refuses the write that raises one.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Start the demo
+        timeout-minutes: 20
+        env:
+          MEDKIT_OPCUA_VARIANT: write-capable
+        run: bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/start.sh
+
+      - name: Fault routes answer 200
+        run: |
+          for path in faults apps/tank_process/faults; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:8080/api/v1/$path")
+            echo "GET /api/v1/$path -> $code"
+            [ "$code" = "200" ] || { echo "FAIL: expected 200"; exit 1; }
+          done
+
+      - name: A PLC alarm becomes a fault
+        run: |
+          api=http://localhost:8080/api/v1
+          code=$(curl -s -o /tmp/put.json -w '%{http_code}' -X PUT \
+            "$api/apps/tank_process/data/tank_temperature" \
+            -H 'Content-Type: application/json' -d '{"value": 90.0}')
+          echo "PUT tank_temperature -> $code"
+          cat /tmp/put.json; echo
+          [ "$code" = "200" ] || { echo "FAIL: write refused"; exit 1; }
+          for i in $(seq 1 60); do
+            if curl -sf "$api/faults" | jq -e '.items | map(.fault_code) | contains(["PLC_HIGH_TEMP"])' >/dev/null; then
+              echo "PLC_HIGH_TEMP listed after about $((i * 2))s"
+              curl -s "$api/faults" | jq .
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FAIL: PLC_HIGH_TEMP not listed within 120s"
+          curl -s "$api/faults" | jq . || true
+          exit 1
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          echo "=== Gateway logs ==="
+          docker logs gateway 2>&1 | tail -80 || true
+          echo "=== Fault manager logs ==="
+          docker exec gateway cat /var/lib/ros2_medkit/fault_manager.log 2>&1 | tail -80 || true
+          echo "=== OpenPLC logs ==="
+          docker logs openplc 2>&1 | tail -60 || true
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f gateway openplc 2>/dev/null || true
+          docker network rm plc-demo 2>/dev/null || true
+
   integration-alarms:
     name: Integration (AlarmConditionType, ${{ matrix.variant }})
     # Issue #386: tests the native OPC-UA AlarmCondition subscription bridge
