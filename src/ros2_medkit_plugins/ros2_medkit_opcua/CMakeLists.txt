@@ -683,6 +683,10 @@ if(BUILD_TESTING)
       test/integration/test_opcua_per_source_clear.test.py
       test/integration/test_opcua_startup_sweep_signal.test.py
       DESTINATION lib/${PROJECT_NAME})
+    # The fault manager client the installed scripts import from their directory.
+    install(FILES
+      test/integration/fault_manager_client.py
+      DESTINATION lib/${PROJECT_NAME})
 
     # ---- Read-only / write-capable behaviour over real HTTP ----------------
     # The build-inspection test proves the write symbols are gone; this proves

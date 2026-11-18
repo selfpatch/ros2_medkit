@@ -37,6 +37,8 @@ import time
 import urllib.error
 import urllib.request
 
+from fault_manager_client import FaultManagerClient
+
 COMPONENT = 'per_source_runtime'
 ENTITY = 'plc_app'
 CODE = 'PS_STATUS_BIT0'
@@ -187,60 +189,18 @@ def start_fault_manager(log_path, env):
     return proc
 
 
-FAULT_MANAGER_CLIENT = """
-import json
-import sys
-
-import rclpy
-from ros2_medkit_msgs.msg import Fault
-from ros2_medkit_msgs.srv import ListFaults, ReportFault
-
-rclpy.init()
-node = rclpy.create_node('per_source_clear_test_client')
+def gateway_records(client):
+    """Return {first reporting source: status} of every CODE record."""
+    return {f.reporting_sources[0]: f.status for f in client.faults()
+            if f.fault_code == CODE and f.reporting_sources}
 
 
-def call(client, request):
-    future = client.call_async(request)
-    rclpy.spin_until_future_complete(node, future, timeout_sec=10.0)
-    return future.result()
-
-
-if sys.argv[1] == 'report':
-    client = node.create_client(ReportFault, '/fault_manager/report_fault')
-    client.wait_for_service(timeout_sec=10.0)
-    request = ReportFault.Request()
-    request.fault_code = sys.argv[2]
-    request.event_type = ReportFault.Request.EVENT_FAILED
-    request.severity = Fault.SEVERITY_ERROR
-    request.description = 'second source'
-    request.source_id = sys.argv[3]
-    print(json.dumps({'accepted': call(client, request).accepted}))
-else:
-    client = node.create_client(ListFaults, '/fault_manager/list_faults')
-    client.wait_for_service(timeout_sec=10.0)
-    request = ListFaults.Request()
-    request.statuses = ['PREFAILED', 'PREPASSED', 'CONFIRMED', 'HEALED', 'CLEARED']
-    print(json.dumps({f.reporting_sources[0]: f.status for f in call(client, request).faults
-                      if f.fault_code == sys.argv[2] and f.reporting_sources}))
-node.destroy_node()
-rclpy.shutdown()
-"""
-
-
-def fault_manager_client(env, *args):
-    result = subprocess.run([sys.executable, '-c', FAULT_MANAGER_CLIENT, *args], env=env,
-                            capture_output=True, text=True, timeout=60 * SCALE)
-    if result.returncode != 0:
-        raise AssertionError(f'fault manager client {args} failed:\n{result.stderr}')
-    return json.loads(result.stdout)
-
-
-def wait_records(env, accept, deadline):
+def wait_records(client, accept, deadline):
     """Poll a scaled deadline until accept(records) holds. Return the last records."""
     end = time.monotonic() + deadline * SCALE
     records = {}
     while time.monotonic() < end:
-        records = fault_manager_client(env, 'list', CODE)
+        records = gateway_records(client)
         if accept(records):
             return records
         time.sleep(0.3)
@@ -266,6 +226,7 @@ def main():
     workdir = Path(tempfile.mkdtemp(prefix='opcua_per_source_clear_'))
     env = dict(os.environ, ROS_DOMAIN_ID=ros_domain_id)
     procs = []
+    client = FaultManagerClient('per_source_clear_test_client', 1.0 * SCALE, 60 * SCALE)
     try:
         node_map = workdir / 'nodes.yaml'
         node_map.write_text(
@@ -337,19 +298,19 @@ def main():
             return 1
 
         # A second source holds a record of the same code.
-        if not fault_manager_client(env, 'report', CODE, OTHER)['accepted']:
+        if not client.report(CODE, OTHER):
             print('the second source was refused', file=sys.stderr)
             return 1
 
         set_register(server, server_log, 'StatusWord', 1)
         records = wait_records(
-            env, lambda r: r.get(ENTITY) == 'CONFIRMED' and r.get(OTHER) == 'CONFIRMED', 30)
+            client, lambda r: r.get(ENTITY) == 'CONFIRMED' and r.get(OTHER) == 'CONFIRMED', 30)
         if records.get(ENTITY) != 'CONFIRMED':
             print(f'the alarm never raised the gateway record: {records}', file=sys.stderr)
             return 1
 
         set_register(server, server_log, 'StatusWord', 0)
-        records = wait_records(env, lambda r: r.get(ENTITY) == 'CLEARED', 30)
+        records = wait_records(client, lambda r: r.get(ENTITY) == 'CLEARED', 30)
         if records.get(ENTITY) != 'CLEARED':
             print(f"the cleared alarm did not clear the gateway's record: {records}\n"
                   + fm_log.read_text(errors='replace')[-3000:], file=sys.stderr)
@@ -362,6 +323,7 @@ def main():
     finally:
         for proc in reversed(procs):
             terminate(proc)
+        client.close()
         shutil.rmtree(workdir, ignore_errors=True)
 
 
