@@ -78,11 +78,9 @@ std::vector<std::string> override_string_array(const ParameterOverrides & overri
   return found->second.get<std::vector<std::string>>();
 }
 
-}  // namespace
-
-GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medkit_gateway", options) {
-  // Both options would declare the secrets and plugin config as parameters, and the parameter
-  // services and /parameter_events would then serve their values.
+// Runs before the Node base class is built. Both options make rclcpp declare the overrides, secrets
+// and plugin config included, with their values, and publish them on /parameter_events.
+const rclcpp::NodeOptions & checked_node_options(const rclcpp::NodeOptions & options) {
   if (options.automatically_declare_parameters_from_overrides()) {
     throw std::invalid_argument(
         "GatewayNode: NodeOptions::automatically_declare_parameters_from_overrides must be false: "
@@ -93,6 +91,13 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
         "GatewayNode: NodeOptions::allow_undeclared_parameters must be false: "
         "it would serve secrets and plugin config as parameters");
   }
+  return options;
+}
+
+}  // namespace
+
+GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
+  : Node("ros2_medkit_gateway", checked_node_options(options)) {
   log::set_sink(std::make_shared<Ros2LogSink>());
   RCLCPP_INFO(get_logger(), "Initializing ROS 2 Medkit Gateway...");
 
