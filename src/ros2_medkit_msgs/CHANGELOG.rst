@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_msgs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* ``Snapshot``, ``GetRosbag`` and ``ListRosbags`` define a recording's size as the bytes its download serves: the storage files its metadata names, summed for a split recording. The fields are unchanged (`#679 <https://github.com/selfpatch/ros2_medkit/pull/679>`_)
+* Contributors: @bburda
+
 0.7.0 (2026-08-27)
 ------------------
 * ``GetRosbag.srv`` gains a ``recording_id`` request field (tried before ``fault_code`` and falling back to it when it names no recording, so a caller holding one identifier that may be either can set both; ``fault_code`` keeps its meaning of "the newest recording of this fault") and ``recording_id`` / ``fault_codes[]`` response fields. ``ListRosbags.srv`` gains a parallel ``recording_ids[]``. ``Snapshot.msg``'s ``bulk_data_id`` now carries a recording id for rosbag snapshots rather than the fault code; the field type is unchanged. Additive, but the service type hashes change, so the gateway and the fault manager must be deployed together (`#623 <https://github.com/selfpatch/ros2_medkit/pull/623>`_, `#620 <https://github.com/selfpatch/ros2_medkit/issues/620>`_)

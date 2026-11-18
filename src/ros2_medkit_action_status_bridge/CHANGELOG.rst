@@ -2,6 +2,12 @@
 Changelog for package ros2_medkit_action_status_bridge
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* Exits 0 when ``SIGINT`` lands during startup, in a timer or in a status callback. ``SIGINT`` and ``SIGTERM`` are held until the node and its executor are built
+* Waits for the action server's node name before the first report
+* Contributors: @bburda
+
 0.7.0 (2026-08-27)
 ------------------
 * A deferred fault report is retried instead of dropped, and delivered promptly through a fast retry timer rather than waiting for the next ordinary cycle (`#472 <https://github.com/selfpatch/ros2_medkit/pull/472>`_)

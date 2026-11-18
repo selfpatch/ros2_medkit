@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_graph_provider
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.0 (2026-08-27)
 ------------------
 * **Breaking:** the ``x-medkit-graph`` health model is reworked and ``schema_version`` is now ``"2.0.0"``. ``pipeline_status`` is derived from data freshness and node reachability instead of the previous status model, and no longer reports ``"broken"`` for an edge that simply has no ``/diagnostics`` coverage. The ``error_reason`` values ``node_offline``, ``topic_stale`` and ``no_data_source`` are gone; ``metrics_stale`` is the only reachable value. A consumer that matched on the old values needs a change (`#546 <https://github.com/selfpatch/ros2_medkit/pull/546>`_, `#545 <https://github.com/selfpatch/ros2_medkit/issues/545>`_)

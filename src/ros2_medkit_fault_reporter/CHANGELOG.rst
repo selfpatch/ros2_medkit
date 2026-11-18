@@ -2,6 +2,12 @@
 Changelog for package ros2_medkit_fault_reporter
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* Delivery of every report is confirmed, and a report without a response is sent again. Retrying works on every constructor and stops cleanly when the reporter is destroyed
+* Internal: the reporting logic is split into a ROS-free core (`#739 <https://github.com/selfpatch/ros2_medkit/pull/739>`_)
+* Contributors: @bburda
+
 0.7.0 (2026-08-27)
 ------------------
 * ``FaultReporter`` can now be constructed from an ``rclcpp_lifecycle::LifecycleNode`` (and from a plain ``rclcpp::Node`` reference or explicit node interfaces), enabling use inside lifecycle nodes (`#556 <https://github.com/selfpatch/ros2_medkit/pull/556>`_, `#555 <https://github.com/selfpatch/ros2_medkit/issues/555>`_)
