@@ -61,6 +61,9 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'fixtures' / 'test_alarm_server'))
 import alarm_fixture  # noqa: E402
+import rclpy  # noqa: E402
+from ros2_medkit_msgs.msg import Fault  # noqa: E402
+from ros2_medkit_msgs.srv import ListFaults, ReportFault  # noqa: E402
 
 COMMS_LOST = 'PLC_COMMS_LOST'
 HELD_BY_OTHERS = f'{COMMS_LOST} is held by sources this bridge did not report under ['
@@ -197,11 +200,12 @@ class Gateway:
 class Run:
     """The processes of one scenario. stop_all() ends every one of them."""
 
-    def __init__(self, workdir, server_bin, plugin, env):
+    def __init__(self, workdir, server_bin, plugin, env, client):
         self.workdir = workdir
         self.server_bin = server_bin
         self.plugin = plugin
         self.env = env
+        self.client = client
         self.procs = []
         self.logs = {}
         # Logs of fixtures that printed READY. A failed start printed its own.
@@ -407,55 +411,52 @@ def scenario_late_nameplate(run):
                   'after the device named itself')
 
 
-# Talks to the fault manager as a second source: reports a fault, lists the records.
-FAULT_MANAGER_CLIENT = """
-import json
-import sys
-
-import rclpy
-from ros2_medkit_msgs.msg import Fault
-from ros2_medkit_msgs.srv import ListFaults, ReportFault
-
-rclpy.init()
-node = rclpy.create_node('comms_lost_test_client')
+# A reply is asked for again after this long. A reply can be lost while the fault manager has not
+# matched this client yet, and every scenario starts a new fault manager.
+ANSWER_WAIT_SEC = 1.0 * SCALE
 
 
-def call(client, request):
-    future = client.call_async(request)
-    rclpy.spin_until_future_complete(node, future, timeout_sec=10.0)
-    return future.result()
+class FaultManagerClient:
+    """One node in the test process that talks to the fault manager as a second source."""
 
+    def __init__(self):
+        rclpy.init()
+        self.node = rclpy.create_node('comms_lost_test_client')
+        self.report = self.node.create_client(ReportFault, '/fault_manager/report_fault')
+        self.list = self.node.create_client(ListFaults, '/fault_manager/list_faults')
 
-if sys.argv[1] == 'report':
-    client = node.create_client(ReportFault, '/fault_manager/report_fault')
-    client.wait_for_service(timeout_sec=10.0)
-    request = ReportFault.Request()
-    request.fault_code = sys.argv[2]
-    request.event_type = ReportFault.Request.EVENT_FAILED
-    request.severity = Fault.SEVERITY_ERROR
-    request.description = 'second source'
-    request.source_id = sys.argv[3]
-    print(json.dumps({'accepted': call(client, request).accepted}))
-else:
-    client = node.create_client(ListFaults, '/fault_manager/list_faults')
-    client.wait_for_service(timeout_sec=10.0)
-    request = ListFaults.Request()
-    request.statuses = ['PREFAILED', 'PREPASSED', 'CONFIRMED', 'HEALED', 'CLEARED']
-    print(json.dumps([{'code': f.fault_code, 'status': f.status,
-                       'sources': list(f.reporting_sources)}
-                      for f in call(client, request).faults]))
-node.destroy_node()
-rclpy.shutdown()
-"""
+    def close(self):
+        self.node.destroy_node()
+        rclpy.shutdown()
+
+    def call(self, client, request):
+        """Return the answer to <request>, sending it again while the reply is lost."""
+        end = time.monotonic() + 60 * SCALE
+        while time.monotonic() < end:
+            if not client.wait_for_service(timeout_sec=ANSWER_WAIT_SEC):
+                continue
+            future = client.call_async(request)
+            rclpy.spin_until_future_complete(self.node, future, timeout_sec=ANSWER_WAIT_SEC)
+            if future.done():
+                return future.result()
+            client.remove_pending_request(future)
+        raise AssertionError(f'{client.srv_name} never answered')
 
 
 def fault_manager_client(run, *args):
-    """Run the fault manager client script on the scenario's ROS domain and return its JSON."""
-    result = subprocess.run([sys.executable, '-c', FAULT_MANAGER_CLIENT, *args], env=run.env,
-                            capture_output=True, text=True, timeout=60 * SCALE)
-    if result.returncode != 0:
-        raise AssertionError(f'fault manager client {args} failed:\n{result.stderr}')
-    return json.loads(result.stdout)
+    """Report <code> <source> as a second source ('report'), or list every fault ('list')."""
+    if args[0] == 'report':
+        request = ReportFault.Request()
+        request.fault_code = args[1]
+        request.event_type = ReportFault.Request.EVENT_FAILED
+        request.severity = Fault.SEVERITY_ERROR
+        request.description = 'second source'
+        request.source_id = args[2]
+        return {'accepted': run.client.call(run.client.report, request).accepted}
+    request = ListFaults.Request()
+    request.statuses = ['PREFAILED', 'PREPASSED', 'CONFIRMED', 'HEALED', 'CLEARED']
+    return [{'code': f.fault_code, 'status': f.status, 'sources': list(f.reporting_sources)}
+            for f in run.client.call(run.client.list, request).faults]
 
 
 def comms_lost_records(run):
@@ -729,11 +730,12 @@ def main():
     env = dict(os.environ, ROS_DOMAIN_ID=ros_domain_id)
     only = os.environ.get('OPCUA_COMMS_LOST_SCENARIO')
     failures = 0
+    client = FaultManagerClient()
     for name, scenario in SCENARIOS:
         if only and only != name:
             continue
         workdir = Path(tempfile.mkdtemp(prefix='opcua_comms_lost_'))
-        run = Run(workdir, server_bin, plugin, env)
+        run = Run(workdir, server_bin, plugin, env, client)
         started = time.monotonic()
         error = None
         try:
@@ -750,6 +752,7 @@ def main():
             print(f'FAIL {name} ({elapsed:.0f} s): {error}', file=sys.stderr)
             for log in run.server_logs:
                 print(f'{log.name}:\n' + alarm_fixture.read_log(log), file=sys.stderr)
+    client.close()
     return 1 if failures else 0
 
 
