@@ -143,6 +143,10 @@ from ros2_medkit_test_utils.graph_fixtures import (  # noqa: E402
     observed_enclaves,
     wait_observed,
 )
+from ros2_medkit_test_utils.service_round_trip import (  # noqa: E402
+    answer_once_each,
+    call_until_answered,
+)
 
 # No default on purpose - a default makes this file FAIL OPEN (see harness-consuming
 # siblings' identical rationale): if the CTest ENVIRONMENT property never reaches the
@@ -593,9 +597,10 @@ def _get_lifecycle_label(client_node, service_name, timeout=10.0):
     try:
         if not client.wait_for_service(timeout_sec=timeout):
             return None
-        future = client.call_async(GetState.Request())
-        rclpy.spin_until_future_complete(client_node, future, timeout_sec=timeout)
-        result = future.result()
+        try:
+            result = call_until_answered(client_node, client, GetState.Request(), timeout)
+        except AssertionError:
+            return None
         return None if result is None else result.current_state.label
     finally:
         client_node.destroy_client(client)
@@ -631,10 +636,16 @@ def _poll_lifecycle_label(client_node, service_name, expected_label, timeout=30.
 
 
 def _call_change_state_once(client_node, service_name, transition_id, timeout=30.0):
-    """One ``ChangeState`` call against `service_name`. ``True`` on ``result.success``."""
+    """
+    One ``ChangeState`` call against `service_name`. ``True`` on ``result.success``.
+
+    The new client first gets one answer to the default request, transition 0 (create),
+    which a running node refuses without changing state.
+    """
     client = client_node.create_client(ChangeState, service_name)
     if not client.wait_for_service(timeout_sec=timeout):
         return False
+    answer_once_each(client_node, (client,), timeout)
     request = ChangeState.Request()
     request.transition.id = transition_id
     future = client.call_async(request)
