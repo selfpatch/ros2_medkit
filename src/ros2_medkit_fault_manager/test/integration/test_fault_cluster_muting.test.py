@@ -25,6 +25,7 @@ per reporting node).
 """
 
 import os
+import sys
 import tempfile
 import unittest
 
@@ -36,6 +37,9 @@ import rclpy
 from rclpy.node import Node
 from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import ClearFault, GetFault, ListFaults, ReportFault
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from service_round_trip import answer_once_each  # noqa: E402
 
 TIMEOUT_SEC = 30.0
 MODES = ('SH', 'PS')
@@ -110,8 +114,10 @@ class TestClusterMuting(unittest.TestCase):
         cls.list_client = cls.node.create_client(ListFaults, '/fault_manager/list_faults')
         cls.get_client = cls.node.create_client(GetFault, '/fault_manager/get_fault')
         cls.clear_client = cls.node.create_client(ClearFault, '/fault_manager/clear_fault')
-        for client in (cls.report_client, cls.list_client, cls.get_client, cls.clear_client):
+        clients = (cls.report_client, cls.list_client, cls.get_client, cls.clear_client)
+        for client in clients:
             assert client.wait_for_service(timeout_sec=TIMEOUT_SEC)
+        answer_once_each(cls.node, clients, TIMEOUT_SEC)
 
     @classmethod
     def tearDownClass(cls):

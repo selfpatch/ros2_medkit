@@ -28,6 +28,7 @@ import os
 import shutil
 import signal
 import sqlite3
+import sys
 import tempfile
 import time
 import unittest
@@ -41,6 +42,9 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from ros2_medkit_msgs.msg import Fault, FaultEvent
 from ros2_medkit_msgs.srv import ClearFault, ListFaults, ReportFault
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from service_round_trip import answer_once_each, wait_for_event_route  # noqa: E402
 
 DB_DIR = tempfile.mkdtemp(prefix='medkit_severity_')
 DB_PATH = os.path.join(DB_DIR, 'faults.db')
@@ -214,18 +218,12 @@ class TestSeverityConsistency(unittest.TestCase):
         return None
 
     def _prime_events(self):
-        """Report fresh CRITICAL codes until one event arrives, so the event topic is matched."""
-        deadline = time.monotonic() + TIMEOUT_SEC
-        while time.monotonic() < deadline:
-            type(self).primes += 1
-            code = f'PRIME_{self.primes}'
-            self._report(code, Fault.SEVERITY_CRITICAL)
-            settle = time.monotonic() + 1.0
-            while time.monotonic() < settle:
-                if any(e.fault.fault_code == code for e in self.events):
-                    return
-                rclpy.spin_once(self.node, timeout_sec=0.1)
-        self.fail('no fault event arrived from the fault manager')
+        """Get one answer on every client and one event from the fault manager just started."""
+        type(self).primes += 1
+        answer_once_each(
+            self.node, (self.report_client, self.list_client, self.clear_client), TIMEOUT_SEC)
+        wait_for_event_route(
+            self.node, self.report_client, self.events, f'PRIME_{self.primes}_', TIMEOUT_SEC)
 
     def _restart(self, fault_manager_node):
         old_pid = fault_manager_node.process_details['pid']

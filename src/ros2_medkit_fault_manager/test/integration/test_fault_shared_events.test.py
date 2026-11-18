@@ -22,6 +22,7 @@ second updates it, and the update names both sources with the occurrence count s
 
 import os
 import shutil
+import sys
 import tempfile
 import time
 import unittest
@@ -36,6 +37,9 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from ros2_medkit_msgs.msg import Fault, FaultEvent
 from ros2_medkit_msgs.srv import ReportFault
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from service_round_trip import answer_once_each, wait_for_event_route  # noqa: E402
 
 TIMEOUT_SEC = 30.0
 _temp_dirs = []
@@ -79,11 +83,9 @@ class TestSharedRecordEvents(unittest.TestCase):
         cls.subscription = cls.node.create_subscription(
             FaultEvent, '/fault_manager/events', cls.events.append,
             QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE))
-        deadline = time.monotonic() + TIMEOUT_SEC
-        while (cls.node.count_publishers('/fault_manager/events') == 0
-               and time.monotonic() < deadline):
-            rclpy.spin_once(cls.node, timeout_sec=0.1)
-        assert cls.node.count_publishers('/fault_manager/events') > 0
+        answer_once_each(cls.node, (cls.report_client,), TIMEOUT_SEC)
+        wait_for_event_route(cls.node, cls.report_client, cls.events, 'SE.PROBE_', TIMEOUT_SEC)
+        cls.events.clear()
 
     @classmethod
     def tearDownClass(cls):

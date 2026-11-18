@@ -24,6 +24,7 @@ A record that confirms again after it was acknowledged gets a capture of its own
 
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -38,6 +39,9 @@ from rclpy.node import Node
 from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import ClearFault, GetSnapshots, ReportFault
 from std_msgs.msg import Int32
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from service_round_trip import answer_once_each  # noqa: E402, I100
 
 TIMEOUT_SEC = 30.0
 SOURCES = ['/grp/a', '/grp/b', '/grp/c']
@@ -98,8 +102,10 @@ class TestSnapshotGrouping(unittest.TestCase):
         cls.clear_client = cls.node.create_client(ClearFault, '/fault_manager/clear_fault')
         cls.snapshots_client = cls.node.create_client(
             GetSnapshots, '/fault_manager/get_snapshots')
-        for client in (cls.report_client, cls.clear_client, cls.snapshots_client):
+        clients = (cls.report_client, cls.clear_client, cls.snapshots_client)
+        for client in clients:
             assert client.wait_for_service(timeout_sec=TIMEOUT_SEC)
+        answer_once_each(cls.node, clients, TIMEOUT_SEC)
         cls.publisher = cls.node.create_publisher(Int32, '/grouping/counter', 10)
         cls.stop = threading.Event()
         cls.publisher_thread = threading.Thread(target=cls._publish)
