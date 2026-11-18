@@ -63,8 +63,23 @@ class RuntimeLinker {
   /**
    * @brief Link manifest apps to runtime apps (nodes)
    *
-   * @param manifest_apps Apps from manifest
-   * @param runtime_apps Apps discovered from ROS graph (each node is an App)
+   * @param apps The merged app set (MergePipeline passes every app the merge
+   *        produced, so runtime and plugin apps arrive here too).
+   * @param runtime_apps Apps discovered from ROS graph (each node is an App).
+   *        Every node, also those gap-fill keeps out of the merge: these are
+   *        the candidates for binding and the source of orphan_nodes.
+   * @param merged_runtime_apps The runtime layer's apps that went into the
+   *        merge (its output after gap-fill). A runtime app here with a
+   *        manifest app's id is the one the merge folded into that app, and
+   *        the only one whose state the linker takes back from it.
+   * @param manifest_app_ids Ids of the apps the manifest declares. The linker
+   *        owns the binding state of these apps only. Before matching it takes
+   *        back from them the bound_fqn, is_online and topics, services and
+   *        actions the merge copied in from a runtime app of the same id, so a
+   *        manifest app is tied to a node by its ros_binding and never by its
+   *        id. Every other app passes through unchanged and is never counted
+   *        as unlinked. There is deliberately no default: an empty set means
+   *        "no manifest apps", not "every app is one".
    * @param config Manifest config with orphan policy
    * @param protected_ids Ids whose owning discovery layer declares them
    *        protected from suppression. Passed in rather than recomputed so
@@ -73,8 +88,10 @@ class RuntimeLinker {
    *        alone, which is what a caller with no pipeline context gets.
    * @return LinkingResult with linked apps and orphan info
    */
-  LinkingResult link(const std::vector<App> & manifest_apps, const std::vector<App> & runtime_apps,
-                     const ManifestConfig & config, const std::unordered_set<std::string> & protected_ids = {});
+  LinkingResult link(const std::vector<App> & apps, const std::vector<App> & runtime_apps,
+                     const std::vector<App> & merged_runtime_apps,
+                     const std::unordered_set<std::string> & manifest_app_ids, const ManifestConfig & config,
+                     const std::unordered_set<std::string> & protected_ids = {});
 
   /**
    * @brief Check if a specific app is linked to a runtime node
