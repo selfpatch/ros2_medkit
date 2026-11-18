@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_diagnostic_bridge
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* Built against the ROS-free fault reporter core. No change in behaviour (`#739 <https://github.com/selfpatch/ros2_medkit/pull/739>`_)
+* Contributors: @bburda
+
 0.7.0 (2026-08-27)
 ------------------
 * The ``hardware_id`` of a diagnostic message is passed through as the fault's source id, so a fault raised from ``/diagnostics`` is attributed to the device the publisher named rather than to the bridge (`#622 <https://github.com/selfpatch/ros2_medkit/pull/622>`_)

@@ -2,6 +2,16 @@
 Changelog for package ros2_medkit_opcua
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* **Breaking:** read-only is a property of the build, not a setting. The default build and the published images carry no controller write path and no alarm acknowledge, a write request answers ``501``, and a warning is logged only for a write setting someone wrote. A write-capable plugin is built with ``-DMEDKIT_OPCUA_READ_ONLY=OFF`` (`#657 <https://github.com/selfpatch/ros2_medkit/pull/657>`_)
+* Node-map points take ``raise_after_samples`` and ``raise_after_ms``, so a fault is raised only after the condition has held (`#767 <https://github.com/selfpatch/ros2_medkit/pull/767>`_)
+* Reconnect: the plugin rescans while it is disconnected and heals ``PLC_COMMS_LOST`` on connect, keeps the server it bound to across a restart, decides the comms-lost clear per bridge, and ends the session on a closed connection even when the channel still reads open (`#660 <https://github.com/selfpatch/ros2_medkit/pull/660>`_)
+* The session is closed before its event contexts are released (`#774 <https://github.com/selfpatch/ros2_medkit/pull/774>`_), and subscription mode is serviced without event alarms configured (`#766 <https://github.com/selfpatch/ros2_medkit/pull/766>`_)
+* The report and the clear of one fault are handed over in the order they were worked out, and the fault-service clients are created, used and destroyed on the plugin's own threads
+* The OpenPLC tank demo runs a fault manager (`#683 <https://github.com/selfpatch/ros2_medkit/pull/683>`_)
+* Contributors: @bburda, @mfaferek93, @ahmedsleem109
+
 0.7.0 (2026-08-27)
 ------------------
 * Config-less discovery. A read-only network scan finds the OPC UA server instead of requiring its endpoint up front (`#509 <https://github.com/selfpatch/ros2_medkit/pull/509>`_), ``auto_browse`` walks the address space recursively and builds the SOVD tree from it (`#510 <https://github.com/selfpatch/ros2_medkit/pull/510>`_), and identity, writability and fault triggers are read from the device itself rather than declared in a node map (`#544 <https://github.com/selfpatch/ros2_medkit/pull/544>`_)

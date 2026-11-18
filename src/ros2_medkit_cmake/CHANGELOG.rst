@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_cmake
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* Test support: shared memory of killed Fast DDS participants is reclaimed after each test, ``fastdds`` is run through ``sh`` when its launcher has no shebang, and a failed clean is reported (`#708 <https://github.com/selfpatch/ros2_medkit/pull/708>`_)
+* Contributors: @bburda
+
 0.7.0 (2026-08-27)
 ------------------
 * ``ROS_DOMAIN_ID`` isolation is allocated at run time instead of from a hand-maintained table. A test registered through ``medkit_add_gtest``, ``medkit_add_gmock``, ``medkit_add_launch_test``, ``medkit_add_pytest_test`` or ``medkit_add_wrapped_test`` takes a domain when it starts and holds it through an open socket for exactly as long as it runs, so a crash or a SIGKILL releases it the same way an ordinary exit does. The isolation reaches across packages, which a CTest ``RESOURCE_LOCK`` cannot, because colcon runs one ctest per package in parallel. ``medkit_test_needs_no_domain()`` opts out a test that creates no ROS node. The usable band excludes the domains whose RTPS port slice falls inside the kernel ephemeral port range (`#551 <https://github.com/selfpatch/ros2_medkit/pull/551>`_, `#597 <https://github.com/selfpatch/ros2_medkit/pull/597>`_)

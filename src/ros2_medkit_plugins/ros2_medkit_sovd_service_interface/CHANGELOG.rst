@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_sovd_service_interface
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.0 (2026-08-27)
 ------------------
 * A cyclic-subscription request naming a resource path the collection cannot stream is refused instead of being accepted and never delivering

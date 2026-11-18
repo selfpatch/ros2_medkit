@@ -2,6 +2,12 @@
 Changelog for package ros2_medkit_graph_watchdog
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* Presence ownership is kept only on a measured active state (`#732 <https://github.com/selfpatch/ros2_medkit/pull/732>`_)
+* Follows the gateway's handling of its own helper nodes: own ROS context and hidden names (`#723 <https://github.com/selfpatch/ros2_medkit/pull/723>`_, `#725 <https://github.com/selfpatch/ros2_medkit/pull/725>`_)
+* Contributors: @bburda
+
 0.7.0 (2026-08-27)
 ------------------
 * Initial release of the package: a gateway plugin that raises faults for silent failures in the ROS 2 graph - problems that leave every node alive and every topic present, so nothing in the stack reports them today. The package carries the plugin skeleton, a central reliability gate that holds raises until the graph has quiesced, and a detector registry. Detectors are configured under ``plugins.graph_watchdog.<key>``, each with a ``raise`` / ``advisory`` / ``off`` mode, and an unknown key under ``detectors.<id>`` is reported rather than silently ignored, so a typo cannot quietly disable a check (`#571 <https://github.com/selfpatch/ros2_medkit/pull/571>`_)
