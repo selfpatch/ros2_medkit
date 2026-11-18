@@ -384,7 +384,11 @@ TEST_F(LogScopeTest, LevelsOfEveryWaitingChangeReachTheTriggerDecision) {
   ResourceChangeNotifier notifier;
   mgr.set_notifier(&notifier);
   // Unblocks the worker on every exit path, before the notifier joins it.
+  // Not an aggregate under C++20: the deleted copy and move make the constructor necessary.
   struct Unblock {
+    Unblock(std::mutex & mutex_ref, std::condition_variable & cv_ref, int & released_ref)
+      : m(mutex_ref), c(cv_ref), r(released_ref) {
+    }
     std::mutex & m;
     std::condition_variable & c;
     int & r;
