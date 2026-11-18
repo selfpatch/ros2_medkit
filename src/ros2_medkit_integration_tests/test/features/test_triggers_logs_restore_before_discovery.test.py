@@ -84,8 +84,12 @@ def _level(constant):
     return constant if isinstance(constant, int) else ord(constant)
 
 
-# Both nodes log only at startup.
+# Logs one INFO line at startup and nothing after.
 NODE_EXECUTABLE = 'demo_calibration_service'
+# The startup line reaches the gateway only when /rosout matched first, and it fires the
+# trigger like any entry. At warn the node publishes nothing, so the test's entries are
+# the only entries of each app.
+NODE_LOG_LEVEL = 'warn'
 # Root node: its logger name is its app id.
 NAMESAKE_APP = 'late_logger'
 # /late/late_logger: collides with the root node, so its id carries the namespace.
@@ -131,6 +135,7 @@ def _app_node(domain, namespace):
         executable=NODE_EXECUTABLE,
         name='late_logger',
         namespace=namespace,
+        arguments=['--ros-args', '--log-level', NODE_LOG_LEVEL],
         output='screen',
         additional_env=env,
         sigterm_timeout='30',
