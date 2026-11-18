@@ -260,6 +260,11 @@ class FaultManagerCore {
 
   ReportOutcome report_locked(const fd::FaultReport & report);
   ClearOutcome clear_locked(const std::string & code, bool skip_correlation_auto_clear);
+  /// Clears the symptoms a root cause took with it: storage, audit, cooldown and capture cleanup.
+  /// Appends each cleared code to @p cleared. Throws FaultStorage::IgnorableConnectionException
+  /// when the storage is unreachable; @p cleared then holds the codes done before that.
+  void clear_symptoms(const std::vector<std::string> & symptom_codes, const std::string & root_code,
+                      const char * audit_source, std::vector<std::string> & cleared);
   ListOutcome list_locked(const ListQuery & query);
   /// @p rosbag_paths receives (snapshot index, bag path) for each rosbag entry, for sizing after unlock.
   FaultDetail get_locked(const std::string & code, std::vector<std::pair<size_t, std::string>> & rosbag_paths);
