@@ -19,8 +19,10 @@ A persistent logs trigger is restored while the gateway is constructed, and its
 entity may reach the discovery cache much later. An entry its entity's
 GET /logs lists once the entity is discovered must reach the trigger, even when
 it was logged before that, and must reach no other entity's trigger. Both
-triggers have log_settings; the markers they write, the first one during the
-replay, are listed and fire no trigger.
+triggers have log_settings and write one marker per firing, the first one
+during the replay. A marker fires no trigger. It is logged under the trigger's
+entity id, so the root app lists its own markers and neither app lists the
+namespaced app's.
 
 Two nodes named late_logger make the owner rule visible. Node
 /late/late_logger gets the app id late_late_logger, because the root node
@@ -233,6 +235,11 @@ def _at_least(items, count):
     return items if len(items) >= count else None
 
 
+def _id_number(entry_id):
+    """Return n of a log entry id "log_<n>"; n grows with every entry the gateway logs."""
+    return int(entry_id.removeprefix('log_'))
+
+
 def _status(url):
     return requests.get(url, timeout=HTTP_TIMEOUT_SEC).status_code
 
@@ -246,6 +253,12 @@ def _listed(base_url, app_id):
         if match:
             found.setdefault(match.group(1), []).append(item.get('id'))
     return found
+
+
+def _listed_past(base_url, app_id, marker, last_id):
+    """Return the listing of `app_id` once it holds `marker` with an id past `last_id`."""
+    found = _listed(base_url, app_id)
+    return found if any(_id_number(i) > last_id for i in found.get(marker, [])) else None
 
 
 def _markers(payloads):
@@ -288,6 +301,17 @@ class EventReader:
     def markers(self):
         with self._cond:
             return _markers(self.payloads)
+
+    def count(self):
+        """Return the number of events delivered so far, one per firing."""
+        with self._cond:
+            return len(self.payloads)
+
+    def others(self):
+        """Return the delivered payloads that carry no marker of this run."""
+        with self._cond:
+            return [p for p in self.payloads
+                    if not (isinstance(p, dict) and MARKER.search(p.get('message', '')))]
 
     def wait_for(self, marker, timeout):
         deadline = time.monotonic() + timeout
@@ -422,24 +446,47 @@ class TestLogsTriggerRestoreBeforeDiscovery(unittest.TestCase):
                                 f'{app_id}: {marker} not delivered: {reader.markers()}, '
                                 f'stream error {reader.error!r}')
 
-            # The root app lists its own markers, one per firing.
-            own_markers = _poll(
-                lambda: _at_least(
-                    _listed(BASE_URL_RESTARTED, NAMESAKE_APP).get(f'ls-{NAMESAKE_APP}', []), 2),
-                what=f'GET /apps/{NAMESAKE_APP}/logs to list a marker per firing')
+            # A firing writes its marker after it delivers the event. Once each firing
+            # so far has its marker listed, a marker with an id past the next entry's
+            # belongs to that entry or a later one.
+            fired = readers[NAMESAKE_APP].count()
+            _poll(lambda: _at_least(
+                _listed(BASE_URL_RESTARTED, NAMESAKE_APP).get(f'ls-{NAMESAKE_APP}', []), fired),
+                what=f'GET /apps/{NAMESAKE_APP}/logs to list a marker per delivered event')
             # Each trigger delivers in log order, so once an entry logged after the
-            # others arrives, no earlier entry or marker can still reach it.
+            # others arrives, no earlier entry can still reach it.
             probe.publish('owner-done', OWNER_LOGGER)
             probe.publish('namesake-done', NAMESAKE_APP)
             for app_id, marker in ((OWNER_APP, 'owner-done'), (NAMESAKE_APP, 'namesake-done')):
                 self.assertTrue(readers[app_id].wait_for(marker, DELIVERY_TIMEOUT_SEC),
                                 f'{app_id}: {marker} not delivered: {readers[app_id].markers()}')
+            # One notifier worker dispatches the entries in log order and writes the
+            # markers of an entry before it takes the next. namesake-done is the last
+            # entry, so once its marker is listed no trigger writes another.
+            done_id = _id_number(dict(readers[NAMESAKE_APP].markers())['namesake-done'])
+            listings = {
+                NAMESAKE_APP: _poll(
+                    lambda: _listed_past(BASE_URL_RESTARTED, NAMESAKE_APP,
+                                         f'ls-{NAMESAKE_APP}', done_id),
+                    what=f'GET /apps/{NAMESAKE_APP}/logs to list the marker of namesake-done'),
+                OWNER_APP: _listed(BASE_URL_RESTARTED, OWNER_APP),
+            }
             owner = readers[OWNER_APP].markers()
             namesake = readers[NAMESAKE_APP].markers()
             problems = []
-            if len(own_markers) != 2:
-                problems.append(f'{NAMESAKE_APP}: GET lists {len(own_markers)} of its markers, '
-                                f'expected 2')
+            # The root app lists one marker per own entry. Neither app lists the namespaced
+            # app's markers: they are logged under its id, which neither app's log holds.
+            expected_markers = {NAMESAKE_APP: {f'ls-{NAMESAKE_APP}': 3}, OWNER_APP: {}}
+            for app_id, want in expected_markers.items():
+                got = {name: len(ids) for name, ids in listings[app_id].items()
+                       if name.startswith('ls-')}
+                if got != want:
+                    problems.append(f'{app_id}: GET lists markers {got}, expected {want}: '
+                                    f'{listings[app_id]}')
+            for app_id, reader in readers.items():
+                if reader.others():
+                    problems.append(f'{app_id}: delivered entries the test never logged: '
+                                    f'{reader.others()}')
             if [i for m, i in owner if m == 'owner-early'] != listed[OWNER_APP]:
                 problems.append(f'{OWNER_APP}: early entry listed as {listed[OWNER_APP]}, '
                                 f'delivered {owner}')
