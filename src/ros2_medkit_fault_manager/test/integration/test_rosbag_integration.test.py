@@ -30,11 +30,12 @@ import launch_testing.markers
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from ros2_medkit_msgs.msg import Fault, FaultEvent
+from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import ClearFault, GetRosbag, ReportFault
 from sensor_msgs.msg import Temperature
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rosbag_ring_buffer import RecordedTopicWatch  # noqa: E402, I100
 from service_round_trip import answer_once_each  # noqa: E402, I100
 
 
@@ -68,6 +69,9 @@ PER_SOURCE_CODES_FILE = tempfile.NamedTemporaryFile(
     'w', suffix='.yaml', prefix='rosbag_per_source_', delete=False)
 PER_SOURCE_CODES_FILE.write('BURST_PER_SOURCE:\n  per_source: true\n')
 PER_SOURCE_CODES_FILE.close()
+# The capture's ring buffer and post-fault window.
+RING_BUFFER_SEC = 2.0
+POST_FAULT_SEC = 0.5
 
 
 def generate_test_description():
@@ -170,8 +174,8 @@ if __name__ == '__main__':
             'fault_thresholds.config_file': PER_SOURCE_CODES_FILE.name,
             # Rosbag configuration
             'snapshots.rosbag.enabled': True,
-            'snapshots.rosbag.duration_sec': 2.0,  # 2 second buffer
-            'snapshots.rosbag.duration_after_sec': 0.5,  # 0.5 second after confirm
+            'snapshots.rosbag.duration_sec': RING_BUFFER_SEC,
+            'snapshots.rosbag.duration_after_sec': POST_FAULT_SEC,
             # Use explicit topics - faster than discovery, more reliable for tests
             'snapshots.rosbag.topics': '/test/temperature,/test/status',
             'snapshots.rosbag.format': 'mcap',
@@ -290,14 +294,14 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         assert not missing, 'fault_manager not ready: ' + ', '.join(missing)
         answer_once_each(cls.node, tuple(clients.values()), PRECONDITION_BUDGET_SEC)
 
-        # Wait for the background publisher to come up before letting the rosbag
-        # ring buffer fill (duration_sec=2.0 configured), so a slow publisher
-        # start does not leave the buffer empty.
-        deadline = time.time() + 15.0
-        while (not cls.node.get_publishers_info_by_topic('/test/temperature')
-               and time.time() < deadline):
-            time.sleep(0.2)
-        time.sleep(3.0)
+        # Matches the publisher's BEST_EFFORT sensor QoS, else no messages arrive.
+        cls.recorded = RecordedTopicWatch(
+            cls.node, '/test/temperature', Temperature,
+            QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                       history=HistoryPolicy.KEEP_LAST, depth=10),
+            RING_BUFFER_SEC, POST_FAULT_SEC)
+        assert cls.recorded.wait_for_history(0.5, 18.0), \
+            'the recorded topic never reached the ring buffer'
 
     @classmethod
     def tearDownClass(cls):
@@ -341,59 +345,9 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
             response = self._call_service(self.get_rosbag_client, request)
         return response
 
-    def _wait_for_buffered_data(self, count=5, timeout=8.0):
-        """
-        Wait until the rosbag ring buffer holds fresh data before a confirmation.
-
-        A previous fault's post-fault recording window diverts incoming messages
-        away from the ring buffer - message_callback() writes straight to the open
-        bag and returns before it ever touches the buffer - so right after the
-        window closes the buffer can be empty and flush_to_bag creates no bag.
-        There is no service to read the buffer, so this counts messages on the same
-        source the fault manager records instead, as a proxy. Counting alone is not
-        a safe proxy: a confirmation landing mid-count reopens that same diversion,
-        so ``count`` messages arriving at this node can still correspond to
-        near-zero buffered history on the fault manager's side. The broad topic
-        modes already subscribe to ``/fault_manager/events``, so this does too, and
-        resets the count on every ``EVENT_CONFIRMED`` - guaranteeing the streak of
-        messages this function finally returns on arrived with no post-fault window
-        newly opened partway through it.
-        """
-        received = 0
-
-        def _cb(_msg):
-            nonlocal received
-            received += 1
-
-        def _on_event(msg):
-            nonlocal received
-            if msg.event_type == FaultEvent.EVENT_CONFIRMED:
-                received = 0
-
-        # Match the publisher's BEST_EFFORT sensor QoS, else no messages arrive.
-        qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-        )
-        # Matches the fault manager's own reliable, depth-100 events publisher.
-        events_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=100,
-        )
-        sub = self.node.create_subscription(Temperature, '/test/temperature', _cb, qos)
-        events_sub = self.node.create_subscription(
-            FaultEvent, '/fault_manager/events', _on_event, events_qos
-        )
-        try:
-            deadline = time.time() + timeout
-            while received < count and time.time() < deadline:
-                rclpy.spin_once(self.node, timeout_sec=0.1)
-        finally:
-            self.node.destroy_subscription(sub)
-            self.node.destroy_subscription(events_sub)
-        return received >= count
+    def _wait_for_buffered_data(self, history_sec=0.5, timeout=8.0):
+        """Wait until a fault confirmed now gets <history_sec> of pre-fault history."""
+        return self.recorded.wait_for_history(history_sec, timeout)
 
     def test_01_rosbag_created_on_fault_confirmation(self):
         """Test that rosbag file is created when fault is confirmed."""
@@ -535,20 +489,13 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
         """
         Test that a full-buffer recording reports ~the configured window.
 
-        ``duration_sec`` is the recording's real span, not the configured
-        ``duration_sec + duration_after_sec``. The two only coincide when the
-        ring buffer actually held a full pre-fault window at confirmation, so
-        this test waits for that many messages (25 at the publisher's 10 Hz =
-        2.5s > the 2.0s buffer) instead of the 5-message default, which only
-        guarantees ~0.5s of history and would legitimately report ~1.4s.
+        ``duration_sec`` is the recording's real span: its pre-fault history plus
+        the post-fault window. 1.5 s needs 1.0 s of history, so the test waits
+        until the buffer holds 1.2 s.
         """
         fault_code = 'DURATION_TEST'
 
-        # Report fault only once the buffer holds a FULL pre-fault window.
-        # Same refill race as test_01/test_02: the previous test's post-fault window
-        # diverts messages away from the ring buffer, so reporting straight after it
-        # closes finds the buffer empty and no bag is created.
-        self.assertTrue(self._wait_for_buffered_data(count=25),
+        self.assertTrue(self._wait_for_buffered_data(history_sec=1.2),
                         'ring buffer never refilled after the previous post-fault window')
         response = self._report_fault(fault_code, 'Duration test fault')
         self.assertTrue(response.accepted)
