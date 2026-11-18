@@ -2139,9 +2139,16 @@ TEST_F(PerSourceNodeTest, UnscopedClearOfTwoRecordsIsRefusedAndClearsNothing) {
   EXPECT_NE(response->message.find("Set source_id to pick one."), std::string::npos) << "got: " << response->message;
   EXPECT_EQ(response->message.find(';'), std::string::npos) << "got: " << response->message;
 
-  // Nothing was cleared, and nothing was published.
-  spin_for(std::chrono::milliseconds(200));
-  EXPECT_TRUE(received_events_.empty());
+  // Nothing was cleared, and nothing was published: events arrive in publish order, so the
+  // refused clear published nothing if a later report's event comes first.
+  ASSERT_TRUE(call_report_fault("SHARED_CODE", Fault::SEVERITY_ERROR, "/owner_c"));
+  ASSERT_TRUE(spin_until([this]() {
+    return !received_events_.empty();
+  }));
+  ASSERT_EQ(received_events_.size(), 1u);
+  EXPECT_EQ(received_events_[0].event_type, FaultEvent::EVENT_CONFIRMED);
+  ASSERT_EQ(received_events_[0].fault.reporting_sources.size(), 1u);
+  EXPECT_EQ(received_events_[0].fault.reporting_sources.front(), "/owner_c");
   for (const char * owner : {"/owner_a", "/owner_b"}) {
     auto still = call_get_fault("SHARED_CODE", owner);
     ASSERT_TRUE(still.has_value());
