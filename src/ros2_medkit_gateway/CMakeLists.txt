@@ -895,6 +895,10 @@ if(BUILD_TESTING)
   medkit_add_gtest(test_plugin_config test/test_plugin_config.cpp)
   target_link_libraries(test_plugin_config gateway_ros2)
 
+  # Secrets must not appear on /parameter_events
+  medkit_add_gtest(test_secrets_not_on_parameter_events test/test_secrets_not_on_parameter_events.cpp)
+  target_link_libraries(test_secrets_not_on_parameter_events gateway_ros2)
+
   # Plugin manager tests
   medkit_add_gtest(test_plugin_manager test/test_plugin_manager.cpp)
   target_link_libraries(test_plugin_manager gateway_ros2)

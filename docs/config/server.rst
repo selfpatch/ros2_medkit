@@ -1055,6 +1055,10 @@ that are automatically detected and wired into the gateway's subsystem managers.
      - string
      - (required)
      - Absolute path to the plugin ``.so`` file. Must exist and have ``.so`` extension.
+   * - ``plugins.<name>.<key>``
+     - any
+     - (none)
+     - Plugin config, read at start and passed to ``configure()``. Not served as a ROS parameter.
 
 Plugin loading lifecycle:
 

@@ -61,7 +61,10 @@ Credential and certificate provisioning
       (``<from MEDKIT_JWT_SECRET>`` or ``<set at start>``), so ``ros2 param get``
       and ``/parameter_events`` do not carry it. ``auth.clients`` and
       ``aggregation.peer_auth_header`` get the same treatment, and none of them
-      can be changed at runtime.
+      can be changed at runtime. Plugin config (``plugins.<name>.<key>``) is read
+      from the node's parameter overrides and handed to the plugin; it is never
+      declared as a parameter, so it is not served by the parameter services and
+      does not appear on ``/parameter_events``.
 
    .. warning::
 

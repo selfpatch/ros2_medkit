@@ -64,6 +64,18 @@ configuration is built once at start, so ``ros2 param set``, ``ros2 param load``
 and atomic batches touching ``auth.*`` or ``aggregation.peer_auth_header`` are
 refused; restart the gateway with the new configuration.
 
+Plugin config (``plugins.<name>.<key>``) is read at start and is not served as
+parameters, so a plugin password never reaches ``ros2 param get`` or
+``/parameter_events``.
+
+Where a secret is safe:
+
+- The environment variable (``MEDKIT_JWT_SECRET``, ``MEDKIT_CLIENTS``) is the
+  safest place.
+- A params file that holds a secret must be readable only by the gateway's user.
+- A value given with ``-p`` on the command line is visible to every local user
+  in the process list.
+
 Authentication Modes
 --------------------
 
