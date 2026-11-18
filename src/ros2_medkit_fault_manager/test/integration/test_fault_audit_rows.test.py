@@ -29,6 +29,7 @@ import os
 import signal
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -41,6 +42,9 @@ import rclpy
 from rclpy.node import Node
 from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import ClearFault, GetFault, ReportFault
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from service_round_trip import answer_once_each  # noqa: E402
 
 GENESIS = '0' * 64
 HEAL = ('  confirmation_threshold: -1\n'
@@ -173,16 +177,7 @@ class TestFaultAuditRows(unittest.TestCase):
         for client in clients.values():
             self.assertTrue(client.wait_for_service(timeout_sec=15.0))
         # The graph can still list the previous node's services, so wait for an answer.
-        probe = GetFault.Request()
-        probe.fault_code = 'NOT.A.FAULT'
-        deadline = time.monotonic() + 15.0
-        while time.monotonic() < deadline:
-            future = clients['get'].call_async(probe)
-            rclpy.spin_until_future_complete(self.node, future, timeout_sec=1.0)
-            if future.result() is not None:
-                break
-        else:
-            self.fail('fault_manager did not answer after start')
+        answer_once_each(self.node, tuple(clients.values()), 15.0)
         return proc, clients
 
     @staticmethod

@@ -18,6 +18,7 @@
 import atexit
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -33,6 +34,9 @@ from rclpy.node import Node
 from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import ClearFault, GetSnapshots, ListFaults, ReportFault
 from sensor_msgs.msg import Temperature
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from service_round_trip import answer_once_each  # noqa: E402, I100
 
 
 def get_coverage_env():
@@ -160,6 +164,8 @@ class TestFaultManagerIntegration(unittest.TestCase):
             'clear_fault service not available'
         assert cls.get_snapshots_client.wait_for_service(timeout_sec=10.0), \
             'get_snapshots service not available'
+        answer_once_each(cls.node, (cls.report_fault_client, cls.list_faults_client,
+                                    cls.clear_fault_client, cls.get_snapshots_client), 30.0)
 
     @classmethod
     def tearDownClass(cls):

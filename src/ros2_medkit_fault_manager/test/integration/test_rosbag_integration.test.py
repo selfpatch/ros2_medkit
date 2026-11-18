@@ -16,6 +16,7 @@
 """Integration tests for rosbag capture feature (Issue #120)."""
 
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -32,6 +33,9 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from ros2_medkit_msgs.msg import Fault, FaultEvent
 from ros2_medkit_msgs.srv import ClearFault, GetRosbag, ReportFault
 from sensor_msgs.msg import Temperature
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from service_round_trip import answer_once_each  # noqa: E402, I100
 
 
 def get_coverage_env():
@@ -284,6 +288,7 @@ class TestRosbagCaptureIntegration(unittest.TestCase):
                 break
             time.sleep(0.2)
         assert not missing, 'fault_manager not ready: ' + ', '.join(missing)
+        answer_once_each(cls.node, tuple(clients.values()), PRECONDITION_BUDGET_SEC)
 
         # Wait for the background publisher to come up before letting the rosbag
         # ring buffer fill (duration_sec=2.0 configured), so a slow publisher

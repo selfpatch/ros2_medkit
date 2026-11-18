@@ -28,6 +28,7 @@ import os
 import queue
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -42,6 +43,9 @@ import rclpy
 from rclpy.node import Node
 from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import GetFault, GetRosbag, GetSnapshots, ListFaults, ReportFault
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from service_round_trip import answer_once_each  # noqa: E402
 
 TIMEOUT_SEC = 30.0
 ALL_STATUSES = [
@@ -203,6 +207,7 @@ class TestPostgresMigration(unittest.TestCase):
             self.assertTrue(client.wait_for_service(timeout_sec=TIMEOUT_SEC))
         self.assertIsNotNone(
             process.wait_for_line('FaultManager node started'), 'the node never finished starting')
+        answer_once_each(self.node, tuple(self.clients.values()), TIMEOUT_SEC)
         return process
 
     def _stop(self, process):

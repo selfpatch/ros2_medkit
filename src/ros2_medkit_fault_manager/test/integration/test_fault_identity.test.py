@@ -23,6 +23,7 @@ reserved id '*', which no reporter may use.
 """
 
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -37,6 +38,9 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from ros2_medkit_msgs.msg import Fault, FaultEvent
 from ros2_medkit_msgs.srv import ClearFault, GetFault, ListFaults, ReportFault
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from service_round_trip import answer_once_each, wait_for_event_route  # noqa: E402
 
 TIMEOUT_SEC = 30.0
 ALL_STATUSES = [
@@ -112,13 +116,11 @@ class TestFaultIdentity(unittest.TestCase):
         cls.event_sub = cls.node.create_subscription(
             FaultEvent, '/fault_manager/events', cls.events.append,
             QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE))
-        for client in (cls.report_client, cls.list_client, cls.get_client, cls.clear_client):
+        clients = (cls.report_client, cls.list_client, cls.get_client, cls.clear_client)
+        for client in clients:
             assert client.wait_for_service(timeout_sec=TIMEOUT_SEC)
-        deadline = time.monotonic() + TIMEOUT_SEC
-        while (cls.node.count_publishers('/fault_manager/events') == 0
-               and time.monotonic() < deadline):
-            rclpy.spin_once(cls.node, timeout_sec=0.1)
-        assert cls.node.count_publishers('/fault_manager/events') > 0
+        answer_once_each(cls.node, clients, TIMEOUT_SEC)
+        wait_for_event_route(cls.node, cls.report_client, cls.events, 'ID.PROBE_', TIMEOUT_SEC)
 
     @classmethod
     def tearDownClass(cls):

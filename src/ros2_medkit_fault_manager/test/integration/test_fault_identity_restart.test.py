@@ -32,6 +32,7 @@ import queue
 import signal
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -46,9 +47,10 @@ from rclpy.node import Node
 from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import ClearFault, GetFault, ListFaults, ReportFault
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from service_round_trip import answer_once_each  # noqa: E402
+
 TIMEOUT_SEC = 30.0
-# How long one request that changes nothing waits for its answer before it is sent again.
-ANSWER_WAIT_SEC = 1.0
 ALL_STATUSES = [
     Fault.STATUS_PREFAILED, Fault.STATUS_PREPASSED, Fault.STATUS_CONFIRMED,
     Fault.STATUS_HEALED, Fault.STATUS_CLEARED,
@@ -201,30 +203,13 @@ class TestFaultIdentityRestart(unittest.TestCase):
             self.assertTrue(client.wait_for_service(timeout_sec=TIMEOUT_SEC))
         self.assertIsNotNone(
             process.wait_for_line('FaultManager node started'), 'the node never finished starting')
-        # The fault manager drops an answer while its reply writer has not matched the
-        # client's reader, and never sends it again. Each client asks something that changes
-        # nothing until one answer arrives; after that its answers are delivered.
-        for client, request in ((self.report, ReportFault.Request()),
-                                (self.get, GetFault.Request()),
-                                (self.list, ListFaults.Request()),
-                                (self.clear, ClearFault.Request())):
-            self._until_answered(client, request)
+        answer_once_each(self.node, (self.report, self.get, self.list, self.clear), TIMEOUT_SEC)
         return process
 
     def _stop(self, process):
         for client in (self.report, self.get, self.list, self.clear):
             self.node.destroy_client(client)
         self.assertEqual(process.stop(), 0)
-
-    def _until_answered(self, client, request):
-        """Send request until one copy is answered. Only for a request that changes nothing."""
-        deadline = time.monotonic() + TIMEOUT_SEC
-        while time.monotonic() < deadline:
-            future = client.call_async(request)
-            rclpy.spin_until_future_complete(self.node, future, timeout_sec=ANSWER_WAIT_SEC)
-            if future.done():
-                return
-        self.fail(f'{client.srv_name} never answered')
 
     def _call(self, client, request):
         future = client.call_async(request)
