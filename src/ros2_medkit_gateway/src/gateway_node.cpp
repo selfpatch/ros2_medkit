@@ -24,6 +24,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -80,6 +81,18 @@ std::vector<std::string> override_string_array(const ParameterOverrides & overri
 }  // namespace
 
 GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medkit_gateway", options) {
+  // Both options would declare the secrets and plugin config as parameters, and the parameter
+  // services and /parameter_events would then serve their values.
+  if (options.automatically_declare_parameters_from_overrides()) {
+    throw std::invalid_argument(
+        "GatewayNode: NodeOptions::automatically_declare_parameters_from_overrides must be false: "
+        "it would serve secrets and plugin config as parameters");
+  }
+  if (options.allow_undeclared_parameters()) {
+    throw std::invalid_argument(
+        "GatewayNode: NodeOptions::allow_undeclared_parameters must be false: "
+        "it would serve secrets and plugin config as parameters");
+  }
   log::set_sink(std::make_shared<Ros2LogSink>());
   RCLCPP_INFO(get_logger(), "Initializing ROS 2 Medkit Gateway...");
 

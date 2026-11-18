@@ -54,9 +54,12 @@ Each plugin name in the ``plugins`` array requires a corresponding ``plugins.<na
 parameter with the absolute path to the ``.so`` file. Any additional ``plugins.<name>.<key>``
 parameters are collected into a JSON object and passed to the plugin's ``configure()`` method.
 The gateway reads this config once at start, from a params file, ``-p`` arguments or node
-options. It does not declare the keys as ROS parameters, so ``ros2 param list`` and
-``ros2 param get`` do not show them (only ``plugins.<name>.path`` is a parameter) and
-``/parameter_events`` does not carry them.
+options (which must leave ``automatically_declare_parameters_from_overrides`` and
+``allow_undeclared_parameters`` off). It does not declare the keys as ROS parameters, so
+``ros2 param list`` and ``ros2 param get`` do not show them (only ``plugins.<name>.path``
+is a parameter) and ``/parameter_events`` does not carry them. A plugin must not declare
+its own config keys as node parameters: a declared key is served and published like any
+parameter.
 
 For the example above, ``configure()`` receives:
 

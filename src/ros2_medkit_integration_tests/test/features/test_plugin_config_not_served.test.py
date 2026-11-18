@@ -25,6 +25,7 @@ the plugin must act on its config (it creates the Function named by
 @verifies REQ_INTEROP_086
 """
 
+import json
 import os
 import unittest
 
@@ -60,8 +61,25 @@ ARGS_FUNCTION_ID = 'cfg_from_args'
 # One key per type the parameter parser handles, nesting included.
 CONFIG_KEYS = (
     'password', 'nested.token', 'flag', 'count', 'ratio', 'labels',
-    'flags', 'counts', 'ratios', 'function_id',
+    'flags', 'counts', 'ratios', 'function_id', 'expose_config',
 )
+
+
+def _expected_config(function_id):
+    """Return the JSON the plugin must receive: nested, typed, without `path`."""
+    return {
+        'password': SECRET,
+        'nested': {'token': NESTED_SECRET},
+        'flag': True,
+        'count': 42,
+        'ratio': 2.5,
+        'labels': ['alpha', 'beta'],
+        'flags': [True, False],
+        'counts': [1, 2, 3],
+        'ratios': [0.5, 1.5],
+        'function_id': function_id,
+        'expose_config': True,
+    }
 
 
 def _plugin_path():
@@ -86,6 +104,7 @@ def _file_params():
         'plugins.topics_test.counts': [1, 2, 3],
         'plugins.topics_test.ratios': [0.5, 1.5],
         'plugins.topics_test.function_id': FILE_FUNCTION_ID,
+        'plugins.topics_test.expose_config': True,
     }
 
 
@@ -104,6 +123,7 @@ def _args():
         '-p', 'plugins.topics_test.counts:=[1, 2, 3]',
         '-p', 'plugins.topics_test.ratios:=[0.5, 1.5]',
         '-p', f'plugins.topics_test.function_id:={ARGS_FUNCTION_ID}',
+        '-p', 'plugins.topics_test.expose_config:=true',
     ]
 
 
@@ -129,10 +149,15 @@ class _PluginConfigNotServed:
     MIN_EXPECTED_APPS = 0
 
     def test_01_the_plugin_received_its_config(self):
-        """The plugin acts on `function_id`, so it got the config."""
+        """The plugin reports the exact config it was given."""
         response = requests.get(
             f'{self.BASE_URL}/functions/{self.FUNCTION_ID}', timeout=30)
         self.assertEqual(response.status_code, 200, response.text)
+        received = json.loads(response.json()['x-medkit']['description'])
+        # Compared as text so that true/1 and 1/1.0 stay distinct.
+        self.assertEqual(
+            json.dumps(received, sort_keys=True),
+            json.dumps(_expected_config(self.FUNCTION_ID), sort_keys=True))
 
     @classmethod
     def setUpClass(cls):

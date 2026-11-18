@@ -78,6 +78,8 @@ namespace ros2_medkit_gateway {
 
 class GatewayNode : public rclcpp::Node, public GatewayServices {
  public:
+  /// The options must leave automatically_declare_parameters_from_overrides and
+  /// allow_undeclared_parameters off; either would serve secrets as parameters. Throws otherwise.
   explicit GatewayNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions{});
   ~GatewayNode() override;
 

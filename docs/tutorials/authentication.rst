@@ -70,8 +70,10 @@ parameters, so a plugin password never reaches ``ros2 param get`` or
 
 Where a secret is safe:
 
-- The environment variable (``MEDKIT_JWT_SECRET``, ``MEDKIT_CLIENTS``) is the
-  safest place.
+- The environment variable (``MEDKIT_JWT_SECRET``, ``MEDKIT_CLIENTS``) keeps the
+  secret out of params files and out of the process list. The same user and
+  root can still read it from ``/proc/<pid>/environ``, and child processes
+  inherit it.
 - A params file that holds a secret must be readable only by the gateway's user.
 - A value given with ``-p`` on the command line is visible to every local user
   in the process list.
