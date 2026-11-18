@@ -32,6 +32,7 @@
 #include <string>
 #include <vector>
 
+#include <rcl_interfaces/msg/parameter.hpp>
 #include <rcl_interfaces/msg/parameter_event.hpp>
 #include <rclcpp/rclcpp.hpp>
 
@@ -90,6 +91,28 @@ class ScopedFile {
   std::string path_;
 };
 
+// Every string the event carries: parameter names, string values and string array elements.
+void collect_strings(const std::vector<rcl_interfaces::msg::Parameter> & params, std::string & out) {
+  for (const auto & p : params) {
+    out += p.name;
+    out += '\n';
+    out += p.value.string_value;
+    out += '\n';
+    for (const auto & element : p.value.string_array_value) {
+      out += element;
+      out += '\n';
+    }
+  }
+}
+
+std::string event_strings(const rcl_interfaces::msg::ParameterEvent & event) {
+  std::string out;
+  collect_strings(event.new_parameters, out);
+  collect_strings(event.changed_parameters, out);
+  collect_strings(event.deleted_parameters, out);
+  return out;
+}
+
 }  // namespace
 
 TEST(SecretsNotOnParameterEvents, NoSecretValueIsPublished) {
@@ -142,7 +165,7 @@ TEST(SecretsNotOnParameterEvents, NoSecretValueIsPublished) {
         if (event.node != std::string("/") + kNodeName) {
           return;
         }
-        events.push_back(rcl_interfaces::msg::to_yaml(event));
+        events.push_back(event_strings(event));
         for (const auto & p : event.new_parameters) {
           if (p.name == "auth.jwt_secret" && p.value.string_value == kJwtSentinel) {
             jwt_declared_with_sentinel = true;

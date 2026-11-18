@@ -27,12 +27,11 @@ as subprocesses, one per case, because a refusal is observed as an exit code.
 @verifies REQ_INTEROP_086, REQ_INTEROP_087
 """
 
-import ast
+import atexit
 import base64
 import hashlib
 import hmac
 import os
-import re
 import select
 import shutil
 import signal
@@ -54,6 +53,7 @@ from ros2_medkit_test_utils.constants import (
 )
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_gateway_node
+from ros2_medkit_test_utils.param_client import ParameterClient
 
 CLOSED_PORT = get_test_port(0)
 DISABLED_PORT = get_test_port(1)
@@ -212,29 +212,30 @@ def _ros2_param(*args):
         time.sleep(1)
 
 
+_PARAMS = {}
+
+
+def _client():
+    """Return the one parameter client of this test process, created on first use."""
+    if 'client' not in _PARAMS:
+        _PARAMS['client'] = ParameterClient('env_auth_contract_probe')
+        atexit.register(_PARAMS['client'].close)
+    return _PARAMS['client']
+
+
 def _param_value(node, name):
-    """Return the parameter's value as Python data, read from `ros2 param get`."""
-    rc, output = _ros2_param('get', node, name)
-    match = re.search(r'values? (?:is|are): ?(.*)', output)
-    assert rc == 0 and match, output
-    text = match.group(1).strip()
-    if 'values are' in output:
-        return ast.literal_eval(text)
-    if text in ('True', 'False'):
-        return text == 'True'
-    if 'Integer value' in output:
-        return int(text)
-    return text
+    """Return the parameter's value as Python data, read from the node's parameter service."""
+    return _client().get(node, name)
 
 
 def _other_value(value):
-    """Return a `ros2 param set` argument of the same type as `value`, but different."""
+    """Return a value of the same type as `value`, but different."""
     if isinstance(value, bool):
-        return 'false' if value else 'true'
+        return not value
     if isinstance(value, list):
-        return "['x:y:admin']"
+        return ['x:y:admin']
     if isinstance(value, int):
-        return str(value + 1)
+        return value + 1
     return 'other_value'
 
 
@@ -362,9 +363,9 @@ class TestEnvironmentClosesTheNode(GatewayTestCase):
 
     def test_00_the_file_reached_this_gateway(self):
         """Premise: every auth key of the file is overridden but the expiry."""
-        rc, output = _ros2_param('get', f'/{ENV_CLOSED_NODE}', 'auth.token_expiry_seconds')
-        self.assertEqual(rc, 0, output)
-        self.assertIn(str(CLOSED_FILE_TOKEN_EXPIRY), output, output)
+        self.assertEqual(
+            _param_value(f'/{ENV_CLOSED_NODE}', 'auth.token_expiry_seconds'),
+            CLOSED_FILE_TOKEN_EXPIRY)
 
     def test_01_every_route_is_closed_not_only_the_writes(self):
         """The file says auth off and require_auth_for write; both lose."""
@@ -415,9 +416,9 @@ class TestAuthDisabledWinsOverEverything(GatewayTestCase):
     BASE_URL = DISABLED_BASE_URL
 
     def test_00_the_file_reached_this_gateway(self):
-        rc, output = _ros2_param('get', f'/{ENV_DISABLED_NODE}', 'auth.token_expiry_seconds')
-        self.assertEqual(rc, 0, output)
-        self.assertIn(str(DISABLED_FILE_TOKEN_EXPIRY), output, output)
+        self.assertEqual(
+            _param_value(f'/{ENV_DISABLED_NODE}', 'auth.token_expiry_seconds'),
+            DISABLED_FILE_TOKEN_EXPIRY)
 
     def test_01_every_route_is_answered(self):
         for path in ('/areas', '/health'):
@@ -440,9 +441,9 @@ class TestAuthDisabledWinsOverEverything(GatewayTestCase):
             _param_value(f'/{ENV_DISABLED_NODE}', PEER_HEADER_PARAM), '<set at start>')
 
     def test_05_the_peer_auth_header_cannot_be_set_at_runtime(self):
-        _, output = _ros2_param(
-            'set', f'/{ENV_DISABLED_NODE}', PEER_HEADER_PARAM, 'Bearer other')
-        self.assertIn('read at start', output, output)
+        result = _client().set_one(f'/{ENV_DISABLED_NODE}', PEER_HEADER_PARAM, 'Bearer other')
+        self.assertFalse(result.successful)
+        self.assertIn('read at start', result.reason)
         self.assertEqual(
             _param_value(f'/{ENV_DISABLED_NODE}', PEER_HEADER_PARAM), '<set at start>')
 
@@ -468,26 +469,24 @@ class TestIntrospectionAgreesWithEnforcement(GatewayTestCase):
             [f'{CLIENT_ID}:<from MEDKIT_CLIENTS>:admin'])
 
     def test_03_every_auth_parameter_is_refused_and_unchanged(self):
-        rc, listing = _ros2_param('list', self.NODE)
-        self.assertEqual(rc, 0, listing)
-        names = [line.strip() for line in listing.splitlines()
-                 if line.strip().startswith('auth.') or line.strip() == PEER_HEADER_PARAM]
+        listing = _client().list_names(self.NODE)
+        names = [n for n in listing if n.startswith('auth.') or n == PEER_HEADER_PARAM]
         self.assertIn('auth.enabled', names, listing)
         self.assertIn('auth.clients', names, listing)
         self.assertIn(PEER_HEADER_PARAM, names, listing)
         for name in names:
             with self.subTest(parameter=name):
                 before = _param_value(self.NODE, name)
-                _, output = _ros2_param('set', self.NODE, name, _other_value(before))
-                self.assertIn('read at start', output, output)
-                self.assertNotIn('Set parameter successful', output, output)
+                result = _client().set_one(self.NODE, name, _other_value(before))
+                self.assertFalse(result.successful)
+                self.assertIn('read at start', result.reason)
                 self.assertEqual(_param_value(self.NODE, name), before)
         resp = requests.get(f'{CLOSED_BASE_URL}/areas', timeout=15)
         self.assertEqual(resp.status_code, 401, resp.text)
 
     def test_04_a_non_auth_parameter_is_untouched_by_the_guard(self):
-        _, output = _ros2_param('set', self.NODE, 'refresh_interval_ms', '3000')
-        self.assertIn('Set parameter successful', output, output)
+        result = _client().set_one(self.NODE, 'refresh_interval_ms', 3000)
+        self.assertTrue(result.successful, result.reason)
         self.assertEqual(_param_value(self.NODE, 'refresh_interval_ms'), 3000)
 
     def test_05_a_param_load_applies_what_it_may_and_refuses_the_rest(self):
@@ -509,35 +508,10 @@ class TestIntrospectionAgreesWithEnforcement(GatewayTestCase):
 
     def test_06_an_atomic_batch_mixing_the_two_is_refused_whole(self):
         before = _param_value(self.NODE, 'refresh_interval_ms')
-        script = (
-            'import rclpy\n'
-            'from rclpy.node import Node\n'
-            'from rclpy.parameter import Parameter\n'
-            'from rcl_interfaces.srv import SetParametersAtomically\n'
-            'rclpy.init()\n'
-            'n = Node("batch_probe")\n'
-            f'c = n.create_client(SetParametersAtomically,\n'
-            f'                    "{self.NODE}/set_parameters_atomically")\n'
-            'assert c.wait_for_service(timeout_sec=30.0), "no service"\n'
-            'req = SetParametersAtomically.Request()\n'
-            'req.parameters = [\n'
-            '    Parameter("refresh_interval_ms", Parameter.Type.INTEGER, 6100)\n'
-            '        .to_parameter_msg(),\n'
-            '    Parameter("auth.enabled", Parameter.Type.BOOL, False)\n'
-            '        .to_parameter_msg(),\n'
-            ']\n'
-            'f = c.call_async(req)\n'
-            'rclpy.spin_until_future_complete(n, f, timeout_sec=30.0)\n'
-            'r = f.result()\n'
-            'print("SUCCESSFUL", r.result.successful)\n'
-            'print("REASON", r.result.reason)\n'
-            'rclpy.shutdown()\n'
-        )
-        completed = subprocess.run(
-            ['python3', '-c', script], capture_output=True, text=True, timeout=90, check=False)
-        output = completed.stdout + completed.stderr
-        self.assertIn('SUCCESSFUL False', output, output[-600:])
-        self.assertIn('read at start', output, output[-600:])
+        result = _client().set_atomically(
+            self.NODE, {'refresh_interval_ms': 6100, 'auth.enabled': False})
+        self.assertFalse(result.successful)
+        self.assertIn('read at start', result.reason)
         self.assertEqual(_param_value(self.NODE, 'refresh_interval_ms'), before)
 
 

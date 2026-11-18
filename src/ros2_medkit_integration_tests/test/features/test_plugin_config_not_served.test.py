@@ -26,8 +26,6 @@ the plugin must act on its config (it creates the Function named by
 """
 
 import os
-import subprocess
-import time
 import unittest
 
 from ament_index_python.packages import get_package_prefix
@@ -44,14 +42,13 @@ from ros2_medkit_test_utils.constants import (
 )
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_gateway_node
+from ros2_medkit_test_utils.param_client import ParameterClient
 
 FILE_PORT = get_test_port(0)
 ARGS_PORT = get_test_port(1)
 FILE_NODE = 'gateway_cfg_file'
 ARGS_NODE = 'gateway_cfg_args'
 
-# How long `ros2 param` may spend discovering a gateway over DDS.
-PARAM_DISCOVERY_TIMEOUT = 30
 START_LINE = 'Initializing ROS 2 Medkit Gateway'
 
 PREFIX = 'plugins.topics_test.'
@@ -124,24 +121,6 @@ def generate_test_description():
     ]), {'from_file': from_file, 'from_args': from_args}
 
 
-def _ros2_param(*args):
-    """Run `ros2 param ...` and return (rc, output).
-
-    Retries while the CLI reports the node missing: the HTTP port answering says
-    nothing about whether DDS discovery of the parameter services has finished.
-    """
-    deadline = time.monotonic() + PARAM_DISCOVERY_TIMEOUT
-    while True:
-        completed = subprocess.run(
-            ['ros2', 'param', args[0], '--no-daemon', *args[1:]],
-            capture_output=True, text=True, timeout=30, check=False,
-        )
-        output = completed.stdout + completed.stderr
-        if 'Node not found' not in output or time.monotonic() >= deadline:
-            return completed.returncode, output
-        time.sleep(1)
-
-
 class _PluginConfigNotServed:
     """Checks shared by both configuration sources."""
 
@@ -155,30 +134,36 @@ class _PluginConfigNotServed:
             f'{self.BASE_URL}/functions/{self.FUNCTION_ID}', timeout=30)
         self.assertEqual(response.status_code, 200, response.text)
 
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.params = ParameterClient(f'{cls.NODE}_probe')
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.params.close()
+        super().tearDownClass()
+
     def test_02_no_plugin_key_but_path_is_a_parameter(self):
-        rc, output = _ros2_param('list', f'/{self.NODE}')
-        self.assertEqual(rc, 0, output)
-        names = {line.strip() for line in output.splitlines()}
+        names = set(self.params.list_names(f'/{self.NODE}'))
         # Positive checks: the node was read, and the one declared key is there.
-        self.assertIn('server.port', names, output)
-        self.assertIn(f'{PREFIX}path', names, output)
+        self.assertIn('server.port', names, sorted(names))
+        self.assertIn(f'{PREFIX}path', names, sorted(names))
         served = sorted(n for n in names
                         if n.startswith(PREFIX) and n != f'{PREFIX}path')
         self.assertEqual(served, [], 'plugin config is served as parameters')
 
     def test_03_every_config_key_reads_as_not_set(self):
+        """An undeclared key comes back with type PARAMETER_NOT_SET."""
         for key in CONFIG_KEYS:
             with self.subTest(key=key):
-                rc, output = _ros2_param('get', f'/{self.NODE}', f'{PREFIX}{key}')
-                self.assertIn('not set', output.lower(), output)
-                self.assertNotIn(SECRET, output)
-                self.assertNotIn(NESTED_SECRET, output)
+                self.assertTrue(self.params.is_not_set(f'/{self.NODE}', f'{PREFIX}{key}'))
 
     def test_04_the_declared_path_still_reads(self):
-        """Positive control for test_03: `get` on a served key succeeds."""
-        rc, output = _ros2_param('get', f'/{self.NODE}', f'{PREFIX}path')
-        self.assertEqual(rc, 0, output)
-        self.assertIn('libtopics_test_plugin.so', output)
+        """Positive control for test_03: a declared key is not NOT_SET."""
+        self.assertFalse(self.params.is_not_set(f'/{self.NODE}', f'{PREFIX}path'))
+        self.assertTrue(
+            self.params.get(f'/{self.NODE}', f'{PREFIX}path').endswith('libtopics_test_plugin.so'))
 
 
 class TestPluginConfigFromParamsFile(_PluginConfigNotServed, GatewayTestCase):
