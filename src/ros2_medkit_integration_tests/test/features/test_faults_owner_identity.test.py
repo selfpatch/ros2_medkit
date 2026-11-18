@@ -68,7 +68,7 @@ SUB_X = f'{OWNER_A}/x'
 SUB_Y = f'{OWNER_A}/y'
 HOST_COMPONENT = 'shared-code-hub'
 CELL_AREA = 'shared-code-cell'
-# per_source codes. SHARED_CODE keeps its name for the recording and stream cases.
+# per_source codes. SHARED_CODE keeps its name for the recording cases.
 SHARED_CODE = 'SHARED_OVERFLOW'
 PER_SOURCE = {
     'app': 'APP_PER_SOURCE',
@@ -76,6 +76,8 @@ PER_SOURCE = {
     'merge': 'MERGE_PER_SOURCE',
     'bulk': 'BULK_PER_SOURCE',
     'global': 'GLOBAL_PER_SOURCE',
+    # Reported only in test_08, so every frame of it comes from that test's reports.
+    'stream': 'STREAM_PER_SOURCE',
 }
 # Default codes: one shared record whatever the number of sources.
 SHARED = {
@@ -86,6 +88,7 @@ SHARED = {
     'bulk': 'BULK_SHARED',
 }
 PRIME_CODE = 'OWNER_IDENTITY_PRIME'
+STREAM_CODE = PER_SOURCE['stream']
 FAULT_TIMEOUT = 30.0
 REPORT_TIMEOUT = 2.0
 CONFIG_DIR = tempfile.mkdtemp(prefix='medkit_owner_identity_')
@@ -526,8 +529,8 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
         pump.start()
         try:
             self._prime_stream(frames)
-            self._report(OWNER_A, fault_code=SHARED_CODE)
-            self._report(OWNER_B, fault_code=SHARED_CODE)
+            self._report(OWNER_A, fault_code=STREAM_CODE)
+            self._report(OWNER_B, fault_code=STREAM_CODE)
 
             seen = {}
             deadline = time.monotonic() + FAULT_TIMEOUT
@@ -538,11 +541,11 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
                         continue
                     payload = json.loads(data)
                     fault = payload.get('fault', {})
-                    if fault.get('fault_code') != SHARED_CODE:
+                    if fault.get('fault_code') != STREAM_CODE:
                         continue
                     hint = payload.get('x-medkit')
                     self.assertIsNotNone(
-                        hint, f'a frame for {SHARED_CODE} carried no entity hint: {payload}'
+                        hint, f'a frame for {STREAM_CODE} carried no entity hint: {payload}'
                     )
                     self.assertEqual(
                         hint['entity_id'], fault.get('source_id'),
