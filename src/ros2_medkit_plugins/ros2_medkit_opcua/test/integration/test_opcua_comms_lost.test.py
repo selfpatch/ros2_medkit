@@ -40,6 +40,9 @@ the opcua plugin, and reads the fault over HTTP. A real outage raises the fault.
   * binding directory: a binding file whose directory cannot be looked up is
     reported, and the plugin stays connected. Once at start, and once on the
     poll thread when a rescan adopts a PLC that came up later.
+  * reconnect interval setting: reconnect_interval_ms at both ends of its range is
+    used, and a value just outside each end or a non-integer is refused with a
+    warning, so the default 5000 ms is used.
 
 Usage: test_opcua_comms_lost.test.py <test_alarm_server>
 """
@@ -663,6 +666,31 @@ def scenario_binding_directory_on_reconnect(run):
     expect_binding_failure_survived(gateway, binding, 60)
 
 
+REFUSED_INTERVAL = ('plugins.opcua.reconnect_interval_ms must be an integer in [100, 60000] '
+                    '- keeping 5000 ms')
+
+
+def scenario_reconnect_interval_setting(run):
+    endpoint = f'opc.tcp://127.0.0.1:{free_port()}'
+    for value, effective in ((100, 100), (60000, 60000), (99, 5000), (60001, 5000),
+                             (250.5, 5000)):
+        name = 'interval_' + str(value).replace('.', '_')
+        gateway = run.start_gateway(name, endpoint=endpoint, reconnect_ms=value)
+        started = f'OPC-UA poller started (mode: poll, first reconnect wait {effective} ms)'
+        if not wait_log(gateway.log, started, 30):
+            raise AssertionError(f'reconnect_interval_ms={value}: the poller did not start with '
+                                 f'a {effective} ms wait:\n' + tail(gateway))
+        # The value is read before the poller starts, so its warning is already logged.
+        warned = REFUSED_INTERVAL in gateway.log.read_text(errors='replace')
+        if warned != (effective != value):
+            raise AssertionError(f'reconnect_interval_ms={value}: refused warning '
+                                 f'{"logged" if warned else "missing"}:\n' + tail(gateway))
+        # Four failed connects take 15 s at the default wait and 0.3 s at 100 ms.
+        if value == 100 and not wait_log(gateway.log, CONNECT_FAILED, 4, count=4):
+            raise AssertionError('the gateway did not retry at 100 ms:\n' + tail(gateway))
+        run.stop(gateway.proc)
+
+
 SCENARIOS = [
     ('pinned stand-in', scenario_pinned_stand_in),
     ('foreign stand-in', scenario_foreign_stand_in),
@@ -677,6 +705,7 @@ SCENARIOS = [
      scenario_explicit_component_id_keeps_a_shared_stand_in_record),
     ('binding directory at start', scenario_binding_directory_at_start),
     ('binding directory on reconnect', scenario_binding_directory_on_reconnect),
+    ('reconnect interval setting', scenario_reconnect_interval_setting),
 ]
 
 
