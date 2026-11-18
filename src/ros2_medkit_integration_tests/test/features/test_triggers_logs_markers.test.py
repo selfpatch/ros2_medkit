@@ -73,6 +73,12 @@ SETTLE_TIMEOUT_SEC = 15.0 * TIME_SCALE
 DELIVERY_TIMEOUT_SEC = 20.0 * TIME_SCALE
 POLL_INTERVAL_SEC = 0.5
 
+
+def _level(constant):
+    """Return a Log severity constant as an int. Humble declares the constants as byte."""
+    return constant if isinstance(constant, int) else ord(constant)
+
+
 REAL_ENTRIES = 5
 
 RUN = uuid.uuid4().hex[:10]
@@ -327,7 +333,7 @@ class RosoutProbe:
         if stamp_sec is not None:
             msg.stamp.sec = stamp_sec
             msg.stamp.nanosec = 0
-        msg.level = Log.INFO
+        msg.level = _level(Log.INFO)
         msg.name = logger_name
         msg.msg = message
         if source:

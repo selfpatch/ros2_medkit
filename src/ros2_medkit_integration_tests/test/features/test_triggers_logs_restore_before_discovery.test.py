@@ -78,6 +78,12 @@ HTTP_TIMEOUT_SEC = 5.0 * TIME_SCALE
 DISCOVERY_TIMEOUT_SEC = 60.0 * TIME_SCALE
 DELIVERY_TIMEOUT_SEC = 20.0 * TIME_SCALE
 
+
+def _level(constant):
+    """Return a Log severity constant as an int. Humble declares the constants as byte."""
+    return constant if isinstance(constant, int) else ord(constant)
+
+
 # Both nodes log only at startup.
 NODE_EXECUTABLE = 'demo_calibration_service'
 # Root node: its logger name is its app id.
@@ -307,7 +313,7 @@ class RosoutProbe:
     def publish(self, case_id, logger_name):
         msg = Log()
         msg.stamp = self.node.get_clock().now().to_msg()
-        msg.level = Log.INFO
+        msg.level = _level(Log.INFO)
         msg.name = logger_name
         msg.msg = f'{RUN}:{case_id}'
         msg.file = 'test_triggers_logs_restore_before_discovery.test.py'
