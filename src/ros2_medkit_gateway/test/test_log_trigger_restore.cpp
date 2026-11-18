@@ -201,13 +201,41 @@ class LogTriggerRestoreTest : public ::testing::Test {
     return done();
   }
 
-  void spin_for(std::chrono::nanoseconds duration) {
-    spin_until(
-        [] {
-          return false;
-        },
-        duration);
+  /// The orphan sweep and restore replay the gateway's refresh timer runs, run here.
+  void sweep() {
+    gateway_->get_trigger_manager()->sweep_orphaned_triggers();
   }
+
+  /// Entries the gateway holds under logger dup_node, markers included.
+  size_t buffered() {
+    auto items = gateway_->get_log_manager()->get_logs({"/dup_node"}, false, "", "", "dup_node");
+    return items ? items->size() : 0;
+  }
+
+  /// Moves the pending events of @p trigger_id into events_.
+  void drain(const std::string & trigger_id) {
+    while (auto event = gateway_->get_trigger_manager()->consume_pending_event(trigger_id)) {
+      events_[trigger_id].push_back((*event)["payload"].value("message", ""));
+    }
+  }
+
+  /// Spins until every trigger in @p trigger_ids has delivered @p message. Events reach a
+  /// trigger in log order, so nothing logged before @p message can arrive after it.
+  bool spin_until_delivered(const std::vector<std::string> & trigger_ids, const std::string & message) {
+    return spin_until(
+        [&] {
+          bool all = true;
+          for (const auto & id : trigger_ids) {
+            drain(id);
+            const auto & got = events_[id];
+            all = all && std::find(got.begin(), got.end(), message) != got.end();
+          }
+          return all;
+        },
+        20s);
+  }
+
+  std::map<std::string, std::vector<std::string>> events_;
 
   std::filesystem::path work_dir_;
   std::filesystem::path db_path_;
@@ -266,13 +294,19 @@ TEST_F(LogTriggerRestoreTest, AppReplayWaitsForTheAppNotForAComponentWithItsId) 
       20s));
   ASSERT_FALSE(cache.has_app("dup_node"));
 
-  // Logged while only the Component carries the id; several sweeps pass.
+  // Logged while only the Component carries the id. Sweeps run, and the trigger waits.
   publish("dup_node", "early");
-  spin_for(2s);
+  ASSERT_TRUE(spin_until(
+      [&] {
+        return buffered() == 1;
+      },
+      10s))
+      << "the gateway did not take the early entry";
+  sweep();
+  sweep();
   ASSERT_FALSE(cache.has_app("dup_node"));
-  auto buffered = gateway_->get_log_manager()->get_logs({"/dup_node"}, false, "", "", "dup_node");
-  ASSERT_TRUE(buffered.has_value());
-  ASSERT_EQ(buffered->size(), 1u) << "the gateway did not take the early entry";
+  drain(kTriggerId);
+  EXPECT_TRUE(events_[kTriggerId].empty()) << "replayed for the Component with the app's id";
 
   app_node_ = std::make_shared<rclcpp::Node>("dup_node", "/");
   executor_->add_node(app_node_);
@@ -282,17 +316,16 @@ TEST_F(LogTriggerRestoreTest, AppReplayWaitsForTheAppNotForAComponentWithItsId) 
       },
       20s));
 
-  std::vector<std::string> messages;
-  auto drain = [&] {
-    while (auto event = triggers->consume_pending_event(kTriggerId)) {
-      messages.push_back((*event)["payload"].value("message", ""));
-    }
-    return std::find(messages.begin(), messages.end(), "early") != messages.end();
-  };
-  EXPECT_TRUE(spin_until(drain, 10s)) << "the early entry never reached the app's restored trigger";
-  spin_for(1s);
-  drain();
-  EXPECT_EQ(std::count(messages.begin(), messages.end(), "early"), 1);
+  sweep();
+  ASSERT_TRUE(spin_until_delivered({kTriggerId}, "early")) << "the early entry never reached the restored trigger";
+  // A sweep after a live entry replays nothing again: an OnChange trigger would fire on a
+  // repeated "early", which differs from "later". A last entry closes the check.
+  publish("dup_node", "later");
+  ASSERT_TRUE(spin_until_delivered({kTriggerId}, "later"));
+  sweep();
+  publish("dup_node", "last");
+  ASSERT_TRUE(spin_until_delivered({kTriggerId}, "last"));
+  EXPECT_EQ(events_[kTriggerId], (std::vector<std::string>{"early", "later", "last"}));
 }
 
 TEST_F(LogTriggerRestoreTest, TriggerIsAnOrphanOnceItsAppIsGoneAlthoughAComponentKeepsTheId) {
@@ -308,8 +341,8 @@ TEST_F(LogTriggerRestoreTest, TriggerIsAnOrphanOnceItsAppIsGoneAlthoughAComponen
         return cache.has_app("dup_node") && cache.has_component("dup_node");
       },
       20s));
-  // Sweeps run while the App is there, so the trigger has seen its entity.
-  spin_for(1500ms);
+  // A sweep while the App is there: the trigger has seen its entity and stays.
+  sweep();
   ASSERT_TRUE(triggers->get(kTriggerId).has_value()) << "swept while its App was there";
 
   executor_->remove_node(app_node_);
@@ -347,7 +380,13 @@ TEST_F(LogTriggerRestoreMarkerTest, MarkersWrittenByTheReplayFireNoTrigger) {
       },
       20s));
   publish("dup_node", "early");
-  spin_for(2s);
+  ASSERT_TRUE(spin_until(
+      [&] {
+        return listed().size() == 1;
+      },
+      10s))
+      << "the gateway did not take the early entry";
+  sweep();
   ASSERT_FALSE(cache.has_app("dup_node"));
 
   app_node_ = std::make_shared<rclcpp::Node>("dup_node", "/");
@@ -357,17 +396,9 @@ TEST_F(LogTriggerRestoreMarkerTest, MarkersWrittenByTheReplayFireNoTrigger) {
         return cache.has_app("dup_node");
       },
       20s));
-
-  std::map<std::string, std::vector<std::string>> events;
-  auto drain = [&] {
-    for (const char * id : {kMarkerTriggerA, kMarkerTriggerB}) {
-      while (auto event = triggers->consume_pending_event(id)) {
-        events[id].push_back((*event)["payload"].value("message", ""));
-      }
-    }
-  };
-  // Both replays ran once both markers are listed; a marker that fired would
-  // add events and markers within the next seconds.
+  // The replay writes one marker per trigger. Each marker reaches the notifier like an
+  // entry, before the entries logged after it.
+  sweep();
   ASSERT_TRUE(spin_until(
       [&] {
         const auto messages = listed();
@@ -375,34 +406,27 @@ TEST_F(LogTriggerRestoreMarkerTest, MarkersWrittenByTheReplayFireNoTrigger) {
       },
       20s))
       << "the replays wrote no markers";
-  spin_for(3s);
-  drain();
-  const std::vector<std::string> early{"early"};
-  EXPECT_EQ(events[kMarkerTriggerA], early);
-  EXPECT_EQ(events[kMarkerTriggerB], early);
-  auto messages = listed();
-  EXPECT_EQ(count_prefix(messages, "mark-a "), 1u);
-  EXPECT_EQ(count_prefix(messages, "mark-b "), 1u);
-  EXPECT_EQ(messages.size(), 3u) << "the entry plus one marker per firing";
 
-  // A live entry after the replays: one event per trigger, one marker each.
+  // A live entry fires each trigger once and writes one marker each; a last entry is
+  // delivered after anything the markers could fire.
   publish("dup_node", "late");
+  ASSERT_TRUE(spin_until_delivered({kMarkerTriggerA, kMarkerTriggerB}, "late")) << "the live entry fired no trigger";
+  publish("dup_node", "done");
+  ASSERT_TRUE(spin_until_delivered({kMarkerTriggerA, kMarkerTriggerB}, "done"));
   ASSERT_TRUE(spin_until(
       [&] {
-        const auto listed_now = listed();
-        return count_prefix(listed_now, "mark-a ") >= 2 && count_prefix(listed_now, "mark-b ") >= 2;
+        const auto messages = listed();
+        return count_prefix(messages, "mark-a ") >= 3 && count_prefix(messages, "mark-b ") >= 3;
       },
       20s))
-      << "the live entry fired no trigger";
-  spin_for(2s);
-  drain();
-  const std::vector<std::string> both{"early", "late"};
-  EXPECT_EQ(events[kMarkerTriggerA], both);
-  EXPECT_EQ(events[kMarkerTriggerB], both);
-  messages = listed();
-  EXPECT_EQ(count_prefix(messages, "mark-a "), 2u);
-  EXPECT_EQ(count_prefix(messages, "mark-b "), 2u);
-  EXPECT_EQ(messages.size(), 6u) << "two entries plus one marker per firing";
+      << "a firing wrote no marker";
+  const std::vector<std::string> entries{"early", "late", "done"};
+  EXPECT_EQ(events_[kMarkerTriggerA], entries);
+  EXPECT_EQ(events_[kMarkerTriggerB], entries);
+  const auto messages = listed();
+  EXPECT_EQ(count_prefix(messages, "mark-a "), 3u);
+  EXPECT_EQ(count_prefix(messages, "mark-b "), 3u);
+  EXPECT_EQ(messages.size(), 9u) << "three entries plus one marker per firing";
 }
 
 // A real entry logged before discovery with the text of trigger a's marker,
@@ -441,24 +465,27 @@ TEST_F(LogTriggerRestoreMarkerTest, ReplayDeliversARealEntryThatLooksLikeAMarker
       },
       20s));
 
-  std::map<std::string, std::vector<std::string>> events;
+  sweep();
   ASSERT_TRUE(spin_until(
       [&] {
-        return count_prefix(listed(), "mark-b ") >= 1;
+        return count_prefix(listed(), "mark-b ") >= 2;
       },
       20s))
       << "the replays wrote no markers";
-  spin_for(3s);
-  for (const char * id : {kMarkerTriggerA, kMarkerTriggerB}) {
-    while (auto event = triggers->consume_pending_event(id)) {
-      events[id].push_back((*event)["payload"].value("message", ""));
-    }
-  }
-  const std::vector<std::string> both{"early", lookalike};
-  EXPECT_EQ(events[kMarkerTriggerA], both);
-  EXPECT_EQ(events[kMarkerTriggerB], both);
+  // A last entry is delivered after anything the replay's markers could fire.
+  publish("dup_node", "done");
+  ASSERT_TRUE(spin_until_delivered({kMarkerTriggerA, kMarkerTriggerB}, "done"));
+  ASSERT_TRUE(spin_until(
+      [&] {
+        return count_prefix(listed(), "mark-b ") >= 3;
+      },
+      20s))
+      << "a firing wrote no marker";
+  const std::vector<std::string> entries{"early", lookalike, "done"};
+  EXPECT_EQ(events_[kMarkerTriggerA], entries);
+  EXPECT_EQ(events_[kMarkerTriggerB], entries);
   const auto messages = listed();
-  EXPECT_EQ(count_prefix(messages, "mark-b "), 2u);
-  EXPECT_EQ(count_prefix(messages, "mark-a "), 3u) << "the look-alike plus one marker per firing of a";
-  EXPECT_EQ(messages.size(), 6u);
+  EXPECT_EQ(count_prefix(messages, "mark-b "), 3u);
+  EXPECT_EQ(count_prefix(messages, "mark-a "), 4u) << "the look-alike plus one marker per firing of a";
+  EXPECT_EQ(messages.size(), 9u);
 }
