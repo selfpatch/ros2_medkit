@@ -323,6 +323,11 @@ class EventReader:
                 self._cond.wait(timeout=min(remaining, 0.5))
         return True
 
+    def ended(self, timeout):
+        """Return True once the gateway has ended the stream."""
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
+
     def close(self):
         self._closed = True
         self._resp.close()
@@ -415,6 +420,7 @@ class TestLogsTriggerRestoreBeforeDiscovery(unittest.TestCase):
 
         probe = RosoutProbe(RESTARTED_DOMAIN)
         readers = {}
+        problems_at_close = []
         try:
             _poll(lambda: probe.pub.get_subscription_count() >= 1,
                   what='the restarted gateway to subscribe /rosout')
@@ -498,9 +504,19 @@ class TestLogsTriggerRestoreBeforeDiscovery(unittest.TestCase):
                                 f'order, got {namesake}')
             self.assertFalse(problems, '; '.join(problems))
         finally:
+            # A trigger's stream wakes only for an event, the trigger's removal or its
+            # 15 s keepalive. Removing the triggers ends both streams now, so neither the
+            # close below nor the gateway's shutdown waits for a keepalive.
+            for app_id, reader in readers.items():
+                requests.delete(
+                    f'{BASE_URL_RESTARTED}/apps/{app_id}/triggers/{self.trigger_ids[app_id]}',
+                    timeout=HTTP_TIMEOUT_SEC)
+                if not reader.ended(DELIVERY_TIMEOUT_SEC):
+                    problems_at_close.append(f'{app_id}: the stream outlived its trigger')
             for reader in readers.values():
                 reader.close()
             probe.close()
+        self.assertFalse(problems_at_close, '; '.join(problems_at_close))
 
 
 @launch_testing.post_shutdown_test()
