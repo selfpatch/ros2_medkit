@@ -5,7 +5,7 @@ Changelog for package ros2_medkit_action_status_bridge
 0.7.1 (2026-11-18)
 ------------------
 * Exits 0 when ``SIGINT`` lands during startup, in a timer or in a status callback. ``SIGINT`` and ``SIGTERM`` are held until the node and its executor are built
-* Waits for the action server's node name before the first report
+* Waits for the action server's node name before the first report, so the first fault is attributed to the right node
 * Contributors: @bburda
 
 0.7.0 (2026-08-27)

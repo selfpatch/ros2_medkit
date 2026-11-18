@@ -4,7 +4,7 @@ Changelog for package ros2_medkit_topic_beacon
 
 0.7.1 (2026-11-18)
 ------------------
-* Follows the gateway's discovery changes: a graph leftover is hidden only for a node discovery saw running (`#723 <https://github.com/selfpatch/ros2_medkit/pull/723>`_, `#725 <https://github.com/selfpatch/ros2_medkit/pull/725>`_)
+* Configuration values are bounded: ``max_messages_per_second`` at 10000 (0.7.0 took any larger value, ``+inf`` too), ``beacon_ttl_sec`` and ``beacon_expiry_sec`` at 2147483647 s, and ``max_hints`` at 1..2147483647 (`#660 <https://github.com/selfpatch/ros2_medkit/pull/660>`_)
 * Contributors: @bburda
 
 0.7.0 (2026-08-27)

@@ -4,8 +4,8 @@ Changelog for package ros2_medkit_fault_reporter
 
 0.7.1 (2026-11-18)
 ------------------
-* Delivery of every report is confirmed, and a report without a response is sent again. Retrying works on every constructor and stops cleanly when the reporter is destroyed
-* Internal: the reporting logic is split into a ROS-free core (`#739 <https://github.com/selfpatch/ros2_medkit/pull/739>`_)
+* Delivery of a report is confirmed, and a report without a response is sent again. ``fault_reporter.delivery.ack_timeout_sec`` sets how long a response is awaited, a queued report is dropped after ``fault_reporter.delivery.max_attempts`` (10) tries, and a new report is dropped when ``fault_reporter.delivery.max_pending`` (1024) reports are queued. A report made while the service is not ready is dropped. When a reporter is destroyed, the ROS context takes its pending reports and keeps sending them (`#764 <https://github.com/selfpatch/ros2_medkit/pull/764>`_)
+* **Breaking (ABI):** the member layout of ``FaultReporter`` in ``fault_reporter.hpp`` changed (``filter_`` is gone; ``delivery_config_``, ``delivery_`` and ``core_`` are new), so a binary built against 0.7.0 must be rebuilt. The reporting logic is split into a ROS-free core (`#739 <https://github.com/selfpatch/ros2_medkit/pull/739>`_)
 * Contributors: @bburda
 
 0.7.0 (2026-08-27)
