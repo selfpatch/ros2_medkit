@@ -119,6 +119,9 @@ def generate_test_description():
             # Locking off, so the per-code DELETE publishes no lock contract and
             # test_07 reads a 409 on it only if the route declares one itself.
             'locking.enabled': False,
+            # The fault stream writes at least once a second, so closing it in
+            # test_08 returns at once instead of after a 30 s keepalive.
+            'sse.keepalive_interval_sec': 1,
         },
     )
 
