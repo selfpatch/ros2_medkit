@@ -89,8 +89,14 @@ POLL_INTERVAL_SEC = 0.3
 RUN = uuid.uuid4().hex[:10]
 MARKER = re.compile(rf'{RUN}:([A-Za-z0-9_.-]+)')
 
-INFO = Log.INFO
-WARN = Log.WARN
+
+def _level(constant):
+    """Return a Log severity constant as an int. Humble declares the constants as byte."""
+    return constant if isinstance(constant, int) else ord(constant)
+
+
+INFO = _level(Log.INFO)
+WARN = _level(Log.WARN)
 
 PROBE_NODE = 'log_trigger_probe'
 
@@ -761,7 +767,7 @@ class TestSeverityFilterChange(unittest.TestCase):
         _configure_logs(RUNTIME_URL, self.PATH, severity_filter=severity_filter)
         for case_id, level in probes:
             self.probe.publish(case_id, self.LOGGER, level)
-        self.probe.publish(sentinel, self.LOGGER, Log.FATAL)
+        self.probe.publish(sentinel, self.LOGGER, _level(Log.FATAL))
         arrived = self.stream.wait_until(
             lambda: sentinel in self.stream.markers(), DELIVERY_TIMEOUT_SEC)
         self.assertTrue(arrived, f'{sentinel} not delivered')
@@ -769,8 +775,9 @@ class TestSeverityFilterChange(unittest.TestCase):
     # @verifies REQ_INTEROP_097
     def test_filter_endpoints_and_change(self):
         """Fatal admits only fatal; back to debug admits debug again."""
-        self._round('fatal', [('sf-error', Log.ERROR), ('sf-fatal', Log.FATAL)], 'sf-s1')
-        self._round('debug', [('sf-debug', Log.DEBUG)], 'sf-s2')
+        self._round('fatal', [('sf-error', _level(Log.ERROR)), ('sf-fatal', _level(Log.FATAL))],
+                    'sf-s1')
+        self._round('debug', [('sf-debug', _level(Log.DEBUG))], 'sf-s2')
 
         received = set(self.stream.markers())
         self.assertEqual(received & {'sf-error', 'sf-fatal', 'sf-debug', 'sf-s1', 'sf-s2'},
