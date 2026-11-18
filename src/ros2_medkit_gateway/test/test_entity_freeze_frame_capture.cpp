@@ -363,8 +363,8 @@ TEST_F(EntityFreezeFrameCaptureTest, QueuedLiveConfirmDedupesTheSameStandingReco
                               return std::nullopt;
                             }
                             route_reads.fetch_add(1);
-                            return json{{"connected", true},
-                                        {"items", json::array({{{"name", "level"}, {"value", 99.0}}})}};
+                            return std::optional<json>{json{
+                                {"connected", true}, {"items", json::array({{{"name", "level"}, {"value", 99.0}}})}}};
                           },
                           "PLC_BOTH_PATHS", {{"PLC_BOTH_PATHS", {"route_live_app"}}});
 
@@ -405,8 +405,8 @@ TEST_F(EntityFreezeFrameCaptureTest, QueuedConfirmDoesNotDedupeAnotherOwnerOfThe
                             } else {
                               return std::nullopt;
                             }
-                            return json{{"connected", true},
-                                        {"items", json::array({{{"name", "level"}, {"value", level}}})}};
+                            return std::optional<json>{json{
+                                {"connected", true}, {"items", json::array({{{"name", "level"}, {"value", level}}})}}};
                           },
                           "PLC_TWO_OWNERS", {{"PLC_TWO_OWNERS", {"route_standing_app"}}});
 
@@ -451,7 +451,8 @@ TEST_F(EntityFreezeFrameCaptureTest, TwoOwnersOfOneCodeKeepSeparateFrames) {
         } else {
           return std::nullopt;
         }
-        return json{{"connected", true}, {"items", json::array({{{"name", "level"}, {"value", level}}})}};
+        return std::optional<json>{
+            json{{"connected", true}, {"items", json::array({{{"name", "level"}, {"value", level}}})}}};
       });
 
   ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("SHARED_CODE", {"line_a"})));

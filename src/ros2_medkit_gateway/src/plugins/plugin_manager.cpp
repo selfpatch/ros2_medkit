@@ -440,7 +440,7 @@ std::optional<nlohmann::json> PluginManager::fetch_entity_data_content(const std
   if (auto * data_prov = get_data_provider_for_entity(entity_id)) {
     try {
       if (auto result = data_prov->list_data(entity_id)) {
-        return result->content;
+        return std::optional<nlohmann::json>{result->content};
       }
     } catch (const std::exception & e) {
       MEDKIT_LOG_WARN(logger(), "DataProvider threw for entity '%s': %s. Trying its route.", entity_id.c_str(),
