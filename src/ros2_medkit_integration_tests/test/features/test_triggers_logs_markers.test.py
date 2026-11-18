@@ -60,6 +60,7 @@ from ros2_medkit_test_utils.constants import (
 )
 from ros2_medkit_test_utils.coverage import get_coverage_env
 from ros2_medkit_test_utils.launch_helpers import create_fault_manager_node, create_gateway_node
+from ros2_medkit_test_utils.service_round_trip import answer_once_each
 
 RUNTIME_PORT = get_test_port(0)
 MANIFEST_PORT = get_test_port(1)
@@ -326,6 +327,7 @@ class RosoutProbe:
         qos = QoSProfile(depth=1000, reliability=ReliabilityPolicy.RELIABLE,
                          durability=DurabilityPolicy.VOLATILE)
         self.pub = self.node.create_publisher(Log, '/rosout', qos)
+        self.report_client = self.node.create_client(ReportFault, '/fault_manager/report_fault')
 
     def publish(self, logger_name, message, *, source=True, stamp_sec=None):
         msg = Log()
@@ -343,22 +345,19 @@ class RosoutProbe:
         self.pub.publish(msg)
 
     def report_fault(self, code, source_id):
-        """Report a CRITICAL fault, which the fault manager confirms at once."""
-        client = self.node.create_client(ReportFault, '/fault_manager/report_fault')
-        try:
-            assert client.wait_for_service(timeout_sec=DISCOVERY_TIMEOUT_SEC), \
-                'report_fault service not available'
-            req = ReportFault.Request()
-            req.fault_code = code
-            req.event_type = ReportFault.Request.EVENT_FAILED
-            req.severity = Fault.SEVERITY_CRITICAL
-            req.description = 'marker test fault'
-            req.source_id = source_id
-            future = client.call_async(req)
-            rclpy.spin_until_future_complete(self.node, future, timeout_sec=HTTP_TIMEOUT_SEC)
-            return future.result() is not None and future.result().accepted
-        finally:
-            self.node.destroy_client(client)
+        """Report a CRITICAL fault, which the fault manager confirms at once. Sent once."""
+        assert self.report_client.wait_for_service(timeout_sec=DISCOVERY_TIMEOUT_SEC), \
+            'report_fault service not available'
+        answer_once_each(self.node, (self.report_client,), DISCOVERY_TIMEOUT_SEC)
+        req = ReportFault.Request()
+        req.fault_code = code
+        req.event_type = ReportFault.Request.EVENT_FAILED
+        req.severity = Fault.SEVERITY_CRITICAL
+        req.description = 'marker test fault'
+        req.source_id = source_id
+        future = self.report_client.call_async(req)
+        rclpy.spin_until_future_complete(self.node, future, timeout_sec=HTTP_TIMEOUT_SEC)
+        return future.result() is not None and future.result().accepted
 
     def close(self):
         self.node.destroy_node()
