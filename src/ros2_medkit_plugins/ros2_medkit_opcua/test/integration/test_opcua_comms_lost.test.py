@@ -63,6 +63,9 @@ COMMS_LOST = 'PLC_COMMS_LOST'
 HELD_BY_OTHERS = f'{COMMS_LOST} is held by sources this bridge did not report under ['
 # Discovery identifies OPC-UA only on this port.
 DISCOVERY_PORT = 4840
+# First reconnect wait of the scenarios that set one. The production default is 5000 ms.
+RECONNECT_MS = 200
+CONNECT_FAILED = 'OPC-UA connect to '
 
 
 def time_scale():
@@ -109,12 +112,12 @@ def http_json(url, timeout=2):
         return None
 
 
-def wait_log(path, needle, deadline):
-    """Poll a log file until <needle> appears, for a scaled deadline."""
+def wait_log(path, needle, deadline, count=1):
+    """Poll a log file until <needle> appears <count> times, for a scaled deadline."""
     end = time.monotonic() + deadline * SCALE
     while time.monotonic() < end:
         try:
-            if needle in Path(path).read_text(errors='replace'):
+            if Path(path).read_text(errors='replace').count(needle) >= count:
                 return True
         except OSError:
             pass
@@ -257,7 +260,8 @@ class Run:
                                  + log.read_text(errors='replace'))
         return proc
 
-    def start_gateway(self, name, endpoint=None, poll_ms=200, extra_env=None, node_map=None):
+    def start_gateway(self, name, endpoint=None, poll_ms=200, extra_env=None, node_map=None,
+                      reconnect_ms=None):
         """Start gateway_node with the opcua plugin and wait for HTTP."""
         port = free_port()
         params = self.workdir / f'{name}_gateway.yaml'
@@ -276,6 +280,8 @@ class Run:
             lines.append(f'    plugins.opcua.endpoint_url: "{endpoint}"')
         if node_map is not None:
             lines.append(f'    plugins.opcua.node_map_path: "{node_map}"')
+        if reconnect_ms is not None:
+            lines.append(f'    plugins.opcua.reconnect_interval_ms: {reconnect_ms}')
         params.write_text('\n'.join(lines) + '\n')
         env = dict(self.env)
         env.update(extra_env or {})
@@ -472,7 +478,7 @@ def scenario_per_source_record(run):
     run.start_fault_manager('persrc', per_source_codes=[COMMS_LOST])
     named, port = run.start_server('persrc_named')
     endpoint = f'opc.tcp://127.0.0.1:{port}'
-    gateway = run.start_gateway('persrc', endpoint=endpoint)
+    gateway = run.start_gateway('persrc', endpoint=endpoint, reconnect_ms=RECONNECT_MS)
     if not wait_log(gateway.log, 'Connected to OPC-UA server', 30):
         raise AssertionError('the gateway never connected:\n' + tail(gateway))
 
@@ -501,7 +507,12 @@ def scenario_per_source_record(run):
 def scenario_per_source_placeholder_rename(run):
     run.start_fault_manager('rename', per_source_codes=[COMMS_LOST])
     port = free_port()
-    gateway = run.start_gateway('rename', endpoint=f'opc.tcp://127.0.0.1:{port}')
+    gateway = run.start_gateway('rename', endpoint=f'opc.tcp://127.0.0.1:{port}',
+                                reconnect_ms=RECONNECT_MS)
+    # Four failed connects take 15 s at the default wait and well under 1 s at RECONNECT_MS.
+    if not wait_log(gateway.log, CONNECT_FAILED, 4, count=4):
+        raise AssertionError('the gateway did not retry at reconnect_interval_ms:\n'
+                             + tail(gateway))
     records = wait_records(run, lambda r: len(r) == 1 and 'CONFIRMED' in r.values(), 60)
     if len(records) != 1 or 'CONFIRMED' not in records.values():
         raise AssertionError(f'the outage was never reported: {records}\n' + tail(gateway))
@@ -519,7 +530,8 @@ def scenario_per_source_pinned_stand_in(run):
     run.start_fault_manager('persrc_pinned', per_source_codes=[COMMS_LOST])
     port = free_port()
     endpoint = f'opc.tcp://127.0.0.1:{port}'
-    gateway = run.start_gateway('persrc_pinned_before', endpoint=endpoint)
+    gateway = run.start_gateway('persrc_pinned_before', endpoint=endpoint,
+                                reconnect_ms=RECONNECT_MS)
     records = wait_records(run, lambda r: len(r) == 1 and 'CONFIRMED' in r.values(), 60)
     if len(records) != 1 or 'CONFIRMED' not in records.values():
         raise AssertionError(f'the outage was never reported: {records}\n' + tail(gateway))
@@ -528,7 +540,7 @@ def scenario_per_source_pinned_stand_in(run):
 
     # The restarted gateway remembers nothing, and the PLC names the component.
     run.start_server('persrc_pinned', port=port)
-    after = run.start_gateway('persrc_pinned_after', endpoint=endpoint)
+    after = run.start_gateway('persrc_pinned_after', endpoint=endpoint, reconnect_ms=RECONNECT_MS)
     records = wait_records(run, lambda r: r.get(stand_in) == 'CLEARED', 60)
     if records.get(stand_in) != 'CLEARED':
         raise AssertionError(f'the record raised under the stand-in {stand_in} stayed standing '
@@ -545,7 +557,7 @@ def scenario_explicit_component_id_keeps_the_default_id_record(run):
     node_map.write_text('area_id: plc_area\ncomponent_id: plc_a\nnodes: []\n')
     _, port = run.start_server('explicit_id')
     gateway = run.start_gateway('explicit_id', endpoint=f'opc.tcp://127.0.0.1:{port}',
-                                node_map=node_map)
+                                node_map=node_map, reconnect_ms=RECONNECT_MS)
     # The gateway asked for its own record, found none, and went through every id it reports under.
     if not wait_log(gateway.log, 'nothing to clear', 30):
         raise AssertionError('the gateway never decided on PLC_COMMS_LOST:\n' + tail(gateway))
@@ -565,7 +577,7 @@ def scenario_explicit_component_id_keeps_a_stand_in_record(run):
     node_map.write_text('area_id: plc_area\ncomponent_id: plc_a\nnodes: []\n')
     _, port = run.start_server('stand_in_id')
     gateway = run.start_gateway('stand_in_id', endpoint=f'opc.tcp://127.0.0.1:{port}',
-                                node_map=node_map)
+                                node_map=node_map, reconnect_ms=RECONNECT_MS)
     if not wait_log(gateway.log, 'nothing to clear', 30):
         raise AssertionError('the gateway never decided on PLC_COMMS_LOST:\n' + tail(gateway))
     records = comms_lost_records(run)
@@ -583,7 +595,7 @@ def scenario_explicit_component_id_keeps_a_shared_stand_in_record(run):
     node_map.write_text('area_id: plc_area\ncomponent_id: plc_a\nnodes: []\n')
     _, port = run.start_server('stand_in_shared')
     gateway = run.start_gateway('stand_in_shared', endpoint=f'opc.tcp://127.0.0.1:{port}',
-                                node_map=node_map)
+                                node_map=node_map, reconnect_ms=RECONNECT_MS)
     if not wait_log(gateway.log, HELD_BY_OTHERS, 30):
         raise AssertionError('the gateway never left the shared record standing:\n'
                              + tail(gateway))

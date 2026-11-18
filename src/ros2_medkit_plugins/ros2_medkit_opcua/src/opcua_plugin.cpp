@@ -341,6 +341,16 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     auto ms = std::clamp(config["poll_interval_ms"].get<int>(), 100, 60000);
     poller_config_.poll_interval = std::chrono::milliseconds(ms);
   }
+  if (config.contains("reconnect_interval_ms")) {
+    const auto & raw = config["reconnect_interval_ms"];
+    const auto ceiling = poller_config_.max_reconnect_interval.count();
+    if (raw.is_number_integer() && raw.get<int64_t>() >= 100 && raw.get<int64_t>() <= ceiling) {
+      poller_config_.reconnect_interval = std::chrono::milliseconds(raw.get<int64_t>());
+    } else {
+      log_warn("plugins.opcua.reconnect_interval_ms must be an integer in [100, " + std::to_string(ceiling) +
+               "] - keeping " + std::to_string(poller_config_.reconnect_interval.count()) + " ms");
+    }
+  }
   if (config.contains("condition_replay_strategy")) {
     poller_config_.condition_replay_strategy =
         OpcuaPoller::parse_replay_strategy(config["condition_replay_strategy"].get<std::string>());
