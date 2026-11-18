@@ -570,7 +570,7 @@ tl::expected<nlohmann::json, ErrorInfo> resolve_scoped_rosbag(FaultManager & fau
       continue;
     }
     if (rosbag_rows_hold_recording(held_rows.data.value("rosbags", json::array()), rosbag_result.data)) {
-      return rosbag_result.data;
+      return tl::expected<json, ErrorInfo>{rosbag_result.data};
     }
   }
   if (failed_listing) {
