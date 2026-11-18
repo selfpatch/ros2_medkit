@@ -36,6 +36,7 @@ from ros2_medkit_msgs.srv import ListFaults, ReportFault
 from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
+from ros2_medkit_test_utils.service_round_trip import answer_once_each
 
 ROOT_CODE = 'LIDAR_RANGE_INVALID'
 SYMPTOM_CODE = 'ROOT_CLEAR_SYMPTOM'
@@ -92,6 +93,7 @@ class TestCorrelationRootClear(GatewayTestCase):
         cls._list = cls._node.create_client(ListFaults, '/fault_manager/list_faults')
         assert cls._report.wait_for_service(timeout_sec=30.0)
         assert cls._list.wait_for_service(timeout_sec=30.0)
+        answer_once_each(cls._node, (cls._report, cls._list), 30.0)
 
     @classmethod
     def tearDownClass(cls):

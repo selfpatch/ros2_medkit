@@ -43,6 +43,7 @@ from ros2_medkit_msgs.srv import ReportFault
 from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH, FAULT_TIMEOUT
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
+from ros2_medkit_test_utils.service_round_trip import answer_once_each
 
 
 APP_ID = 'temp_sensor'
@@ -131,6 +132,7 @@ class TestFaultSeverityConsistency(GatewayTestCase):
         cls._report_client = cls._node.create_client(ReportFault, '/fault_manager/report_fault')
         assert cls._report_client.wait_for_service(timeout_sec=15.0), \
             'report_fault service not available'
+        answer_once_each(cls._node, (cls._report_client,), 15.0)
 
     @classmethod
     def tearDownClass(cls):
