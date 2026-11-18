@@ -79,6 +79,7 @@ from ros2_medkit_test_utils.launch_helpers import (
     create_fault_manager_node,
     create_gateway_node,
 )
+from ros2_medkit_test_utils.service_round_trip import answer_once_each
 
 from std_msgs.msg import Float32
 
@@ -359,6 +360,7 @@ class TestFaultScopeNotifications(GatewayTestCase):
         super().setUpClass()
         assert cls._report_client.wait_for_service(timeout_sec=30.0), \
             'report_fault service not available'
+        answer_once_each(cls._reporter, (cls._report_client, cls._clear_client), 30.0, spin=False)
         cls._wait_for_entities()
         cls._host_component = cls._runtime_host_component()
         cls._report_counter = 0

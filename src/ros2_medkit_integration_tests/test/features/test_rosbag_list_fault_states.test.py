@@ -52,6 +52,7 @@ from ros2_medkit_test_utils.launch_helpers import (
     create_fault_manager_node,
     create_gateway_node,
 )
+from ros2_medkit_test_utils.service_round_trip import answer_once_each
 
 from std_msgs.msg import Float32
 
@@ -140,12 +141,8 @@ class TestRosbagListFaultStates(GatewayTestCase):
         super().setUpClass()
         assert cls._report_client.wait_for_service(timeout_sec=30.0), \
             'report_fault service not available'
-        # A reply can be lost while the fault manager is still matching this
-        # client, so the first round trip is retried until it is answered.
-        deadline = time.monotonic() + FAULT_TIMEOUT
-        while not cls._call(cls._report_client, cls._report_request(
-                'BAGSTATES_HANDSHAKE', '/bagstates/handshake', passed=False), 2.0):
-            assert time.monotonic() < deadline, 'report_fault never answered'
+        answer_once_each(
+            cls._owner, (cls._report_client, cls._clear_client), FAULT_TIMEOUT, spin=False)
 
     @classmethod
     def tearDownClass(cls):
