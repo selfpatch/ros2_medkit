@@ -17,7 +17,8 @@
 Shared snapshot capture of per-source records under queue pressure, through a real fault manager.
 
 One worker, a queue of two and drop_oldest, so every extra queued job evicts another fault's
-capture. A topic nobody publishes on keeps a capture running for its whole timeout.
+capture. A capture of the slow topic runs until the test releases it: the topic is silent until
+then, and the capture timeout is longer than any test.
 
   * a record joining the queued capture of its code queues no job of its own;
   * a capture that outlives the recapture cooldown keeps every record that joined it;
@@ -42,6 +43,7 @@ from ros2_medkit_msgs.srv import ClearFault, GetSnapshots, ReportFault
 from std_msgs.msg import Int32
 
 TIMEOUT_SEC = 40.0
+COOLDOWN_SEC = 0.3
 FAST = '/queue/fast'
 SLOW = '/queue/slow'
 
@@ -82,11 +84,11 @@ def generate_test_description():
             'fault_thresholds.config_file': THRESHOLDS_FILE,
             'snapshots.enabled': True,
             'snapshots.config_file': SNAPSHOTS_FILE,
-            'snapshots.timeout_sec': 2.0,
+            'snapshots.timeout_sec': TIMEOUT_SEC,
             'snapshots.capture_pool_size': 1,
             'snapshots.capture_queue_depth': 2,
             'snapshots.capture_queue_full_policy': 'drop_oldest',
-            'snapshots.recapture_cooldown_sec': 0.3,
+            'snapshots.recapture_cooldown_sec': COOLDOWN_SEC,
             'snapshots.rosbag.enabled': False,
         }],
         sigterm_timeout='30',
@@ -110,11 +112,12 @@ class TestSnapshotQueue(unittest.TestCase):
             GetSnapshots, '/fault_manager/get_snapshots')
         for client in (cls.report_client, cls.clear_client, cls.snapshots_client):
             assert client.wait_for_service(timeout_sec=TIMEOUT_SEC)
-        # Nothing is ever published here, so a capture of this topic runs for its whole timeout.
-        # Created first: the fault manager has processed it once it has discovered FAST.
+        # Silent until a test sets release. Created first: the fault manager has processed it
+        # once it has discovered FAST.
         cls.slow = cls.node.create_publisher(Int32, SLOW, 10)
         cls.fast = cls.node.create_publisher(Int32, FAST, 10)
         cls.stop = threading.Event()
+        cls.release = threading.Event()
         cls.publisher_thread = threading.Thread(target=cls._publish)
         cls.publisher_thread.start()
         cls._wait_for_discovery('XQ_PROBE_')
@@ -154,6 +157,8 @@ class TestSnapshotQueue(unittest.TestCase):
         while not cls.stop.wait(0.1):
             value += 1
             cls.fast.publish(Int32(data=value))
+            if cls.release.is_set():
+                cls.slow.publish(Int32(data=value))
 
     @classmethod
     def tearDownClass(cls):
@@ -161,6 +166,10 @@ class TestSnapshotQueue(unittest.TestCase):
         cls.publisher_thread.join()
         cls.node.destroy_node()
         rclpy.shutdown()
+
+    def setUp(self):
+        # A capture of SLOW subscribes when it starts, so it gets nothing published before.
+        self.release.clear()
 
     def _call(self, client, request):
         future = client.call_async(request)
@@ -223,6 +232,7 @@ class TestSnapshotQueue(unittest.TestCase):
         # evict the oldest one, which is the other fault's.
         self._report('XQ.QUEUE', '/q/a')
         self._report('XQ.QUEUE', '/q/b')
+        self.release.set()
 
         self._wait_snapshot('XQ.OTHER', '/q/other')
         first = self._wait_snapshot('XQ.QUEUE', '/q/a')
@@ -232,15 +242,22 @@ class TestSnapshotQueue(unittest.TestCase):
     def test_a_capture_that_outlives_the_cooldown_keeps_its_records(
             self, proc_output, fault_manager_node):
         self._report('XQ.PRUNE', '/q/a')
+        admitted = time.monotonic()
         self._wait_capture_started(proc_output, fault_manager_node, 'XQ.PRUNE')
         self._report('XQ.PRUNE', '/q/b')
 
         # Every admission of another grouped code is a chance to drop an aged-out group. The
-        # capture above runs for the whole topic timeout, much longer than the cooldown.
+        # capture runs until a trigger is admitted after the cooldown.
         triggers = iter(range(10000))
-        first = self._wait_snapshot(
-            'XQ.PRUNE', '/q/a',
-            between=lambda: self._report('XQ.PRUNE.TRIGGER', f'/q/trigger{next(triggers)}'))
+
+        def admit_trigger():
+            sent = time.monotonic()
+            self._report('XQ.PRUNE.TRIGGER', f'/q/trigger{next(triggers)}')
+            if sent - admitted > COOLDOWN_SEC:
+                self.release.set()
+
+        first = self._wait_snapshot('XQ.PRUNE', '/q/a', between=admit_trigger)
+        self.assertTrue(self.release.is_set(), 'the capture ended before it was released')
         second = self._wait_snapshot('XQ.PRUNE', '/q/b')
         self.assertEqual(first['captured_at'], second['captured_at'])
 
@@ -255,6 +272,7 @@ class TestSnapshotQueue(unittest.TestCase):
         self._clear('XQ.AGAIN', '/q/a')
         confirmed_again = time.time()
         self._report('XQ.AGAIN', '/q/a')
+        self.release.set()
 
         old = self._wait_snapshot('XQ.AGAIN', '/q/b')
         again = self._wait_snapshot('XQ.AGAIN', '/q/a')
@@ -266,11 +284,11 @@ class TestSnapshotQueue(unittest.TestCase):
 @launch_testing.post_shutdown_test()
 class TestSnapshotQueueShutdown(unittest.TestCase):
 
-    def test_the_silent_topic_was_discovered(self, proc_output, fault_manager_node):
+    def test_the_slow_topic_was_discovered(self, proc_output, fault_manager_node):
         for text in proc_output[fault_manager_node]:
             self.assertNotIn(
                 f"Topic '{SLOW}' not found", text.text.decode(errors='replace'),
-                'a capture skipped the silent topic, so nothing was kept busy')
+                'a capture skipped the slow topic, so nothing was kept busy')
 
     def test_exit_code(self, proc_info):
         launch_testing.asserts.assertExitCodes(proc_info)
