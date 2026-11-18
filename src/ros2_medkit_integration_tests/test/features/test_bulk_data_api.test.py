@@ -39,7 +39,7 @@ import requests
 from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import ReportFault
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, ROSBAG_TIMEOUT
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, get_time_scale, ROSBAG_TIMEOUT
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
@@ -63,6 +63,8 @@ def generate_test_description():
     return create_test_launch(
         demo_nodes=['lidar_sensor'],
         fault_manager=True,
+        # The stalled fault manager case waits this long on every call it makes.
+        gateway_params={'fault_manager.service_timeout_sec': 1.0 * get_time_scale()},
         fault_manager_params={
             'snapshots.rosbag.storage_path': ROSBAG_DIR,
             'fault_thresholds.config_file': THRESHOLDS_PATH,
