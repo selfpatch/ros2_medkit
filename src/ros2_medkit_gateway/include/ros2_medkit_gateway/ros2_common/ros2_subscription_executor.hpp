@@ -83,6 +83,7 @@ class Ros2SubscriptionExecutor final {
     std::chrono::milliseconds watchdog_threshold;
     std::chrono::milliseconds watchdog_tick;
     std::chrono::milliseconds graph_poll_tick;
+    /// The subscription node is named `_<gateway name><suffix>`.
     std::string subscription_node_name_suffix;
 
     // Explicit ctor needed because GCC does not allow default member initializers
@@ -121,8 +122,8 @@ class Ros2SubscriptionExecutor final {
    * deliberately not wired up - sharing the subscription node with a multi-threaded
    * executor reintroduces the rcutils_hash_map race this class exists to eliminate.
    *
-   * @param gateway_node Owning gateway node. Used only to derive the subscription
-   *                     node name and namespace; no references retained after
+   * @param gateway_node Owning gateway node. Used only to set up the subscription
+   *                     node (see make_helper_node); no references retained after
    *                     construction.
    * @param cfg          Bounded resource configuration.
    */

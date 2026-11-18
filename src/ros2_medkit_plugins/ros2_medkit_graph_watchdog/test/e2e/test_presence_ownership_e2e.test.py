@@ -37,7 +37,7 @@ failed". Refusing ownership past that point is not a handover, it is a silence -
 will ever measure the node, and `lifecycle_expectation` returns early unless an operator named
 it in `require_active`, which defaults to empty.
 
-Runs as FIVE separate CTest targets (see CMakeLists.txt). WATCHDOG_E2E_SCENARIO selects which
+Runs as EIGHT separate CTest targets (see CMakeLists.txt). WATCHDOG_E2E_SCENARIO selects which
 launch and which assertions run:
 
 - "budget_spent_then_owned": the fixture is never told to answer, so its label stays "" for its
@@ -70,6 +70,10 @@ launch and which assertions run:
   detector held this node was that nobody else could report it, and the label ends that. It is
   also the one row that rejects a detector wired to the permissive `reliability_allows()`, which
   admits the node during the unread window and, tracking being sticky, never lets go.
+- "late_services_yield_to_a_real_label": the provisional row with the fixture's lifecycle services
+  held back until the test has seen the node armed with no lifecycle record. node_death admits
+  it as a plain node then. That admission is not a measurement, so the later "inactive" label
+  must still take the node back.
 - "restart_inside_warmup": a crash loop whose uptime is shorter than the warmup. The node is
   killed, reported, and comes back - and while it is merely RE-WARMING the gate has no claim to
   state either way, which is not the same fact as the graph having measured the node as another
@@ -206,6 +210,8 @@ MISS_GRACE = 16
 # invisible to that rewrite. The sustained-observation window is deliberately NOT scaled: it is
 # not a give-up bound, and stretching a window that watches for silence buys no confidence.
 TIME_SCALE = get_time_scale()
+# The fixture advertises its lifecycle services only once the test sets this to true.
+ADVERTISE_PARAM = 'advertise_lifecycle_services'
 ARM_TIMEOUT_SEC = 60.0 * TIME_SCALE
 FAULTS_LIVE_TIMEOUT_SEC = 30.0 * TIME_SCALE
 LABEL_TIMEOUT_SEC = 30.0 * TIME_SCALE
@@ -249,18 +255,14 @@ QOS_SUB_DEADLINE_SEC = 0.1
 DROPPABLE_NODE = 'presence_ownership_droppable'
 DROP_PARAM = 'drop_services'
 
-# The label the never-answering fixture announces once it is told to answer. "inactive" is a
-# measured, NON-active state: it says the node was never the presence detector's, which is
-# exactly what a provisional grant has to yield to.
-# The rclpy node this row's own test process spins to drive the fixture's parameter. It is an
-# App like any other, so node_death admits it too - and an admission landing between the
-# release and the sample that looks for it hides the release completely, because tracked_count
-# is a graph-wide total rather than a per-key flag. The row therefore waits for this one to arm
-# before it takes its baseline, which leaves the fixture's release the only admission event
-# still to come.
+# The rclpy node this row's test process uses to set the fixture's parameters. It is an App, so
+# node_death admits it too.
 LATE_LABEL_CLIENT_NODE = 'presence_ownership_late_label_client'
 
 TRANSITION_LABEL_PARAM = 'transition_label'
+# The label the never-answering fixture announces once it is told to answer. "inactive" is a
+# measured, NON-active state: it says the node was never the presence detector's, which is
+# exactly what a provisional grant has to yield to.
 LATE_LABEL = 'inactive'
 
 # lifecycle_expectation's own grace, in ticks, for the row where GRAPH_NODE_INACTIVE is the
@@ -316,7 +318,7 @@ def _plain_node_action():
     )
 
 
-def _unreadable_node_action(transition_label=None):
+def _unreadable_node_action(transition_label=None, advertise_services=None):
     """Build the fixture as a launch action with a PID handle the test can signal.
 
     Uses DEMO_NODE_REGISTRY's own (executable, ros_name, namespace) triple so this stays in
@@ -328,6 +330,8 @@ def _unreadable_node_action(transition_label=None):
     # default: every other row here depends on the default being what it always was.
     parameters = ([{TRANSITION_LABEL_PARAM: transition_label}] if transition_label is not None
                   else [])
+    if advertise_services is not None:
+        parameters.append({ADVERTISE_PARAM: advertise_services})
     return launch_ros.actions.Node(
         package='ros2_medkit_integration_tests',
         executable=executable,
@@ -348,7 +352,7 @@ def generate_test_description():
         f'{_NODE_DEATH_PREFIX}.miss_grace': MISS_GRACE,
     }
 
-    if SCENARIO == 'provisional_yields_to_a_real_label':
+    if SCENARIO in ('provisional_yields_to_a_real_label', 'late_services_yield_to_a_real_label'):
         # require_active is what makes GRAPH_NODE_INACTIVE available as the positive control:
         # the node has to be reported by SOMEBODY once the presence detector hands it back, or
         # the row cannot tell a correct handover from a plain silence.
@@ -394,6 +398,8 @@ def generate_test_description():
         target = _plain_node_action()
     elif SCENARIO == 'provisional_yields_to_a_real_label':
         target = _unreadable_node_action(transition_label=LATE_LABEL)
+    elif SCENARIO == 'late_services_yield_to_a_real_label':
+        target = _unreadable_node_action(transition_label=LATE_LABEL, advertise_services=False)
     else:
         target = _unreadable_node_action()
     launch_description.add_action(TimerAction(period=2.0, actions=[target]))
@@ -402,7 +408,7 @@ def generate_test_description():
 
 
 def _poll_watchdog_entity(port, app_id, lifecycle, timeout=30.0, interval=0.5,
-                          measurement_pending=None):
+                          measurement_pending=None, armed=None):
     """Poll GET /x-medkit-watchdog until `app_id` appears with this lifecycle label.
 
     The PAIR is the instrument these scenarios need, not `armed` on its own: `armed` reads the
@@ -437,6 +443,8 @@ def _poll_watchdog_entity(port, app_id, lifecycle, timeout=30.0, interval=0.5,
                         continue
                     if (measurement_pending is not None
                             and entity.get('measurement_pending') is not measurement_pending):
+                        continue
+                    if armed is not None and entity.get('armed') is not armed:
                         continue
                     return entity
         except requests.exceptions.RequestException as exc:
@@ -554,13 +562,9 @@ def _poll_tracked_count_below(port, detector_id, threshold, timeout=30.0, interv
     comes off the tracker, republished once per tick, so it only moves when a key is actually
     admitted or released.
 
-    It is a graph-WIDE total, though, and that costs the caller two obligations. The count must
-    have stopped moving before it is used as a threshold, or the admission this release will
-    later undo is not inside it. And every other App that will ever be admitted must already
-    be admitted, or one landing after the release refills the total and hides it: measured on a
-    live stack, a release dipped the count for 200 ms before the test's own client node was
-    admitted, which a 200 ms poll reads as no release at all. `_poll_stable_tracked_count`
-    covers the first; gating on every other node being armed covers the second.
+    It is a graph-WIDE total, so `threshold` must count every App that will ever be admitted.
+    An admission after the baseline refills the total and hides the release. Take the baseline
+    with `_poll_every_visible_node_tracked`.
 
     Returns ``True`` once the count drops, ``False`` on timeout (after printing the last value,
     which is gone once the launch tears down).
@@ -580,28 +584,40 @@ def _poll_tracked_count_below(port, detector_id, threshold, timeout=30.0, interv
     return False
 
 
-def _poll_stable_tracked_count(port, detector_id, samples=5, interval=0.25, timeout=30.0):
-    """Return `detector_id`'s `tracked_count` once it has held the same value `samples` times.
+def _poll_every_visible_node_tracked(port, client_node, detector_id, timeout=30.0, interval=0.25):
+    """Return `detector_id`'s `tracked_count` once it tracks every visible node on the graph.
 
-    A baseline read the instant the gate answers PROVISIONAL is taken too early: the gate is
-    answering out of LifecycleWatcher, and the admission it licenses happens on the detector's
-    next tick. Sampling until the value stops moving is what puts the admission inside the
-    baseline instead of after it - without that, the release later returns the count to exactly
-    the number this captured and "fell below" is never true.
+    The expected set is the graph as `client_node` sees it, so a node that GET /apps does not
+    list yet still counts. Each node must be listed on GET /apps, and the count must equal the
+    number of nodes.
 
-    Returns the stable value, or ``None`` on timeout.
+    Returns the count, or ``None`` on timeout.
     """
+    base = f'http://127.0.0.1:{port}{API_BASE_PATH}'
     deadline = time.monotonic() + timeout
-    history = []
+    last_seen = 'nothing read yet'
     while time.monotonic() < deadline:
+        # Hidden nodes, the gateway's helper nodes among them, are never Apps.
+        graph = {f"{namespace.rstrip('/')}/{name}"
+                 for name, namespace in client_node.get_node_names_and_namespaces()
+                 if not name.startswith('_')}
+        listed = set()
+        try:
+            response = requests.get(f'{base}/apps', timeout=5)
+            if response.status_code == 200:
+                listed = {item.get('x-medkit', {}).get('ros2', {}).get('node')
+                          for item in response.json().get('items', [])}
+        except requests.exceptions.RequestException:
+            pass
         block = watchdog_detector_status(port, detector_id, timeout=5.0)
         count = block.get('tracked_count') if block else None
-        history = (history + [count]) if count is not None else []
-        if len(history) >= samples and len(set(history[-samples:])) == 1:
-            return history[-1]
+        last_seen = (f'graph {sorted(graph)}, unlisted {sorted(graph - listed)}, '
+                     f'tracked_count {count}')
+        if graph and graph <= listed and count == len(graph):
+            return count
         time.sleep(interval)
-    print(f'_poll_stable_tracked_count({detector_id!r}) never settled in {timeout}s; '
-          f'last samples: {history[-samples:]}')
+    print(f'_poll_every_visible_node_tracked({detector_id!r}) timed out after {timeout}s; '
+          f'last seen: {last_seen}')
     return None
 
 
@@ -1063,28 +1079,13 @@ class TestProvisionalOwnershipYieldsToARealLabel(unittest.TestCase):
             'that state there is no provisional grant for the label below to revoke')
         self.assertTrue(entity.get('armed'))
 
-        # Everything else that will ever be admitted must be admitted FIRST, or the baseline
-        # below is measured against a moving total. This process's own client node is the one
-        # that moves it: it is an ordinary App, node_death admits it like any other, and an
-        # admission landing between the release and the sample looking for it puts the count
-        # straight back where it started. Measured on a live stack: the release dipped the
-        # count for 200 ms and the client node's admission refilled it, which a 200 ms poll
-        # sees as no release at all.
-        self.assertTrue(
-            wait_until_watchdog_armed(PORT, timeout=ARM_TIMEOUT_SEC,
-                                      app_id=LATE_LABEL_CLIENT_NODE),
-            f'{LATE_LABEL_CLIENT_NODE} never armed, so an admission of it could still land on '
-            'top of the release this row has to see')
-
-        # And the baseline has to include the fixture's OWN admission, which the gate licenses
-        # a tick before the detector acts on it. Sampling until the total stops moving is what
-        # puts it inside; capturing on the gate's answer alone captures the number the release
-        # will later return to, and "fell below" is then never true however long it waits.
-        tracked_before = _poll_stable_tracked_count(PORT, DETECTOR_ID_NODE_DEATH,
-                                                    timeout=LABEL_TIMEOUT_SEC)
+        # The baseline must count every App node_death will ever admit, so it waits until
+        # every visible node on the graph is tracked.
+        tracked_before = _poll_every_visible_node_tracked(
+            PORT, type(self)._client_node, DETECTOR_ID_NODE_DEATH, timeout=LABEL_TIMEOUT_SEC)
         self.assertIsNotNone(
             tracked_before,
-            "node_death's tracked_count never settled, so there is no baseline here that the "
+            'node_death never tracked every visible node, so there is no baseline here that the '
             'release below could be measured against')
         self.assertGreater(
             tracked_before, 0,
@@ -1142,6 +1143,29 @@ class TestProvisionalOwnershipYieldsToARealLabel(unittest.TestCase):
         assert_fault_never_names(
             self, PORT, FAULT_CODE_DISAPPEARED, forbidden=[UNREADABLE_NODE],
             duration=SILENCE_WINDOW_SEC)
+
+
+class TestLateServicesYieldToARealLabel(TestProvisionalOwnershipYieldsToARealLabel):
+    """The provisional row with the fixture's lifecycle services advertised late.
+
+    The node arms while the graph shows it with no lifecycle record, so node_death admits it as
+    a plain node. That admission is not a measurement: a non-active label that arrives later
+    must still take the node back. The services appear only after the test has seen that state.
+    """
+
+    def test_a_late_non_active_label_takes_the_node_back(self, target_node):
+        self.assertIsNotNone(
+            _poll_watchdog_entity(PORT, UNREADABLE_NODE, None, timeout=ARM_TIMEOUT_SEC,
+                                  armed=True),
+            f'{UNREADABLE_NODE} was never armed while it had no lifecycle record, so this row '
+            'would only repeat the provisional one')
+        self.assertTrue(
+            _set_bool_parameter(
+                type(self)._client_node, f'/{UNREADABLE_NODE}/set_parameters',
+                ADVERTISE_PARAM, True, timeout=PARAM_SET_TIMEOUT_SEC),
+            f'setting {ADVERTISE_PARAM}:=true on /{UNREADABLE_NODE}/set_parameters never '
+            'succeeded')
+        super().test_a_late_non_active_label_takes_the_node_back(target_node)
 
 
 class TestGateStaysPermissiveForTheOtherDetectors(unittest.TestCase):
@@ -1237,6 +1261,7 @@ class TestGateStaysPermissiveForTheOtherDetectors(unittest.TestCase):
 _SCENARIO_CASES = {
     'restart_inside_warmup': 'TestRestartInsideWarmup',
     'provisional_yields_to_a_real_label': 'TestProvisionalOwnershipYieldsToARealLabel',
+    'late_services_yield_to_a_real_label': 'TestLateServicesYieldToARealLabel',
     'budget_spent_then_owned': 'TestBudgetSpentThenOwned',
     'no_require_active_still_owned': 'TestNoRequireActiveStillOwned',
     'answered_then_owned': 'TestMeasuredNodeIsOwnedByPresence',

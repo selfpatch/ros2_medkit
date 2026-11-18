@@ -294,9 +294,10 @@ class OpcuaClient {
   uint32_t add_event_monitored_item(uint32_t subscription_id, const opcua::NodeId & source_node,
                                     const std::vector<EventFieldSpec> & select_specs, EventCallback callback);
 
-  /// Remove a previously-added event monitored item. The server is asked to
-  /// delete the item synchronously; the callback context is freed only after
-  /// the server ACK so in-flight C callbacks cannot dangle.
+  /// Remove a previously-added event monitored item. Its callback stops at
+  /// once and the server is asked to delete the item; the callback context is
+  /// freed when open62541 drops the item, so no late notification can reach
+  /// freed memory.
   /// @return true if the item was found and removed cleanly.
   bool remove_event_monitored_item(uint32_t subscription_id, uint32_t mi_id);
 
@@ -482,22 +483,25 @@ class OpcuaClient {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 
-  /// Drops the bookkeeping of a session that is gone, with client_mutex held:
-  /// the generation moves first so an in-flight trampoline from the old
-  /// subscription drops its work, then the event contexts and subscription
-  /// handles are released. Nothing is deleted server-side, because the session
-  /// that held them is gone. Every path that marks the client disconnected
-  /// ends here, and connect() runs it before a new session is published, so
-  /// the monitored-item ids the next session hands out, which start from 1
-  /// again, register fresh contexts under their own ids.
+  /// Ends the current session locally, with client_mutex held: the generation
+  /// moves first so an in-flight trampoline from the old subscription drops
+  /// its work, then the subscription handles go and open62541 closes the
+  /// session, which removes its subscriptions and frees every event context
+  /// through its item's delete callback. Without the close, open62541
+  /// re-activates the same session on the next connect and its subscriptions
+  /// keep publishing. Every path that marks the client disconnected ends here,
+  /// and connect() runs it before it opens a session.
   void drop_session_bookkeeping_locked();
 
   /// Marks the client disconnected when ``e`` is a transport-level loss
-  /// (connection closed, secure channel closed, not connected) and drops the
-  /// session's bookkeeping; a per-node error such as BadNodeIdUnknown leaves
-  /// the session up. Called with client_mutex held from every operation that
-  /// can observe the drop, so OpcuaPoller's reconnect logic, keyed off
-  /// is_connected(), fires whichever operation saw it first.
+  /// (connection closed, secure channel closed, not connected) and ends the
+  /// session; a per-node error such as BadNodeIdUnknown leaves the session up.
+  /// BadConnectionClosed and BadSecureChannelClosed always end the session.
+  /// BadNotConnected ends it only while the channel or the session is down:
+  /// a value whose own status is BadNotConnected leaves it up. Called with
+  /// client_mutex held from every operation that can observe the drop, so
+  /// OpcuaPoller's reconnect logic, keyed off is_connected(), fires whichever
+  /// operation saw it first.
   /// @return true when this call flipped the client to disconnected.
   bool mark_disconnected_on_transport_error(const opcua::BadStatus & e);
 };

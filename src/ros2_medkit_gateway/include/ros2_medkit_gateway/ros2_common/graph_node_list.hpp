@@ -18,6 +18,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -47,6 +48,9 @@ struct GraphNodeList {
   std::vector<std::pair<std::string, std::string>> nodes;
   /// FQN of every node left out as a leftover, once each, in graph order.
   std::vector<std::string> leftovers;
+  /// FQN of every running node the graph also lists without an enclave. A by-node query for it
+  /// can answer for that leftover entry.
+  std::set<std::string> shadowed;
 };
 
 /// Fully qualified name from the name and namespace the graph reports.
@@ -60,34 +64,25 @@ inline std::string graph_node_fqn(const std::string & name, const std::string & 
 /**
  * @brief Is this FQN one of the gateway's in-process helper nodes?
  *
- * True for `<self>_sub`, `<self>_fault_clients` and `<self>_lifecycle_state_reader`, exact matches
- * only. False for the gateway node itself, which is a diagnosable App. The last two take only the
- * gateway's node name, so they also match as `/<name><suffix>`; two gateways with one name in
- * different namespaces both claim those root-namespace nodes.
+ * For a gateway at `<ns>/<name>`: true for `<ns>/_<name>_sub`, `<ns>/_<name>_fault_clients`,
+ * `<ns>/_<name>_lifecycle_state_reader` and graph_watchdog's `<ns>/_<name>_lifecycle_watcher`, the
+ * names make_helper_node gives them, exact matches only.
+ * False for the gateway node itself, which is a diagnosable App.
  *
  * @param node_fqn Fully qualified node name to test ("/ns/node")
- * @param self_fqn The gateway node's own FQN. An empty value matches nothing
+ * @param self_fqn The gateway node's own FQN. A value with no '/' (an empty one included), or with
+ *        nothing after its last '/', matches nothing
  */
 inline bool is_own_gateway_helper_node(const std::string & node_fqn, const std::string & self_fqn) {
-  if (self_fqn.empty() || node_fqn.empty()) {
+  const auto last_slash = self_fqn.rfind('/');
+  if (last_slash == std::string::npos || last_slash + 1 == self_fqn.size()) {
     return false;
   }
-  struct HelperNode {
-    const char * suffix;
-    bool follows_gateway_namespace;
-  };
-  static constexpr std::array<HelperNode, 3> kHelperNodes{{
-      {"_sub", true},
-      {"_fault_clients", false},
-      {"_lifecycle_state_reader", false},
-  }};
-  const auto last_slash = self_fqn.rfind('/');
-  const std::string bare_name = last_slash == std::string::npos ? self_fqn : self_fqn.substr(last_slash + 1);
-  return std::any_of(kHelperNodes.begin(), kHelperNodes.end(), [&](const HelperNode & helper) {
-    if (node_fqn == self_fqn + helper.suffix) {
-      return true;
-    }
-    return !helper.follows_gateway_namespace && !bare_name.empty() && node_fqn == "/" + bare_name + helper.suffix;
+  const std::string helper_prefix = self_fqn.substr(0, last_slash + 1) + "_" + self_fqn.substr(last_slash + 1);
+  static constexpr std::array<const char *, 4> kHelperSuffixes{"_sub", "_fault_clients", "_lifecycle_state_reader",
+                                                               "_lifecycle_watcher"};
+  return std::any_of(kHelperSuffixes.begin(), kHelperSuffixes.end(), [&](const char * suffix) {
+    return node_fqn == helper_prefix + suffix;
   });
 }
 
@@ -111,6 +106,30 @@ inline bool graph_node_has_endpoints(const rclcpp::node_interfaces::NodeGraphInt
 }
 
 /**
+ * @brief Services of each node, keyed by node FQN, from the writers on each `rr/<service>Reply` topic.
+ *
+ * A by-node query answers from the first graph entry of the name, which can be a leftover with no
+ * endpoints. Endpoint info names the node that owns each writer. Empty on an RMW without `rr/` topics.
+ * Throws what the graph queries throw, for example once the context is shut down.
+ *
+ * @param wanted `bool(const std::string & service)`. Only these services cost an endpoint query.
+ */
+template <typename Wanted>
+std::map<std::string, std::map<std::string, std::vector<std::string>>>
+graph_services_by_server(const rclcpp::node_interfaces::NodeGraphInterface & graph, Wanted && wanted) {
+  std::map<std::string, std::map<std::string, std::vector<std::string>>> by_server;
+  for (const auto & [service, types] : graph.get_service_names_and_types()) {
+    if (!wanted(service)) {
+      continue;
+    }
+    for (const auto & writer : graph.get_publishers_info_by_topic("rr" + service + "Reply", /*no_mangle=*/true)) {
+      by_server[graph_node_fqn(writer.node_name(), writer.node_namespace())].emplace(service, types);
+    }
+  }
+  return by_server;
+}
+
+/**
  * @brief Reads the ROS graph's node list, leaving out the leftovers of nodes it saw running.
  *
  * A leftover is an entry with an empty enclave and no endpoints that a late `ros_discovery_info`
@@ -118,7 +137,8 @@ inline bool graph_node_has_endpoints(const rclcpp::node_interfaces::NodeGraphInt
  * not enough: micro-ROS and DDS-router nodes read the same, so only names this reader saw running
  * are hidden. Per FQN, on every read:
  * - an entry with an enclave is listed;
- * - an entry without an enclave is dropped when another entry of the name has one;
+ * - an entry without an enclave is dropped when another entry of the name has one, and the name
+ *   is reported as shadowed;
  * - an entry without an enclave for a departed name is left out when it has no endpoints;
  * - any other entry without an enclave is listed.
  *
@@ -204,6 +224,7 @@ class GraphNodeListReader {
       }
       auto fqn = graph_node_fqn(name, ns);
       if (running_.count(fqn) > 0) {
+        result.shadowed.insert(std::move(fqn));
         continue;
       }
       if (departed_.count(fqn) == 0) {

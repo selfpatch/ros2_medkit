@@ -53,6 +53,13 @@ Add plugins to ``gateway_params.yaml``:
 Each plugin name in the ``plugins`` array requires a corresponding ``plugins.<name>.path``
 parameter with the absolute path to the ``.so`` file. Any additional ``plugins.<name>.<key>``
 parameters are collected into a JSON object and passed to the plugin's ``configure()`` method.
+The gateway reads this config once at start, from a params file, ``-p`` arguments or node
+options (which must leave ``automatically_declare_parameters_from_overrides`` and
+``allow_undeclared_parameters`` off). It does not declare the keys as ROS parameters, so
+``ros2 param list`` and ``ros2 param get`` do not show them (only ``plugins.<name>.path``
+is a parameter) and ``/parameter_events`` does not carry them. A plugin must not declare
+its own config keys as node parameters: a declared key is served and published like any
+parameter.
 
 For the example above, ``configure()`` receives:
 
@@ -252,7 +259,7 @@ Plugin Lifecycle
 3. ``create_plugin()`` factory function creates the plugin instance
 4. Provider interfaces are queried via ``get_update_provider()`` / ``get_introspection_provider()`` / ``get_log_provider()`` / ``get_script_provider()`` / ``get_data_provider()`` / ``get_operation_provider()`` / ``get_fault_provider()``
 5. ``configure()`` is called with per-plugin JSON config
-6. ``set_context()`` provides ``PluginContext`` with ROS 2 node, entity cache, faults, and HTTP utilities
+6. ``set_context()`` provides ``PluginContext`` with entity cache, faults, locks, and HTTP utilities, and the ROS 2 node when the host has one
 7. ``get_routes()`` returns custom REST endpoint definitions as ``vector<PluginRoute>``
 8. Runtime: subsystem managers call provider methods as needed
 9. ``shutdown()`` is called before the plugin is destroyed
@@ -263,7 +270,7 @@ PluginContext
 After ``configure()``, the gateway calls ``set_context()`` with a ``PluginContext`` reference
 providing access to gateway data and utilities:
 
-- ``node()`` - ROS 2 node pointer for service clients, timers, and parameter access.
+- ``node()`` - ROS 2 node pointer for service clients, timers, and parameter access. Null when the host is a program that hosts the core without a ROS 2 node (see ``CorePluginContext`` in the gateway README). A plugin that needs ROS checks it and declines to start; a plugin that needs no ROS never calls it. ``as_ros_plugin_context()`` is valid on every host.
 
   .. warning::
 
@@ -347,7 +354,8 @@ with everything, so the URI must end at the collection.
 .. note::
 
    The ``PluginContext`` interface is versioned alongside ``PLUGIN_API_VERSION``.
-   Breaking changes to existing methods or removal of methods increment the version.
+   Breaking changes to existing methods or removal of methods increment the version, and so
+   does a layout change of a type that crosses the plugin boundary (see `API Versioning`_).
    New non-breaking methods (like ``check_lock``, ``get_entity_snapshot``,
    ``list_all_faults``, and ``register_sampler``) provide default no-op implementations
    so plugins that do not use these methods need no code changes. However, a rebuild is
@@ -1019,8 +1027,11 @@ Plugins export ``plugin_api_version()`` which must return the gateway's ``PLUGIN
 If the version does not match, the plugin is rejected with a clear error message suggesting
 a rebuild against matching gateway headers.
 
-The current API version is **5**. It is incremented when the ``PluginContext`` vtable changes
-or breaking changes are made to ``GatewayPlugin`` or provider interfaces.
+The current API version is **7**. It is incremented when the ``PluginContext`` vtable changes
+or breaking changes are made to ``GatewayPlugin`` or provider interfaces. A change to the layout
+of a type that crosses the plugin boundary, such as the entity models in ``IntrospectionInput`` /
+``NewEntities``, bumps the version too. A plugin built against the old layout would read those
+types wrongly, so it must be rebuilt even when its source compiles unchanged.
 
 Build Requirements
 ------------------

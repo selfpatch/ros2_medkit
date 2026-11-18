@@ -23,12 +23,18 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/capture_thread_pool.hpp"
+#include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
+#include "ros2_medkit_fault_manager/core/fault_manager_core.hpp"
 #include "ros2_medkit_fault_manager/correlation/correlation_engine.hpp"
-#include "ros2_medkit_fault_manager/entity_threshold_resolver.hpp"
 #include "ros2_medkit_fault_manager/fault_audit_log.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/ros2/ros_capture_hooks.hpp"
+#include "ros2_medkit_fault_manager/ros2/ros_event_sink.hpp"
+#include "ros2_medkit_fault_manager/ros2/ros_log_sink.hpp"
+#include "ros2_medkit_fault_manager/ros2/system_wall_clock.hpp"
 #include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
+#include "ros2_medkit_fault_manager/threshold_resolver.hpp"
 #include "ros2_medkit_msgs/msg/fault_event.hpp"
 #include "ros2_medkit_msgs/srv/clear_fault.hpp"
 #include "ros2_medkit_msgs/srv/get_fault.hpp"
@@ -71,7 +77,7 @@ class FaultManagerNode : public rclcpp::Node {
 
   /// Get the tamper-evident audit log (nullptr when disabled), for testing only.
   const FaultAuditLog * get_audit_log_for_test() const {
-    return audit_log_.get();
+    return core_->audit_log();
   }
 
   /// Health signal: number of audit transitions that failed to append (and were
@@ -80,7 +86,7 @@ class FaultManagerNode : public rclcpp::Node {
   /// health surface yet, so an operator cannot read it at runtime in this
   /// revision (a runtime read/verify/health surface is future work).
   uint64_t audit_dropped_writes() const {
-    return audit_dropped_writes_.load(std::memory_order_relaxed);
+    return core_->audit_dropped_writes();
   }
 
   /// Health signal: false once any audit append has failed. A compliance-strict
@@ -88,13 +94,13 @@ class FaultManagerNode : public rclcpp::Node {
   /// as the audit chain being incomplete. IN-PROCESS ONLY (see above): not yet
   /// observable at runtime by an operator.
   bool audit_healthy() const {
-    return audit_healthy_.load(std::memory_order_relaxed);
+    return core_->audit_healthy();
   }
 
   /// Test-only: drive one audit append through the same failure-handling path the
   /// service handlers use. Throws when audit_log.fail_closed is set and the append
   /// fails; otherwise observe audit_dropped_writes()/audit_healthy().
-  void audit_transition_for_test(const char * transition, const ros2_medkit_msgs::msg::Fault & fault) {
+  void audit_transition_for_test(const char * transition, const fd::FaultRecord & fault) {
     audit_transition(transition, fault, "test", 0);
   }
 
@@ -117,12 +123,11 @@ class FaultManagerNode : public rclcpp::Node {
   /// @param reporting_sources List of reporting sources from fault
   /// @param entity_id Entity ID to match (exact match or as suffix of FQN)
   /// @return true if entity_id matches any source
-  static bool matches_entity(const std::vector<std::string> & reporting_sources, const std::string & entity_id);
+  static bool matches_entity(const std::vector<std::string> & reporting_sources, const std::string & entity_id) {
+    return core::FaultManagerCore::matches_entity(reporting_sources, entity_id);
+  }
 
  private:
-  /// Create storage backend based on configuration
-  std::unique_ptr<FaultStorage> create_storage();
-
   /// Handle ReportFault service request
   void handle_report_fault(const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> & request,
                            const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & response);
@@ -156,7 +161,10 @@ class FaultManagerNode : public rclcpp::Node {
   handle_list_faults_for_entity(const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & request,
                                 const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> & response);
 
-  /// Create snapshot configuration from parameters
+  /// Declare every startup parameter and read it into a config, unvalidated.
+  core::FaultManagerConfig declare_config();
+
+  /// Create snapshot configuration from the validated config
   SnapshotConfig create_snapshot_config();
 
   /// Load snapshot configuration from YAML file
@@ -164,48 +172,25 @@ class FaultManagerNode : public rclcpp::Node {
   /// @param config SnapshotConfig to populate with loaded values
   void load_snapshot_config_from_yaml(const std::string & config_file, SnapshotConfig & config);
 
-  /// Initialize correlation engine from configuration file
-  /// @return CorrelationEngine instance if enabled and config is valid, nullptr otherwise
-  std::unique_ptr<correlation::CorrelationEngine> create_correlation_engine();
-
   /// Publish a fault event to the events topic
   /// @param event_type One of FaultEvent::EVENT_CONFIRMED, EVENT_CLEARED, EVENT_UPDATED
   /// @param fault The fault data associated with this event
-  /// @param auto_cleared_codes Optional list of auto-cleared symptom fault codes (for EVENT_CLEARED)
-  void publish_fault_event(const std::string & event_type, const ros2_medkit_msgs::msg::Fault & fault,
-                           const std::vector<std::string> & auto_cleared_codes = {});
+  void publish_fault_event(const std::string & event_type, const fd::FaultRecord & fault);
 
-  /// Enqueue snapshot + rosbag capture for a fault that has just confirmed.
-  /// Shared by the report path and the time-based confirmation timer so a
-  /// confirmation produces the same evidence whichever one produced it.
-  /// @param fault_code Code of the fault that reached CONFIRMED
-  void capture_on_confirm(const std::string & fault_code);
+  /// Queue the snapshot and rosbag capture of a confirmed fault on the capture pool. The core calls it
+  /// through the capture hooks after its cooldown check.
+  core::CaptureResult enqueue_capture(const std::string & fault_code);
 
-  /// Validate severity value
-  static bool is_valid_severity(uint8_t severity);
-
-  /// Extract topic name from full topic path (last segment)
-  static std::string extract_topic_name(const std::string & topic_path);
-
-  /// Resolve debounce config for a given source_id using entity threshold resolver.
-  /// Falls back to global config if no entity-specific overrides match.
-  DebounceConfig resolve_config(const std::string & source_id) const;
-
-  /// Create the tamper-evident audit log from parameters (nullptr if disabled).
-  std::unique_ptr<FaultAuditLog> create_audit_log();
-
-  /// Append a fault state-transition to the audit log when enabled. No-op when
-  /// the log is off, or when only confirmations are logged and this is not one.
+  /// Append a fault state-transition to the audit log through the core.
   /// @param transition One of the kTransition* constants.
   /// @param fault The fault state at the time of the transition.
   /// @param source_id The reporting source that drove the transition.
   /// @param occurred_at_ns Wall-clock timestamp of the transition.
-  void audit_transition(const char * transition, const ros2_medkit_msgs::msg::Fault & fault,
-                        const std::string & source_id, int64_t occurred_at_ns);
+  void audit_transition(const char * transition, const fd::FaultRecord & fault, const std::string & source_id,
+                        int64_t occurred_at_ns);
 
+  core::FaultManagerConfig config_;  ///< Validated startup configuration
   std::string storage_type_;
-  std::string database_path_;
-  std::string database_url_;
   int32_t confirmation_threshold_{-1};
   bool healing_enabled_{false};
   int32_t healing_threshold_{3};
@@ -214,21 +199,9 @@ class FaultManagerNode : public rclcpp::Node {
   int capture_pool_size_{2};
   int capture_queue_depth_{16};
   QueueFullPolicy capture_queue_full_policy_{QueueFullPolicy::kRejectNewest};
-  DebounceConfig global_config_;  ///< Global debounce config (built from ROS params)
-  std::unique_ptr<FaultStorage> storage_;
-  std::unique_ptr<EntityThresholdResolver> threshold_resolver_;  ///< Per-entity threshold overrides
-
-  /// Tamper-evident audit log of fault transitions (nullptr when disabled).
-  std::unique_ptr<FaultAuditLog> audit_log_;
-  bool audit_confirmed_only_{false};  ///< When true, only "confirmed" transitions are logged
-  /// When true, an audit append failure is re-raised as a fail-FAST signal that
-  /// the chain is broken (operator must act). It does NOT roll back the already-
-  /// committed fault-state change (the fault store is a separate DB); it is not
-  /// atomicity.
-  bool audit_fail_closed_{false};
-
-  std::atomic<uint64_t> audit_dropped_writes_{0};  ///< Count of audit appends that failed (lost rows)
-  std::atomic<bool> audit_healthy_{true};          ///< Cleared on the first failed audit append
+  ros2::RosLogSink log_sink_;  ///< Outlives the core and the storage it is passed to
+  ros2::SystemWallClock wall_clock_;
+  FaultStorage * storage_{nullptr};  ///< Owned by core_
 
   rclcpp::Service<ros2_medkit_msgs::srv::ReportFault>::SharedPtr report_fault_srv_;
   rclcpp::Service<ros2_medkit_msgs::srv::ListFaults>::SharedPtr list_faults_srv_;
@@ -254,16 +227,15 @@ class FaultManagerNode : public rclcpp::Node {
   /// shared_ptr to allow safe capture-by-value in the pool's capture jobs.
   std::shared_ptr<RosbagCapture> rosbag_capture_;
 
-  /// Correlation engine for fault correlation/muting (nullptr if disabled)
-  std::unique_ptr<correlation::CorrelationEngine> correlation_engine_;
-
   /// Bounded pool that runs capture jobs off the service thread (issue #441).
   /// Declared after snapshot_capture_/rosbag_capture_ so it is destroyed first.
   std::unique_ptr<CaptureThreadPool> capture_pool_;
 
-  /// Per-fault cooldown tracking for snapshot recapture
-  std::mutex last_capture_mutex_;
-  std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_capture_times_;
+  std::unique_ptr<ros2::RosEventSink> event_sink_;
+  std::unique_ptr<ros2::RosCaptureHooks> capture_hooks_;
+
+  /// Report, clear and query sequences. Declared after the sink and the hooks it calls.
+  std::unique_ptr<core::FaultManagerCore> core_;
 };
 
 }  // namespace ros2_medkit_fault_manager

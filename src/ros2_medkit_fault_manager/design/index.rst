@@ -73,6 +73,46 @@ The following diagram shows the relationships between the main components of the
            kDropOldest
        }
 
+       package "core (no ROS)" {
+           class FaultManagerCore {
+               + report(report): ReportOutcome
+               + clear(code, skip_correlation_auto_clear): ClearOutcome
+               + list(query): ListOutcome
+               + get(code): FaultDetail
+               + record_transition(...): void
+               + tick(wall_now_ns): void
+           }
+
+           class EventSink <<interface>> {
+               + publish(event): void
+           }
+
+           class CaptureHooks <<interface>> {
+               + capture_now(code): CaptureResult
+               + on_prefailed(code): void
+               + on_cleared(code): void
+           }
+
+           class WallClock <<interface>> {
+               + now_ns(): int64
+           }
+
+           class LogSink <<interface>> {
+               + log(level, logger, message): void
+           }
+
+           class FaultManagerConfig <<struct>> {
+               + validate(): vector<ConfigNotice>
+           }
+       }
+
+       package "ROS adapter" {
+           class RosEventSink
+           class RosCaptureHooks
+           class SystemWallClock
+           class RosLogSink
+       }
+
        abstract class FaultStorage <<interface>> {
            + {abstract} report_fault(): bool
            + {abstract} list_faults(): vector<Fault>
@@ -103,7 +143,18 @@ The following diagram shows the relationships between the main components of the
    InMemoryFaultStorage -up-|> FaultStorage : implements
 
    ' Composition
-   FaultManagerNode *-down-> InMemoryFaultStorage : owns
+   FaultManagerNode *-down-> FaultManagerCore : owns
+   FaultManagerCore --> EventSink : publishes events
+   FaultManagerCore --> CaptureHooks : requests captures
+   FaultManagerCore --> WallClock : reads
+   FaultManagerCore --> LogSink : logs
+   FaultManagerCore *-down-> FaultStorage : owns
+   FaultManagerCore ..> FaultManagerConfig : built from
+   RosEventSink -up-|> EventSink
+   RosCaptureHooks -up-|> CaptureHooks
+   SystemWallClock -up-|> WallClock
+   RosLogSink -up-|> LogSink
+
    FaultManagerNode --> CaptureThreadPool : enqueues capture jobs
 
    ' InMemoryFaultStorage contains FaultStates
@@ -124,8 +175,7 @@ Main Components
 
 1. **FaultManagerNode** - The main ROS 2 node that provides fault management services
    - Extends ``rclcpp::Node``
-   - Owns a ``FaultStorage`` implementation for fault state persistence
-   - Provides three ROS 2 services for fault reporting, querying, and clearing
+   - Provides the ROS 2 services for fault reporting, querying, and clearing, and delegates them to ``FaultManagerCore``
    - Validates input parameters (fault_code, severity, source_id)
    - Logs fault lifecycle events at appropriate severity levels
 
@@ -153,6 +203,42 @@ Main Components
    thread per fault. The full-queue policy (``reject_newest``/``drop_oldest``) bounds memory,
    and the destructor joins the pool before rosbag teardown.
 
+6. **FaultManagerCore** - ROS-free report, clear, list, get and tick logic (``core/fault_manager_core.hpp``)
+
+   - Owns the storage, the audit log, the correlation engine and the threshold resolvers built by
+     ``build_core_parts()`` from a validated ``FaultManagerConfig``
+   - Runs ``report``, ``clear``, ``list``, ``get``, ``list_for_entity``, ``record_transition`` and ``tick``
+     under one internal mutex
+   - Reaches everything outside the core through ``EventSink`` (fault events), ``CaptureHooks``
+     (``capture_now``), ``WallClock`` and ``LogSink``. ``EventSink`` and ``CaptureHooks`` run inside the mutex and must not
+     call back into the core. ``LogSink::log`` is called from several threads and must be thread-safe
+   - Has no timer: ``tick(wall_now_ns)`` runs the auto-confirmation job (every second) and the
+     correlation cleanup (every ``correlation.cleanup_interval_sec``) when they are due
+   - Built as the static library ``fault_manager_core`` from ``cmake/fault_manager_core.cmake``
+     (plain CMake, no ament)
+
+7. **ROS adapter** - what stays in ``FaultManagerNode`` and ``ros2/``
+
+   - The eight services and the ``FaultEvent`` publisher
+   - Wall timers that call ``tick`` with the wall clock
+   - ``CaptureThreadPool``, ``SnapshotCapture`` and ``RosbagCapture``, reached from the core through
+     ``ros2::RosCaptureHooks``
+   - ``ros2::RosEventSink``, ``ros2::SystemWallClock`` and ``ros2::RosLogSink`` implement the core
+     interfaces. ``ros2/fault_msg_conversions.hpp`` converts between the neutral
+     ``ros2_medkit::fault_detection`` types (``ros2_medkit_fault_detection/fault_types.hpp``) and the
+     messages
+
+Plain-CMake Build
+~~~~~~~~~~~~~~~~~
+
+``cmake/fault_manager_core.cmake`` builds the core with plain CMake. The ament build includes it, and
+so does ``scripts/check_cores_without_ros``. The file needs CMake 3.16, C++17, SQLite3, OpenSSL,
+nlohmann_json and yaml-cpp, plus libpqxx 7.5 and libpq with ``POSTGRES_SUPPORT``. It finds
+``fault_types.hpp`` at ``../ros2_medkit_fault_detection/include``, so the package directories must stay
+side by side. The target is not installed or exported. The ROS node implements the four core
+interfaces and calls ``tick``. The check supplies its own implementations, builds the core on
+Ubuntu 20.04 with gcc 9 and checks that the result links no ROS library.
+
 Services
 --------
 
@@ -166,6 +252,14 @@ Reports a new fault or updates an existing one.
 - **Debounce**: FAILED events decrement counter, PASSED events increment counter
 - **Aggregation**: Same fault_code from different sources creates a single fault entry
 - **Severity escalation**: Fault severity is updated if a higher severity is reported
+- **Request queue**: Holds ``report_fault_queue_depth`` requests (default 100) until the executor
+  reads them. The default service QoS holds 10. A reporter has one request in flight per fault code,
+  so one reporter can fill the queue alone. Past the depth the middleware drops requests without an
+  answer. FaultReporter sends a dropped request again. graph_watchdog and the gateway's fault
+  triggers report again on their next tick while the condition holds. The OPC UA plugin reports
+  once per alarm transition, so for it a dropped report is lost. A FaultReporter request that
+  waits longer than ``ack_timeout_sec`` is sent again while the first copy is still in the queue,
+  and the manager processes both.
 - **Returns**: ``accepted=true`` if event was processed
 
 ~/list_faults
@@ -242,9 +336,12 @@ the occurrence, not every report within it.
 
 Thresholds must satisfy ``confirmation_threshold < 0 <= healing_threshold`` (``healing_threshold == 0``
 means heal on a single PASSED event); the node validates the
-merged per-entity config at startup, logs a warning, and falls back to safe defaults if not. When
-healing is disabled, any HEALED row left by a previous (healing-enabled) run is reclassified to
-CLEARED once at startup so it does not behave inconsistently under the latch.
+merged per-entity and per-fault-code config at startup, logs a warning, and falls back to safe
+defaults if not. When healing is disabled for a code, any HEALED row of that code left by a
+previous (healing-enabled) run is reclassified to CLEARED once at startup so it does not behave
+inconsistently under the latch. The code's own ``healing_enabled`` decides, and the global value
+applies when the code does not set one. Entity overrides are not used, because a stored fault
+belongs to its code and can have several sources.
 
 Rosbag Black-Box Recording
 ~~~~~~~~~~~~~~~~~~~~~~~~~~

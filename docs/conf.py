@@ -42,8 +42,8 @@ project = 'ros2_medkit'
 project_copyright = f'{datetime.now().year}, selfpatch'
 author = 'selfpatch Team'
 
-version = '0.7.0'
-release = '0.7.0'
+version = '0.7.1'
+release = '0.7.1'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -128,6 +128,9 @@ html_theme = 'sphinx_rtd_theme'
 html_static_path = ['_static']
 html_css_files = ['custom.css']
 html_title = f'{project} Documentation'
+# The selfpatch.ai wordmark and app icon; custom.css carries the rest of the look
+html_logo = '_static/selfpatch-wordmark.svg'
+html_favicon = '_static/favicon.svg'
 
 html_theme_options = {
     'prev_next_buttons_location': 'bottom',
@@ -167,6 +170,9 @@ linkcheck_ignore = [
     r'https://github\.com/selfpatch/ros2_medkit/blob/.+#L\d+',
     # GitHub issue links may 404 in linkcheck without auth token
     r'https://github\.com/selfpatch/ros2_medkit/issues/\d+',
+    # The changelogs link every pull request of this repository, and GitHub answers a burst of
+    # them with 502s.
+    r'https://github\.com/selfpatch/ros2_medkit/pull/\d+',
     # The rep-0149 page intermittently exceeds the read timeout in CI; the
     # canonical REP host is slow, not broken. Scope the skip to this exact URL
     # so other REP links stay checked.

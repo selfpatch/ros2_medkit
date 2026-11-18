@@ -358,6 +358,23 @@ This means the process does not have permission to bind to port 5353. Solutions
    systemd-resolved), port 5353 may already be in use. Either stop the
    existing responder or use static peers.
 
+**Peers not discovered behind a host firewall**
+
+Discovery sends its queries from UDP port 5353, so peers answer by multicast
+to ``224.0.0.251:5353`` and announcements arrive on the same port. A firewall
+that allows the ``mdns`` service (udp/5353) is enough, for example:
+
+.. code-block:: bash
+
+   sudo firewall-cmd --permanent --add-service=mdns && sudo firewall-cmd --reload
+   sudo ufw allow 5353/udp
+
+The browse socket shares port 5353 with Avahi and with the gateway's own
+announce socket, bound to the multicast group only. If another process holds
+port 5353 exclusively, discovery falls back to an ephemeral port and logs
+``mDNS: browse_loop: socket opened on an ephemeral port`` at debug level. Peers then answer by
+unicast to that port, which a firewall allowing only udp/5353 drops.
+
 Next Steps
 ----------
 

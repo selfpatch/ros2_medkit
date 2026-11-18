@@ -13,40 +13,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The gateway node reads the three auth environment variables itself.
+"""The gateway node reads MEDKIT_JWT_SECRET, MEDKIT_CLIENTS and MEDKIT_AUTH_DISABLED.
 
-Where the rule lives decides which deployments it covers. A container
-entrypoint can only apply it to what the entrypoint runs, and a launch file
-only to launches that include it - so `docker run <image> ros2 launch ...`,
-`docker run <image> bash`, and a plain `ros2 run ros2_medkit_gateway
-gateway_node` each ran on whatever rule reached them. The node reads the
-variables where it reads its parameters, which covers every path by
-construction, and this is the test of that: the gateways below are started with
-no entrypoint and no launch file, only an environment.
+The gateways here start with no entrypoint and no launch file, only an
+environment, so the rule is proven for every way of starting the node. Each
+case pairs the environment with a params file that says the opposite, because
+a rule that only agrees with the file proves nothing about precedence.
 
-Each case pairs the environment against a params file that says the OPPOSITE,
-because a rule that only agrees with the file proves nothing about precedence.
-
-THE RULES
-
-C1  MEDKIT_JWT_SECRET, against a file with `auth.enabled: false`: the gateway
-    refuses an anonymous read.
-C2  Every route, writes and reads alike. `require_auth_for` has to become
-    "all": at
-    the file's "write" an anonymous GET answers 200 with authentication
-    switched on, and the entity tree, the fault history and the operation list
-    are the disclosure.
-C3  MEDKIT_CLIENTS reaches the gateway: the credential in it obtains a token
-    from POST /auth/authorize, and that token reads. Without this a gateway
-    closed to everyone including its operator would pass C1 and C2.
-C4  MEDKIT_AUTH_DISABLED=1 on top of the same secret, against a file with
-    `auth.enabled: true`: the gateway answers an anonymous read.
+Three gateways run for the whole file (closed by the environment, opened by the
+environment, closed by a file alone). The sweep classes start further gateways
+as subprocesses, one per case, because a refusal is observed as an exit code.
 
 @verifies REQ_INTEROP_086, REQ_INTEROP_087
 """
 
+import atexit
+import base64
+import hashlib
+import hmac
 import os
-import re
 import select
 import shutil
 import signal
@@ -68,132 +53,121 @@ from ros2_medkit_test_utils.constants import (
 )
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_gateway_node
+from ros2_medkit_test_utils.param_client import ParameterClient
 
 CLOSED_PORT = get_test_port(0)
 DISABLED_PORT = get_test_port(1)
-# For the gateways below that are expected to refuse to start. They never bind
-# it; a port of their own keeps a case that unexpectedly DOES come up from
-# colliding with the two gateways this file launches.
-REFUSE_PORT = get_test_port(2)
+# Subprocess gateways take this port one at a time.
+SWEEP_PORT = get_test_port(2)
 FILE_CLOSED_PORT = get_test_port(3)
 
-# How long `ros2 param` may spend discovering a gateway over DDS before a call
-# against it is treated as a real failure.
+# How long `ros2 param` may spend discovering a gateway over DDS.
 PARAM_DISCOVERY_TIMEOUT = 30
+READY_LINE = 'Medkit Gateway ready on'
+START_LINE = 'Initializing ROS 2 Medkit Gateway'
+
 CLOSED_BASE_URL = f'http://127.0.0.1:{CLOSED_PORT}{API_BASE_PATH}'
 DISABLED_BASE_URL = f'http://127.0.0.1:{DISABLED_PORT}{API_BASE_PATH}'
 FILE_CLOSED_BASE_URL = f'http://127.0.0.1:{FILE_CLOSED_PORT}{API_BASE_PATH}'
-
-# Never valid as a credential - it is the secret half of a two-field entry the
-# gateway must refuse - and distinctive enough to grep a whole log for.
-MALFORMED_CLIENT_SECRET = 's3cret_that_must_not_be_logged'
-# The secret of an entry written `id:role:secret`, which parses as a role
-# nobody has; a warning that quoted the role field would print it.
-SWAPPED_FILE_SECRET = 's3cret_swapped_in_the_file_zz'
-SWAPPED_ENV_SECRET = 's3cret_swapped_in_the_env_zz'
-# What this gateway would present to its peers; served through the parameter
-# services as a sentinel and never as itself.
-PEER_AUTH_HEADER = 'Bearer zz_peer_token_that_must_not_be_served'
-FILE_JWT_SECRET = 'a_file_supplied_secret_of_at_least_32_characters'
+SWEEP_BASE_URL = f'http://127.0.0.1:{SWEEP_PORT}{API_BASE_PATH}'
 
 JWT_SECRET = 'an_environment_supplied_secret_of_at_least_32_chars'
+FILE_JWT_SECRET = 'a_file_supplied_secret_of_at_least_32_characters'
+SECRET_32 = 'k' * 32
+SECRET_31 = 'j' * 31
 CLIENT_ID = 'envclient'
 CLIENT_SECRET = 'env_client_secret'
+FILE_CLIENT_ID = 'fileclient'
+FILE_CLIENT_SECRET = 'a_file_supplied_client_secret'
+# The secret half of a two-field entry, and of `id:role:secret` entries, whose
+# secret lands in the role field.
+MALFORMED_CLIENT_SECRET = 's3cret_that_must_not_be_logged'
+SWAPPED_FILE_SECRET = 's3cret_swapped_in_the_file_zz'
+SWAPPED_ENV_SECRET = 's3cret_swapped_in_the_env_zz'
+PEER_HEADER_PARAM = 'aggregation.peer_auth_header'
+PEER_AUTH_HEADER = 'Bearer zz_peer_token_that_must_not_be_served'
+SECOND_SECRET = 'second_entry_secret_zz'
+# Sit in the id slot of entries that must be refused; no message may carry them.
+CANARY_ID = 'canary_id_zz_must_not_be_logged'
+CANARY_TWO_FIELDS = 'canary_two_fields_zz_must_not_be_logged'
 
-# Written once at import time, so both gateways load a real file from disk
-# - the file, and not inline parameters, is the thing the environment has to
-# outrank.
+# Every value that must never reach a gateway's output.
+SECRETS = (
+    JWT_SECRET, FILE_JWT_SECRET, SECRET_32, SECRET_31, CLIENT_SECRET,
+    FILE_CLIENT_SECRET, MALFORMED_CLIENT_SECRET, SWAPPED_FILE_SECRET,
+    SWAPPED_ENV_SECRET, PEER_AUTH_HEADER, SECOND_SECRET, CANARY_ID, CANARY_TWO_FIELDS,
+)
+
 _PARAMS_DIR = tempfile.mkdtemp(prefix='medkit_env_auth_')
 
-# The node names the launch below gives its gateways. A params file is keyed by
-# the node it is for: rcl applies an entry only to the node whose name heads
-# it, so a file written under any other name is read and applies to nothing,
-# and a test built on it measures the defaults.
+# A params file is applied only to the node whose name heads it.
 ENV_CLOSED_NODE = 'gateway_env_closed'
 ENV_DISABLED_NODE = 'gateway_env_disabled'
 FILE_CLOSED_NODE = 'gateway_file_closed'
 
-
-# A key the environment never touches and the inline parameters never set, with
-# a different value per file. Every other key in these files is overwritten by
-# the environment or equals the default, so this is the one that shows the
-# file reached its gateway at all.
+# A key the environment never touches, with a different value per file; it
+# shows that the file reached its gateway at all.
 CLOSED_FILE_TOKEN_EXPIRY = 1234
 DISABLED_FILE_TOKEN_EXPIRY = 2345
 
 
-def _write_params(name, node_name, auth_enabled, token_expiry):
-    """Write a params file stating a posture, so the environment has one to override."""
+def _write_params(name, node_name, auth_enabled, require_auth_for, token_expiry=None,
+                  extra_clients=()):
+    """Write a params file stating an auth posture for the environment to override."""
     path = os.path.join(_PARAMS_DIR, name)
+    clients = [f'{FILE_CLIENT_ID}:{FILE_CLIENT_SECRET}:viewer', *extra_clients]
+    lines = [
+        f'{node_name}:',
+        '  ros__parameters:',
+        '    auth:',
+        f'      enabled: {"true" if auth_enabled else "false"}',
+        f'      require_auth_for: "{require_auth_for}"',
+        f'      jwt_secret: "{FILE_JWT_SECRET}"',
+        '      clients:',
+        *[f'        - "{c}"' for c in clients],
+    ]
+    if token_expiry is not None:
+        lines.append(f'      token_expiry_seconds: {token_expiry}')
     with open(path, 'w', encoding='utf-8') as handle:
-        handle.write(
-            f'{node_name}:\n'
-            '  ros__parameters:\n'
-            '    auth:\n'
-            f'      enabled: {"true" if auth_enabled else "false"}\n'
-            '      require_auth_for: "write"\n'
-            '      jwt_secret: "a_file_supplied_secret_of_at_least_32_characters"\n'
-            f'      clients: ["{CLIENT_ID}:a_file_supplied_client_secret:viewer"]\n'
-            f'      token_expiry_seconds: {token_expiry}\n'
-        )
+        handle.write('\n'.join(lines) + '\n')
     return path
 
 
-AUTH_OFF_PARAMS = _write_params('auth-off.yaml', ENV_CLOSED_NODE, auth_enabled=False,
-                                token_expiry=CLOSED_FILE_TOKEN_EXPIRY)
-AUTH_ON_PARAMS = _write_params('auth-on.yaml', ENV_DISABLED_NODE, auth_enabled=True,
-                               token_expiry=DISABLED_FILE_TOKEN_EXPIRY)
-
-
-def _write_file_closed_params():
-    """Write a file that closes the gateway on its own, with one bad client.
-
-    Everything here comes from the file and nothing from the environment, which
-    is the case the sentinel and the malformed-entry warning are about.
-    """
-    path = os.path.join(_PARAMS_DIR, 'file-closed.yaml')
-    with open(path, 'w', encoding='utf-8') as handle:
-        handle.write(
-            f'{FILE_CLOSED_NODE}:\n'
-            '  ros__parameters:\n'
-            '    auth:\n'
-            '      enabled: true\n'
-            '      require_auth_for: "all"\n'
-            f'      jwt_secret: "{FILE_JWT_SECRET}"\n'
-            '      clients:\n'
-            f'        - "{CLIENT_ID}:{CLIENT_SECRET}:admin"\n'
-            f'        - "twofield:{MALFORMED_CLIENT_SECRET}"\n'
-            f'        - "swapped:admin:{SWAPPED_FILE_SECRET}"\n'
-        )
-    return path
-
-
-FILE_CLOSED_PARAMS = _write_file_closed_params()
+AUTH_OFF_PARAMS = _write_params(
+    'auth-off.yaml', ENV_CLOSED_NODE, False, 'write', CLOSED_FILE_TOKEN_EXPIRY,
+    [f'{CLIENT_ID}:{FILE_CLIENT_SECRET}:viewer'])
+AUTH_ON_PARAMS = _write_params('auth-on.yaml', ENV_DISABLED_NODE, True, 'write',
+                               DISABLED_FILE_TOKEN_EXPIRY)
+FILE_CLOSED_PARAMS = _write_params(
+    'file-closed.yaml', FILE_CLOSED_NODE, True, 'all', None,
+    [f'{CLIENT_ID}:{CLIENT_SECRET}:admin', f'twofield:{MALFORMED_CLIENT_SECRET}',
+     f'swapped:admin:{SWAPPED_FILE_SECRET}'])
+# For the subprocess gateways, which carry the default node name.
+SWEEP_OFF_PARAMS = _write_params('sweep-off.yaml', '/**', False, 'write')
+SWEEP_ON_PARAMS = _write_params('sweep-on.yaml', '/**', True, 'all')
+SWEEP_CANARY_PARAMS = _write_params(
+    'sweep-canary.yaml', '/**', True, 'all', None,
+    [f'{CANARY_ID}:x:wizard', f'{CANARY_TWO_FIELDS}:only'])
 
 
 @pytest.mark.launch_test
 def generate_test_description():
-    """Two gateways, differing only in what their environments say."""
+    """Three gateways, differing in what their environments and files say."""
     closed = create_gateway_node(
         port=CLOSED_PORT,
         name=ENV_CLOSED_NODE,
-        params_file=AUTH_OFF_PARAMS,
-        # `auth.public_routes: [""]` is the empty-sequence idiom, and it is
-        # written here on purpose: a gateway that read the blank entry as a
-        # route would refuse to start, and one that opened something on it
-        # would answer /health anonymously below.
-        extra_params={'server.host': '127.0.0.1', 'auth.public_routes': ['']},
+        parameter_files=[AUTH_OFF_PARAMS],
+        extra_params={'server.host': '127.0.0.1'},
         extra_env={
             'MEDKIT_JWT_SECRET': JWT_SECRET,
             'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin,'
                               f'envswapped:admin:{SWAPPED_ENV_SECRET}',
         },
     )
-
     disabled = create_gateway_node(
         port=DISABLED_PORT,
         name=ENV_DISABLED_NODE,
-        params_file=AUTH_ON_PARAMS,
+        parameter_files=[AUTH_ON_PARAMS],
         extra_params={'server.host': '127.0.0.1',
                       'aggregation.peer_auth_header': PEER_AUTH_HEADER},
         extra_env={
@@ -202,14 +176,12 @@ def generate_test_description():
             'MEDKIT_AUTH_DISABLED': '1',
         },
     )
-
     file_closed = create_gateway_node(
         port=FILE_CLOSED_PORT,
         name=FILE_CLOSED_NODE,
-        params_file=FILE_CLOSED_PARAMS,
+        parameter_files=[FILE_CLOSED_PARAMS],
         extra_params={'server.host': '127.0.0.1'},
     )
-
     return launch.LaunchDescription([
         closed,
         disabled,
@@ -218,191 +190,20 @@ def generate_test_description():
     ]), {'closed': closed, 'disabled': disabled, 'file_closed': file_closed}
 
 
-class TestEnvironmentClosesTheNode(GatewayTestCase):
-    """MEDKIT_JWT_SECRET closes a gateway whose params file says auth is off."""
-
-    BASE_URL = CLOSED_BASE_URL
-
-    def test_00_the_file_reached_this_gateway(self):
-        """The premise of every case below: the file was applied at all.
-
-        Every auth key the file sets is overwritten by the environment, so a
-        file that never reached the node would leave C1-C4 passing against the
-        defaults. The expiry is the one key the environment leaves alone.
-        """
-        rc, output = _ros2_param('get', f'/{ENV_CLOSED_NODE}', 'auth.token_expiry_seconds')
-        self.assertEqual(rc, 0, output)
-        self.assertIn(
-            str(CLOSED_FILE_TOKEN_EXPIRY), output,
-            f'the params file did not reach {ENV_CLOSED_NODE}: {output}')
-
-    def test_01_an_anonymous_read_is_refused(self):
-        """C1. The params file says `auth.enabled: false` and is overruled."""
-        resp = requests.get(f'{CLOSED_BASE_URL}/areas', timeout=15)
-        self.assertIn(
-            resp.status_code, (401, 403),
-            f'MEDKIT_JWT_SECRET was in the environment and an anonymous GET /areas '
-            f'answered {resp.status_code}. Body: {resp.text[:300]}'
-        )
-
-    def test_02_every_route_is_closed_not_only_the_writes(self):
-        """C2. `require_auth_for` became "all", against a file saying "write".
-
-        A read is what "closed" has to mean here: at "write" every one of these
-        answers 200 with authentication switched on, which is the posture an
-        operator would be told was closed.
-        """
-        for path in ('/areas', '/components', '/apps', '/health', '/'):
-            with self.subTest(path=path):
-                resp = requests.get(f'{CLOSED_BASE_URL}{path}', timeout=15)
-                self.assertIn(
-                    resp.status_code, (401, 403),
-                    f'an anonymous GET {path} answered {resp.status_code}; '
-                    f'require_auth_for is still the file\'s "write"'
-                )
-
-    def test_03_the_environment_credential_issues_a_working_token(self):
-        """C3. The mirror: a gateway closed to everyone would pass C1 and C2.
-
-        The file names the same client id with a different secret and the
-        `viewer` role, so this also pins WHICH credential reached the gateway:
-        the environment's secret authenticates, and the role that comes back is
-        the environment's `admin`.
-        """
-        token = requests.post(
-            f'{CLOSED_BASE_URL}/auth/authorize',
-            json={
-                'grant_type': 'client_credentials',
-                'client_id': CLIENT_ID,
-                'client_secret': CLIENT_SECRET,
-            },
-            timeout=30,
-        )
-        self.assertEqual(token.status_code, 200, token.text)
-        self.assertEqual(
-            token.json().get('scope'), 'admin',
-            f"the token came back with the file's role, so auth.clients was not "
-            f'replaced: {token.text[:300]}'
-        )
-
-        resp = requests.get(
-            f'{CLOSED_BASE_URL}/areas',
-            headers={'Authorization': f'Bearer {token.json()["access_token"]}'},
-            timeout=15,
-        )
-        self.assertEqual(resp.status_code, 200, resp.text)
-
-    def test_04_the_file_credential_is_gone(self):
-        """MEDKIT_CLIENTS replaces auth.clients; it does not add to it.
-
-        Leaving the file's credentials standing under a secret they were not
-        issued against is the surprise: an operator who closed a container with
-        a new secret would still be handing out tokens to whoever knew the old
-        file.
-        """
-        token = requests.post(
-            f'{CLOSED_BASE_URL}/auth/authorize',
-            json={
-                'grant_type': 'client_credentials',
-                'client_id': CLIENT_ID,
-                'client_secret': 'a_file_supplied_client_secret',
-            },
-            timeout=30,
-        )
-        self.assertNotEqual(
-            token.status_code, 200,
-            "the params file's client secret still obtains a token"
-        )
-
-
-class TestAuthDisabledWinsOverEverything(GatewayTestCase):
-    """MEDKIT_AUTH_DISABLED=1 beats the secret and a file that asks for auth."""
-
-    BASE_URL = DISABLED_BASE_URL
-
-    def test_00_the_file_reached_this_gateway(self):
-        """The premise: the file was applied, so C4 overrules something."""
-        rc, output = _ros2_param('get', f'/{ENV_DISABLED_NODE}', 'auth.token_expiry_seconds')
-        self.assertEqual(rc, 0, output)
-        self.assertIn(
-            str(DISABLED_FILE_TOKEN_EXPIRY), output,
-            f'the params file did not reach {ENV_DISABLED_NODE}: {output}')
-
-    def test_01_an_anonymous_read_is_answered(self):
-        """C4. Both the file (`auth.enabled: true`) and MEDKIT_JWT_SECRET lose."""
-        resp = requests.get(f'{DISABLED_BASE_URL}/areas', timeout=15)
-        self.assertEqual(
-            resp.status_code, 200,
-            f'MEDKIT_AUTH_DISABLED=1 was set and an anonymous GET /areas answered '
-            f'{resp.status_code}. Body: {resp.text[:300]}'
-        )
-
-    def test_02_nothing_asks_for_a_credential(self):
-        resp = requests.get(f'{DISABLED_BASE_URL}/health', timeout=15)
-        self.assertEqual(resp.status_code, 200, resp.text)
-        self.assertNotIn(
-            'x-medkit-reduced', resp.json(),
-            'the body was cut down on a gateway running without authentication'
-        )
-
-    def test_03_no_secret_is_served_with_authentication_off(self):
-        """The file's secrets are unused here and still not served.
-
-        A gateway running open carries the secrets of the file that asked for
-        auth, and the parameter services answer anyone on the domain; a peer
-        sharing that file signs with the same secret.
-        """
-        rc, secret = _ros2_param('get', f'/{ENV_DISABLED_NODE}', 'auth.jwt_secret')
-        self.assertEqual(rc, 0, secret)
-        self.assertNotIn(
-            'a_file_supplied_secret_of_at_least_32_characters', secret,
-            'the file signing secret is served by an open gateway')
-        rc, clients = _ros2_param('get', f'/{ENV_DISABLED_NODE}', 'auth.clients')
-        self.assertEqual(rc, 0, clients)
-        self.assertNotIn(
-            'a_file_supplied_client_secret', clients,
-            'a file client secret is served by an open gateway')
-
-    def test_04_the_peer_auth_header_is_never_served(self):
-        """What this gateway presents to its peers is a bearer, and stays here."""
-        rc, header = _ros2_param('get', f'/{ENV_DISABLED_NODE}', 'aggregation.peer_auth_header')
-        self.assertEqual(rc, 0, header)
-        self.assertNotIn(
-            'zz_peer_token', header,
-            'aggregation.peer_auth_header is served as itself')
-        self.assertIn('<set at start>', header, header)
-
-    def test_05_the_peer_auth_header_cannot_be_set_at_runtime(self):
-        """Read once at construction, like auth.*, so a set would change nothing."""
-        _, output = _ros2_param(
-            'set', f'/{ENV_DISABLED_NODE}', 'aggregation.peer_auth_header', 'Bearer other')
-        self.assertIn(
-            'read at start', output,
-            f'a runtime set of aggregation.peer_auth_header was not refused: {output}')
-
-
-def _param_value(node, name):
-    """Return the value `ros2 param get` prints, without DDS diagnostics on the same streams."""
-    rc, output = _ros2_param('get', node, name)
-    match = re.search(r'value is: (.*)', output)
-    assert rc == 0 and match, output
-    return match.group(1).strip()
-
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _ros2_param(*args):
-    """Run `ros2 param ...` against this test's domain and return (rc, output).
+    """Run `ros2 param ...` and return (rc, output).
 
-    Retries while the CLI reports the node missing. `ros2 param` builds its own
-    participant and has to discover the gateway's parameter services over DDS,
-    which is not instantaneous - the HTTP port answering says nothing about
-    whether that has happened yet, so the first call in a class would otherwise
-    fail with "Node not found" while the node is plainly there.
+    Retries while the CLI reports the node missing: the HTTP port answering says
+    nothing about whether DDS discovery of the parameter services has finished.
     """
     deadline = time.monotonic() + PARAM_DISCOVERY_TIMEOUT
-    output = ''
     while True:
         completed = subprocess.run(
-            ['ros2', 'param', *args],
+            ['ros2', 'param', args[0], '--no-daemon', *args[1:]],
             capture_output=True, text=True, timeout=30, check=False,
         )
         output = completed.stdout + completed.stderr
@@ -411,574 +212,567 @@ def _ros2_param(*args):
         time.sleep(1)
 
 
-class TestIntrospectionAgreesWithEnforcement(GatewayTestCase):
-    """`ros2 param get` answers what the gateway enforces, and refuses writes.
+_PARAMS = {}
 
-    The environment decides the posture, and the parameters carried whatever
-    the params file said - so on a gateway refusing every request,
-    `auth.enabled` read back `false`, which is the file's value and the
-    opposite of the truth. An operator reading the parameters to find out how a
-    container is running was told the wrong thing by the gateway itself.
 
-    A write is refused, because the auth configuration is consumed once at
-    construction: a `param set` that reported success would change nothing and
-    say it had.
+def _client():
+    """Return the one parameter client of this test process, created on first use."""
+    if 'client' not in _PARAMS:
+        _PARAMS['client'] = ParameterClient('env_auth_contract_probe')
+        atexit.register(_PARAMS['client'].close)
+    return _PARAMS['client']
+
+
+def _param_value(node, name):
+    """Return the parameter's value as Python data, read from the node's parameter service."""
+    return _client().get(node, name)
+
+
+def _other_value(value):
+    """Return a value of the same type as `value`, but different."""
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, list):
+        return ['x:y:admin']
+    if isinstance(value, int):
+        return value + 1
+    return 'other_value'
+
+
+def _b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b'=')
+
+
+def _signed_with(token, secret):
+    """Return True when `token` carries a valid HS256 signature under `secret`."""
+    head, body, signature = token.split('.')
+    expected = hmac.new(secret.encode(), f'{head}.{body}'.encode(), hashlib.sha256).digest()
+    return hmac.compare_digest(_b64url(expected), signature.encode())
+
+
+def _authorize(base_url, client_id, client_secret):
+    return requests.post(
+        f'{base_url}/auth/authorize',
+        json={'grant_type': 'client_credentials', 'client_id': client_id,
+              'client_secret': client_secret},
+        timeout=30,
+    )
+
+
+def _status(base_url, client_id, client_secret):
+    return _authorize(base_url, client_id, client_secret).status_code
+
+
+def _assert_no_secret(testcase, output):
+    """Assert the output is a real gateway log, then that it holds no secret."""
+    testcase.assertIn(
+        START_LINE, output,
+        f'no gateway startup line in the capture, so a clean scan proves nothing: {output[-400:]}')
+    for secret in SECRETS:
+        testcase.assertNotIn(secret, output, f'a secret reached the output: {secret[:8]}...')
+
+
+class _Gateway:
+    """A `gateway_node` subprocess on the sweep port, started with this environment.
+
+    ``rc`` is None when the gateway announced itself ready (or was still running
+    at the timeout), else its exit code. Leaving the block kills its process
+    group: `ros2 run` execs the node as a child, so killing the wrapper alone
+    would leave a gateway holding the port.
     """
+
+    def __init__(self, testcase, env_extra=None, extra_args=(), params_file=None, timeout=45):
+        self.testcase = testcase
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith('MEDKIT_')}
+        self.env.update(env_extra or {})
+        self.command = [
+            'ros2', 'run', 'ros2_medkit_gateway', 'gateway_node', '--ros-args',
+            '-p', f'server.port:={SWEEP_PORT}', '-p', 'server.host:=127.0.0.1',
+            *(['--params-file', params_file] if params_file else []),
+            *extra_args,
+        ]
+        self.timeout = timeout
+        self.rc = None
+        self.ready = False
+        self._chunks = []
+        self._process = None
+
+    @property
+    def output(self):
+        return b''.join(self._chunks).decode(errors='replace')
+
+    def _read_until(self, marker):
+        """Return 'marker', 'exit' (output closed) or 'deadline'."""
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            readable, _, _ = select.select([self._process.stdout], [], [], 0.5)
+            if not readable:
+                continue
+            chunk = os.read(self._process.stdout.fileno(), 65536)
+            if not chunk:
+                return 'exit'
+            self._chunks.append(chunk)
+            if marker.encode() in b''.join(self._chunks[-2:]):
+                return 'marker'
+        return 'deadline'
+
+    def assert_up(self):
+        """Assert the gateway printed its ready line and answers HTTP."""
+        self.testcase.assertIsNone(self.rc, self.output[-600:])
+        self.testcase.assertTrue(
+            self.ready, f'no ready line before the deadline: {self.output[-600:]}')
+        self.testcase.assertIn(READY_LINE, self.output)
+        resp = requests.get(f'{SWEEP_BASE_URL}/health', timeout=15)
+        self.testcase.assertIn(resp.status_code, (200, 401, 403))
+
+    def __enter__(self):
+        self._process = subprocess.Popen(
+            self.command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=self.env, start_new_session=True,
+        )
+        outcome = self._read_until(READY_LINE)
+        self.ready = outcome == 'marker'
+        if outcome == 'exit':
+            self._process.wait(timeout=15)
+            self.rc = self._process.returncode
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.rc is None:
+            os.killpg(os.getpgid(self._process.pid), signal.SIGTERM)
+            try:
+                self._process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(self._process.pid), signal.SIGKILL)
+        rest, _ = self._process.communicate()
+        if rest:
+            self._chunks.append(rest)
+        if exc_type is None:
+            _assert_no_secret(self.testcase, self.output)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Long-running gateways
+# ---------------------------------------------------------------------------
+
+class TestEnvironmentClosesTheNode(GatewayTestCase):
+    """MEDKIT_JWT_SECRET closes a gateway whose params file says auth is off."""
 
     BASE_URL = CLOSED_BASE_URL
 
+    def test_00_the_file_reached_this_gateway(self):
+        """Premise: every auth key of the file is overridden but the expiry."""
+        self.assertEqual(
+            _param_value(f'/{ENV_CLOSED_NODE}', 'auth.token_expiry_seconds'),
+            CLOSED_FILE_TOKEN_EXPIRY)
+
+    def test_01_every_route_is_closed_not_only_the_writes(self):
+        """The file says auth off and require_auth_for write; both lose."""
+        for path in ('/areas', '/components', '/apps', '/health', '/'):
+            with self.subTest(path=path):
+                resp = requests.get(f'{CLOSED_BASE_URL}{path}', timeout=15)
+                self.assertEqual(resp.status_code, 401, f'anonymous GET {path}: {resp.text[:200]}')
+
+    def test_02_a_write_is_closed_too(self):
+        resp = requests.post(f'{CLOSED_BASE_URL}/apps/none/operations/x/executions',
+                             json={}, timeout=15)
+        self.assertEqual(resp.status_code, 401, resp.text[:200])
+
+    def test_03_the_environment_credential_issues_a_working_token(self):
+        """The mirror: a gateway closed to everyone would pass the cases above."""
+        token = _authorize(CLOSED_BASE_URL, CLIENT_ID, CLIENT_SECRET)
+        self.assertEqual(token.status_code, 200, token.text)
+        self.assertEqual(token.json().get('scope'), 'admin', token.text[:300])
+        resp = requests.get(
+            f'{CLOSED_BASE_URL}/areas',
+            headers={'Authorization': f'Bearer {token.json()["access_token"]}'}, timeout=15)
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+    def test_04_the_token_is_signed_with_the_environment_secret(self):
+        """Not with the file's secret, which the params file also carries."""
+        token = _authorize(CLOSED_BASE_URL, CLIENT_ID, CLIENT_SECRET).json()['access_token']
+        self.assertTrue(_signed_with(token, JWT_SECRET), 'not signed with MEDKIT_JWT_SECRET')
+        self.assertFalse(_signed_with(token, FILE_JWT_SECRET), 'signed with the file secret')
+
+    def test_05_the_file_credential_is_gone(self):
+        """MEDKIT_CLIENTS replaces auth.clients; it does not add to it.
+
+        The file names the same id with another secret, and a second id.
+        """
+        for client_id, secret in ((CLIENT_ID, FILE_CLIENT_SECRET),
+                                  (FILE_CLIENT_ID, FILE_CLIENT_SECRET)):
+            with self.subTest(client=client_id):
+                self.assertNotEqual(_status(CLOSED_BASE_URL, client_id, secret), 200)
+
+    def test_06_a_swapped_entry_registered_nothing(self):
+        for secret in (SWAPPED_ENV_SECRET, 'admin'):
+            self.assertNotEqual(_authorize(CLOSED_BASE_URL, 'envswapped', secret).status_code, 200)
+
+
+class TestAuthDisabledWinsOverEverything(GatewayTestCase):
+    """MEDKIT_AUTH_DISABLED=1 beats the secret and a file that asks for auth."""
+
+    BASE_URL = DISABLED_BASE_URL
+
+    def test_00_the_file_reached_this_gateway(self):
+        self.assertEqual(
+            _param_value(f'/{ENV_DISABLED_NODE}', 'auth.token_expiry_seconds'),
+            DISABLED_FILE_TOKEN_EXPIRY)
+
+    def test_01_every_route_is_answered(self):
+        for path in ('/areas', '/health'):
+            with self.subTest(path=path):
+                resp = requests.get(f'{DISABLED_BASE_URL}{path}', timeout=15)
+                self.assertEqual(resp.status_code, 200, resp.text[:200])
+
+    def test_02_the_environment_credential_gets_no_token(self):
+        """Authentication is off, and the gateway holds no signing secret."""
+        self.assertNotEqual(_status(DISABLED_BASE_URL, CLIENT_ID, CLIENT_SECRET), 200)
+
+    def test_03_no_secret_is_served_with_authentication_off(self):
+        secret = _param_value(f'/{ENV_DISABLED_NODE}', 'auth.jwt_secret')
+        self.assertEqual(secret, '<set at start>')
+        clients = _param_value(f'/{ENV_DISABLED_NODE}', 'auth.clients')
+        self.assertEqual(clients, [f'{FILE_CLIENT_ID}:<set at start>:viewer'])
+
+    def test_04_the_peer_auth_header_reads_as_a_sentinel(self):
+        self.assertEqual(
+            _param_value(f'/{ENV_DISABLED_NODE}', PEER_HEADER_PARAM), '<set at start>')
+
+    def test_05_the_peer_auth_header_cannot_be_set_at_runtime(self):
+        result = _client().set_one(f'/{ENV_DISABLED_NODE}', PEER_HEADER_PARAM, 'Bearer other')
+        self.assertFalse(result.successful)
+        self.assertIn('read at start', result.reason)
+        self.assertEqual(
+            _param_value(f'/{ENV_DISABLED_NODE}', PEER_HEADER_PARAM), '<set at start>')
+
+    def test_06_introspection_reports_the_open_posture(self):
+        self.assertIs(_param_value(f'/{ENV_DISABLED_NODE}', 'auth.enabled'), False)
+        self.assertEqual(_param_value(f'/{ENV_DISABLED_NODE}', 'auth.require_auth_for'), 'none')
+
+
+class TestIntrospectionAgreesWithEnforcement(GatewayTestCase):
+    """`ros2 param get` answers what the gateway enforces, and refuses writes."""
+
+    BASE_URL = CLOSED_BASE_URL
+    NODE = f'/{ENV_CLOSED_NODE}'
+
     def test_01_the_closed_gateway_reports_the_posture_it_serves(self):
-        rc, enabled = _ros2_param('get', '/gateway_env_closed', 'auth.enabled')
-        self.assertEqual(rc, 0, enabled)
-        self.assertIn(
-            'True', enabled,
-            f'the params file says auth.enabled false and the gateway refuses '
-            f'every anonymous read; introspection answered: {enabled}'
-        )
+        self.assertIs(_param_value(self.NODE, 'auth.enabled'), True)
+        self.assertEqual(_param_value(self.NODE, 'auth.require_auth_for'), 'all')
 
-        rc, level = _ros2_param('get', '/gateway_env_closed', 'auth.require_auth_for')
-        self.assertEqual(rc, 0, level)
-        self.assertIn(
-            'all', level,
-            'the environment forced require_auth_for to "all" and the '
-            f'parameter still reports the value from the file: {level}'
-        )
+    def test_02_secrets_read_back_as_sentinels(self):
+        self.assertEqual(_param_value(self.NODE, 'auth.jwt_secret'), '<from MEDKIT_JWT_SECRET>')
+        self.assertEqual(
+            _param_value(self.NODE, 'auth.clients'),
+            [f'{CLIENT_ID}:<from MEDKIT_CLIENTS>:admin'])
 
-    def test_02_the_disabled_gateway_reports_the_posture_it_serves(self):
-        """The other shape: a file asking for auth, an environment refusing it."""
-        rc, enabled = _ros2_param('get', '/gateway_env_disabled', 'auth.enabled')
-        self.assertEqual(rc, 0, enabled)
-        self.assertIn(
-            'False', enabled,
-            'MEDKIT_AUTH_DISABLED=1 turned authentication off and the '
-            f'parameter still reports true from the file: {enabled}'
-        )
-
-    def test_03_no_secret_is_readable_through_the_parameters(self):
-        """A sentinel names the variable; the value stays out of reach.
-
-        The parameter services answer anything that can reach the node, so a
-        secret written back here would be readable by a caller holding no HTTP
-        credential at all - which is a wider audience than the file it was
-        kept out of.
-        """
-        rc, secret = _ros2_param('get', '/gateway_env_closed', 'auth.jwt_secret')
-        self.assertEqual(rc, 0, secret)
-        self.assertNotIn(JWT_SECRET, secret, 'the signing secret is readable through ros2 param')
-        self.assertIn('<from MEDKIT_JWT_SECRET>', secret, secret)
-
-        rc, clients = _ros2_param('get', '/gateway_env_closed', 'auth.clients')
-        self.assertEqual(rc, 0, clients)
-        self.assertNotIn(CLIENT_SECRET, clients, 'a client secret is readable through ros2 param')
-        self.assertIn(CLIENT_ID, clients, f'the client id should still be visible: {clients}')
-        self.assertIn('<from MEDKIT_CLIENTS>', clients, clients)
-
-    def test_04_an_auth_parameter_cannot_be_set_at_runtime(self):
-        """Refused, and the gateway goes on refusing anonymous reads."""
-        _, output = _ros2_param(
-            'set', '/gateway_env_closed', 'auth.enabled', 'false')
-        self.assertIn(
-            'read at start', output,
-            f'setting auth.enabled did not report the reason it is refused: {output}'
-        )
-        self.assertNotIn('Set parameter successful', output, output)
-
+    def test_03_every_auth_parameter_is_refused_and_unchanged(self):
+        listing = _client().list_names(self.NODE)
+        names = [n for n in listing if n.startswith('auth.') or n == PEER_HEADER_PARAM]
+        self.assertIn('auth.enabled', names, listing)
+        self.assertIn('auth.clients', names, listing)
+        self.assertIn(PEER_HEADER_PARAM, names, listing)
+        for name in names:
+            with self.subTest(parameter=name):
+                before = _param_value(self.NODE, name)
+                result = _client().set_one(self.NODE, name, _other_value(before))
+                self.assertFalse(result.successful)
+                self.assertIn('read at start', result.reason)
+                self.assertEqual(_param_value(self.NODE, name), before)
         resp = requests.get(f'{CLOSED_BASE_URL}/areas', timeout=15)
-        self.assertIn(
-            resp.status_code, (401, 403),
-            f'after a refused param set the gateway answered {resp.status_code}'
-        )
+        self.assertEqual(resp.status_code, 401, resp.text)
 
-    def test_06_a_param_load_applies_what_it_may_and_refuses_the_rest(self):
-        """`ros2 param load` is how a whole file is pushed at a running node.
+    def test_04_a_non_auth_parameter_is_untouched_by_the_guard(self):
+        result = _client().set_one(self.NODE, 'refresh_interval_ms', 3000)
+        self.assertTrue(result.successful, result.reason)
+        self.assertEqual(_param_value(self.NODE, 'refresh_interval_ms'), 3000)
 
-        It sets each parameter in turn, so the guard has to refuse the auth
-        entry and leave the rest applied - a file mixing the two must not
-        become an all-or-nothing gamble on which key came first.
-        """
+    def test_05_a_param_load_applies_what_it_may_and_refuses_the_rest(self):
+        """`ros2 param load` sets each key in turn: the auth entry is refused, the rest applies."""
         path = os.path.join(_PARAMS_DIR, 'runtime-load.yaml')
-        # Keyed on the absolute node name: `ros2 param load` matches the
-        # file's keys against the name it was given, slash included.
         with open(path, 'w', encoding='utf-8') as handle:
             handle.write(
                 f'/{ENV_CLOSED_NODE}:\n'
                 '  ros__parameters:\n'
-                '    refresh_interval_ms: 4500\n'
                 '    auth:\n'
                 '      enabled: false\n'
+                '    refresh_interval_ms: 4500\n'
             )
+        _, output = _ros2_param('load', self.NODE, path)
+        self.assertIn('read at start', output, output)
+        self.assertEqual(_param_value(self.NODE, 'refresh_interval_ms'), 4500)
+        self.assertIs(_param_value(self.NODE, 'auth.enabled'), True)
+        self.assertEqual(requests.get(f'{CLOSED_BASE_URL}/areas', timeout=15).status_code, 401)
 
-        _, output = _ros2_param('load', '/gateway_env_closed', path)
-        self.assertIn(
-            'read at start', output,
-            f'the auth entry in a loaded file was not refused: {output}')
-
-        rc, refresh = _ros2_param('get', '/gateway_env_closed', 'refresh_interval_ms')
-        self.assertEqual(rc, 0, refresh)
-        self.assertIn(
-            '4500', refresh,
-            f'the non-auth entry was not applied: {refresh}')
-
-        rc, enabled = _ros2_param('get', '/gateway_env_closed', 'auth.enabled')
-        self.assertEqual(rc, 0, enabled)
-        self.assertIn('True', enabled, f'auth.enabled was changed by the load: {enabled}')
-
-        resp = requests.get(f'{CLOSED_BASE_URL}/areas', timeout=15)
-        self.assertIn(resp.status_code, (401, 403), resp.text)
-
-    def test_07_an_atomic_batch_mixing_the_two_is_refused_whole(self):
-        """set_parameters_atomically is all-or-nothing, and auth.* refuses.
-
-        The guard returns one result for the batch, so a batch carrying an
-        auth parameter must apply none of it - including the harmless one
-        beside it, which would otherwise be a way to have half a refused
-        request take effect.
-        """
-        before = _param_value('/gateway_env_closed', 'refresh_interval_ms')
-
-        script = (
-            'import rclpy\n'
-            'from rclpy.node import Node\n'
-            'from rclpy.parameter import Parameter\n'
-            'from rcl_interfaces.srv import SetParametersAtomically\n'
-            'rclpy.init()\n'
-            'n = Node("batch_probe")\n'
-            'c = n.create_client(SetParametersAtomically,\n'
-            '                    "/gateway_env_closed/set_parameters_atomically")\n'
-            'assert c.wait_for_service(timeout_sec=30.0), "no service"\n'
-            'req = SetParametersAtomically.Request()\n'
-            'req.parameters = [\n'
-            '    Parameter("refresh_interval_ms", Parameter.Type.INTEGER, 6100)\n'
-            '        .to_parameter_msg(),\n'
-            '    Parameter("auth.enabled", Parameter.Type.BOOL, False)\n'
-            '        .to_parameter_msg(),\n'
-            ']\n'
-            'f = c.call_async(req)\n'
-            'rclpy.spin_until_future_complete(n, f, timeout_sec=30.0)\n'
-            'r = f.result()\n'
-            'print("SUCCESSFUL", r.result.successful)\n'
-            'print("REASON", r.result.reason)\n'
-            'rclpy.shutdown()\n'
-        )
-        completed = subprocess.run(
-            ['python3', '-c', script],
-            capture_output=True, text=True, timeout=90, check=False,
-        )
-        output = completed.stdout + completed.stderr
-        self.assertIn('SUCCESSFUL False', output, f'the batch was accepted: {output[-600:]}')
-        self.assertIn('read at start', output, f'the batch gave no reason: {output[-600:]}')
-
-        after = _param_value('/gateway_env_closed', 'refresh_interval_ms')
-        self.assertEqual(
-            before, after,
-            'the harmless half of a refused atomic batch was applied')
-        self.assertNotEqual('6100', after, after)
-
-    def test_05_a_non_auth_parameter_is_untouched_by_the_guard(self):
-        """The guard names `auth.` and must not close the rest of the surface."""
-        _, output = _ros2_param(
-            'set', '/gateway_env_closed', 'refresh_interval_ms', '3000')
-        self.assertNotIn(
-            'read at start', output,
-            f'the auth guard refused a parameter outside auth.*: {output}'
-        )
-        # The absence of the refusal is not the claim; a gateway that refused
-        # every set for some other reason would satisfy it. The set has to work.
-        self.assertIn(
-            'Set parameter successful', output,
-            f'setting a parameter outside auth.* did not succeed: {output}'
-        )
-
-
-class TestAMisconfiguredEnvironmentRefusesToStart(GatewayTestCase):
-    """Two environments with no working reading, each refused at startup.
-
-    Both would otherwise produce a gateway that runs and serves nobody: a
-    client list where every entry was rejected leaves a gateway closed to its
-    own operator, and MEDKIT_JWT_SECRET under RS256 hands a shared secret to a
-    code path that wants a file path. Refusing is the same answer a missing
-    secret already gets, and for the same reason - a gateway nobody can use is
-    a misconfiguration, not a posture.
-
-    Driven as subprocesses, because the subject is a process that must NOT come
-    up: a launch action that dies is a fixture failure, and the exit code is the
-    assertion here.
-    """
-
-    BASE_URL = CLOSED_BASE_URL
-
-    @staticmethod
-    def _run_gateway(env_extra, extra_args=(), timeout=45):
-        """Start a gateway with this environment; return (rc, output).
-
-        ``rc`` is None when the gateway announced itself ready, or was still
-        running at the timeout - either is what "it started" looks like here,
-        and the control case needs that to be distinguishable from a refusal.
-        The ready line ends the wait, so a control returns the moment the
-        gateway is up and does not sit out a timer on it.
-        """
-        env = dict(os.environ)
-        env.update(env_extra)
-        command = [
-            'ros2', 'run', 'ros2_medkit_gateway', 'gateway_node', '--ros-args',
-            '-p', f'server.port:={REFUSE_PORT}', '-p', 'server.host:=127.0.0.1',
-            *extra_args,
-        ]
-        # Its own process group, and killed as a group on the way out. `ros2
-        # run` execs the node as a CHILD, so killing the wrapper alone leaves a
-        # gateway running with PPID 1 holding this port and its DDS domain - and
-        # a later test drawing the same port then talks to it and fails looking
-        # like a regression. The control case here is a gateway that comes up
-        # and stays up, so this path is taken on every run.
-        process = subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            env=env, start_new_session=True,
-        )
-        chunks = []
-        started = False
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            readable, _, _ = select.select([process.stdout], [], [], min(remaining, 0.5))
-            if not readable:
-                continue
-            chunk = os.read(process.stdout.fileno(), 65536)
-            if not chunk:
-                break  # end of output: the process group is gone
-            chunks.append(chunk)
-            # The line can straddle two reads, so the last two are searched.
-            if b'Medkit Gateway ready on' in b''.join(chunks[-2:]):
-                started = True
-                break
-
-        def drain():
-            rest, _ = process.communicate()
-            if rest:
-                chunks.append(rest)
-            return b''.join(chunks).decode(errors='replace')
-
-        if started or process.poll() is None and deadline <= time.monotonic():
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-            try:
-                process.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-            return None, drain()
-
-        process.wait(timeout=15)
-        return process.returncode, drain()
-
-    def test_01_a_client_list_refused_in_full_stops_the_gateway(self):
-        rc, output = self._run_gateway({
-            'MEDKIT_JWT_SECRET': JWT_SECRET,
-            'MEDKIT_CLIENTS': 'nocolons,also-bad,third:entry:wizard',
-        })
-        self.assertNotEqual(
-            rc, 0,
-            f'a gateway whose every client entry was refused started anyway, '
-            f'closed to everyone including its operator. Output: {output[-600:]}'
-        )
-        self.assertIn('every MEDKIT_CLIENTS entry was refused', output, output[-600:])
-
-    def test_02_an_empty_client_list_starts_and_warns(self):
-        """The control. An EMPTY value is a decision, and must not be refused.
-
-        Without this, test_01 would pass against a gateway that refused any
-        MEDKIT_CLIENTS it could not use a credential from, which is a different
-        and wrong rule.
-        """
-        rc, output = self._run_gateway(
-            {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': ''},
-            timeout=20,
-        )
-        self.assertIsNone(
-            rc,
-            f'an empty MEDKIT_CLIENTS stopped the gateway; empty is a decision, '
-            f'not a list that failed to parse. Output: {output[-600:]}'
-        )
-        self.assertIn(
-            'Medkit Gateway ready on', output,
-            f'the gateway neither refused nor came up: {output[-600:]}')
-        self.assertNotIn('every MEDKIT_CLIENTS entry was refused', output, output[-600:])
-        self.assertIn('no client can obtain a token', output, output[-600:])
-
-    def test_03_a_secret_under_rs256_stops_the_gateway(self):
-        rc, output = self._run_gateway(
-            {'MEDKIT_JWT_SECRET': JWT_SECRET,
-             'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin'},
-            extra_args=('-p', 'auth.jwt_algorithm:=RS256'),
-        )
-        self.assertNotEqual(
-            rc, 0,
-            f'MEDKIT_JWT_SECRET under RS256 started a gateway. Output: {output[-600:]}'
-        )
-        self.assertIn('MEDKIT_JWT_SECRET is set and auth.jwt_algorithm is RS256', output,
-                      output[-600:])
-        self.assertNotIn(
-            JWT_SECRET, output,
-            'the refusal echoed the secret it was refusing')
-
-    def test_04_a_short_secret_names_the_variable_it_came_from(self):
-        """The message has to send the operator to the right knob.
-
-        A FATAL naming `auth.jwt_secret` sends them to a params file the
-        gateway did not read, which is the whole point of the environment
-        contract being that the file loses.
-        """
-        rc, output = self._run_gateway({
-            'MEDKIT_JWT_SECRET': 'too-short',
-            'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin',
-        })
-        self.assertNotEqual(rc, 0, output[-600:])
-        self.assertNotIn('too-short', output, 'the refusal echoed the secret')
-
-        # The startup WARN naming MEDKIT_JWT_SECRET is printed on every closed
-        # gateway, so finding that string anywhere proves nothing. The claim is
-        # about the REFUSAL line: it has to say the secret came from the
-        # environment, because that is where the operator has to go and fix it.
-        refusal = [line for line in output.splitlines() if 'Refusing to start' in line]
-        self.assertTrue(refusal, f'no refusal line in the output: {output[-600:]}')
-        self.assertIn(
-            'MEDKIT_JWT_SECRET', refusal[0],
-            f'the refusal does not name the variable the secret came from: {refusal[0]}'
-        )
-
-    def test_05_a_refused_file_value_is_not_blamed_on_the_environment(self):
-        """The refusal names which values the environment supplied, and no more.
-
-        A gateway closed by MEDKIT_JWT_SECRET still reads its expiries from the
-        parameters. The refusal line names the values the environment supplied
-        (the secret, the clients, or both) and says every other auth.* value
-        came from the parameters, so the validator's own message is what points
-        at the refused key.
-        """
-        rc, output = self._run_gateway(
-            {'MEDKIT_JWT_SECRET': JWT_SECRET,
-             'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin'},
-            extra_args=('-p', 'auth.token_expiry_seconds:=0'),
-        )
-        self.assertNotEqual(rc, 0, output[-600:])
-        refusal = [line for line in output.splitlines() if 'Refusing to start' in line]
-        self.assertTrue(refusal, f'no refusal line in the output: {output[-600:]}')
-        self.assertIn(
-            'Token expiry must be positive', refusal[0],
-            f'the refusal does not say which value was refused: {refusal[0]}')
-        self.assertIn(
-            'came from the parameters', refusal[0],
-            f'the refusal does not send the operator to the parameters: {refusal[0]}')
-        self.assertNotIn(
-            'MEDKIT_AUTH_DISABLED', refusal[0],
-            f'the refusal names a variable the value did not come from: {refusal[0]}')
-
-    def test_06_a_refusal_names_only_the_variable_that_was_set(self):
-        """The secret without the clients: the clause names one variable."""
-        rc, output = self._run_gateway(
-            {'MEDKIT_JWT_SECRET': JWT_SECRET},
-            extra_args=('-p', 'auth.token_expiry_seconds:=0'),
-        )
-        self.assertNotEqual(rc, 0, output[-600:])
-        refusal = [line for line in output.splitlines() if 'Refusing to start' in line]
-        self.assertTrue(refusal, f'no refusal line in the output: {output[-600:]}')
-        self.assertIn(
-            'The environment supplied auth.jwt_secret (MEDKIT_JWT_SECRET); every other '
-            'auth.* value came from the parameters.',
-            refusal[0], refusal[0])
-        self.assertNotIn(
-            'MEDKIT_CLIENTS', refusal[0],
-            f'the refusal names a variable that was not set: {refusal[0]}')
+    def test_06_an_atomic_batch_mixing_the_two_is_refused_whole(self):
+        before = _param_value(self.NODE, 'refresh_interval_ms')
+        result = _client().set_atomically(
+            self.NODE, {'refresh_interval_ms': 6100, 'auth.enabled': False})
+        self.assertFalse(result.successful)
+        self.assertIn('read at start', result.reason)
+        self.assertEqual(_param_value(self.NODE, 'refresh_interval_ms'), before)
 
 
 class TestAFileSuppliedSecretIsAlsoRedacted(GatewayTestCase):
-    """A secret is redacted wherever it came from and in every auth state.
-
-    A `jwt_secret:=` launch argument or a value in a params file would reach
-    the parameter services like any other parameter, and those answer any
-    participant on the domain - a wider audience than the file the operator put
-    it in. The gateway takes these from its overrides once at construction,
-    declares the parameters with a sentinel, and the on-set guard makes them
-    immutable, so nothing downstream needs the value.
-    """
+    """A file-closed gateway with no MEDKIT_* variable: same read-back, same behaviour."""
 
     BASE_URL = FILE_CLOSED_BASE_URL
+    NODE = f'/{FILE_CLOSED_NODE}'
 
-    def test_01_the_gateway_is_closed_by_its_file_alone(self):
-        """The premise: no MEDKIT_* variable is set for this gateway."""
+    def test_01_the_file_alone_closes_the_gateway(self):
         resp = requests.get(f'{FILE_CLOSED_BASE_URL}/areas', timeout=15)
-        self.assertIn(resp.status_code, (401, 403), resp.text)
+        self.assertEqual(resp.status_code, 401)
 
-    def test_02_the_file_secret_reads_back_as_a_sentinel(self):
-        rc, secret = _ros2_param('get', '/gateway_file_closed', 'auth.jwt_secret')
-        self.assertEqual(rc, 0, secret)
-        self.assertNotIn(
-            FILE_JWT_SECRET, secret,
-            'a params-file signing secret is readable through ros2 param')
-        self.assertIn('<set at start>', secret, secret)
+    def test_02_the_posture_reads_back(self):
+        self.assertIs(_param_value(self.NODE, 'auth.enabled'), True)
+        self.assertEqual(_param_value(self.NODE, 'auth.require_auth_for'), 'all')
 
-    def test_03_the_file_client_secrets_read_back_as_sentinels(self):
-        rc, clients = _ros2_param('get', '/gateway_file_closed', 'auth.clients')
-        self.assertEqual(rc, 0, clients)
-        self.assertNotIn(
-            CLIENT_SECRET, clients,
-            'a params-file client secret is readable through ros2 param')
-        self.assertIn(CLIENT_ID, clients, f'the client id should still show: {clients}')
-        self.assertIn('<set at start>', clients, clients)
+    def test_03_the_file_secret_reads_back_as_a_sentinel(self):
+        self.assertEqual(_param_value(self.NODE, 'auth.jwt_secret'), '<set at start>')
 
-    def test_04_the_credential_still_works(self):
-        """Redaction is about what is readable, not about what is configured."""
-        token = requests.post(
-            f'{FILE_CLOSED_BASE_URL}/auth/authorize',
-            json={
-                'grant_type': 'client_credentials',
-                'client_id': CLIENT_ID,
-                'client_secret': CLIENT_SECRET,
-            },
-            timeout=30,
-        )
+    def test_04_the_file_client_secrets_read_back_as_sentinels(self):
+        self.assertEqual(
+            _param_value(self.NODE, 'auth.clients'),
+            [f'{FILE_CLIENT_ID}:<set at start>:viewer', f'{CLIENT_ID}:<set at start>:admin'])
+
+    def test_05_the_credential_still_works_and_signs_with_the_file_secret(self):
+        token = _authorize(FILE_CLOSED_BASE_URL, CLIENT_ID, CLIENT_SECRET)
         self.assertEqual(token.status_code, 200, token.text)
+        self.assertTrue(_signed_with(token.json()['access_token'], FILE_JWT_SECRET))
         resp = requests.get(
             f'{FILE_CLOSED_BASE_URL}/areas',
-            headers={'Authorization': f'Bearer {token.json()["access_token"]}'},
-            timeout=15,
-        )
+            headers={'Authorization': f'Bearer {token.json()["access_token"]}'}, timeout=15)
         self.assertEqual(resp.status_code, 200, resp.text)
 
-    def test_05_the_malformed_entry_did_not_register_a_client(self):
-        """The two-field entry is dropped, and the rest of the list stands.
-
-        test_04 above shows the good entry registered; this shows the bad one
-        did not become a client under some other reading of its fields.
-        """
-        token = requests.post(
-            f'{FILE_CLOSED_BASE_URL}/auth/authorize',
-            json={
-                'grant_type': 'client_credentials',
-                'client_id': 'twofield',
-                'client_secret': MALFORMED_CLIENT_SECRET,
-            },
-            timeout=30,
-        )
-        self.assertNotEqual(
-            token.status_code, 200,
-            'a two-field auth.clients entry was registered as a client')
+    def test_06_the_malformed_entries_registered_no_client(self):
+        for client_id, secret in (('twofield', MALFORMED_CLIENT_SECRET),
+                                  ('swapped', SWAPPED_FILE_SECRET), ('swapped', 'admin')):
+            self.assertNotEqual(_status(FILE_CLOSED_BASE_URL, client_id, secret), 200)
 
 
-class TestPublicRoutesAreValidatedWhateverThePosture(GatewayTestCase):
-    """A malformed auth.public_routes stops the gateway with auth OFF too.
+# ---------------------------------------------------------------------------
+# One gateway per case
+# ---------------------------------------------------------------------------
 
-    A list validated only while authentication is on leaves a typo unnoticed
-    until somebody closes the gateway - the worst moment to discover that a
-    route they believe is reachable is not. The key is a configuration error
-    whenever it is set.
+def _anonymous_status(path='/areas'):
+    return requests.get(f'{SWEEP_BASE_URL}{path}', timeout=15).status_code
 
-    `[""]` is the opposite case and must not be refused: it is how a ROS 2 YAML
-    file writes an empty sequence, and both shipped profiles use that idiom.
-    """
 
-    BASE_URL = CLOSED_BASE_URL
+class TestEnvironmentSweep(unittest.TestCase):
+    """The three variables across their input space, one gateway per case."""
 
-    def test_01_a_malformed_entry_stops_a_gateway_with_auth_off(self):
-        rc, output = TestAMisconfiguredEnvironmentRefusesToStart._run_gateway(
-            {}, extra_args=('-p', 'auth.enabled:=false',
-                            '-p', 'auth.public_routes:=["nonsense"]'))
-        self.assertNotEqual(
-            rc, 0,
-            f'a malformed auth.public_routes started a gateway because auth was '
-            f'off. Output: {output[-600:]}'
-        )
-        self.assertIn('auth.public_routes entry "nonsense" is invalid', output, output[-600:])
+    def test_01_no_variable_set_leaves_main_behaviour(self):
+        with _Gateway(self) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 200)
+            self.assertEqual(_anonymous_status('/health'), 200)
+            self.assertIs(_param_value('/ros2_medkit_gateway', 'auth.enabled'), False)
+            self.assertEqual(_param_value('/ros2_medkit_gateway', 'auth.require_auth_for'), 'none')
+            self.assertEqual(_param_value('/ros2_medkit_gateway', 'auth.jwt_secret'), '')
+            self.assertEqual(_param_value('/ros2_medkit_gateway', 'auth.clients'), [])
 
-    def test_02_a_blank_entry_is_accepted_with_auth_off(self):
-        """The control: the empty-sequence idiom is not a typo."""
-        rc, output = TestAMisconfiguredEnvironmentRefusesToStart._run_gateway(
-            {}, extra_args=('-p', 'auth.enabled:=false',
-                            '-p', 'auth.public_routes:=[""]'),
-            timeout=20)
-        self.assertIsNone(
-            rc,
-            f'auth.public_routes: [""] stopped the gateway; that is how a ROS 2 '
-            f'YAML file writes an empty sequence. Output: {output[-600:]}'
-        )
-        self.assertIn(
-            'Medkit Gateway ready on', output,
-            f'the gateway neither refused nor came up: {output[-600:]}')
-        self.assertNotIn('auth.public_routes entry', output, output[-600:])
+    def test_02_a_file_closed_gateway_without_variables_is_unchanged(self):
+        with _Gateway(self, params_file=SWEEP_ON_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 401)
+            token = _authorize(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET)
+            self.assertEqual(token.status_code, 200, token.text)
+            self.assertTrue(_signed_with(token.json()['access_token'], FILE_JWT_SECRET))
 
-    def test_03_a_blank_entry_exempts_nothing(self):
-        """And it opens no route.
+    def test_03_the_secret_length_boundary(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': SECRET_31}) as gateway:
+            self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+            self.assertIn('MEDKIT_JWT_SECRET', gateway.output)
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': SECRET_32}) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 401)
 
-        The closed gateway in this launch carries `auth.public_routes: [""]`,
-        so it came up with the blank entry and still refuses /health.
-        """
-        resp = requests.get(f'{CLOSED_BASE_URL}/health', timeout=15)
-        self.assertIn(resp.status_code, (401, 403), resp.text)
+    def test_04_an_empty_secret_refuses_to_start_and_names_the_variable(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': ''}, params_file=SWEEP_ON_PARAMS) as gateway:
+            self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+            self.assertIn('MEDKIT_JWT_SECRET is set but empty', gateway.output)
+            self.assertNotIn(READY_LINE, gateway.output)
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': '',
+                             'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin'}) as gateway:
+            self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+
+    def test_05_disabled_wins_over_an_empty_secret(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': '', 'MEDKIT_AUTH_DISABLED': '1'}) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 200)
+
+    def test_06_only_the_literal_one_disables(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_AUTH_DISABLED': '1'},
+                      params_file=SWEEP_ON_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 200)
+        for value in ('0', 'true', ''):
+            with self.subTest(value=value):
+                with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET,
+                                     'MEDKIT_AUTH_DISABLED': value},
+                              params_file=SWEEP_OFF_PARAMS) as gateway:
+                    gateway.assert_up()
+                    self.assertEqual(_anonymous_status('/areas'), 401)
+        for value in ('0', 'true', ''):
+            with self.subTest(value=value, secret=False):
+                with _Gateway(self, {'MEDKIT_AUTH_DISABLED': value},
+                              params_file=SWEEP_ON_PARAMS) as gateway:
+                    gateway.assert_up()
+                    self.assertEqual(_anonymous_status('/areas'), 401)
+
+    def test_07_the_secret_beats_every_params_source(self):
+        """A `-p` argument comes after the file, and the environment still wins."""
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET,
+                             'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin'},
+                      params_file=SWEEP_OFF_PARAMS,
+                      extra_args=('-p', 'auth.enabled:=false',
+                                  '-p', 'auth.require_auth_for:=write',
+                                  '-p', f'auth.jwt_secret:={SECOND_SECRET}_pad_to_32')) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 401)
+            token = _authorize(SWEEP_BASE_URL, CLIENT_ID, CLIENT_SECRET)
+            self.assertEqual(token.status_code, 200, token.text)
+            self.assertTrue(_signed_with(token.json()['access_token'], JWT_SECRET))
+
+    def test_08_a_secret_under_rs256_names_both_settings_and_no_value(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET,
+                             'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin'},
+                      extra_args=('-p', 'auth.jwt_algorithm:=RS256')) as gateway:
+            self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+            line = next(row for row in gateway.output.splitlines() if 'Refusing to start' in row)
+            self.assertIn('MEDKIT_JWT_SECRET (environment)', line)
+            self.assertIn('auth.jwt_algorithm is RS256 (parameters)', line)
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET},
+                      extra_args=('-p', 'auth.jwt_algorithm:=HS256')) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 401)
+
+    def test_09_a_refusal_names_where_each_value_came_from(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET},
+                      extra_args=('-p', 'auth.token_expiry_seconds:=0')) as gateway:
+            self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+            line = next(row for row in gateway.output.splitlines() if 'Refusing to start' in row)
+            self.assertIn('Token expiry must be positive', line)
+            self.assertIn(
+                'The environment supplied auth.jwt_secret (MEDKIT_JWT_SECRET); every other '
+                'auth.* value came from the parameters.', line)
+            self.assertNotIn('MEDKIT_CLIENTS', line)
+
+    def test_10_clients_unset_leaves_the_files_clients(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET},
+                      params_file=SWEEP_OFF_PARAMS) as gateway:
+            gateway.assert_up()
+            token = _authorize(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET)
+            self.assertEqual(token.status_code, 200, token.text)
+
+    def test_11_clients_without_a_secret_are_ignored_with_a_warning(self):
+        with _Gateway(self, {'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin'},
+                      params_file=SWEEP_ON_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertIn('MEDKIT_CLIENTS is set and MEDKIT_JWT_SECRET is unset', gateway.output)
+            self.assertEqual(
+                _status(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET), 200)
+            self.assertNotEqual(_status(SWEEP_BASE_URL, CLIENT_ID, CLIENT_SECRET), 200)
+
+    def test_11b_an_empty_clients_value_without_a_secret_is_ignored_with_a_warning(self):
+        with _Gateway(self, {'MEDKIT_CLIENTS': ''}, params_file=SWEEP_ON_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertIn('MEDKIT_CLIENTS is set and MEDKIT_JWT_SECRET is unset', gateway.output)
+            self.assertEqual(_status(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET), 200)
+
+    def test_12_an_empty_clients_value_means_no_clients_and_warns(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': ''},
+                      params_file=SWEEP_OFF_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertIn('MEDKIT_CLIENTS is empty', gateway.output)
+            self.assertNotEqual(
+                _status(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET), 200)
+
+    def test_13_a_list_refused_in_full_stops_the_gateway(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET,
+                             'MEDKIT_CLIENTS': f'nocolons,also-bad,third:{MALFORMED_CLIENT_SECRET}'
+                                               ':wizard'}) as gateway:
+            self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+            self.assertIn('every MEDKIT_CLIENTS entry was refused', gateway.output)
+
+    def test_14_one_refused_entry_does_not_take_the_others_with_it(self):
+        clients = (f'good:{CLIENT_SECRET}:admin,nocolons,'
+                   f'{MALFORMED_CLIENT_SECRET}:x,swapped:admin:{SWAPPED_ENV_SECRET}')
+        env = {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': clients}
+        with _Gateway(self, env) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_status(SWEEP_BASE_URL, 'good', CLIENT_SECRET), 200)
+            self.assertIn('MEDKIT_CLIENTS entry 2 is not', gateway.output)
+            self.assertIn('MEDKIT_CLIENTS entry 3 is not', gateway.output)
+            self.assertIn('MEDKIT_CLIENTS entry 4 names an unknown role', gateway.output)
+            self.assertNotIn('swapped', gateway.output)
+
+    def test_15_a_duplicate_id_keeps_the_first_entry_and_warns(self):
+        clients = f'dup:{CLIENT_SECRET}:admin,dup:{SECOND_SECRET}:viewer'
+        env = {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': clients}
+        with _Gateway(self, env) as gateway:
+            gateway.assert_up()
+            self.assertIn(
+                'MEDKIT_CLIENTS entry 2 repeats the client id of entry 1', gateway.output)
+            self.assertNotIn('"dup"', gateway.output)
+            self.assertEqual(_status(SWEEP_BASE_URL, 'dup', CLIENT_SECRET), 200)
+            self.assertNotEqual(_status(SWEEP_BASE_URL, 'dup', SECOND_SECRET), 200)
+
+    def test_15b_a_refused_entry_is_reported_by_position_only(self):
+        """The id slot of a shifted entry can hold a secret, so no field is logged."""
+        env = {'MEDKIT_JWT_SECRET': JWT_SECRET,
+               'MEDKIT_CLIENTS': f'{CANARY_ID}:x:wizard,{CANARY_TWO_FIELDS}:only,'
+                                 f'good:{CLIENT_SECRET}:admin'}
+        with _Gateway(self, env) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_status(SWEEP_BASE_URL, 'good', CLIENT_SECRET), 200)
+            self.assertNotIn(CANARY_ID, gateway.output)
+            self.assertNotIn(CANARY_TWO_FIELDS, gateway.output)
+            self.assertIn('MEDKIT_CLIENTS entry 1 names an unknown role', gateway.output)
+
+    def test_15c_a_refused_file_entry_is_reported_by_position_only(self):
+        with _Gateway(self, params_file=SWEEP_CANARY_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_status(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET), 200)
+            self.assertNotIn(CANARY_ID, gateway.output)
+            self.assertNotIn(CANARY_TWO_FIELDS, gateway.output)
+            self.assertIn('auth.clients entry 2 names an unknown role', gateway.output)
+            self.assertIn('auth.clients entry 3 is not', gateway.output)
+
+    def test_15d_a_disabled_value_other_than_one_leaves_a_default_gateway_open(self):
+        for value in ('0', 'true', ''):
+            with self.subTest(value=value):
+                with _Gateway(self, {'MEDKIT_AUTH_DISABLED': value}) as gateway:
+                    gateway.assert_up()
+                    self.assertEqual(_anonymous_status('/areas'), 200)
+
+    def test_16_surrounding_whitespace_is_trimmed(self):
+        clients = f' one:{CLIENT_SECRET}:admin ,\ttwo:{SECOND_SECRET}:viewer\t'
+        env = {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': clients}
+        with _Gateway(self, env) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_status(SWEEP_BASE_URL, 'one', CLIENT_SECRET), 200)
+            self.assertEqual(_status(SWEEP_BASE_URL, 'two', SECOND_SECRET), 200)
 
 
 @launch_testing.post_shutdown_test()
 class TestEnvAuthContractShutdown(unittest.TestCase):
-    """Both gateways exit cleanly."""
+    """Every gateway exits cleanly and none printed a secret."""
 
     def test_exit_codes(self, proc_info, closed, disabled, file_closed):
         for proc in (closed, disabled, file_closed):
             launch_testing.asserts.assertExitCodes(
-                proc_info, allowable_exit_codes=ALLOWED_EXIT_CODES, process=proc
-            )
+                proc_info, allowable_exit_codes=ALLOWED_EXIT_CODES, process=proc)
 
     def test_no_secret_reached_the_log(self, proc_output, closed, disabled, file_closed):
-        """Nothing the gateway printed carries a secret it was given.
-
-        Container logs are shipped, aggregated and kept, so a secret echoed
-        once at startup outlives the process and reaches an audience nobody
-        chose. Checked post-shutdown, over the whole captured output rather
-        than a line somebody expected to be the risky one.
-
-        Concatenated with no separator: proc_output yields raw stream chunks
-        and a chunk boundary can fall mid-line, so joining with a newline
-        splices one into the text being searched.
-        """
+        # Concatenated with no separator: a chunk boundary can fall mid-line.
         for proc in (closed, disabled, file_closed):
-            text = ''.join(
-                output.text.decode(errors='replace') for output in proc_output[proc]
-            )
-            self.assertNotIn(
-                JWT_SECRET, text,
-                'MEDKIT_JWT_SECRET was echoed into the gateway log'
-            )
-            self.assertNotIn(
-                CLIENT_SECRET, text,
-                'a MEDKIT_CLIENTS client secret was echoed into the gateway log'
-            )
-            self.assertNotIn(
-                FILE_JWT_SECRET, text,
-                'a params-file jwt_secret was echoed into the gateway log'
-            )
-            # The malformed entry is the interesting one: a warning that quoted
-            # the entry to show what was wrong with it would publish the secret
-            # inside it.
-            self.assertNotIn(
-                MALFORMED_CLIENT_SECRET, text,
-                'the secret inside a malformed auth.clients entry was echoed '
-                'into the gateway log'
-            )
-            # A swapped entry puts the secret in the role field; a warning that
-            # quoted the role it could not recognise would print it.
-            self.assertNotIn(
-                SWAPPED_FILE_SECRET, text,
-                'the role field of a swapped auth.clients entry was echoed into the log')
-            self.assertNotIn(
-                SWAPPED_ENV_SECRET, text,
-                'the role field of a swapped MEDKIT_CLIENTS entry was echoed into the log')
-            self.assertNotIn(
-                PEER_AUTH_HEADER, text,
-                'the peer auth header was echoed into the gateway log')
-            # The blank entry is not an exemption and gets no line of its own;
-            # the two spaces are what an empty entry leaves in that message.
-            self.assertNotIn(
-                'auth.public_routes:  is answered', text,
-                'a blank auth.public_routes entry was logged as an exemption')
+            text = ''.join(out.text.decode(errors='replace') for out in proc_output[proc])
+            self.assertIn(READY_LINE, text, 'the capture holds no gateway startup line')
+            _assert_no_secret(self, text)
 
     @classmethod
     def tearDownClass(cls):
-        """Drop the params files, which exist only for this run."""
         shutil.rmtree(_PARAMS_DIR, ignore_errors=True)

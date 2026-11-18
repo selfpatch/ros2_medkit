@@ -51,7 +51,7 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
   when a cleared fault is raised again - and tracks all reporting sources
 - **Severity escalation**: Fault severity is updated if a higher severity is reported
 - **Persistent storage**: SQLite (default) or PostgreSQL backend ensures faults survive node restarts
-- **Debounce filtering** (optional): AUTOSAR DEM-style counter-based fault confirmation with per-entity threshold overrides
+- **Debounce filtering** (optional): AUTOSAR DEM-style counter-based fault confirmation with per-entity and per-fault_code threshold overrides
 - **Snapshot capture**: Captures topic data when faults are confirmed for debugging (the value snapshots are deleted when the fault is cleared, unless `snapshots.retain_on_clear` is set)
 - **Near-miss series**: Appends one entry per FAILED report that moved the debounce counter without confirming, bounded per fault code and retained when the fault is cleared
 - **Freeze-frame retention**: One compact JSON freeze-frame per fault code, retained across `clear_fault` (see below)
@@ -69,7 +69,9 @@ ros2 service call /fault_manager/clear_fault ros2_medkit_msgs/srv/ClearFault \
 | `healing_enabled`               | bool   | `false`                            | Enable automatic healing via PASSED events                                      |
 | `healing_threshold`             | int    | `3`                                | Counter value at which faults are healed                                        |
 | `auto_confirm_after_sec`        | double | `0.0`                              | Auto-confirm PREFAILED faults after timeout (0 = disabled)                      |
+| `report_fault_queue_depth`      | int    | `100`                              | Requests `~/report_fault` holds until read (1-65536, read-only); past it they are dropped without an answer |
 | `entity_thresholds.config_file` | string | `""`                               | Path to YAML file with per-entity debounce threshold overrides                  |
+| `fault_thresholds.config_file`  | string | `""`                               | Path to YAML file with per-fault_code debounce threshold overrides, applied on top of the entity ones |
 | `near_miss.max_per_fault`       | int    | `200`                              | Near-miss entries retained per fault code, oldest evicted first (0 = unlimited) |
 
 ### Snapshot Parameters
@@ -85,7 +87,7 @@ That single-writer property also shapes what each fault of a burst gets. Nothing
 | Parameter                             | Type     | Default         | Description                                                                                                                |
 | ------------------------------------- | -------- | --------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `snapshots.enabled`                   | bool     | `true`          | Enable/disable snapshot capture                                                                                            |
-| `snapshots.background_capture`        | bool     | `false`         | Use background subscriptions (caches latest message) vs on-demand capture                                                  |
+| `snapshots.background_capture`        | bool     | `false`         | Cache each configured topic's latest message vs on-demand capture; a topic absent at startup is cached once it appears     |
 | `snapshots.timeout_sec`               | double   | `1.0`           | Timeout waiting for topic message (on-demand mode)                                                                         |
 | `snapshots.max_message_size`          | int      | `65536`         | Maximum message size in bytes (larger messages skipped)                                                                    |
 | `snapshots.default_topics`            | string[] | `[]`            | Topics to capture for all faults                                                                                           |
@@ -174,7 +176,11 @@ rows written before the field existed.
 
 With per-entity thresholds the recorded `confirmation_threshold` is the one belonging to the
 **reporting source**, while the debounce counter is shared by every source of that fault code. It
-is therefore not by itself the distance to confirmation for the fault as a whole.
+is therefore not by itself the distance to confirmation for the fault as a whole. An entry in
+`fault_thresholds.config_file` that sets `confirmation_threshold` makes the two agree again: it
+resolves the same for every source, so the recorded threshold is the fault's own. An entry with
+only healing fields keeps the per-source threshold. The node warns
+once per code when two sources resolve different policies for it.
 
 Entries are kept and evicted in **arrival order**, not by their timestamps. Reporters carry their
 own clocks, so a report can arrive carrying a timestamp behind one already stored; ordering the
@@ -548,6 +554,78 @@ Leading slashes are optional - `"robot1"` and `"/robot1"` are equivalent.
 colcon build --packages-select ros2_medkit_fault_manager
 source install/setup.bash
 ```
+
+### ROS-free core
+
+The package has two parts. The core compiles without ROS and without DDS setup.
+`scripts/check_cores_without_ros` builds it with plain CMake, runs a check program against it with no
+ROS (a fault through `SqliteFaultStorage`, and `FaultManagerCore` with a clock the program sets), and
+fails when the program links rclcpp. The unit test suites link `fault_manager_lib`, which uses rclcpp,
+and some of them build an `rclcpp::Clock`.
+
+**Core** (`fault_manager_core`, static library, no ROS):
+
+- the storage backends (SQLite, in-memory, optional PostgreSQL), the threshold resolvers, the
+  correlation engine and the audit log;
+- `core::FaultManagerConfig`: every startup value, named after its parameter. `validate()` applies
+  the clamps and fallbacks and returns the lines to log as `ConfigNotice` values;
+- `core::build_core_parts()`: opens the storage and the audit log, loads the threshold and
+  correlation files. It throws when the storage or the audit log cannot be opened.
+  `core::reclassify_stale_healed()` is the startup pass for stale HEALED rows;
+- `core::FaultManagerCore`: `report`, `clear`, `list`, `get`, `list_for_entity`, `record_transition`
+  and `tick`. These calls run under one internal mutex.
+
+The core reaches the outside through four interfaces. The ROS adapter implements them.
+
+| Interface | Role |
+| --- | --- |
+| `core::EventSink` | `publish()` receives every fault event the core emits. |
+| `core::CaptureHooks` | `capture_now()` queues the snapshot and rosbag capture of a fault code. The core has already applied the recapture cooldown. `on_prefailed()` and `on_cleared()` notify the capture side. |
+| `core::WallClock` | `now_ns()` returns nanoseconds since the Unix epoch. |
+| `core::LogSink` | `log()` receives the log lines. |
+
+`EventSink` and `CaptureHooks` run inside the core mutex and must not call back into the core, or
+the call deadlocks. `LogSink::log()` is called from several threads at once (core callers and
+capture workers), so it must be thread-safe.
+
+`tick(wall_now_ns)` runs the periodic jobs that are due: time-based auto-confirmation
+every second and the correlation cleanup every `correlation.cleanup_interval_sec`. A job runs from half
+a period before its due time. After a run its next due time stays on the job's own grid, so a late
+tick does not delay the run after it. The core has no timer. The caller calls `tick` with the wall clock, at least as often as the shortest period it needs.
+
+The core returns `ros2_medkit::fault_detection` values (`FaultRecord`, `FaultEventRecord`) with
+nanosecond times.
+
+**ROS adapter** (`fault_manager_lib` and `fault_manager_node`): the services, the `FaultEvent`
+publisher, wall timers that call `tick`, the capture thread pool, snapshot and rosbag capture. It
+implements the four interfaces: `ros2::RosEventSink`, `ros2::RosCaptureHooks`,
+`ros2::SystemWallClock` and `ros2::RosLogSink`. It converts between the core values and the
+messages in `ros2/fault_msg_conversions.hpp`.
+
+### Plain-CMake build
+
+`cmake/fault_manager_core.cmake` is plain CMake (3.16 or newer, C++17), no ament. The ament build
+includes it by path, and so does `scripts/check_cores_without_ros`. The directories
+`ros2_medkit_fault_detection` and `ros2_medkit_fault_manager` must stay side by side, because the file
+finds the shared `fault_types.hpp` at `../ros2_medkit_fault_detection/include`. The file looks the
+libraries up itself when the project has not.
+
+| Dependency | When |
+| --- | --- |
+| SQLite3 | always |
+| OpenSSL (`OpenSSL::Crypto`) | always |
+| nlohmann_json | always |
+| yaml-cpp | always |
+| libpqxx >= 7.5 and PostgreSQL (libpq) | only with `-DPOSTGRES_SUPPORT=ON` |
+
+The core is built from a `core::FaultManagerConfig`: call `validate()` and log the notices, then
+`build_core_parts(config, sink)`, and pass the parts, the config and the four interface
+implementations to `FaultManagerCore`. The fault reporter core is a separate target, see
+`ros2_medkit_fault_reporter`. Both files can be included in one project and share the
+`ros2_medkit_fault_detection` target. Neither target is installed or exported.
+`scripts/check_cores_without_ros/run.sh` builds and runs both on Ubuntu 20.04 with gcc 9, the oldest
+compiler the cores are checked with. Ubuntu 20.04 does not package libpqxx 7.5, so the PostgreSQL
+backend is not built there. SQLite is the default.
 
 ## Testing
 

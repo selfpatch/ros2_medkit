@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ros2_medkit_gateway</name>
-  <version>0.7.0</version>
+  <version>0.7.1</version>
   <description>HTTP gateway for ros2_medkit diagnostics system</description>
 
   <maintainer email="bartoszburda93@gmail.com">bburda</maintainer>
@@ -28,6 +28,7 @@
   <depend>ros2_medkit_msgs</depend>
   <depend>ros2_medkit_serialization</depend>
   <depend>libsqlite3-dev</depend>
+  <depend>ros2_medkit_fault_detection</depend>
   <depend>rosidl_typesupport_cpp</depend>
   <depend>rosidl_typesupport_introspection_cpp</depend>
   <exec_depend>rosidl_runtime_py</exec_depend>
@@ -35,7 +36,6 @@
 
   <!-- bringup.launch.py composes the full local stack via IncludeLaunchDescription -->
   <exec_depend>ament_index_python</exec_depend>
-  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ros2_medkit_fault_manager</exec_depend>

@@ -405,9 +405,10 @@ Run validation:
 Common Issues
 -------------
 
-**"App X not found for function Y"**
+**"Function 'Y' hosts non-existent entity: X"**
 
-The ``hosted_by`` list references an app ID that doesn't exist.
+The ``hosted_by`` list names an ID that no entity in the manifest has (rule
+``R009``).
 
 .. code-block:: yaml
 

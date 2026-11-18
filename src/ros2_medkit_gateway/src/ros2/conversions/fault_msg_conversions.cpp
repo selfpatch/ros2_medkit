@@ -16,52 +16,46 @@
 
 #include <builtin_interfaces/msg/time.hpp>
 
+#include "ros2_medkit_gateway/core/faults/fault_json.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 
 namespace ros2_medkit_gateway::ros2::conversions {
 
+namespace fd = ros2_medkit::fault_detection;
+
 namespace {
 
-double to_seconds(const builtin_interfaces::msg::Time & t) {
-  return t.sec + static_cast<double>(t.nanosec) / 1e9;
+int64_t time_to_ns(const builtin_interfaces::msg::Time & t) {
+  return static_cast<int64_t>(t.sec) * 1000000000LL + t.nanosec;
 }
 
 }  // namespace
 
+fd::FaultRecord from_msg(const ros2_medkit_msgs::msg::Fault & msg) {
+  fd::FaultRecord record;
+  record.fault_code = msg.fault_code;
+  record.severity = msg.severity;
+  record.description = msg.description;
+  record.first_occurred_ns = time_to_ns(msg.first_occurred);
+  record.last_occurred_ns = time_to_ns(msg.last_occurred);
+  record.last_passed_ns = time_to_ns(msg.last_passed);
+  record.occurrence_count = msg.occurrence_count;
+  record.status = msg.status;
+  record.reporting_sources = msg.reporting_sources;
+  return record;
+}
+
+fd::FaultEventRecord from_msg(const ros2_medkit_msgs::msg::FaultEvent & msg) {
+  fd::FaultEventRecord record;
+  record.event_type = msg.event_type;
+  record.fault = from_msg(msg.fault);
+  record.timestamp_ns = time_to_ns(msg.timestamp);
+  record.auto_cleared_codes = msg.auto_cleared_codes;
+  return record;
+}
+
 nlohmann::json fault_to_json(const ros2_medkit_msgs::msg::Fault & fault) {
-  nlohmann::json j;
-  j["fault_code"] = fault.fault_code;
-  j["severity"] = fault.severity;
-  j["description"] = fault.description;
-  j["first_occurred"] = to_seconds(fault.first_occurred);
-  j["last_occurred"] = to_seconds(fault.last_occurred);
-  // Omitted while zero: the fault never reported a PASSED event.
-  if (fault.last_passed.sec != 0 || fault.last_passed.nanosec != 0u) {
-    j["last_passed"] = to_seconds(fault.last_passed);
-  }
-  j["occurrence_count"] = fault.occurrence_count;
-  j["status"] = fault.status;
-  j["reporting_sources"] = fault.reporting_sources;
-
-  switch (fault.severity) {
-    case ros2_medkit_msgs::msg::Fault::SEVERITY_INFO:
-      j["severity_label"] = "INFO";
-      break;
-    case ros2_medkit_msgs::msg::Fault::SEVERITY_WARN:
-      j["severity_label"] = "WARN";
-      break;
-    case ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR:
-      j["severity_label"] = "ERROR";
-      break;
-    case ros2_medkit_msgs::msg::Fault::SEVERITY_CRITICAL:
-      j["severity_label"] = "CRITICAL";
-      break;
-    default:
-      j["severity_label"] = "UNKNOWN";
-      break;
-  }
-
-  return j;
+  return fault_record_to_json(from_msg(fault));
 }
 
 nlohmann::json environment_data_to_json(const ros2_medkit_msgs::msg::EnvironmentData & env_data) {

@@ -15,6 +15,7 @@
 #pragma once
 
 #include "ros2_medkit_gateway/core/discovery/discovery_enums.hpp"
+#include "ros2_medkit_gateway/core/discovery/entity_discovery.hpp"
 #include "ros2_medkit_gateway/core/discovery/layers/manifest_layer.hpp"
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
@@ -35,6 +36,7 @@
 #include <optional>
 #include <rclcpp/rclcpp.hpp>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace ros2_medkit_serialization {
@@ -143,7 +145,7 @@ struct DiscoveryConfig {
  * @see discovery::MergePipeline
  * @see discovery::ManifestManager
  */
-class DiscoveryManager : public ServiceActionResolver {
+class DiscoveryManager : public ServiceActionResolver, public EntityDiscovery {
  public:
   /**
    * @brief Construct the discovery manager
@@ -205,6 +207,17 @@ class DiscoveryManager : public ServiceActionResolver {
    */
   std::vector<Function> discover_functions(const std::vector<App> & apps);
 
+  /**
+   * @brief Ids of the given Functions that only runtime introspection created
+   *
+   * Takes the same branch as discover_functions(): every Function runtime
+   * discovery returns, none from a manifest, and in hybrid mode the ids only
+   * the runtime layer contributed to the last merge.
+   *
+   * @param functions What discover_functions() returned in this refresh
+   */
+  std::unordered_set<std::string> introspection_only_function_ids(const std::vector<Function> & functions);
+
   // =========================================================================
   // Entity lookup by ID
   // =========================================================================
@@ -214,28 +227,28 @@ class DiscoveryManager : public ServiceActionResolver {
    * @param id Area identifier
    * @return Area if found
    */
-  std::optional<Area> get_area(const std::string & id);
+  std::optional<Area> get_area(const std::string & id) override;
 
   /**
    * @brief Get component by ID
    * @param id Component identifier
    * @return Component if found
    */
-  std::optional<Component> get_component(const std::string & id);
+  std::optional<Component> get_component(const std::string & id) override;
 
   /**
    * @brief Get app by ID
    * @param id App identifier
    * @return App if found
    */
-  std::optional<App> get_app(const std::string & id);
+  std::optional<App> get_app(const std::string & id) override;
 
   /**
    * @brief Get function by ID
    * @param id Function identifier
    * @return Function if found
    */
-  std::optional<Function> get_function(const std::string & id);
+  std::optional<Function> get_function(const std::string & id) override;
 
   // =========================================================================
   // Relationship queries
@@ -378,7 +391,7 @@ class DiscoveryManager : public ServiceActionResolver {
    * default-constructed ManifestConfig in those cases - the same values the
    * pipeline itself runs with.
    */
-  discovery::ManifestConfig get_manifest_config() const;
+  discovery::ManifestConfig get_manifest_config() const override;
 
   /**
    * @brief Re-read the manifest configuration into the running pipeline
@@ -412,7 +425,7 @@ class DiscoveryManager : public ServiceActionResolver {
    * @brief Get current discovery mode
    * @return Active discovery mode
    */
-  DiscoveryMode get_mode() const {
+  DiscoveryMode get_mode() const override {
     return config_.mode;
   }
 
@@ -420,19 +433,19 @@ class DiscoveryManager : public ServiceActionResolver {
    * @brief Get a human-readable name for the active discovery configuration.
    * @return One of "runtime", "manifest", "hybrid".
    */
-  std::string get_strategy_name() const;
+  std::string get_strategy_name() const override;
 
   /**
    * @brief Get the last merge pipeline report (hybrid mode only)
    * @return MergeReport if in hybrid mode, nullopt otherwise
    */
-  std::optional<discovery::MergeReport> get_merge_report() const;
+  std::optional<discovery::MergeReport> get_merge_report() const override;
 
   /**
    * @brief Get the last linking result (hybrid mode only)
    * @return LinkingResult if in hybrid mode, nullopt otherwise
    */
-  std::optional<discovery::LinkingResult> get_linking_result() const;
+  std::optional<discovery::LinkingResult> get_linking_result() const override;
 
  private:
   /**

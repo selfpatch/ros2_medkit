@@ -13,26 +13,35 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/rest_server.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cinttypes>
 #include <exception>
 #include <limits>
-#include <rclcpp/rclcpp.hpp>
 #include <stdexcept>
 #include <type_traits>
 
+#include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_middleware.hpp"
+#include "ros2_medkit_gateway/core/fault_trigger_engine.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/http/parameter_error_classification.hpp"
+#include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
+#include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/script_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/subscription_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/update_manager.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/resource_sampler.hpp"
+#include "ros2_medkit_gateway/core/subscription_transport.hpp"
 #include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/dto/fault_triggers.hpp"
 #include "ros2_medkit_gateway/dto/sse_frames.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/detail/status_recorder.hpp"
-#include "ros2_medkit_gateway/ros2/status/ros2_lifecycle_state_reader.hpp"
 
 #include "../openapi/route_registry.hpp"
 #include "../openapi/schema_builder.hpp"
@@ -59,20 +68,20 @@ struct HttplibExceptionHandlerAdapter {
       if (ep) {
         std::rethrow_exception(ep);
       }
-      RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled empty exception_ptr");
+      MEDKIT_LOG_ERROR(log::Logger("rest_server"), "Unhandled empty exception_ptr");
       set_internal_server_error(res, "Unknown exception");
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled exception: %s", e.what());
+      MEDKIT_LOG_ERROR(log::Logger("rest_server"), "Unhandled exception: %s", e.what());
       set_internal_server_error(res, "An internal error occurred");
     } catch (...) {
-      RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unknown exception caught");
+      MEDKIT_LOG_ERROR(log::Logger("rest_server"), "Unknown exception caught");
       set_internal_server_error(res, "An internal error occurred");
     }
   }
 
   // Older cpp-httplib versions pass std::exception directly.
   void operator()(const httplib::Request & /*req*/, httplib::Response & res, const std::exception & e) const {
-    RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "Unhandled exception: %s", e.what());
+    MEDKIT_LOG_ERROR(log::Logger("rest_server"), "Unhandled exception: %s", e.what());
     set_internal_server_error(res, "An internal error occurred");
   }
 };
@@ -82,10 +91,11 @@ static_assert(std::is_constructible_v<httplib::Server::ExceptionHandler, Httplib
 
 }  // namespace
 
-RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
+RESTServer::RESTServer(GatewayServices & services, std::shared_ptr<LifecycleStateReader> lifecycle_reader,
+                       const std::string & host, int port, const CorsConfig & cors_config,
                        const AuthConfig & auth_config, const RateLimitConfig & rate_limit_config,
-                       const TlsConfig & tls_config)
-  : node_(node)
+                       const RestConfig & rest_config, const TlsConfig & tls_config)
+  : services_(services)
   , host_(host)
   , port_(port)
   , cors_config_(cors_config)
@@ -104,31 +114,31 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   // (default 2s) to recover workers quickly while retaining reuse.
   // Both clamps report when they fire: the pool that ends up serving requests
   // must be traceable to the config file that asked for it.
-  const auto requested_pool_size = node_->get_parameter("server.http_thread_pool_size").as_int();
+  const auto requested_pool_size = rest_config.http_thread_pool_size;
   const auto http_thread_pool_size = clamp_thread_count(requested_pool_size, 1, 1024);
   if (static_cast<int64_t>(http_thread_pool_size) != requested_pool_size) {
-    RCLCPP_WARN(rclcpp::get_logger("rest_server"), "server.http_thread_pool_size %" PRId64 " clamped to %zu",
-                requested_pool_size, http_thread_pool_size);
+    MEDKIT_LOG_WARN(log::Logger("rest_server"), "server.http_thread_pool_size %" PRId64 " clamped to %zu",
+                    requested_pool_size, http_thread_pool_size);
   }
-  const auto requested_keep_alive = node_->get_parameter("server.keep_alive_timeout_sec").as_int();
+  const auto requested_keep_alive = rest_config.keep_alive_timeout_sec;
   const auto keep_alive_timeout_sec = clamp_keep_alive_timeout(requested_keep_alive, 1, 3600);
   if (static_cast<int64_t>(keep_alive_timeout_sec) != requested_keep_alive) {
-    RCLCPP_WARN(rclcpp::get_logger("rest_server"), "server.keep_alive_timeout_sec %" PRId64 " clamped to %" PRId64,
-                requested_keep_alive, static_cast<int64_t>(keep_alive_timeout_sec));
+    MEDKIT_LOG_WARN(log::Logger("rest_server"), "server.keep_alive_timeout_sec %" PRId64 " clamped to %" PRId64,
+                    requested_keep_alive, static_cast<int64_t>(keep_alive_timeout_sec));
   }
   http_server_ = std::make_unique<HttpServerManager>(tls_config_, http_thread_pool_size, keep_alive_timeout_sec);
-  RCLCPP_INFO(rclcpp::get_logger("rest_server"),
-              "HTTP request thread pool bounded to %zu workers (each active SSE stream holds one), "
-              "keep-alive timeout %" PRId64 "s",
-              http_thread_pool_size, static_cast<int64_t>(keep_alive_timeout_sec));
+  MEDKIT_LOG_INFO(log::Logger("rest_server"),
+                  "HTTP request thread pool bounded to %zu workers (each active SSE stream holds one), "
+                  "keep-alive timeout %" PRId64 "s",
+                  http_thread_pool_size, static_cast<int64_t>(keep_alive_timeout_sec));
 
   // Set maximum payload size for uploads (cpp-httplib default is 8MB)
   auto * srv = http_server_->get_server();
   if (srv) {
-    size_t max_payload = node_->get_bulk_data_store() ? node_->get_bulk_data_store()->max_upload_bytes() : 0;
+    size_t max_payload = services_.bulk_data_store() ? services_.bulk_data_store()->max_upload_bytes() : 0;
     if (max_payload > 0) {
       srv->set_payload_max_length(max_payload);
-      RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Max payload length set to %zu bytes", max_payload);
+      MEDKIT_LOG_INFO(log::Logger("rest_server"), "Max payload length set to %zu bytes", max_payload);
     }
   }
 
@@ -136,23 +146,23 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   if (auth_config_.enabled) {
     auth_manager_ = std::make_unique<AuthManager>(auth_config_);
     auth_middleware_ = std::make_unique<AuthMiddleware>(auth_config_, auth_manager_.get());
-    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Authentication enabled - algorithm: %s, require_auth_for: %s",
-                algorithm_to_string(auth_config_.jwt_algorithm).c_str(),
-                auth_config_.require_auth_for == AuthRequirement::NONE    ? "none"
-                : auth_config_.require_auth_for == AuthRequirement::WRITE ? "write"
-                                                                          : "all");
+    MEDKIT_LOG_INFO(log::Logger("rest_server"), "Authentication enabled - algorithm: %s, require_auth_for: %s",
+                    algorithm_to_string(auth_config_.jwt_algorithm).c_str(),
+                    auth_config_.require_auth_for == AuthRequirement::NONE    ? "none"
+                    : auth_config_.require_auth_for == AuthRequirement::WRITE ? "write"
+                                                                              : "all");
   }
 
   // Initialize rate limiter if enabled
   if (rate_limit_config.enabled) {
     rate_limiter_ = std::make_unique<RateLimiter>(rate_limit_config);
-    RCLCPP_INFO(rclcpp::get_logger("rest_server"), "Rate limiting enabled - global: %d rpm, per-client: %d rpm",
-                rate_limit_config.global_requests_per_minute, rate_limit_config.client_requests_per_minute);
+    MEDKIT_LOG_INFO(log::Logger("rest_server"), "Rate limiting enabled - global: %d rpm, per-client: %d rpm",
+                    rate_limit_config.global_requests_per_minute, rate_limit_config.client_requests_per_minute);
   }
 
   // Create handler context and domain-specific handlers
-  handler_ctx_ = std::make_unique<handlers::HandlerContext>(node_, cors_config_, auth_config_, tls_config_,
-                                                            auth_manager_.get(), node_->get_bulk_data_store());
+  handler_ctx_ = std::make_unique<handlers::HandlerContext>(services_, cors_config_, auth_config_, tls_config_,
+                                                            auth_manager_.get(), services_.bulk_data_store());
 
   // Create route registry before handlers that need it (HealthHandlers, DocsHandlers).
   // Routes are populated later in setup_routes(), but both handlers only access
@@ -172,19 +182,19 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   // absence that `HandlerContext::validate_lock_access` short-circuits on. This
   // is the same source `get_root` reports `capabilities.locking` from, so the
   // document and the root cannot disagree.
-  route_registry_->set_locking_enabled(node_->get_lock_manager() != nullptr);
+  route_registry_->set_locking_enabled(services_.lock_manager() != nullptr);
 
   // Taken before the handlers that read it: /health reports how much of the
   // SSE client cap is in use, and a tracker fetched afterwards would reach
   // HealthHandlers as a null pointer and silently omit the field.
-  sse_client_tracker_ = node_->get_sse_client_tracker();
+  sse_client_tracker_ = services_.sse_client_tracker();
 
-  health_handlers_ =
-      std::make_unique<handlers::HealthHandlers>(*handler_ctx_, route_registry_.get(), sse_client_tracker_);
+  health_handlers_ = std::make_unique<handlers::HealthHandlers>(
+      *handler_ctx_, route_registry_.get(), sse_client_tracker_, rest_config.docs_enabled, rest_config);
   discovery_handlers_ = std::make_unique<handlers::DiscoveryHandlers>(*handler_ctx_);
   data_handlers_ = std::make_unique<handlers::DataHandlers>(*handler_ctx_);
-  lifecycle_handlers_ = std::make_unique<handlers::LifecycleHandlers>(
-      *handler_ctx_, node_->get_plugin_manager(), std::make_shared<Ros2LifecycleStateReader>(node_));
+  lifecycle_handlers_ = std::make_unique<handlers::LifecycleHandlers>(*handler_ctx_, services_.plugin_manager(),
+                                                                      std::move(lifecycle_reader));
   operation_handlers_ = std::make_unique<handlers::OperationHandlers>(*handler_ctx_);
   config_handlers_ = std::make_unique<handlers::ConfigHandlers>(*handler_ctx_);
   fault_handlers_ = std::make_unique<handlers::FaultHandlers>(*handler_ctx_);
@@ -195,11 +205,11 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   // disagree with no way to see it from outside.
   constexpr int64_t kMinKeepaliveSec = 1;
   constexpr int64_t kMaxKeepaliveSec = 3600;
-  const int64_t keepalive_raw = node_->get_parameter("sse.keepalive_interval_sec").as_int();
+  const int64_t keepalive_raw = rest_config.sse_keepalive_interval_sec;
   const int64_t keepalive_used = std::clamp<int64_t>(keepalive_raw, kMinKeepaliveSec, kMaxKeepaliveSec);
   if (keepalive_used != keepalive_raw) {
-    RCLCPP_WARN(node_->get_logger(), "sse.keepalive_interval_sec %" PRId64 " clamped to %" PRId64, keepalive_raw,
-                keepalive_used);
+    MEDKIT_LOG_WARN(log::Logger(rest_config.logger_name), "sse.keepalive_interval_sec %" PRId64 " clamped to %" PRId64,
+                    keepalive_raw, keepalive_used);
   }
   sse_fault_handler_ = std::make_unique<handlers::SSEFaultHandler>(*handler_ctx_, sse_client_tracker_,
                                                                    std::chrono::seconds(keepalive_used));
@@ -208,30 +218,32 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   // INT_MAX into a small positive one that passes the check, so 4294967300
   // would silently cap every subscription at 4 seconds. The warning names the
   // requested value, otherwise the operator cannot tell which value was refused.
-  const int64_t max_duration_raw = node_->get_parameter("sse.max_duration_sec").as_int();
+  const int64_t max_duration_raw = rest_config.sse_max_duration_sec;
   int max_duration_sec = 3600;
   if (max_duration_raw < 1 || max_duration_raw > std::numeric_limits<int>::max()) {
-    RCLCPP_WARN(rclcpp::get_logger("rest_server"),
-                "sse.max_duration_sec %" PRId64 " must be in [1, 2147483647]. Using default 3600.", max_duration_raw);
+    MEDKIT_LOG_WARN(log::Logger("rest_server"),
+                    "sse.max_duration_sec %" PRId64 " must be in [1, 2147483647]. Using default 3600.",
+                    max_duration_raw);
   } else {
     max_duration_sec = static_cast<int>(max_duration_raw);
   }
   cyclic_sub_handlers_ = std::make_unique<handlers::CyclicSubscriptionHandlers>(
-      *handler_ctx_, *node_->get_subscription_manager(), *node_->get_sampler_registry(),
-      *node_->get_transport_registry(), max_duration_sec);
+      *handler_ctx_, *services_.subscription_manager(), *services_.sampler_registry(), *services_.transport_registry(),
+      max_duration_sec);
 
-  if (node_->get_update_manager()) {
-    update_handlers_ = std::make_unique<handlers::UpdateHandlers>(*handler_ctx_, node_->get_update_manager());
+  if (services_.update_manager()) {
+    update_handlers_ = std::make_unique<handlers::UpdateHandlers>(*handler_ctx_, services_.update_manager());
   }
 
-  lock_handlers_ = std::make_unique<handlers::LockHandlers>(*handler_ctx_, node_->get_lock_manager());
+  lock_handlers_ = std::make_unique<handlers::LockHandlers>(*handler_ctx_, services_.lock_manager());
 
-  if (node_->get_script_manager()) {
-    script_handlers_ = std::make_unique<handlers::ScriptHandlers>(*handler_ctx_, node_->get_script_manager());
+  if (services_.script_manager()) {
+    script_handlers_ = std::make_unique<handlers::ScriptHandlers>(*handler_ctx_, services_.script_manager());
   }
 
-  docs_handlers_ = std::make_unique<handlers::DocsHandlers>(*handler_ctx_, *node_, node_->get_plugin_manager(),
-                                                            route_registry_.get());
+  docs_handlers_ = std::make_unique<handlers::DocsHandlers>(
+      *handler_ctx_, services_.plugin_manager(), route_registry_.get(), rest_config.docs_enabled,
+      rest_config.server_host, rest_config.server_port, rest_config);
 
   // Set up global error handlers for SOVD GenericError compliance
   setup_global_error_handlers();
@@ -240,10 +252,10 @@ RESTServer::RESTServer(GatewayNode * node, const std::string & host, int port, c
   setup_routes();
 
   // Register plugin custom routes
-  if (node_->get_plugin_manager()) {
+  if (services_.plugin_manager()) {
     auto * plugin_srv = http_server_->get_server();
     if (plugin_srv) {
-      node_->get_plugin_manager()->register_routes(*plugin_srv, API_BASE_PATH);
+      services_.plugin_manager()->register_routes(*plugin_srv, API_BASE_PATH);
     }
   }
 }
@@ -317,25 +329,8 @@ void RESTServer::setup_pre_routing_handler() {
         }
       }
 
-      // 2. Handle preflight OPTIONS requests.
-      //
-      // This is answered WITHOUT a credential, and it has to be. A browser
-      // never puts Authorization on a preflight - asking permission before
-      // sending the real request, headers included, is the entire purpose of
-      // the mechanism - so requiring one here does not harden the gateway, it
-      // makes every browser client impossible.
-      //
-      // It is safe because a preflight discloses nothing about the system: the
-      // response is the CORS policy for an origin the operator configured, with
-      // no body, and the real request that follows is authenticated normally.
-      // Treat this as a named exemption alongside /auth/, not as an oversight.
-      // A real preflight carries Access-Control-Request-Method; the browser
-      // sends it to ask whether the method it is about to use is allowed.
-      // Requiring it is what keeps the exemption to the case that genuinely
-      // cannot authenticate: matching on the method and the origin alone would
-      // let a plain anonymous OPTIONS take this early return, which is
-      // "OPTIONS is public", which is wider than "a preflight is public".
-      if (req.method == "OPTIONS" && req.has_header("Access-Control-Request-Method")) {
+      // 2. Handle preflight OPTIONS requests
+      if (req.method == "OPTIONS") {
         if (origin_allowed) {
           res.set_header("Access-Control-Max-Age", std::to_string(cors_config_.max_age_seconds));
           res.status = 204;
@@ -346,84 +341,28 @@ void RESTServer::setup_pre_routing_handler() {
       }
     }
 
-    // 3. Rate limiting is METERED here, and ANSWERED at one of two later
-    // points depending on what the caller presented.
-    //
-    // Metering before authentication makes every request spend its allowance,
-    // a refused one included, so a flood of bad credentials cannot run free.
-    // The cost of the refusal is the other half: an over-limit caller sending
-    // any Authorization header at all pays for a signature verification per
-    // request under the old order, which under RS256 is the expensive path.
-    //
-    // The X-RateLimit-* headers are NOT written here. They report how much
-    // allowance is left and when it resets, which is limiter state, and at
-    // metering time nothing is known about the caller yet. They go on at step
-    // 5, where the caller has been accepted or the route needs nobody.
-    bool rate_limited = false;
-    RateLimitResult rl_result;
-    bool rate_metered = false;
-    // Every method reaching this line is metered, OPTIONS included. With CORS
-    // on, a preflight - an OPTIONS carrying Access-Control-Request-Method -
-    // has already been answered at step 2; with CORS off there is no preflight
-    // to exempt. Any other OPTIONS is an ordinary request to a route: where the
-    // route needs a credential it runs the token verifier like any other
-    // request, so it spends allowance like any other. The exemption belongs
-    // to the preflight; one for the method would let a flood of plain OPTIONS
-    // cost a signature check each for free.
-    if (rate_limiter_ && rate_limiter_->is_enabled()) {
-      rl_result = rate_limiter_->check(req.remote_addr, req.path);
-      rate_limited = !rl_result.allowed;
-      rate_metered = true;
-    }
-
-    // 4. Authentication, with the limiter given the first word where it has
-    // one to say.
-    if (auth_middleware_ && auth_middleware_->is_enabled()) {
-      auto auth_request = AuthMiddleware::from_httplib_request(req);
-
-      // An exhausted caller who presented an Authorization header is already
-      // being refused, so the signature never needs checking - see
-      // rate_limit_precedes_validation for the three conditions and why the
-      // header is one of them. The `&&` order matters: the route question is a
-      // policy lookup, and it is asked only on the path that can use the
-      // answer.
-      if (rate_limited && auth_request.authorization_header.has_value() &&
-          AuthMiddleware::rate_limit_precedes_validation(rate_limited, true,
-                                                         auth_middleware_->requires_authentication(auth_request))) {
-        // Bare: the refusal and nothing about the limiter. Whoever holds this
-        // header has not been verified, so the allowance, the reset time and
-        // the retry delay stay behind the credential check they would
-        // otherwise sit in front of.
-        RateLimiter::apply_bare_rejection(res);
+    // 3. Rate limiting check. If rejected, return Handled (CORS headers already set)
+    if (rate_limiter_ && rate_limiter_->is_enabled() && req.method != "OPTIONS") {
+      auto rl_result = rate_limiter_->check(req.remote_addr, req.path);
+      RateLimiter::apply_headers(rl_result, res);
+      if (!rl_result.allowed) {
+        RateLimiter::apply_rejection(rl_result, res);
         return handled(req, res);
       }
+    }
 
-      // A caller with no credential keeps the anonymous 401. `process` returns
-      // on the missing Authorization header before it extracts or verifies
-      // anything, so that refusal already costs nothing beyond the route
-      // lookup - which is the whole of what refusing it earlier would buy. A
-      // second refusal path here would produce a 401 of a different shape from
-      // every other one: no WWW-Authenticate and no error document, so a
-      // client could not tell a missing credential from an expired one, and
-      // the difference is itself a signal about which of the two decided.
+    // 1. Handle CORS (existing logic)
+
+    // Handle Authentication if enabled
+    if (auth_middleware_ && auth_middleware_->is_enabled()) {
+      // Use AuthMiddleware to process the request
+      auto auth_request = AuthMiddleware::from_httplib_request(req);
       auto result = auth_middleware_->process(auth_request);
 
       if (!result.allowed) {
         AuthMiddleware::apply_to_response(result, res);
         return handled(req, res);
       }
-    }
-
-    // 5. Now the limiter may speak on every remaining request, headers
-    // included. The caller reached this line with a credential this gateway
-    // accepts, or on a route that needs none, so the allowance and the reset
-    // time tell them something they are entitled to know.
-    if (rate_metered) {
-      RateLimiter::apply_headers(rl_result, res);
-    }
-    if (rate_limited) {
-      RateLimiter::apply_rejection(rl_result, res);
-      return handled(req, res);
     }
 
     return httplib::Server::HandlerResponse::Unhandled;
@@ -438,7 +377,15 @@ void RESTServer::setup_global_error_handlers() {
 
   // Global error handler - catches HTTP errors like 404 Not Found
   // Only set error content if no content has been set by a handler
-  srv->set_error_handler([](const httplib::Request & /*req*/, httplib::Response & res) {
+  srv->set_error_handler([](const httplib::Request & req, httplib::Response & res) {
+    // A Range selects part of a file, never part of an error. cpp-httplib calls this
+    // handler for every status from 400 up and applies req.ranges right after it, to
+    // whatever body the error carries. That covers the 401, 403 and 429 the
+    // pre-routing handler answers before any route runs: a client resuming a download
+    // with an expired token got an empty 416 instead of the 401.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+    const_cast<httplib::Request &>(req).ranges.clear();
+
     // If the response already has content (from a handler's send_error), don't overwrite it
     if (!res.body.empty()) {
       return;
@@ -620,7 +567,7 @@ void RESTServer::setup_routes() {
     route_registry_
         ->raw("get", "/apps/{app_id}/fault-triggers",
               [this, ft_engine_absent](const httplib::Request & req, httplib::Response & res) {
-                auto * engine = node_->get_fault_trigger_engine();
+                auto * engine = services_.fault_trigger_engine();
                 if (!engine) {
                   ft_engine_absent(res);
                   return;
@@ -651,7 +598,7 @@ void RESTServer::setup_routes() {
     route_registry_
         ->raw("post", "/apps/{app_id}/fault-triggers",
               [this, ft_json_error, ft_engine_absent](const httplib::Request & req, httplib::Response & res) {
-                auto * engine = node_->get_fault_trigger_engine();
+                auto * engine = services_.fault_trigger_engine();
                 if (!engine) {
                   ft_engine_absent(res);
                   return;
@@ -722,7 +669,7 @@ void RESTServer::setup_routes() {
     route_registry_
         ->raw("delete", "/apps/{app_id}/fault-triggers/{trigger_id}",
               [this, ft_json_error, ft_engine_absent](const httplib::Request & req, httplib::Response & res) {
-                auto * engine = node_->get_fault_trigger_engine();
+                auto * engine = services_.fault_trigger_engine();
                 if (!engine) {
                   ft_engine_absent(res);
                   return;
@@ -759,6 +706,44 @@ void RESTServer::setup_routes() {
     std::string result = s;
     result[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(result[0])));
     return result;
+  };
+
+  // Routes of one rosbag recording, addressed by recording id. Registered for every
+  // entity path the bulk-data download exists on.
+  auto register_recording_routes = [this, &reg, &capitalize](const std::string & entity_path,
+                                                             const std::string & singular) {
+    reg.json_document(
+           entity_path + "/bulk-data/rosbags/{recording_id}/manifest",
+           [this](http::TypedRequest req) -> http::Result<std::string> {
+             return bulkdata_handlers_->recording_manifest(req);
+           },
+           "Recording manifest", handlers::BulkDataHandlers::recording_manifest_schema())
+        .tag("Bulk Data")
+        .requires_role(UserRole::VIEWER)
+        .summary(std::string("Get the manifest of a rosbag recording for ") + singular)
+        .description(
+            "Returns the recording's manifest.json byte for byte: its storage files in order, each "
+            "with size and sha256, and their total size. 404 with vendor code "
+            "x-medkit-recording-not-found only when no recording has this id.")
+        // 503 when the fault manager did not answer.
+        .errors({503})
+        .operation_id(std::string("get") + capitalize(singular) + "RecordingManifest");
+
+    reg.binary_download(entity_path + "/bulk-data/rosbags/{recording_id}/files/{index}",
+                        [this](http::TypedRequest req) -> http::Result<http::BinaryResponse> {
+                          return bulkdata_handlers_->recording_file(req);
+                        },
+                        {"application/octet-stream"})
+        .tag("Bulk Data")
+        .requires_role(UserRole::VIEWER)
+        .summary(std::string("Download one storage file of a rosbag recording for ") + singular)
+        .description(
+            "Downloads storage file `files[index]` of the recording's manifest. Supports Range. 404 "
+            "with vendor code x-medkit-recording-not-found only when no recording has this id.")
+        // 503 when the fault manager did not answer. 416, for a Range outside the
+        // file, is declared on every operation already.
+        .errors({503})
+        .operation_id(std::string("download") + capitalize(singular) + "RecordingFile");
   };
 
   // === Server endpoints ===
@@ -1371,6 +1356,8 @@ void RESTServer::setup_routes() {
         .requires_role(UserRole::VIEWER)
         .summary(std::string("List bulk-data descriptors for ") + et.singular)
         .description(std::string("Lists downloadable files in a bulk-data category for this ") + et.singular + ".")
+        // 503 when a recordings listing cannot be read in full. A 200 is complete.
+        .errors({503})
         .operation_id(std::string("list") + capitalize(et.singular) + "BulkDataDescriptors");
 
     reg.binary_download(
@@ -1384,6 +1371,8 @@ void RESTServer::setup_routes() {
         .summary(std::string("Download bulk-data file for ") + et.singular)
         .description("Downloads a bulk-data file (binary content).")
         .operation_id(std::string("download") + capitalize(et.singular) + "BulkData");
+
+    register_recording_routes(entity_path, et.singular);
 
     // Upload: only for apps and components (405 for areas and functions)
     std::string et_type_str = et.type;
@@ -2157,6 +2146,7 @@ void RESTServer::setup_routes() {
       .requires_role(UserRole::VIEWER)
       .summary("List bulk-data descriptors for subarea")
       .description("Lists bulk-data descriptors for a subarea.")
+      .errors({503})
       .operation_id("listSubareaBulkDataDescriptors");
 
   reg.binary_download(
@@ -2170,6 +2160,8 @@ void RESTServer::setup_routes() {
       .summary("Download bulk-data file for subarea")
       .description("Downloads a bulk-data file for a subarea.")
       .operation_id("downloadSubareaBulkData");
+
+  register_recording_routes("/areas/{area_id}/subareas/{subarea_id}", "subarea");
 
   // === Nested entities - subcomponents bulk-data ===
   reg.get<dto::BulkDataCategoryList>("/components/{component_id}/subcomponents/{subcomponent_id}/bulk-data",
@@ -2191,6 +2183,7 @@ void RESTServer::setup_routes() {
       .requires_role(UserRole::VIEWER)
       .summary("List bulk-data descriptors for subcomponent")
       .description("Lists bulk-data descriptors for a subcomponent.")
+      .errors({503})
       .operation_id("listSubcomponentBulkDataDescriptors");
 
   reg.binary_download(
@@ -2204,6 +2197,8 @@ void RESTServer::setup_routes() {
       .summary("Download bulk-data file for subcomponent")
       .description("Downloads a bulk-data file for a subcomponent.")
       .operation_id("downloadSubcomponentBulkData");
+
+  register_recording_routes("/components/{component_id}/subcomponents/{subcomponent_id}", "subcomponent");
 
   // === Global faults ===
   //
@@ -2262,6 +2257,13 @@ void RESTServer::setup_routes() {
       // 503 when the fault store cannot be read - same branch as the
       // per-entity list, and equally out of the recorder's reach.
       .errors({503})
+      .fan_out_aware()
+      .header_param(kFanOutVisitedHeader,
+                    "Set by an aggregating gateway on its own fan-out of this operation: the instance ids of "
+                    "the gateways the request has passed through, comma-separated. A gateway on that path "
+                    "answers an empty list, any other answers for itself and asks those of its peers not on "
+                    "it. Takes precedence over X-Medkit-No-Fan-Out. Clients do not send it.",
+                    /*required=*/false)
       .operation_id("listAllFaults")
       .query<dto::FaultListQuery>();
 
@@ -2650,20 +2652,20 @@ void RESTServer::report_route_metadata_issues() const {
   for (const auto & issue : route_registry_->validate_completeness()) {
     if (issue.severity == openapi::ValidationIssue::Severity::kError) {
       ++errors;
-      RCLCPP_ERROR(rclcpp::get_logger("rest_server"), "OpenAPI metadata error on %s: %s", issue.route.c_str(),
-                   issue.message.c_str());
+      MEDKIT_LOG_ERROR(log::Logger("rest_server"), "OpenAPI metadata error on %s: %s", issue.route.c_str(),
+                       issue.message.c_str());
     } else {
       ++warnings;
-      RCLCPP_WARN(rclcpp::get_logger("rest_server"), "OpenAPI metadata warning on %s: %s", issue.route.c_str(),
-                  issue.message.c_str());
+      MEDKIT_LOG_WARN(log::Logger("rest_server"), "OpenAPI metadata warning on %s: %s", issue.route.c_str(),
+                      issue.message.c_str());
     }
   }
-  RCLCPP_INFO(rclcpp::get_logger("rest_server"),
-              "OpenAPI metadata check: %zu error(s), %zu warning(s) across %zu route(s)", errors, warnings,
-              route_registry_->size());
+  MEDKIT_LOG_INFO(log::Logger("rest_server"),
+                  "OpenAPI metadata check: %zu error(s), %zu warning(s) across %zu route(s)", errors, warnings,
+                  route_registry_->size());
   if (errors > 0) {
-    RCLCPP_ERROR(rclcpp::get_logger("rest_server"),
-                 "Routes above publish incomplete OpenAPI metadata; generated clients will be wrong for them");
+    MEDKIT_LOG_ERROR(log::Logger("rest_server"),
+                     "Routes above publish incomplete OpenAPI metadata; generated clients will be wrong for them");
   }
 }
 

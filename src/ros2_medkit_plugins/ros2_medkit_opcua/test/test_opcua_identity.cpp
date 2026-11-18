@@ -55,6 +55,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -67,6 +68,7 @@
 #include <ros2_medkit_msgs/srv/get_fault.hpp>
 #include <ros2_medkit_msgs/srv/report_fault.hpp>
 
+#include "link_proxy.hpp"
 #include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 
 #ifndef MEDKIT_ALARM_SERVER_BIN
@@ -175,8 +177,8 @@ class FakePluginContext : public RosPluginContext {
 
 namespace {
 
-// Reserve an ephemeral loopback port and release it (best-effort; a race with
-// the fixture bind is unlikely on a test host and retried by the caller).
+// Reserve an ephemeral loopback port and release it. Another process can take
+// it before the fixture binds it; AlarmServer::start_on_new_port then moves on.
 int reserve_local_port() {
   int sock = socket(AF_INET, SOCK_STREAM, 0);
   if (sock < 0) {
@@ -197,29 +199,44 @@ int reserve_local_port() {
   return port;
 }
 
+// Starts on newly reserved ports before AlarmServer::start_on_new_port gives up.
+constexpr int kFixtureStartAttempts = 3;
+
 // Boots the test_alarm_server binary as a child process and blocks until it
-// prints the "READY " handshake line on stdout. SIGTERM on teardown.
+// prints the "READY " line, which it does once it listens. Keeps the output of
+// every fixture it ran; report_if_failed() and the destructor print it once when
+// the running test has failed. SIGTERM on teardown.
 class AlarmServer {
  public:
   AlarmServer() = default;
   ~AlarmServer() {
     stop();
+    report_if_failed();
   }
-  // Owns a child process and its pipe descriptors, so a member-wise copy or move
-  // would leave two objects stopping the same process and closing the same
-  // descriptors.
+  // Owns a child process, its pipe descriptors and the thread reading them, so a
+  // member-wise copy or move would leave two objects stopping the same process
+  // and closing the same descriptors.
   AlarmServer(const AlarmServer &) = delete;
   AlarmServer & operator=(const AlarmServer &) = delete;
   AlarmServer(AlarmServer &&) = delete;
   AlarmServer & operator=(AlarmServer &&) = delete;
 
+  // One start on ``port``. False when the fixture exits or stays silent instead
+  // of printing READY; its output then goes to stderr.
   bool start(const std::string & binary, int port, const std::vector<std::string> & extra_args = {}) {
+    {
+      std::lock_guard<std::mutex> lock(output_mutex_);
+      output_.clear();
+    }
+    wait_status_ = -1;
+    port_ = port;
+    // Close-on-exec, so a later fixture child does not hold these pipes open.
     int pipefd[2];
-    if (pipe(pipefd) != 0) {
+    if (pipe2(pipefd, O_CLOEXEC) != 0) {
       return false;
     }
     int stdin_pipe[2];
-    if (pipe(stdin_pipe) != 0) {
+    if (pipe2(stdin_pipe, O_CLOEXEC) != 0) {
       close(pipefd[0]);
       close(pipefd[1]);
       return false;
@@ -253,7 +270,29 @@ class AlarmServer {
     close(stdin_pipe[0]);
     read_fd_ = pipefd[0];
     write_fd_ = stdin_pipe[1];
-    return wait_for_ready(15000);
+    if (wait_for_ready(15000)) {
+      drain_ = std::thread([this]() {
+        drain();
+      });
+      return true;
+    }
+    stop_process();
+    std::cerr << "test_alarm_server on port " << port << " printed no READY (wait status " << wait_status_ << "):\n"
+              << output() << '\n';
+    return false;
+  }
+
+  // Starts on a port from ``reserve`` per attempt. Returns the port the fixture
+  // listens on, or 0 after kFixtureStartAttempts failed starts.
+  int start_on_new_port(const std::string & binary, const std::vector<std::string> & extra_args = {},
+                        const std::function<int()> & reserve = reserve_local_port) {
+    for (int attempt = 0; attempt < kFixtureStartAttempts; ++attempt) {
+      const int port = reserve();
+      if (port != 0 && start(binary, port, extra_args)) {
+        return port;
+      }
+    }
+    return 0;
   }
 
   // One CLI command ("fire Overpressure 750", "clear Overpressure", ...). The
@@ -266,7 +305,39 @@ class AlarmServer {
     return write(write_fd_, line.c_str(), line.size()) == static_cast<ssize_t>(line.size());
   }
 
+  // A failed start() printed its output already, so only a fixture that was
+  // running is kept for report_if_failed().
   void stop() {
+    const bool was_running = pid_ > 0;
+    stop_process();
+    if (was_running) {
+      unreported_ += "--- test_alarm_server on port " + std::to_string(port_) + " ---\n" + output();
+    }
+  }
+
+  // Prints the kept output when the running test has failed, then drops it.
+  void report_if_failed() {
+    if (unreported_.empty() || !::testing::Test::HasFailure()) {
+      return;
+    }
+    std::cerr << unreported_ << "--- end of test_alarm_server output ---\n";
+    unreported_.clear();
+  }
+
+  // Everything the fixture wrote to stdout and stderr since the last start().
+  std::string output() const {
+    std::lock_guard<std::mutex> lock(output_mutex_);
+    return output_;
+  }
+
+  // waitpid status of the last stopped fixture, -1 while none was reaped.
+  int wait_status() const {
+    return wait_status_;
+  }
+
+ private:
+  void stop_process() {
+    // The fixture's stdin reader ends only on EOF.
     if (write_fd_ >= 0) {
       close(write_fd_);
       write_fd_ = -1;
@@ -274,8 +345,14 @@ class AlarmServer {
     if (pid_ > 0) {
       kill(pid_, SIGTERM);
       int status = 0;
-      waitpid(pid_, &status, 0);
+      while (waitpid(pid_, &status, 0) < 0 && errno == EINTR) {
+      }
+      wait_status_ = status;
       pid_ = -1;
+    }
+    // The exit closed the pipe's write end, so the reader is at EOF.
+    if (drain_.joinable()) {
+      drain_.join();
     }
     if (read_fd_ >= 0) {
       close(read_fd_);
@@ -283,7 +360,11 @@ class AlarmServer {
     }
   }
 
- private:
+  void append_output(const char * data, size_t size) {
+    std::lock_guard<std::mutex> lock(output_mutex_);
+    output_.append(data, size);
+  }
+
   bool wait_for_ready(int timeout_ms) {
     std::string acc;
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
@@ -300,6 +381,7 @@ class AlarmServer {
       if (n <= 0) {
         return false;  // EOF: child died before READY
       }
+      append_output(buf, static_cast<size_t>(n));
       acc.append(buf, static_cast<size_t>(n));
       if (acc.find("READY ") != std::string::npos) {
         return true;
@@ -308,9 +390,29 @@ class AlarmServer {
     return false;
   }
 
+  // Reads the fixture's output until EOF, so a full pipe never blocks it.
+  void drain() {
+    char buf[4096];
+    for (;;) {
+      const ssize_t n = read(read_fd_, buf, sizeof(buf));
+      if (n > 0) {
+        append_output(buf, static_cast<size_t>(n));
+      } else if (n == 0 || errno != EINTR) {
+        return;
+      }
+    }
+  }
+
   pid_t pid_{-1};
   int read_fd_{-1};
   int write_fd_{-1};
+  int wait_status_{-1};
+  int port_{0};
+  // Output of stopped fixtures not printed yet. Test thread only.
+  std::string unreported_;
+  std::thread drain_;
+  mutable std::mutex output_mutex_;
+  std::string output_;
 };
 
 std::string fixture_binary() {
@@ -334,50 +436,156 @@ class OpcuaIdentityE2ETest : public ::testing::Test {
     // so fail hard instead of skipping (run_ctest.py does the same).
     ASSERT_TRUE(fixture_available()) << "test_alarm_server fixture missing or not executable at '" << fixture_binary()
                                      << "'";
-    port_ = reserve_local_port();
-    ASSERT_NE(port_, 0);
-    ASSERT_TRUE(server_.start(fixture_binary(), port_)) << "test_alarm_server did not signal READY";
+    port_ = server_.start_on_new_port(fixture_binary());
+    ASSERT_NE(port_, 0) << "test_alarm_server printed no READY on " << kFixtureStartAttempts << " reserved ports";
     endpoint_ = "opc.tcp://127.0.0.1:" + std::to_string(port_);
-    // The fixture prints READY before the OPC-UA listen socket is fully
-    // accepting, so probe until a real connection succeeds. Once connectable it
-    // stays so, making every per-test connect (and the plugin's) race-free.
-    ASSERT_TRUE(wait_until_connectable()) << "fixture never became connectable at " << endpoint_;
   }
 
   void TearDown() override {
     server_.stop();
-  }
-
-  bool wait_until_connectable() {
-    for (int attempt = 0; attempt < 50; ++attempt) {
-      OpcuaClient probe;
-      OpcuaClientConfig config;
-      config.endpoint_url = endpoint_;
-      config.connect_timeout = std::chrono::milliseconds(1000);
-      if (probe.connect(config)) {
-        probe.disconnect();
-        return true;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    return false;
+    server_.report_if_failed();
   }
 
   // Tear the fixture down and boot a fresh instance on the SAME port with
   // different CLI args (e.g. a new --serial). Simulates a PLC reboot /
-  // device swap for the per-session identity refresh test.
+  // device swap for the per-session identity refresh test. Fails when another
+  // process took the port in between.
   bool restart_server(const std::vector<std::string> & extra_args) {
     server_.stop();
-    if (!server_.start(fixture_binary(), port_, extra_args)) {
-      return false;
-    }
-    return wait_until_connectable();
+    return server_.start(fixture_binary(), port_, extra_args);
   }
 
   AlarmServer server_;
   int port_{0};
   std::string endpoint_;
 };
+
+namespace {
+
+// A loopback TCP socket in LISTEN state on an ephemeral port, closed on scope exit.
+class LoopbackListener {
+ public:
+  LoopbackListener() {
+    fd_ = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd_ < 0) {
+      return;
+    }
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t len = sizeof(addr);
+    if (bind(fd_, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0 && listen(fd_, 1) == 0 &&
+        getsockname(fd_, reinterpret_cast<sockaddr *>(&addr), &len) == 0) {
+      port_ = ntohs(addr.sin_port);
+    }
+  }
+  ~LoopbackListener() {
+    if (fd_ >= 0) {
+      close(fd_);
+    }
+  }
+  LoopbackListener(const LoopbackListener &) = delete;
+  LoopbackListener & operator=(const LoopbackListener &) = delete;
+  LoopbackListener(LoopbackListener &&) = delete;
+  LoopbackListener & operator=(LoopbackListener &&) = delete;
+
+  // 0 when the socket could not be set up.
+  int port() const {
+    return port_;
+  }
+
+ private:
+  int fd_{-1};
+  int port_{0};
+};
+
+}  // namespace
+
+// A fixture started on a port another process listens on prints no READY and
+// exits non-zero with its stdin open. start_on_new_port then moves to a new
+// port, and gives up after kFixtureStartAttempts ports that are all taken.
+TEST(AlarmServerStartTest, ATakenPortFailsTheStartAndTheNextAttemptMovesOn) {
+  ASSERT_TRUE(fixture_available()) << "test_alarm_server fixture missing or not executable at '" << fixture_binary()
+                                   << "'";
+  const LoopbackListener holder;
+  const int held = holder.port();
+  ASSERT_NE(held, 0) << "no loopback listener to hold a port with";
+
+  AlarmServer direct;
+  EXPECT_FALSE(direct.start(fixture_binary(), held)) << "READY on a port another process listens on";
+  const std::string output = direct.output();
+  EXPECT_EQ(output.find("READY "), std::string::npos) << output;
+  EXPECT_NE(output.find("EXIT "), std::string::npos) << output;
+  // start() saw EOF on its output first, so the fixture exited before its stdin closed.
+  const int status = direct.wait_status();
+  EXPECT_TRUE(status != -1 && WIFEXITED(status) && WEXITSTATUS(status) != 0)
+      << "the fixture did not exit non-zero on its own (wait status " << status << ")";
+  direct.stop();
+
+  bool first = true;
+  AlarmServer moved;
+  const int port = moved.start_on_new_port(fixture_binary(), {}, [&first, held]() {
+    if (first) {
+      first = false;
+      return held;
+    }
+    return reserve_local_port();
+  });
+  EXPECT_NE(port, 0) << "no attempt printed READY";
+  EXPECT_NE(port, held) << "the start stayed on the taken port";
+  OpcuaClient client;
+  OpcuaClientConfig config;
+  config.endpoint_url = "opc.tcp://127.0.0.1:" + std::to_string(port);
+  config.connect_timeout = std::chrono::milliseconds(5000);
+  EXPECT_TRUE(client.connect(config)) << "no OPC-UA session right after READY on " << config.endpoint_url;
+  client.disconnect();
+  moved.stop();
+
+  int calls = 0;
+  AlarmServer given_up;
+  EXPECT_EQ(given_up.start_on_new_port(fixture_binary(), {},
+                                       [&calls, held]() {
+                                         ++calls;
+                                         return held;
+                                       }),
+            0);
+  EXPECT_EQ(calls, kFixtureStartAttempts);
+}
+
+// Stops its fixture, then fails. Runs only as the child of the test below.
+TEST(AlarmServerReportTest, DISABLED_FailsAfterTheFixtureStopped) {
+  AlarmServer server;
+  ASSERT_NE(server.start_on_new_port(fixture_binary()), 0);
+  server.stop();
+  ADD_FAILURE() << "deliberate failure after stop";
+}
+
+// A test that fails after its fixture stopped prints the fixture's output once.
+TEST(AlarmServerReportTest, AFailureAfterStopPrintsTheFixtureOutputOnce) {
+  ASSERT_TRUE(fixture_available()) << "test_alarm_server fixture missing or not executable at '" << fixture_binary()
+                                   << "'";
+  const std::string self = std::filesystem::read_symlink("/proc/self/exe").string();
+  const std::string command = "'" + self +
+                              "' --gtest_also_run_disabled_tests"
+                              " --gtest_filter=AlarmServerReportTest.DISABLED_FailsAfterTheFixtureStopped 2>&1";
+  FILE * child = popen(command.c_str(), "r");
+  ASSERT_NE(child, nullptr) << "could not run " << command;
+  std::string output;
+  char buf[4096];
+  size_t n = 0;
+  while ((n = fread(buf, 1, sizeof(buf), child)) > 0) {
+    output.append(buf, n);
+  }
+  const int status = pclose(child);
+  EXPECT_TRUE(status != -1 && WIFEXITED(status) && WEXITSTATUS(status) != 0)
+      << "the child test did not fail (wait status " << status << "):\n"
+      << output;
+  size_t ready_lines = 0;
+  for (size_t at = output.find("READY port="); at != std::string::npos; at = output.find("READY port=", at + 1)) {
+    ++ready_lines;
+  }
+  EXPECT_EQ(ready_lines, 1u) << "the fixture's READY line should appear once in the failed test's output:\n" << output;
+}
 
 TEST_F(OpcuaIdentityE2ETest, ClientReadsServerBuildInfo) {
   OpcuaClient client;
@@ -842,24 +1050,6 @@ class ScopedTempDir {
   std::filesystem::path dir_;
 };
 
-// Poll until an OPC-UA session can be opened at ``endpoint``. A fixture prints
-// READY before its listen socket is accepting, so nothing may rely on one
-// before this returns.
-bool wait_for_connectable(const std::string & endpoint) {
-  for (int attempt = 0; attempt < 50; ++attempt) {
-    OpcuaClient probe;
-    OpcuaClientConfig config;
-    config.endpoint_url = endpoint;
-    config.connect_timeout = std::chrono::milliseconds(1000);
-    if (probe.connect(config)) {
-      probe.disconnect();
-      return true;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  }
-  return false;
-}
-
 // The ApplicationUri the server at ``endpoint`` publishes, read the same way
 // the plugin reads it off a live session. Empty when the session cannot be
 // opened or the server publishes none.
@@ -1210,6 +1400,102 @@ TEST_F(OpcuaIdentityE2ETest, DeviceReportedAlarmClearKeepsTheCorrelationCascade)
   const auto link_state_clear_skips = clear_for(kCommsLostFaultCode);
   ASSERT_TRUE(link_state_clear_skips.has_value()) << "the connect-time clear never arrived";
   EXPECT_TRUE(*link_state_clear_skips);
+}
+
+// The whole plugin across a link that goes dark: a node map in poll mode with
+// native alarms, the server behind a proxy that blackholes the link. An alarm
+// that fires while the link is down must reach the fault store once the link
+// is back, through the poller's reconnect, resubscribe and ConditionRefresh,
+// and the alarm subscription of the dropped session must be torn down without
+// taking the process with it.
+TEST_F(OpcuaIdentityE2ETest, AnAlarmRaisedWhileTheLinkIsBlackholedArrivesAfterTheLinkReturns) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_identity_blackhole");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_identity_blackhole_faultmgr");
+
+  test_support::LinkProxy proxy;
+  ASSERT_TRUE(proxy.start(static_cast<uint16_t>(port_)));
+  const std::string proxied = "opc.tcp://127.0.0.1:" + std::to_string(proxy.port());
+
+  FaultStoreStub store(fault_manager);
+  store.open_reports();
+  store.open_clears();
+  store.open_reads();
+
+  rclcpp::executors::MultiThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(fault_manager);
+  ScopedExecutorSpin spin(executor);
+
+  const std::string yaml_path = write_minimal_node_map();
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["node_map_path"] = yaml_path;
+  config["endpoint_url"] = proxied;
+  config["poll_interval_ms"] = 100;
+  config["comms_lost_debounce_ms"] = 0;
+  config["auto_alarms"] = nlohmann::json{{"enabled", true}, {"auto_clear", true}};
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  plugin.set_context(ctx);
+
+  const auto wait_for = [](const std::function<bool()> & done, std::chrono::seconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!done() && std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return done();
+  };
+  const auto reported_codes = [&store]() {
+    const auto codes = store.reported();
+    return std::set<std::string>(codes.begin(), codes.end());
+  };
+  const auto cleared_count = [&store](const std::string & code) {
+    const auto codes = store.cleared_codes();
+    return std::count(codes.begin(), codes.end(), code);
+  };
+
+  // Fire until the event subscription is up and a report lands; an event fired
+  // before the subscribe is not delivered.
+  const auto fire_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (reported_codes().empty() && std::chrono::steady_clock::now() < fire_deadline) {
+    ASSERT_TRUE(server_.send("fire Overpressure 750"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+  }
+  const auto before_outage = reported_codes();
+  ASSERT_EQ(before_outage.size(), 1u) << "the first alarm never reached the fault manager";
+  ASSERT_EQ(before_outage.count(kCommsLostFaultCode), 0u);
+
+  proxy.set_mode(test_support::LinkProxy::Mode::Blackhole);
+  ASSERT_TRUE(wait_for(
+      [&]() {
+        return reported_codes().count(kCommsLostFaultCode) == 1;
+      },
+      std::chrono::seconds(30)))
+      << "the plugin never reported the blackholed link";
+  const auto comms_clears_during_outage = cleared_count(kCommsLostFaultCode);
+
+  ASSERT_TRUE(server_.send("fire Overheat 800"));
+  proxy.cut();
+  proxy.set_mode(test_support::LinkProxy::Mode::Up);
+
+  const auto arrived = [&]() {
+    const auto codes = reported_codes();
+    return codes.size() == 3;
+  };
+  ASSERT_TRUE(wait_for(arrived, std::chrono::seconds(30)))
+      << "the alarm raised while the link was down never reached the fault manager after the link returned";
+  EXPECT_TRUE(wait_for(
+      [&]() {
+        return cleared_count(kCommsLostFaultCode) > comms_clears_during_outage;
+      },
+      std::chrono::seconds(30)))
+      << "the link coming back sent no PLC_COMMS_LOST clear";
+
+  spin.stop();
+  plugin.shutdown();
+  std::remove(yaml_path.c_str());
 }
 
 // One gateway may bridge two field buses, both raising PLC_COMMS_LOST, and
@@ -1612,7 +1898,6 @@ TEST_F(OpcuaIdentityE2ETest, AnAnswerParkedBeforeAnOutageIsNotAppliedAfterTheRec
   // The PLC comes back. The first tick after the reconnect is where the stale
   // answer would be consumed.
   ASSERT_TRUE(server_.start(fixture_binary(), port_)) << "the fixture did not come back";
-  ASSERT_TRUE(wait_until_connectable());
   ASSERT_TRUE(wait_for(
       [&plugin]() {
         return plugin.comms_lost_probe_count_for_test() >= 2;
@@ -1678,7 +1963,6 @@ TEST_F(OpcuaIdentityE2ETest, AFaultRaisedUnderTheStandInHealsAfterTheDeviceNames
   EXPECT_NE(raised_sources.front(), nameplate_id);
 
   ASSERT_TRUE(server_.start(fixture_binary(), port_)) << "the fixture did not come back";
-  ASSERT_TRUE(wait_until_connectable());
 
   const auto heal_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
   while (!store.sources_of(kCommsLostFaultCode).empty() && std::chrono::steady_clock::now() < heal_deadline) {
@@ -1871,7 +2155,6 @@ TEST_F(OpcuaIdentityE2ETest, ARowHeldUnderTheDefaultEndpointsStandInHealsAfterAR
   AlarmServer fixture;
   ASSERT_TRUE(fixture.start(fixture_binary(), kOpcuaPort))
       << "this test needs TCP 4840 on loopback, the only port discovery identifies OPC-UA on";
-  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
   const std::string live_uri = live_application_uri("opc.tcp://127.0.0.1:4840");
   ASSERT_FALSE(live_uri.empty());
 
@@ -1993,7 +2276,6 @@ TEST_F(OpcuaIdentityE2ETest, TheBridgeStaysBoundToItsOwnServerAcrossAddressAndSw
   AlarmServer bound_server;
   ASSERT_TRUE(bound_server.start(fixture_binary(), kOpcuaPort))
       << "this test needs TCP 4840 on loopback, the only port discovery identifies OPC-UA on";
-  ASSERT_TRUE(wait_for_connectable(url_for(bound_address)));
   // The identity the fixture actually serves is what the binding becomes, so
   // the sweep reports the same one and selection has something to look for.
   const std::string bound_uri = live_application_uri(url_for(bound_address));
@@ -2060,7 +2342,6 @@ TEST_F(OpcuaIdentityE2ETest, TheBridgeStaysBoundToItsOwnServerAcrossAddressAndSw
   bound_server.stop();
   AlarmServer foreign_server;
   ASSERT_TRUE(foreign_server.start(fixture_binary(), kOpcuaPort, {"--app-uri", foreign_uri}));
-  ASSERT_TRUE(wait_for_connectable(url_for(bound_address))) << "the foreign fixture never became connectable";
   ASSERT_EQ(live_application_uri(url_for(bound_address)), foreign_uri);
   sweep_reports(other_address, foreign_uri);
 
@@ -2092,7 +2373,6 @@ TEST_F(OpcuaIdentityE2ETest, TheBridgeStaysBoundToItsOwnServerAcrossAddressAndSw
   foreign_server.stop();
   AlarmServer moved_server;
   ASSERT_TRUE(moved_server.start(fixture_binary(), kOpcuaPort));
-  ASSERT_TRUE(wait_for_connectable(url_for(other_address))) << "the moved fixture never became connectable";
   sweep_reports(other_address, bound_uri);
 
   const bool recovered = wait_for(
@@ -2154,7 +2434,6 @@ TEST_F(OpcuaIdentityE2ETest, ARestartedPluginKeepsTheBindingAndRefusesAForeignSe
   AlarmServer bound_server;
   ASSERT_TRUE(bound_server.start(fixture_binary(), kOpcuaPort))
       << "this test needs TCP 4840 on loopback, the only port discovery identifies OPC-UA on";
-  ASSERT_TRUE(wait_for_connectable("opc.tcp://" + bound_address + ":4840"));
   const std::string bound_uri = live_application_uri("opc.tcp://" + bound_address + ":4840");
   ASSERT_FALSE(bound_uri.empty());
   ASSERT_NE(bound_uri, foreign_uri);
@@ -2225,7 +2504,6 @@ TEST_F(OpcuaIdentityE2ETest, ARestartedPluginKeepsTheBindingAndRefusesAForeignSe
   bound_server.stop();
   AlarmServer squatter;
   ASSERT_TRUE(squatter.start(fixture_binary(), kOpcuaPort, {"--app-uri", foreign_uri}));
-  ASSERT_TRUE(wait_for_connectable("opc.tcp://" + bound_address + ":4840"));
   ASSERT_EQ(live_application_uri("opc.tcp://" + bound_address + ":4840"), foreign_uri);
   // The sweep reports the bound identity at the bound address, so nothing
   // before the connect can tell the two apart.
@@ -2254,7 +2532,6 @@ TEST_F(OpcuaIdentityE2ETest, ARestartedPluginKeepsTheBindingAndRefusesAForeignSe
   squatter.stop();
   AlarmServer restored;
   ASSERT_TRUE(restored.start(fixture_binary(), kOpcuaPort));
-  ASSERT_TRUE(wait_for_connectable("opc.tcp://" + bound_address + ":4840"));
   const bool recovered = wait_for(
       [&]() {
         return cleared_count() > clears_after_first;
@@ -2285,7 +2562,6 @@ TEST_F(OpcuaIdentityE2ETest, ASwapUnderAConfigLessSessionIsCaught) {
 
   AlarmServer bound_server;
   ASSERT_TRUE(bound_server.start(fixture_binary(), kOpcuaPort)) << "this test needs TCP 4840 on loopback";
-  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
 
   OpcuaPlugin plugin;
   nlohmann::json config;
@@ -2305,7 +2581,6 @@ TEST_F(OpcuaIdentityE2ETest, ASwapUnderAConfigLessSessionIsCaught) {
   bound_server.stop();
   AlarmServer swapped;
   ASSERT_TRUE(swapped.start(fixture_binary(), kOpcuaPort, {"--app-uri", foreign_uri}));
-  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
   while (plugin.binding_mismatch_count_for_test() == 0 && std::chrono::steady_clock::now() < deadline) {
@@ -2344,7 +2619,6 @@ TEST_F(OpcuaIdentityE2ETest, AnOutageUnderAConfigLessSessionIsObserved) {
 
   AlarmServer bound_server;
   ASSERT_TRUE(bound_server.start(fixture_binary(), kOpcuaPort)) << "this test needs TCP 4840 on loopback";
-  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
 
   OpcuaPlugin plugin;
   nlohmann::json config;
@@ -2408,7 +2682,6 @@ TEST_F(OpcuaIdentityE2ETest, ASwapUnderTheShippedPollCadenceIsCaught) {
 
   AlarmServer bound_server;
   ASSERT_TRUE(bound_server.start(fixture_binary(), kOpcuaPort)) << "this test needs TCP 4840 on loopback";
-  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
 
   OpcuaPlugin plugin;
   nlohmann::json config;
@@ -2425,7 +2698,6 @@ TEST_F(OpcuaIdentityE2ETest, ASwapUnderTheShippedPollCadenceIsCaught) {
   bound_server.stop();
   AlarmServer swapped;
   ASSERT_TRUE(swapped.start(fixture_binary(), kOpcuaPort, {"--app-uri", foreign_uri}));
-  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
   while (plugin.binding_mismatch_count_for_test() == 0 && std::chrono::steady_clock::now() < deadline) {
@@ -2438,7 +2710,6 @@ TEST_F(OpcuaIdentityE2ETest, ASwapUnderTheShippedPollCadenceIsCaught) {
   swapped.stop();
   AlarmServer restored;
   ASSERT_TRUE(restored.start(fixture_binary(), kOpcuaPort));
-  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
   const auto recover_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
   while (!plugin.connected_for_test() && std::chrono::steady_clock::now() < recover_deadline) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -2558,7 +2829,6 @@ TEST_F(OpcuaIdentityE2ETest, ADeviceAlarmIsDeliveredAfterTheBoundServerReboots) 
 
   AlarmServer bound_server;
   ASSERT_TRUE(bound_server.start(fixture_binary(), kOpcuaPort)) << "this test needs TCP 4840 on loopback";
-  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
 
   OpcuaPlugin plugin;
   nlohmann::json config;
@@ -2604,7 +2874,6 @@ TEST_F(OpcuaIdentityE2ETest, ADeviceAlarmIsDeliveredAfterTheBoundServerReboots) 
 
   AlarmServer rebooted;
   ASSERT_TRUE(rebooted.start(fixture_binary(), kOpcuaPort));
-  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
   const auto up_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
   while (!plugin.connected_for_test() && std::chrono::steady_clock::now() < up_deadline) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -2680,7 +2949,6 @@ TEST_F(OpcuaIdentityE2ETest, TheStartupSweepSelectsTheBoundServerNotTheLowestAdd
   AlarmServer fixture;
   ASSERT_TRUE(fixture.start(fixture_binary(), kOpcuaPort))
       << "this test needs TCP 4840 on loopback, the only port discovery identifies OPC-UA on";
-  ASSERT_TRUE(wait_for_connectable("opc.tcp://127.0.0.1:4840"));
   const std::string bound_uri = live_application_uri("opc.tcp://127.0.0.1:4840");
   ASSERT_FALSE(bound_uri.empty());
   ASSERT_NE(bound_uri, foreign_uri);

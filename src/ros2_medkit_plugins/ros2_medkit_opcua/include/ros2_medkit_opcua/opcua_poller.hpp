@@ -15,12 +15,14 @@
 #pragma once
 
 #include "ros2_medkit_opcua/alarm_state_machine.hpp"
+#include "ros2_medkit_opcua/detection_pipeline.hpp"
 #include "ros2_medkit_opcua/node_map.hpp"
 #include "ros2_medkit_opcua/opcua_client.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -295,6 +297,18 @@ class OpcuaPoller {
   static std::chrono::milliseconds next_reconnect_wait(std::chrono::milliseconds current,
                                                        std::chrono::milliseconds max_wait);
 
+  /// Smallest step between two iterates of the subscription pump.
+  static constexpr std::chrono::milliseconds kMinSubscriptionPumpInterval{20};
+
+  /// How often the poll thread iterates the client while it waits for the next
+  /// poll in data-change subscription mode: the subscription interval, rounded
+  /// to whole ms, floored at ``kMinSubscriptionPumpInterval`` and capped at
+  /// ``poll_interval``. A value that is not a positive number (NaN, inf, zero,
+  /// negative) gives ``poll_interval``, which is one iterate per poll. Pure and
+  /// static so the cadence is unit-testable.
+  static std::chrono::milliseconds subscription_pump_interval(double subscription_interval_ms,
+                                                              std::chrono::milliseconds poll_interval);
+
   /// Zero-config native A&C (``auto_alarms``): the alarm sources that should
   /// actually be subscribed / replayed, i.e. every explicit ``event_alarms``
   /// entry plus (when ``auto_cfg.enabled`` and no explicit entry already
@@ -375,6 +389,27 @@ class OpcuaPoller {
     apply_condition_state(cfg, condition_id, input, severity, message, event_id, require_confirm_for_clear);
   }
 
+  /// ``on_data_change`` reached without a server, the way a data-change
+  /// callback delivers a value. Lets tests drive detection from several threads
+  /// at once. Not part of the poller's supported surface.
+  void on_data_change_for_test(const std::string & node_id, const OpcuaValue & value) {
+    on_data_change(node_id, value);
+  }
+
+  /// ``evaluate_alarms`` as the poll thread runs it for a recheck,
+  /// with the poller treated as being in subscription mode.
+  void evaluate_alarms_for_test(DetectionPipeline::Pass pass) {
+    using_subscriptions_ = true;
+    evaluate_alarms(pass);
+  }
+
+  /// Make every evaluate_alarms() pass wait this long between working out its
+  /// edges and handing them over, so a test can hold that window open. Zero
+  /// (the default) skips the wait.
+  void set_handover_delay_for_test(std::chrono::microseconds delay) {
+    handover_delay_for_test_us_ = delay.count();
+  }
+
   /// True only for a real OPC-UA Condition event. Per Part 9 §5.5.2.13 the
   /// ConditionId SAO resolves to a non-null NodeId only for AlarmConditionType
   /// (and subtype) instances; a plain BaseEvent / SystemEvent notification -
@@ -396,7 +431,7 @@ class OpcuaPoller {
   /// map's root component).
   void emit_comms_lost(bool active);
   void setup_subscriptions();
-  void evaluate_alarms();
+  void evaluate_alarms(DetectionPipeline::Pass pass);
   void on_data_change(const std::string & node_id, const OpcuaValue & value);
 
   // Issue #386 helpers.
@@ -490,9 +525,21 @@ class OpcuaPoller {
 
   mutable std::mutex alarm_mutex_;
   AlarmChangeCallback alarm_callback_;
-  // Shared raise/clear edge detector across all detection modes, keyed by
-  // fault_code. Replaces the previous threshold-only last-state map.
-  ros2_medkit::fault_detection::FaultTransitionTracker alarm_tracker_;
+  // Polled detection: raise/clear edges, raise qualifiers and which values are
+  // new. Its state is read and written under snapshot_mutex_, and every
+  // evaluate_alarms() pass also holds detection_mutex_.
+  DetectionPipeline detection_;
+  // Held by evaluate_alarms() from working out the edges until they are handed
+  // to alarm_callback_, so two threads cannot hand them over out of order: the
+  // poll thread (rechecks, polls) and whichever thread runs a data-change
+  // callback (the poll thread, the event pump thread with native alarms on,
+  // or any thread that makes a synchronous client call).
+  // Lock order: the client's lock (held around data-change callbacks), then
+  // detection_mutex_, then snapshot_mutex_, then alarm_mutex_. So
+  // alarm_callback_ must never call into the OPC UA client.
+  std::mutex detection_mutex_;
+  // See set_handover_delay_for_test(). Zero outside tests.
+  std::atomic<std::int64_t> handover_delay_for_test_us_{0};
 
   // Issue #386: event-mode AlarmCondition state.
   EventAlarmCallback event_alarm_callback_;

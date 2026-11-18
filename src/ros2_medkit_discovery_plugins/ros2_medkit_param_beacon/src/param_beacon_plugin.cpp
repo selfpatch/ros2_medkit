@@ -152,6 +152,9 @@ void ParameterBeaconPlugin::set_context(PluginContext & context) {
 
   // Create dedicated node for parameter client operations
   rclcpp::NodeOptions options;
+  // The gateway's context: a host that runs the gateway on a private context never
+  // initialises the default one.
+  options.context(ctx_->node()->get_node_base_interface()->get_context());
   options.start_parameter_services(false);
   options.start_parameter_event_publisher(false);
   options.use_global_arguments(false);
@@ -298,12 +301,13 @@ void ParameterBeaconPlugin::poll_cycle() {
       return;
     }
     for (const auto & [name, ns] : names_and_ns) {
-      // Skip hidden nodes (leading underscore), the gateway and its helper nodes: they carry no beacon.
+      // Skip hidden nodes (leading underscore, the gateway's helper nodes among them) and the gateway:
+      // they carry no beacon.
       if (name.empty() || name[0] == '_') {
         continue;
       }
       auto fqn = ros2_medkit_gateway::ros2_common::graph_node_fqn(name, ns);
-      if (fqn == gateway_fqn_ || ros2_medkit_gateway::ros2_common::is_own_gateway_helper_node(fqn, gateway_fqn_)) {
+      if (fqn == gateway_fqn_) {
         continue;
       }
       targets.push_back(std::move(fqn));

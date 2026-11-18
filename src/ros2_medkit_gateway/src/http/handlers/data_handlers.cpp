@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/handlers/data_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -28,19 +29,21 @@
 #include <nlohmann/json.hpp>
 #include <tl/expected.hpp>
 
+#include "ros2_medkit_gateway/core/data/data_item_reader.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/exceptions.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/http/member_qualified_id.hpp"
+#include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
+#include "ros2_medkit_gateway/core/types/type_schema_provider.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
-#include "ros2_medkit_serialization/type_introspection.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -52,21 +55,6 @@ using json = nlohmann::json;
 // =============================================================================
 // Helper free functions
 // =============================================================================
-
-/// Sanitize a plugin-supplied error into the standard `x-medkit-plugin-error`
-/// shape: clamp HTTP status to [400, 599] and truncate message at 512 chars.
-ErrorInfo make_plugin_error(int http_status, const std::string & message, json extra_params = {}) {
-  static constexpr size_t kMaxMessageLength = 512;
-  int status = http_status < 400 ? 400 : (http_status > 599 ? 599 : http_status);
-  std::string msg = message.size() > kMaxMessageLength ? message.substr(0, kMaxMessageLength) + "..." : message;
-  return make_error(status, ERR_PLUGIN_ERROR, std::move(msg), std::move(extra_params));
-}
-
-/// Map a `DataProviderErrorInfo` (from the typed plugin ABI) into the SOVD
-/// `x-medkit-plugin-error` wire shape via `make_plugin_error`.
-ErrorInfo make_provider_error(const DataProviderErrorInfo & info, const std::string & entity_id) {
-  return make_plugin_error(info.http_status, info.message, json{{"entity_id", entity_id}});
-}
 
 /// Read the first positional capture group (entity_id) with the same "missing
 /// capture is treated as 400 invalid-request" semantics as the other migrated
@@ -87,15 +75,6 @@ tl::expected<std::string, ErrorInfo> read_topic_id(const http::TypedRequest & re
     return *raw;
   }
   return tl::make_unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid request"));
-}
-
-/// A data item is addressed by its full ROS topic path; the leading slash is
-/// optional on the wire because the route captures a percent-decoded segment.
-std::string to_full_topic_path(const std::string & topic_name) {
-  if (topic_name.empty() || topic_name.front() == '/') {
-    return topic_name;
-  }
-  return "/" + topic_name;
 }
 
 /// What one addressed data item resolves to: the ROS topic to act on, the id to
@@ -271,23 +250,18 @@ std::optional<ErrorInfo> dispatch_data_item(const HandlerContext & ctx, const ht
 
 /// Build the typed x-medkit per-item payload for the list endpoint.
 dto::XMedkitDataItem build_list_item_xmedkit(const std::string & topic_name, const std::string & direction,
-                                             const std::string & topic_type,
-                                             ros2_medkit_serialization::TypeIntrospection * type_introspection) {
+                                             const std::string & topic_type, TypeSchemaProvider & type_schemas) {
   dto::XMedkitDataItem item_xm;
   dto::XMedkitRos2 ros2_meta;
   ros2_meta.topic = topic_name;
   ros2_meta.direction = direction;
   if (!topic_type.empty()) {
     ros2_meta.type = topic_type;
-    try {
-      auto type_info = type_introspection->get_type_info(topic_type);
-      json type_info_obj;
-      type_info_obj["schema"] = type_info.schema;
-      type_info_obj["default_value"] = type_info.default_value;
-      item_xm.type_info = type_info_obj;
-    } catch (const std::exception & e) {
-      RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", topic_name.c_str(),
-                   e.what());
+    if (auto type_info = type_schemas.type_info(topic_type)) {
+      item_xm.type_info = std::move(*type_info);
+    } else {
+      MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s' (type '%s')",
+                       topic_name.c_str(), topic_type.c_str());
     }
   }
   item_xm.ros2 = ros2_meta;
@@ -316,7 +290,7 @@ void apply_fan_out_observability(dto::DataListXMedkit & xm, const FanOutResult<d
 /// that was actually sampled.
 dto::DataValue build_read_response(const std::string & item_id, const std::string & full_topic_path,
                                    const TopicSampleResult & sample, const std::string & entity_id,
-                                   ros2_medkit_serialization::TypeIntrospection * type_introspection) {
+                                   TypeSchemaProvider & type_schemas) {
   json response;
   response["id"] = item_id;
   if (sample.has_data && sample.data) {
@@ -331,15 +305,11 @@ dto::DataValue build_read_response(const std::string & item_id, const std::strin
   xm.entity_id = entity_id;
   if (!sample.message_type.empty()) {
     ros2_meta.type = sample.message_type;
-    try {
-      auto type_info = type_introspection->get_type_info(sample.message_type);
-      json type_info_obj;
-      type_info_obj["schema"] = type_info.schema;
-      type_info_obj["default_value"] = type_info.default_value;
-      xm.type_info = type_info_obj;
-    } catch (const std::exception & e) {
-      RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s': %s", full_topic_path.c_str(),
-                   e.what());
+    if (auto type_info = type_schemas.type_info(sample.message_type)) {
+      xm.type_info = std::move(*type_info);
+    } else {
+      MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for topic '%s' (type '%s')",
+                       full_topic_path.c_str(), sample.message_type.c_str());
     }
   }
   xm.ros2 = ros2_meta;
@@ -404,7 +374,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
 
   // Delegate to plugin DataProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * pmgr = ctx_.services().plugin_manager();
     auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
     if (data_prov == nullptr) {
       // PLC bridges serve live values through their own x-plc-data route
@@ -446,12 +416,12 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
       // contract for exactly this case.
       return std::move(*result);
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
       return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
     } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
       return tl::make_unexpected(
           make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
@@ -459,12 +429,10 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
 
   try {
     // Use unified cache method to get aggregated data.
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
+    const auto & cache = ctx_.services().entity_cache();
     auto aggregated = cache.get_entity_data(entity_id);
 
-    // Get data access manager for type introspection.
-    auto data_access_mgr = ctx_.node()->get_data_access_manager();
-    auto type_introspection = data_access_mgr->get_type_introspection();
+    auto & type_schemas = *ctx_.services().type_schemas();
 
     // True for a topic every one of whose providers is a member another gateway
     // runs. The owners are a list because a topic can be published by one member
@@ -494,7 +462,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
       di.name = topic.name;
       di.category = "currentData";
       const std::string topic_type = cache.get_topic_type(topic.name);
-      di.x_medkit = build_list_item_xmedkit(topic.name, topic.direction, topic_type, type_introspection);
+      di.x_medkit = build_list_item_xmedkit(topic.name, topic.direction, topic_type, type_schemas);
       // Attribute the item to the members that contribute it. Only a grouping
       // has members to name; on a leaf the entity is the sole contributor and
       // the field stays absent rather than repeating the entity id.
@@ -615,7 +583,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
     // opaque DataListResult (consistent with the fault list route).
     return dto::DataListResult{dto::JsonWriter<dto::Collection<dto::DataItem, dto::DataListXMedkit>>::write(response)};
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in list_data for entity '%s': %s", entity_id.c_str(), e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in list_data for entity '%s': %s", entity_id.c_str(), e.what());
     return tl::make_unexpected(make_error(500, ERR_INTERNAL_ERROR, "Failed to retrieve entity data",
                                           json{{"details", e.what()}, {"entity_id", entity_id}}));
   }
@@ -646,37 +614,12 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
 
   // Delegate to plugin DataProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
-    auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
-    if (data_prov == nullptr) {
-      // Same x-plc-data route fallback as list_data above, single-item form.
-      if (auto via_route = pmgr ? pmgr->fetch_entity_data_via_route(entity_id, topic_name) : std::nullopt) {
-        return dto::DataValue{std::move(*via_route)};
-      }
-      return tl::make_unexpected(
-          make_error(404, ERR_RESOURCE_NOT_FOUND, "No data provider for plugin entity '" + entity_id + "'"));
-    }
-    try {
-      auto result = data_prov->read_data(entity_id, topic_name);
-      if (!result) {
-        return tl::make_unexpected(make_provider_error(result.error(), entity_id));
-      }
-      return std::move(*result);
-    } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
-      return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
-    } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
-      return tl::make_unexpected(
-          make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
-    }
+    return read_plugin_data_item(ctx_.services().plugin_manager(), entity_id, topic_name);
   }
 
   try {
-    auto addressed = address_data_item(ctx_.node()->get_thread_safe_cache(), entity_id, topic_name,
-                                       ctx_.aggregation_manager() != nullptr);
+    auto addressed =
+        address_data_item(ctx_.services().entity_cache(), entity_id, topic_name, ctx_.aggregation_manager() != nullptr);
     if (!addressed) {
       return tl::make_unexpected(addressed.error());
     }
@@ -686,16 +629,7 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
     }
     const std::string & full_topic_path = addressed->full_topic_path;
 
-    // Sampling goes through the pool-backed TopicDataProvider (issue #375 race
-    // fix). The provider is configured in main() before serving traffic.
-    auto data_access_mgr = ctx_.node()->get_data_access_manager();
-    const auto timeout_sec = data_access_mgr->get_topic_sample_timeout();
-    auto * provider = data_access_mgr->get_topic_data_provider();
-    if (provider == nullptr) {
-      return tl::make_unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "Topic sampling is not configured"));
-    }
-    const auto timeout_ms = std::chrono::milliseconds{static_cast<std::int64_t>(std::max(timeout_sec, 0.0) * 1000.0)};
-    auto r = provider->sample(full_topic_path, timeout_ms);
+    auto r = sample_data_topic(*ctx_.services().data_access_manager(), full_topic_path);
     if (!r) {
       // Propagate the provider's ErrorInfo verbatim: http_status, code (SOVD
       // constant or x-medkit-*), message, and structured params. Collapsing
@@ -711,11 +645,10 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
       return tl::make_unexpected(make_error(status, code, err.message, std::move(params)));
     }
 
-    auto type_introspection = data_access_mgr->get_type_introspection();
-    return build_read_response(addressed->item_id, full_topic_path, *r, entity_id, type_introspection);
+    return build_read_response(addressed->item_id, full_topic_path, *r, entity_id, *ctx_.services().type_schemas());
   } catch (const TopicNotAvailableException & e) {
-    RCLCPP_DEBUG(HandlerContext::logger(), "Topic not available for entity '%s', topic '%s': %s", entity_id.c_str(),
-                 topic_name.c_str(), e.what());
+    MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Topic not available for entity '%s', topic '%s': %s", entity_id.c_str(),
+                     topic_name.c_str(), e.what());
     return tl::make_unexpected(make_error(404, ERR_X_MEDKIT_ROS2_TOPIC_UNAVAILABLE, "Topic not found",
                                           json{{"entity_id", entity_id}, {"topic_name", topic_name}}));
   } catch (const ProviderErrorException & e) {
@@ -728,12 +661,12 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
     params["topic_name"] = topic_name;
     const std::string code = info.code.empty() ? std::string{ERR_INTERNAL_ERROR} : info.code;
     const int status = (info.http_status >= 400 && info.http_status < 600) ? info.http_status : 500;
-    RCLCPP_WARN(HandlerContext::logger(), "Provider error for entity '%s', topic '%s': %s [%d]", entity_id.c_str(),
-                topic_name.c_str(), info.message.c_str(), info.http_status);
+    MEDKIT_LOG_WARN(HandlerContext::logger(), "Provider error for entity '%s', topic '%s': %s [%d]", entity_id.c_str(),
+                    topic_name.c_str(), info.message.c_str(), info.http_status);
     return tl::make_unexpected(make_error(status, code, info.message, std::move(params)));
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in get_data_item for entity '%s', topic '%s': %s", entity_id.c_str(),
-                 topic_name.c_str(), e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in get_data_item for entity '%s', topic '%s': %s",
+                     entity_id.c_str(), topic_name.c_str(), e.what());
     return tl::make_unexpected(
         make_error(500, ERR_INTERNAL_ERROR, "Failed to retrieve topic data",
                    json{{"details", e.what()}, {"entity_id", entity_id}, {"topic_name", topic_name}}));
@@ -781,7 +714,7 @@ http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedReques
 
   // Delegate to plugin DataProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * pmgr = ctx_.services().plugin_manager();
     auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
     if (data_prov == nullptr) {
       return tl::make_unexpected(
@@ -803,12 +736,12 @@ http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedReques
       data_value.content = std::move(result->content);
       return data_value;
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin DataProvider threw for entity '%s': %s", entity_id.c_str(),
+                       e.what());
       return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
     } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin DataProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
       return tl::make_unexpected(
           make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
@@ -858,8 +791,8 @@ http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedReques
     // A write addresses the same item a read does, so it resolves the same way -
     // including which gateway publishes it. Publishing here for a member another
     // gateway runs would create a publisher on a graph that member is not on.
-    auto addressed = address_data_item(ctx_.node()->get_thread_safe_cache(), entity_id, topic_name,
-                                       ctx_.aggregation_manager() != nullptr);
+    auto addressed =
+        address_data_item(ctx_.services().entity_cache(), entity_id, topic_name, ctx_.aggregation_manager() != nullptr);
     if (!addressed) {
       return tl::make_unexpected(addressed.error());
     }
@@ -870,12 +803,12 @@ http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedReques
     const std::string & full_topic_path = addressed->full_topic_path;
 
     // Publish data using DataAccessManager.
-    auto data_access_mgr = ctx_.node()->get_data_access_manager();
+    auto data_access_mgr = ctx_.services().data_access_manager();
     json publish_result = data_access_mgr->publish_to_topic(full_topic_path, msg_type, data);
     return build_write_response(addressed->item_id, full_topic_path, msg_type, entity_id, data, publish_result);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(HandlerContext::logger(), "Error in put_data_item for entity '%s', topic '%s': %s", entity_id.c_str(),
-                 topic_name.c_str(), e.what());
+    MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in put_data_item for entity '%s', topic '%s': %s",
+                     entity_id.c_str(), topic_name.c_str(), e.what());
     return tl::make_unexpected(
         make_error(500, ERR_INTERNAL_ERROR, "Failed to publish to topic",
                    json{{"details", e.what()}, {"entity_id", entity_id}, {"topic_name", topic_name}}));

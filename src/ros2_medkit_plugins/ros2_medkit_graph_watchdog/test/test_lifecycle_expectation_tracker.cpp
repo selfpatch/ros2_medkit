@@ -515,6 +515,61 @@ TEST(LifecycleExpectation, AbsentPastGraceContinuesTheClimbingUnmeasuredClockAnd
          "sent looking for it";
 }
 
+// A dying managed node's lifecycle services can leave the graph a sweep before its App, so it
+// reads not-managed for a few ticks and then goes absent. Below kDefaultObservationSettleTicks
+// those ticks must not change the cause the absence then matures.
+TEST(LifecycleExpectation, ABriefNotManagedRunBeforeDepartureKeepsTheUnreadableCause) {
+  for (const int not_managed_ticks : {1, kDefaultObservationSettleTicks - 1, kDefaultObservationSettleTicks}) {
+    LifecycleExpectationTracker t({"a"}, /*grace=*/5, /*absence_grace=*/2);
+    for (int i = 0; i < 10; ++i) {
+      t.update(M{match("a", "/a", std::string(""))});  // managed, unread
+    }
+    for (int i = 0; i < not_managed_ticks; ++i) {
+      t.update(M{match("a", "/a", std::nullopt)});  // services gone, App still listed
+    }
+    std::optional<ros2_medkit_graph_watchdog::LifecycleExpectationReport> matured;
+    for (int i = 0; i < 2 * kDefaultUnmeasuredHoldTicks && !matured; ++i) {
+      auto report = t.update(M{});
+      if (!report.unreadable_affected.empty() || !report.not_managed_affected.empty()) {
+        matured = report;
+      }
+    }
+    ASSERT_TRUE(matured) << not_managed_ticks << " not-managed ticks: the departed node never matured";
+    if (not_managed_ticks < kDefaultObservationSettleTicks) {
+      EXPECT_EQ(matured->unreadable_affected.count("/a"), 1u)
+          << not_managed_ticks << " not-managed ticks before departure changed the cause of an unreadable node";
+      EXPECT_TRUE(matured->not_managed_affected.empty()) << not_managed_ticks << " not-managed ticks";
+    } else {
+      EXPECT_EQ(matured->not_managed_affected.count("/a"), 1u)
+          << "a not-managed reading held for kDefaultObservationSettleTicks did not take over the cause";
+      EXPECT_TRUE(matured->unreadable_affected.empty());
+    }
+  }
+}
+
+// A starting managed node can be listed before its lifecycle services, so it reads not-managed
+// first. One unreadable read proves the get_state service, so it takes the cause at once.
+TEST(LifecycleExpectation, AnUnreadableReadAfterANotManagedStartTakesTheCauseAtOnce) {
+  for (const int not_managed_ticks : {1, kDefaultObservationSettleTicks, 2 * kDefaultObservationSettleTicks}) {
+    LifecycleExpectationTracker t({"a"}, /*grace=*/5, /*absence_grace=*/2);
+    for (int i = 0; i < not_managed_ticks; ++i) {
+      t.update(M{match("a", "/a", std::nullopt)});  // services not listed yet
+    }
+    t.update(M{match("a", "/a", std::string(""))});  // managed, unread, then gone
+    std::optional<ros2_medkit_graph_watchdog::LifecycleExpectationReport> matured;
+    for (int i = 0; i < 2 * kDefaultUnmeasuredHoldTicks && !matured; ++i) {
+      auto report = t.update(M{});
+      if (!report.unreadable_affected.empty() || !report.not_managed_affected.empty()) {
+        matured = report;
+      }
+    }
+    ASSERT_TRUE(matured) << not_managed_ticks << " not-managed ticks: the departed node never matured";
+    EXPECT_EQ(matured->unreadable_affected.count("/a"), 1u)
+        << not_managed_ticks << " not-managed ticks before one unreadable read kept the not-managed cause";
+    EXPECT_TRUE(matured->not_managed_affected.empty()) << not_managed_ticks << " not-managed ticks";
+  }
+}
+
 // A node that had ALREADY matured before it went absent KEEPS its fault: ownership is
 // sticky and absence does not release it. The node was declared must-be-active, was never
 // measured active, and is now gone - none of which is health.

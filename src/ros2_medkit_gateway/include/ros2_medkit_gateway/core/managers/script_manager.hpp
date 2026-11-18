@@ -14,7 +14,11 @@
 
 #pragma once
 
+#include <memory>
+
+#include "ros2_medkit_gateway/core/default_script_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/script_provider.hpp"
+#include "ros2_medkit_gateway/core/script_types.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -111,5 +115,18 @@ class ScriptManager {
  private:
   ScriptProvider * backend_ = nullptr;
 };
+
+/// A script manager and the default provider behind it, if one was built.
+/// The provider is declared first, so it is destroyed after the manager that points to it.
+struct ScriptHost {
+  std::unique_ptr<DefaultScriptProvider> default_provider;
+  std::unique_ptr<ScriptManager> manager;
+};
+
+/// Builds the script manager a host serves scripts from. A non-null @p plugin_backend is the backend.
+/// Otherwise a non-empty \c config.scripts_dir gives a DefaultScriptProvider (fork/execvp) built from
+/// @p config, with \c config.entries as its predefined scripts. With neither, the manager has no backend and
+/// the script routes answer 501.
+ScriptHost make_script_host(const ScriptsConfig & config, ScriptProvider * plugin_backend);
 
 }  // namespace ros2_medkit_gateway

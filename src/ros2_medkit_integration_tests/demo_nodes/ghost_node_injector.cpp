@@ -53,6 +53,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <memory>
@@ -304,8 +305,13 @@ class GhostNodeInjector : public rclcpp::Node {
     executor_options.context = leftover_context_;
     leftover_executor_ = std::make_shared<rclcpp::executors::SingleThreadedExecutor>(executor_options);
     leftover_executor_->add_node(leftover_node_);
-    leftover_spin_thread_ = std::thread([executor = leftover_executor_]() {
-      executor->spin();
+    // Spins in bounded steps until the flag is set. A cancel() made before
+    // spinning starts is lost, the flag is not.
+    leftover_stop_.store(false);
+    leftover_spin_thread_ = std::thread([this, executor = leftover_executor_]() {
+      while (!leftover_stop_.load()) {
+        executor->spin_once(std::chrono::milliseconds(100));
+      }
     });
   }
 
@@ -314,6 +320,7 @@ class GhostNodeInjector : public rclcpp::Node {
     if (!leftover_context_) {
       return;
     }
+    leftover_stop_.store(true);
     leftover_executor_->cancel();
     if (leftover_spin_thread_.joinable()) {
       leftover_spin_thread_.join();
@@ -549,6 +556,7 @@ class GhostNodeInjector : public rclcpp::Node {
   rclcpp::Node::SharedPtr leftover_node_;
   rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr leftover_marker_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> leftover_executor_;
+  std::atomic<bool> leftover_stop_{false};
   std::thread leftover_spin_thread_;
   LeftoverStep leftover_step_{LeftoverStep::kCapturing};
   std::optional<Gid> marker_gid_;

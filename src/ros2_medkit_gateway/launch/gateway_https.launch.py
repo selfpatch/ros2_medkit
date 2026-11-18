@@ -90,13 +90,7 @@ def generate_certificates(cert_dir: str) -> dict:
         return {
             'cert_file': cert_file,
             'key_file': key_file,
-            # Deliberately NOT passed as server.tls.ca_file. This CA signs the
-            # SERVER certificate so a client can verify the gateway; setting it
-            # as the gateway's ca_file turns on mutual TLS and rejects every
-            # client that has no certificate of its own, including the curl
-            # this launch file prints. Kept here only so the hint below can
-            # tell the user which CA to pass with --cacert.
-            'ca_file_for_client': ca_file if os.path.exists(ca_file) else '',
+            'ca_file': ca_file if os.path.exists(ca_file) else '',
         }
 
     os.makedirs(cert_dir, exist_ok=True)
@@ -159,9 +153,7 @@ IP.2 = ::1
     return {
         'cert_file': cert_file,
         'key_file': key_file,
-        # See the note above: this is the CA a CLIENT verifies the server with,
-        # not a client-certificate authority for the gateway to demand.
-        'ca_file_for_client': ca_file,
+        'ca_file': ca_file,
     }
 
 
@@ -204,7 +196,7 @@ def launch_setup(context):
         LogInfo(msg=[f'  curl -k https://{server_host}:{server_port}/api/v1/health']),
         LogInfo(msg=['']),
         LogInfo(msg=['Test with CA verification:']),
-        LogInfo(msg=[f'  curl --cacert {cert_paths["ca_file_for_client"]} '
+        LogInfo(msg=[f'  curl --cacert {cert_paths["ca_file"]} '
                      f'https://{server_host}:{server_port}/api/v1/health']),
         LogInfo(msg=['='*60]),
 

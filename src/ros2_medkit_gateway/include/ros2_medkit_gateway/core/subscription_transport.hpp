@@ -90,6 +90,8 @@ class TransportRegistry {
   void register_transport(std::unique_ptr<SubscriptionTransportProvider> provider);
   SubscriptionTransportProvider * get_transport(const std::string & protocol) const;
   bool has_transport(const std::string & protocol) const;
+  /// True when no transport is registered.
+  bool empty() const;
 
   /// Shutdown all subscriptions by delegating to SubscriptionManager::shutdown().
   /// Transport cleanup happens via the manager's on_removed callback, which

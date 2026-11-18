@@ -15,26 +15,22 @@
 #pragma once
 
 #include <functional>
-#include <memory>
 #include <string>
 
 #include "rclcpp/rclcpp.hpp"
+#include "ros2_medkit_gateway/core/faults/trigger_fault_feed.hpp"
 #include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
-#include "ros2_medkit_msgs/msg/fault_event.hpp"
+#include "ros2_medkit_gateway/ros2/ros2_fault_event_source.hpp"
 
 namespace ros2_medkit_gateway {
 
 /**
- * @brief Subscribes to the configured fault manager events topic and forwards fault events
- *        to ResourceChangeNotifier for trigger evaluation.
+ * @brief Feeds the fault events of the configured fault manager events topic to
+ *        ResourceChangeNotifier for trigger evaluation.
  *
- * Follows the same ROS 2 subscription pattern as SSEFaultHandler - subscribes
- * to the fault event topic and converts each FaultEvent into a ResourceChange
- * notification on the "faults" collection.
- *
- * Entity ID is derived from the first reporting source of the fault. The
- * fault_code is used as the resource_path. The full fault JSON (via
- * ros2::conversions::fault_to_json) is passed as the change value.
+ * The ROS adapter of TriggerFaultFeed: it owns a Ros2FaultEventSource on the
+ * events topic and a feed on top of it. The conversion and the entity mapping
+ * are the feed's.
  */
 class TriggerFaultSubscriber {
  public:
@@ -45,31 +41,23 @@ class TriggerFaultSubscriber {
    */
   TriggerFaultSubscriber(rclcpp::Node * node, ResourceChangeNotifier & notifier);
 
-  ~TriggerFaultSubscriber();
-
   /// Callback to resolve ROS node FQN to manifest entity ID.
   /// Returns manifest entity ID, or empty string if not resolvable.
-  using NodeToEntityFn = std::function<std::string(const std::string &)>;
+  using NodeToEntityFn = TriggerFaultFeed::NodeToEntityFn;
 
   /// Set the node-to-entity resolver for manifest entity ID lookup.
+  /// Write-once: call it before the ROS executor starts spinning.
   void set_node_to_entity_resolver(NodeToEntityFn resolver);
 
-  // Non-copyable, non-movable
+  ~TriggerFaultSubscriber() = default;
   TriggerFaultSubscriber(const TriggerFaultSubscriber &) = delete;
   TriggerFaultSubscriber & operator=(const TriggerFaultSubscriber &) = delete;
   TriggerFaultSubscriber(TriggerFaultSubscriber &&) = delete;
   TriggerFaultSubscriber & operator=(TriggerFaultSubscriber &&) = delete;
 
  private:
-  /// Callback for fault events from ROS 2 topic
-  void on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg);
-
-  rclcpp::Subscription<ros2_medkit_msgs::msg::FaultEvent>::SharedPtr subscription_;
-  ResourceChangeNotifier & notifier_;
-  rclcpp::Logger logger_;
-  /// Write-once: must be set before ROS executor starts spinning.
-  /// After that, only read from subscription callbacks (no mutex needed).
-  NodeToEntityFn node_to_entity_resolver_;
+  Ros2FaultEventSource source_;
+  TriggerFaultFeed feed_;  ///< after source_: destroyed first, so it unsubscribes while the source lives
 };
 
 }  // namespace ros2_medkit_gateway

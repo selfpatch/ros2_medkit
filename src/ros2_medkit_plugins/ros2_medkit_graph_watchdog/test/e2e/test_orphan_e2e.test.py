@@ -64,6 +64,7 @@ from harness import (  # noqa: E402, I100
 )
 
 from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, get_test_port  # noqa: E402
+from ros2_medkit_test_utils.ros_graph import duplicate_fqns, wait_for_graph  # noqa: E402
 
 PORT = get_test_port()
 
@@ -215,6 +216,15 @@ class TestOrphanE2e(unittest.TestCase):
             f'{FAULT_CODE} did not clear after the typo publishers {TYPO_TOPIC} and '
             f'{NS_TYPO_TOPIC} were removed',
         )
+
+    def test_03_gateway_node_names_are_unique(self):
+        # graph_watchdog's lifecycle reader is a second helper node on the gateway.
+        watcher = '/_ros2_medkit_gateway_lifecycle_watcher'
+        fqns = wait_for_graph(
+            self._sub_node,
+            lambda fqns: '/ros2_medkit_gateway' in fqns and watcher in fqns)
+        self.assertIn(watcher, fqns, f'no {watcher} in {sorted(fqns)}')
+        self.assertEqual(duplicate_fqns(fqns), [], f'duplicate node names in {sorted(fqns)}')
 
 
 @launch_testing.post_shutdown_test()

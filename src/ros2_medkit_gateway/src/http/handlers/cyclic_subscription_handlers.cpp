@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/http/handlers/cyclic_subscription_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <regex>
 #include <string>
@@ -21,7 +22,6 @@
 #include <variant>
 
 #include <nlohmann/json.hpp>
-#include <rclcpp/rclcpp.hpp>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
@@ -177,6 +177,14 @@ CyclicSubscriptionHandlers::post_subscription(const http::TypedRequest & req,
     }
   }
 
+  // GET refuses an update id that fails the entity-id rules; so does a subscription.
+  if (parsed->collection == "updates") {
+    if (auto id_ok = ctx_.validate_entity_id(parsed->resource_path); !id_ok) {
+      return tl::unexpected(make_error(400, ERR_X_MEDKIT_INVALID_RESOURCE_URI, id_ok.error(),
+                                       json{{"parameter", "resource"}, {"value", resource}}));
+    }
+  }
+
   // Check sampler is registered
   if (!sampler_registry_.has_sampler(parsed->collection)) {
     return tl::unexpected(make_error(400, ERR_X_MEDKIT_COLLECTION_NOT_AVAILABLE,
@@ -197,7 +205,7 @@ CyclicSubscriptionHandlers::post_subscription(const http::TypedRequest & req,
 
   // Start transport delivery
   auto sampler = sampler_registry_.get_sampler(parsed->collection);
-  auto event_source_result = transport->start(*result, *sampler, ctx_.node());
+  auto event_source_result = transport->start(*result, *sampler, ctx_.services().ros_node());
   if (!event_source_result) {
     sub_mgr_.remove(result->id);
     return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, event_source_result.error()));
@@ -441,7 +449,7 @@ std::string CyclicSubscriptionHandlers::extract_entity_type(const std::string & 
     case SovdEntityType::AREA:
     case SovdEntityType::UNKNOWN:
     default:
-      RCLCPP_WARN(HandlerContext::logger(), "Unexpected entity type in cyclic subscription path: %s", path.c_str());
+      MEDKIT_LOG_WARN(HandlerContext::logger(), "Unexpected entity type in cyclic subscription path: %s", path.c_str());
       return "apps";
   }
 }
@@ -456,7 +464,8 @@ CyclicSubscriptionHandlers::parse_resource_uri(const std::string & resource) {
     parsed.entity_type = match[1].str();
     parsed.entity_id = match[2].str();
     parsed.collection = match[3].str();
-    parsed.resource_path = match[4].matched ? match[4].str() : "";
+    // Decoded as the GET path is, so a subscription reads the item GET reads. Before the '..' check.
+    parsed.resource_path = match[4].matched ? httplib::detail::decode_url(match[4].str(), false) : "";
 
     // Security: reject '..' as a path segment (not as substring of e.g. '/..foo')
     if (!parsed.resource_path.empty()) {
@@ -482,7 +491,7 @@ CyclicSubscriptionHandlers::parse_resource_uri(const std::string & resource) {
     parsed.entity_type = "";  // server-level, no entity
     parsed.entity_id = "";
     parsed.collection = "updates";
-    parsed.resource_path = match[1].str();  // update package ID
+    parsed.resource_path = httplib::detail::decode_url(match[1].str(), false);  // update package ID
     return parsed;
   }
 

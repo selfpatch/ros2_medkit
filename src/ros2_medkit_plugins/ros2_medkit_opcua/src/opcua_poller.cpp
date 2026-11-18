@@ -223,6 +223,11 @@ void OpcuaPoller::start(const PollerConfig & config) {
   }
 
   config_ = config;
+  {
+    // Under a subscription raise_after_samples waits as long as that many polls.
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    detection_.set_poll_interval(config_.poll_interval);
+  }
   running_ = true;
 
   // Same position as the reconnect arm's: whatever the owner must settle before
@@ -1185,11 +1190,12 @@ void OpcuaPoller::on_data_change(const std::string & node_id, const OpcuaValue &
   {
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
     snapshot_.values[node_id] = value;
+    detection_.record_sample(node_id);
     snapshot_.timestamp = std::chrono::system_clock::now();
     snapshot_.connected = true;
     snapshot_.poll_count++;
   }
-  evaluate_alarms();
+  evaluate_alarms(DetectionPipeline::Pass::kValues);
 }
 
 bool OpcuaPoller::comms_lost_should_raise(bool enabled, bool already_raised,
@@ -1220,6 +1226,22 @@ std::chrono::milliseconds OpcuaPoller::next_reconnect_wait(std::chrono::millisec
   return std::min(current * 2, max_wait);
 }
 
+std::chrono::milliseconds OpcuaPoller::subscription_pump_interval(double subscription_interval_ms,
+                                                                  std::chrono::milliseconds poll_interval) {
+  // subscription_interval_ms is taken from the config as is, so guard it here:
+  // a value that is not a positive number keeps the old once-per-poll cadence,
+  // and a tiny one is floored so the poll thread does not spin.
+  if (!std::isfinite(subscription_interval_ms) || subscription_interval_ms <= 0.0) {
+    return poll_interval;
+  }
+  const auto floor = std::min(kMinSubscriptionPumpInterval, poll_interval);
+  if (subscription_interval_ms >= static_cast<double>(poll_interval.count())) {
+    return poll_interval;
+  }
+  const auto step = std::chrono::milliseconds(static_cast<int64_t>(std::llround(subscription_interval_ms)));
+  return std::clamp(step, floor, poll_interval);
+}
+
 void OpcuaPoller::emit_comms_lost(bool active) {
   ros2_medkit::fault_detection::FaultSignal signal;
   signal.fault_code = kCommsLostFaultCode;
@@ -1242,6 +1264,10 @@ void OpcuaPoller::poll_loop() {
       {
         std::lock_guard<std::mutex> lock(snapshot_mutex_);
         snapshot_.connected = false;
+        // Nothing is observed while the link is down, so a point waiting on
+        // raise_after_* starts over after reconnect instead of raising at once
+        // on time it never saw. Raised faults are untouched.
+        detection_.link_lost();
       }
 
       // Issue #496: remember when the connection first went down so the
@@ -1292,11 +1318,9 @@ void OpcuaPoller::poll_loop() {
         }
         // Re-subscribe to AlarmCondition events on the new session and re-fire
         // ConditionRefresh so conditions that changed state while the link was
-        // down are recovered. The client dropped the previous session's event
-        // contexts and subscription handles when it marked itself disconnected,
-        // and again inside connect(), so the monitored-item ids this session
-        // hands out, which start from 1 again, register fresh contexts under
-        // their own ids.
+        // down are recovered. The client closed the previous session when it
+        // marked itself disconnected, and again inside connect(), so nothing of
+        // the old subscriptions is left to publish into this one.
         event_subscription_id_ = 0;
         event_monitored_item_ids_.clear();
         if (has_alarm_sources()) {
@@ -1334,6 +1358,20 @@ void OpcuaPoller::poll_loop() {
     // Poll if not using subscriptions, or as a health check
     if (!using_subscriptions_.load() || !client_.is_connected()) {
       do_poll();
+    } else {
+      // A subscription is silent while a value holds, so a point waiting on
+      // raise_after_* would never be looked at again. While something waits,
+      // each cycle rechecks it, so the wait can end (see DetectionPipeline). A
+      // data change between this check and the pass is fine: evaluate() reads
+      // the state again under the lock.
+      bool waiting = false;
+      {
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        waiting = detection_.has_pending();
+      }
+      if (waiting) {
+        evaluate_alarms(DetectionPipeline::Pass::kRecheck);
+      }
     }
 
     // Issue #386: dispatch incoming AlarmCondition notifications. open62541's
@@ -1342,7 +1380,10 @@ void OpcuaPoller::poll_loop() {
     // ``nodes:``) do_poll() does nothing, so we explicitly pump iterate
     // here to keep events flowing. Cheap when there are no pending
     // notifications; bounded by the timeout.
-    if (event_subscription_id_ != 0) {
+    //
+    // Data-change subscriptions need the same pump: in subscription mode
+    // do_poll() is skipped, so without it no value would ever arrive.
+    if (event_subscription_id_ != 0 || using_subscriptions_.load()) {
       client_.run_iterate(50);
     }
 
@@ -1354,11 +1395,54 @@ void OpcuaPoller::poll_loop() {
     }
 
     // Sleep for poll interval. condition_variable so stop() wakes immediately.
-    {
-      std::unique_lock<std::mutex> lock(stop_mutex_);
-      stop_cv_.wait_for(lock, config_.poll_interval, [this] {
-        return !running_.load();
-      });
+    // In subscription mode the wait is cut into steps of the subscription
+    // interval with an iterate after each one, so a data change reaches the
+    // plugin within about one publishing interval and not once per poll. The
+    // iterate stays on this thread, with the rechecks that read the same
+    // state.
+    const bool pump_subscriptions = using_subscriptions_.load();
+    const auto step = pump_subscriptions
+                          ? subscription_pump_interval(config_.subscription_interval_ms, config_.poll_interval)
+                          : config_.poll_interval;
+    const auto deadline = std::chrono::steady_clock::now() + config_.poll_interval;
+    while (running_.load()) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        break;
+      }
+      {
+        std::unique_lock<std::mutex> lock(stop_mutex_);
+        const auto wait = std::min<std::chrono::steady_clock::duration>(step, deadline - now);
+        if (stop_cv_.wait_for(lock, wait, [this] {
+              return !running_.load();
+            })) {
+          break;
+        }
+      }
+      if (!pump_subscriptions || std::chrono::steady_clock::now() >= deadline) {
+        continue;
+      }
+      // A link that dropped during the wait goes back to the reconnect arm now.
+      if (!client_.is_connected()) {
+        break;
+      }
+      client_.run_iterate(50);
+      // The iterate can find the link closed. The cached values are then no
+      // longer observed, and a wait that ended on them would raise a fault the
+      // reconnect keeps, so go back to the reconnect arm first.
+      if (!client_.is_connected()) {
+        break;
+      }
+      // While a fault waits, check it on every step, so the wait ends on time
+      // and not at the next poll.
+      bool waiting = false;
+      {
+        std::lock_guard<std::mutex> lock(snapshot_mutex_);
+        waiting = detection_.has_pending();
+      }
+      if (waiting) {
+        evaluate_alarms(DetectionPipeline::Pass::kRecheck);
+      }
     }
   }
 }
@@ -1381,71 +1465,50 @@ void OpcuaPoller::do_poll() {
     for (const auto & r : results) {
       if (r.good) {
         snapshot_.values[r.node_id] = r.value;
+        detection_.record_sample(r.node_id);
       } else {
         snapshot_.error_count++;
       }
     }
   }
 
-  evaluate_alarms();
+  // A read that ended with the link closed can have waited the whole timeout,
+  // so a value read before that would end a wait at a time nobody saw it.
+  // Restart the waits first; points without a qualifier still raise and clear.
+  if (!client_.is_connected()) {
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    detection_.link_lost();
+  }
+  evaluate_alarms(DetectionPipeline::Pass::kValues);
 }
 
-void OpcuaPoller::evaluate_alarms() {
-  namespace fd = ros2_medkit::fault_detection;
-
+void OpcuaPoller::evaluate_alarms(DetectionPipeline::Pass pass) {
   auto detection_entries = node_map_.detection_entries();
   if (detection_entries.empty()) {
     return;
   }
 
-  // Translate a polled OPC-UA value into the shared, protocol-agnostic value
-  // type understood by the fault-detection evaluator.
-  auto to_fd_value = [](const OpcuaValue & v) -> fd::Value {
-    return std::visit(
-        [](auto && val) -> fd::Value {
-          using T = std::decay_t<decltype(val)>;
-          if constexpr (std::is_same_v<T, bool>) {
-            return fd::Value{val};
-          } else if constexpr (std::is_same_v<T, std::string>) {
-            return fd::Value{val};
-          } else if constexpr (std::is_floating_point_v<T>) {
-            return fd::Value{static_cast<double>(val)};
-          } else {
-            return fd::Value{static_cast<std::int64_t>(val)};
-          }
-        },
-        v);
-  };
+  // The poll thread and, with native alarms on, the event pump thread both get
+  // here (the pump's iterate runs data-change callbacks too). Working out the
+  // edges and sending them is one step under detection_mutex_, so a clear
+  // worked out later can never be sent before a raise worked out earlier.
+  std::lock_guard<std::mutex> detection_lock(detection_mutex_);
 
   // Collect raise/clear edges while holding the snapshot mutex.
-  struct FaultChange {
-    std::string entity_id;
-    fd::FaultSignal signal;
-  };
-  std::vector<FaultChange> changes;
-
+  std::vector<DetectionPipeline::Change> changes;
   {
     std::lock_guard<std::mutex> snap_lock(snapshot_mutex_);
-
-    for (const auto * entry : detection_entries) {
-      auto it = snapshot_.values.find(entry->node_id_str);
-      if (it == snapshot_.values.end()) {
-        continue;
-      }
-
-      auto signals = fd::evaluate(to_fd_value(it->second), *entry->detection);
-      for (const auto & s : signals) {
-        snapshot_.alarms[s.fault_code] = s.active;
-      }
-
-      // Edge-detect raise/clear; only transitions reach the callback.
-      for (auto & edge : alarm_tracker_.apply(signals)) {
-        changes.push_back({entry->entity_id, std::move(edge)});
-      }
-    }
+    changes = detection_.evaluate(detection_entries, snapshot_.values, using_subscriptions_.load(), pass,
+                                  DetectionPipeline::Clock::now(), snapshot_.alarms);
   }  // snapshot_mutex_ released
 
-  // Fire callbacks outside of locks
+  if (const auto delay = handover_delay_for_test_us_.load(); delay > 0) {
+    std::this_thread::sleep_for(std::chrono::microseconds(delay));
+  }
+
+  // The callbacks run outside snapshot_mutex_ but under detection_mutex_, and
+  // on a data change also under the OPC UA client's lock, so they must not call
+  // the OPC UA client.
   if (!changes.empty()) {
     std::lock_guard<std::mutex> alarm_lock(alarm_mutex_);
     if (alarm_callback_) {

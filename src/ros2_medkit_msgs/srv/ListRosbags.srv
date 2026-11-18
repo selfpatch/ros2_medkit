@@ -45,7 +45,7 @@ string[] formats
 # Total duration of each recording in seconds.
 float64[] durations_sec
 
-# File sizes in bytes.
+# Per recording, the same figure as GetRosbag size_bytes.
 uint64[] sizes_bytes
 
 # When each recording was made, nanoseconds since the epoch.

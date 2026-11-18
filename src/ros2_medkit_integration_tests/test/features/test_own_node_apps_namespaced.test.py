@@ -13,20 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The helper-node filter holds when the gateway alone is moved to a namespace.
+"""The gateway's helper nodes follow it when a remap moves the gateway alone.
 
-``test_own_node_apps.test.py`` covers the case where all four of the gateway's
-nodes share one namespace, where the three helper names are simply the
-gateway's plus a suffix. That is not the only shape they take. The subscription
-node is created with the gateway's namespace, but the fault-client and
-lifecycle-reader nodes are created from the gateway's node NAME alone, so they
-take the process default namespace - and a remap naming the gateway alone,
-``-r ros2_medkit_gateway:__ns:=/subsystem_b``, moves the gateway and the
-subscription node while leaving those two in the root namespace.
+``test_own_node_apps.test.py`` covers a gateway in the root namespace. A remap
+naming the gateway alone, ``-r ros2_medkit_gateway:__ns:=/subsystem_b``, moves
+the gateway node. Each helper node is created in the gateway's namespace under
+a name of its own, which that rule does not match, so all three land next to
+the gateway.
 
-The gateway must still recognise all three. This launch is the split
-invocation, with one gateway on the graph so nothing else can supply a node by
-those names.
+This file checks that the three helpers are on the graph under those names and
+that ``/apps`` lists the gateway and none of them. One gateway is on the graph,
+so nothing else can supply a node by those names.
 """
 
 import time
@@ -56,13 +53,11 @@ BASE_URL = f'http://127.0.0.1:{GATEWAY_PORT}{API_BASE_PATH}'
 GATEWAY_NAME = 'ros2_medkit_gateway'
 GATEWAY_NS = '/subsystem_b'
 GATEWAY_FQN = f'{GATEWAY_NS}/{GATEWAY_NAME}'
-# The split: one helper follows the gateway, two stay at the root.
-NAMESPACED_HELPER_FQN = f'{GATEWAY_NS}/{GATEWAY_NAME}_sub'
-ROOT_HELPER_FQNS = (
-    f'/{GATEWAY_NAME}_fault_clients',
-    f'/{GATEWAY_NAME}_lifecycle_state_reader',
+ALL_HELPER_FQNS = (
+    f'{GATEWAY_NS}/_{GATEWAY_NAME}_sub',
+    f'{GATEWAY_NS}/_{GATEWAY_NAME}_fault_clients',
+    f'{GATEWAY_NS}/_{GATEWAY_NAME}_lifecycle_state_reader',
 )
-ALL_HELPER_FQNS = (NAMESPACED_HELPER_FQN,) + ROOT_HELPER_FQNS
 WITNESS_NODE = 'own_node_apps_ns_witness'
 PROBE_NODE = 'own_node_apps_ns_probe'
 # This file's own two nodes are ordinary ROS nodes, so the gateway lists them
@@ -79,9 +74,9 @@ REFRESH_WITNESS_BUDGET = 25.0
 def generate_test_description():
     """Launch one gateway with only its own node moved into a namespace.
 
-    Built here because the remap has to name the gateway node, which
-    ``create_gateway_node`` cannot express: a namespace on the launch action
-    moves all four nodes together, and that case is the sibling file's.
+    Built here because the remap has to name the gateway node. A namespace on
+    the launch action is a process-wide remap, the case of
+    ``test_gateway_helper_nodes_namespaced.test.py``.
     """
     gateway_node = launch_ros.actions.Node(
         package='ros2_medkit_gateway',
@@ -180,8 +175,8 @@ class TestOwnNodeAppsNamespaced(unittest.TestCase):
                 return False, apps
             time.sleep(0.5)
 
-    def test_the_split_helper_nodes_are_all_on_the_graph(self):
-        """The remap really does split them, so the absences below mean something.
+    def test_the_helper_nodes_are_all_on_the_graph(self):
+        """The remap really does move them, so the absences below mean something.
 
         Without this the next test would pass on a launch where the namespace
         remap silently did nothing and the helpers never existed under these
@@ -189,8 +184,7 @@ class TestOwnNodeAppsNamespaced(unittest.TestCase):
         """
         self.assertTrue(
             set(ALL_HELPER_FQNS) <= self.graph_fqns,
-            f'expected the gateway and its subscription node in {GATEWAY_NS} and the '
-            f'other two helpers at the root, missing: '
+            f'expected the gateway and its three helpers in {GATEWAY_NS}, missing: '
             f'{sorted(set(ALL_HELPER_FQNS) - self.graph_fqns)}. '
             f'Nodes seen: {sorted(self.graph_fqns)}')
         self.assertIn(

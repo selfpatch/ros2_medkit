@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_integration_tests
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* Test only: coverage for recording manifests and per-file downloads, the gateway's helper nodes, fault lists on a chain of gateways, trigger and subscription paths, and steadier timing in the launch tests
+* Contributors: @bburda, @mfaferek93
+
 0.7.0 (2026-08-27)
 ------------------
 * Every integration launch test runs on its own DDS domain, taken when the test starts and held through an open socket for exactly as long as it runs, so a crash or a SIGKILL releases it the same way an ordinary exit does. This replaces the hand-maintained per-package domain pools, which had to stay pairwise disjoint because colcon runs one ctest per package in parallel and a CTest ``RESOURCE_LOCK`` binds only inside a single ctest run (`#551 <https://github.com/selfpatch/ros2_medkit/pull/551>`_, `#597 <https://github.com/selfpatch/ros2_medkit/pull/597>`_)

@@ -13,16 +13,28 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/managers/script_manager.hpp"
-
-#include <rclcpp/rclcpp.hpp>
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 namespace ros2_medkit_gateway {
 
 namespace {
-auto logger() {
-  return rclcpp::get_logger("script_manager");
+const log::Logger & logger() {
+  static const log::Logger instance("script_manager");
+  return instance;
 }
 }  // namespace
+
+ScriptHost make_script_host(const ScriptsConfig & config, ScriptProvider * plugin_backend) {
+  ScriptHost host;
+  host.manager = std::make_unique<ScriptManager>();
+  if (plugin_backend != nullptr) {
+    host.manager->set_backend(plugin_backend);
+  } else if (!config.scripts_dir.empty()) {
+    host.default_provider = std::make_unique<DefaultScriptProvider>(config);
+    host.manager->set_backend(host.default_provider.get());
+  }
+  return host;
+}
 
 void ScriptManager::set_backend(ScriptProvider * backend) {
   backend_ = backend;
@@ -40,11 +52,11 @@ ScriptManager::list_scripts(const std::string & entity_id) {
   try {
     return backend_->list_scripts(entity_id);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(logger(), "list_scripts failed for entity '%s': %s", entity_id.c_str(), e.what());
+    MEDKIT_LOG_ERROR(logger(), "list_scripts failed for entity '%s': %s", entity_id.c_str(), e.what());
     return tl::make_unexpected(
         ScriptBackendErrorInfo{ScriptBackendError::Internal, std::string("Backend error: ") + e.what()});
   } catch (...) {
-    RCLCPP_ERROR(logger(), "list_scripts failed for entity '%s': unknown exception", entity_id.c_str());
+    MEDKIT_LOG_ERROR(logger(), "list_scripts failed for entity '%s': unknown exception", entity_id.c_str());
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::Internal, "Unknown backend error"});
   }
 }
@@ -57,13 +69,13 @@ tl::expected<ScriptInfo, ScriptBackendErrorInfo> ScriptManager::get_script(const
   try {
     return backend_->get_script(entity_id, script_id);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(logger(), "get_script failed for entity '%s', script '%s': %s", entity_id.c_str(), script_id.c_str(),
-                 e.what());
+    MEDKIT_LOG_ERROR(logger(), "get_script failed for entity '%s', script '%s': %s", entity_id.c_str(),
+                     script_id.c_str(), e.what());
     return tl::make_unexpected(
         ScriptBackendErrorInfo{ScriptBackendError::Internal, std::string("Backend error: ") + e.what()});
   } catch (...) {
-    RCLCPP_ERROR(logger(), "get_script failed for entity '%s', script '%s': unknown exception", entity_id.c_str(),
-                 script_id.c_str());
+    MEDKIT_LOG_ERROR(logger(), "get_script failed for entity '%s', script '%s': unknown exception", entity_id.c_str(),
+                     script_id.c_str());
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::Internal, "Unknown backend error"});
   }
 }
@@ -77,13 +89,13 @@ ScriptManager::upload_script(const std::string & entity_id, const std::string & 
   try {
     return backend_->upload_script(entity_id, filename, content, metadata);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(logger(), "upload_script failed for entity '%s', file '%s': %s", entity_id.c_str(), filename.c_str(),
-                 e.what());
+    MEDKIT_LOG_ERROR(logger(), "upload_script failed for entity '%s', file '%s': %s", entity_id.c_str(),
+                     filename.c_str(), e.what());
     return tl::make_unexpected(
         ScriptBackendErrorInfo{ScriptBackendError::Internal, std::string("Backend error: ") + e.what()});
   } catch (...) {
-    RCLCPP_ERROR(logger(), "upload_script failed for entity '%s', file '%s': unknown exception", entity_id.c_str(),
-                 filename.c_str());
+    MEDKIT_LOG_ERROR(logger(), "upload_script failed for entity '%s', file '%s': unknown exception", entity_id.c_str(),
+                     filename.c_str());
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::Internal, "Unknown backend error"});
   }
 }
@@ -96,13 +108,13 @@ tl::expected<void, ScriptBackendErrorInfo> ScriptManager::delete_script(const st
   try {
     return backend_->delete_script(entity_id, script_id);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(logger(), "delete_script failed for entity '%s', script '%s': %s", entity_id.c_str(),
-                 script_id.c_str(), e.what());
+    MEDKIT_LOG_ERROR(logger(), "delete_script failed for entity '%s', script '%s': %s", entity_id.c_str(),
+                     script_id.c_str(), e.what());
     return tl::make_unexpected(
         ScriptBackendErrorInfo{ScriptBackendError::Internal, std::string("Backend error: ") + e.what()});
   } catch (...) {
-    RCLCPP_ERROR(logger(), "delete_script failed for entity '%s', script '%s': unknown exception", entity_id.c_str(),
-                 script_id.c_str());
+    MEDKIT_LOG_ERROR(logger(), "delete_script failed for entity '%s', script '%s': unknown exception",
+                     entity_id.c_str(), script_id.c_str());
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::Internal, "Unknown backend error"});
   }
 }
@@ -116,13 +128,13 @@ tl::expected<ExecutionInfo, ScriptBackendErrorInfo> ScriptManager::start_executi
   try {
     return backend_->start_execution(entity_id, script_id, request);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(logger(), "start_execution failed for entity '%s', script '%s': %s", entity_id.c_str(),
-                 script_id.c_str(), e.what());
+    MEDKIT_LOG_ERROR(logger(), "start_execution failed for entity '%s', script '%s': %s", entity_id.c_str(),
+                     script_id.c_str(), e.what());
     return tl::make_unexpected(
         ScriptBackendErrorInfo{ScriptBackendError::Internal, std::string("Backend error: ") + e.what()});
   } catch (...) {
-    RCLCPP_ERROR(logger(), "start_execution failed for entity '%s', script '%s': unknown exception", entity_id.c_str(),
-                 script_id.c_str());
+    MEDKIT_LOG_ERROR(logger(), "start_execution failed for entity '%s', script '%s': unknown exception",
+                     entity_id.c_str(), script_id.c_str());
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::Internal, "Unknown backend error"});
   }
 }
@@ -136,13 +148,13 @@ tl::expected<ExecutionInfo, ScriptBackendErrorInfo> ScriptManager::get_execution
   try {
     return backend_->get_execution(entity_id, script_id, execution_id);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(logger(), "get_execution failed for entity '%s', script '%s', execution '%s': %s", entity_id.c_str(),
-                 script_id.c_str(), execution_id.c_str(), e.what());
+    MEDKIT_LOG_ERROR(logger(), "get_execution failed for entity '%s', script '%s', execution '%s': %s",
+                     entity_id.c_str(), script_id.c_str(), execution_id.c_str(), e.what());
     return tl::make_unexpected(
         ScriptBackendErrorInfo{ScriptBackendError::Internal, std::string("Backend error: ") + e.what()});
   } catch (...) {
-    RCLCPP_ERROR(logger(), "get_execution failed for entity '%s', script '%s', execution '%s': unknown exception",
-                 entity_id.c_str(), script_id.c_str(), execution_id.c_str());
+    MEDKIT_LOG_ERROR(logger(), "get_execution failed for entity '%s', script '%s', execution '%s': unknown exception",
+                     entity_id.c_str(), script_id.c_str(), execution_id.c_str());
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::Internal, "Unknown backend error"});
   }
 }
@@ -157,14 +169,14 @@ tl::expected<ExecutionInfo, ScriptBackendErrorInfo> ScriptManager::control_execu
   try {
     return backend_->control_execution(entity_id, script_id, execution_id, action);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(logger(), "control_execution('%s') failed for entity '%s', script '%s', execution '%s': %s",
-                 action.c_str(), entity_id.c_str(), script_id.c_str(), execution_id.c_str(), e.what());
+    MEDKIT_LOG_ERROR(logger(), "control_execution('%s') failed for entity '%s', script '%s', execution '%s': %s",
+                     action.c_str(), entity_id.c_str(), script_id.c_str(), execution_id.c_str(), e.what());
     return tl::make_unexpected(
         ScriptBackendErrorInfo{ScriptBackendError::Internal, std::string("Backend error: ") + e.what()});
   } catch (...) {
-    RCLCPP_ERROR(logger(),
-                 "control_execution('%s') failed for entity '%s', script '%s', execution '%s': unknown exception",
-                 action.c_str(), entity_id.c_str(), script_id.c_str(), execution_id.c_str());
+    MEDKIT_LOG_ERROR(logger(),
+                     "control_execution('%s') failed for entity '%s', script '%s', execution '%s': unknown exception",
+                     action.c_str(), entity_id.c_str(), script_id.c_str(), execution_id.c_str());
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::Internal, "Unknown backend error"});
   }
 }
@@ -178,13 +190,14 @@ tl::expected<void, ScriptBackendErrorInfo> ScriptManager::delete_execution(const
   try {
     return backend_->delete_execution(entity_id, script_id, execution_id);
   } catch (const std::exception & e) {
-    RCLCPP_ERROR(logger(), "delete_execution failed for entity '%s', script '%s', execution '%s': %s",
-                 entity_id.c_str(), script_id.c_str(), execution_id.c_str(), e.what());
+    MEDKIT_LOG_ERROR(logger(), "delete_execution failed for entity '%s', script '%s', execution '%s': %s",
+                     entity_id.c_str(), script_id.c_str(), execution_id.c_str(), e.what());
     return tl::make_unexpected(
         ScriptBackendErrorInfo{ScriptBackendError::Internal, std::string("Backend error: ") + e.what()});
   } catch (...) {
-    RCLCPP_ERROR(logger(), "delete_execution failed for entity '%s', script '%s', execution '%s': unknown exception",
-                 entity_id.c_str(), script_id.c_str(), execution_id.c_str());
+    MEDKIT_LOG_ERROR(logger(),
+                     "delete_execution failed for entity '%s', script '%s', execution '%s': unknown exception",
+                     entity_id.c_str(), script_id.c_str(), execution_id.c_str());
     return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::Internal, "Unknown backend error"});
   }
 }

@@ -15,6 +15,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <deque>
 #include <functional>
 #include <map>
@@ -23,6 +24,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -94,8 +96,15 @@ class RosbagCapture {
   /// If lazy_start is false, this is called automatically on construction
   void start();
 
-  /// Stop recording and clean up subscriptions
+  /// Stop recording and clean up subscriptions. Returns once every recording closed
+  /// so far has its manifest and rows (see wait_for_stored_recordings()).
   void stop();
+
+  /// Block until every recording closed so far has been through the store worker:
+  /// its manifest written and its rows stored, or the bag discarded. A post-fault
+  /// recording is closed on the executor thread and stored on the worker, so its
+  /// rows appear shortly after the timer fires, not when it fires.
+  void wait_for_stored_recordings();
 
   /// Check if ring buffer is currently running
   bool is_running() const;
@@ -135,9 +144,28 @@ class RosbagCapture {
   /// A bag shared by a burst of correlated faults is evicted as one unit: every row
   /// referencing it goes together and its bytes are freed once, so the running total
   /// tracks what is really on disk instead of drifting below it.
+  /// @p keep_recording_id, when set, is never evicted: the recording that was just
+  /// stored must not be the one its own quota sweep deletes, even when it alone is
+  /// over @p max_bytes.
   /// @return Paths of the evicted bags, oldest first.
   /// Static + public so the quota arithmetic is testable without a live recording.
-  static std::vector<std::string> evict_bags_over_quota(FaultStorage * storage, size_t max_bytes);
+  static std::vector<std::string> evict_bags_over_quota(FaultStorage * storage, size_t max_bytes,
+                                                        const std::string & keep_recording_id = "");
+
+  /// Suffix of the directory that reserves a bag path while its writer opens.
+  static constexpr const char * kBagPathClaimSuffix = ".claim";
+
+  /// Reserve a bag path under @p base_path that no recording owns. Starts at
+  /// @p timestamp_ms and moves on by 1 ms while the name is taken or reserved, so the
+  /// id format is unchanged. The reservation is released with release_bag_path_claim()
+  /// once the writer has created the directory.
+  /// @return The path, or std::nullopt when @p base_path is unusable or no name is free.
+  /// Static + public so the collision handling is testable without a live recording.
+  static std::optional<std::string> claim_bag_path(const std::string & base_path, const std::string & fault_code,
+                                                   int64_t timestamp_ms);
+
+  /// Drop the reservation claim_bag_path() made for @p bag_path.
+  static void release_bag_path_claim(const std::string & bag_path);
 
   /// Buffered history a flush may claim, in nanoseconds: the age of the oldest message
   /// it wrote, bounded by how long the capture has been running.
@@ -252,14 +280,39 @@ class RosbagCapture {
   /// Drop active_writer_ and remove the partial bag at @p bag_path.
   void discard_active_writer(const std::string & bag_path);
 
-  /// Generate bag file path for a fault
-  std::string generate_bag_path(const std::string & fault_code) const;
+  /// Reserve a free bag path for a fault, see claim_bag_path()
+  std::optional<std::string> generate_bag_path(const std::string & fault_code) const;
 
   /// Calculate total size of a bag directory
   size_t calculate_bag_size(const std::string & bag_path) const;
 
-  /// Enforce storage limits by deleting oldest bags
-  void enforce_storage_limits();
+  /// Enforce storage limits by deleting oldest bags, never @p keep_recording_id
+  void enforce_storage_limits(const std::string & keep_recording_id);
+
+  /// Write manifest.json into a closed recording. Logs and carries on when it cannot.
+  void write_manifest(const std::string & bag_path, int64_t created_at_ns);
+
+  /// A post-fault recording whose writer is closed, on its way to the store worker.
+  struct ClosedRecording {
+    std::string bag_path;
+    /// Empty when the primary fault was cleared during the post-roll.
+    std::string fault_code;
+    std::set<std::string> attached_fault_codes;
+    double duration_sec{0.0};
+    int64_t created_at_ns{0};
+  };
+
+  /// Hand @p recording to the store worker, starting it the first time.
+  void enqueue_closed_recording(ClosedRecording recording);
+
+  /// The store worker: runs store_closed_recording() for each queued recording,
+  /// until the destructor asks it to stop and the queue is empty.
+  void store_worker_loop();
+
+  /// Write the manifest, measure the bag and store its rows, or discard the bag.
+  /// Hashing reads every storage file, so this never runs on the executor thread.
+  /// Never throws.
+  void store_closed_recording(const ClosedRecording & recording);
 
   /// Make @p rows durable for the finished bag at @p bag_path, or discard the bag.
   ///
@@ -274,12 +327,19 @@ class RosbagCapture {
   /// would strand the rows just written - unreadable for good, and still charged
   /// against max_total_storage_mb.
   ///
-  /// Never throws. One caller is reached from ~RosbagCapture via stop(), where an
-  /// escaping exception would terminate; the other runs on the capture pool, which
-  /// would swallow it into a log with the bag already orphaned.
+  /// Never throws. One caller runs on the store worker, where an escaping exception
+  /// would terminate; the other runs on the capture pool, which would swallow it
+  /// into a log with the bag already orphaned.
+  ///
+  /// Rows of faults the store reports cleared are dropped first (row_still_wanted()),
+  /// and with none left the bag is discarded.
   ///
   /// @return True when the rows are durable.
-  bool store_rows_or_discard_bag(const std::vector<RosbagFileInfo> & rows, const std::string & bag_path);
+  bool store_rows_or_discard_bag(std::vector<RosbagFileInfo> rows, const std::string & bag_path);
+
+  /// Whether the fault still gets a row: false only under auto_cleanup with no history,
+  /// for a fault the store holds as cleared. Called under clear_rows_mutex_.
+  bool row_still_wanted(const std::string & code);
 
   /// Whether the operator asked this fault code to keep a recording history.
   ///
@@ -317,7 +377,7 @@ class RosbagCapture {
   /// Timer callback for post-fault recording
   void post_fault_timer_callback();
 
-  /// Close the in-flight post-fault recording, store its metadata (for the
+  /// Close the in-flight post-fault recording, hand it to the store worker (for the
   /// triggering fault and every fault attached to it) and clear the recording
   /// state. Idempotent - a no-op when no post-roll is running, so the post-fault
   /// timer and stop() can both call it.
@@ -479,6 +539,20 @@ class RosbagCapture {
   /// Topics already subscribed (guards against duplicate subscriptions when the
   /// broad-mode discovery timer re-resolves the topic set).
   std::set<std::string> subscribed_topics_;
+
+  /// Store worker. Owned by the capture and joined in the destructor. The queue is
+  /// FIFO, so the quota sweeps run in the order the recordings closed. It takes no
+  /// other lock of this class, so it adds nothing to the lock order above.
+  std::mutex store_mutex_;
+  std::condition_variable store_cv_;
+  /// Orders storing a recording's rows against on_fault_cleared()'s delete: held for
+  /// the cleared check plus the insert, and for the delete. Hashing stays outside it.
+  /// Only storage calls run under it, so it is innermost in the lock order.
+  std::mutex clear_rows_mutex_;
+  std::deque<ClosedRecording> store_queue_;
+  bool store_busy_{false};
+  bool store_stopping_{false};
+  std::thread store_thread_;
 
   /// True in broad modes ("all"/"auto"/"entity"): the discovery timer keeps
   /// re-resolving for the capture's lifetime so topics whose publishers appear

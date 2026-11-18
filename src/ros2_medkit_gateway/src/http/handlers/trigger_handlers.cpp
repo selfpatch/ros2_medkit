@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/handlers/trigger_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -25,16 +26,15 @@
 #include <variant>
 #include <vector>
 
-#include <rclcpp/rclcpp.hpp>
-
 #include "ros2_medkit_gateway/core/data_point_suggest.hpp"
+#include "ros2_medkit_gateway/core/faults/freeze_frame_source.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
-#include "ros2_medkit_gateway/entity_freeze_frame_capture.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/core/trigger_host.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 using json = nlohmann::json;
@@ -210,25 +210,11 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
     log_settings = body.log_settings;
   }
 
-  // For data triggers, resolve the resource_path URI segment to a full ROS 2 topic name.
-  // The resource_path from parse_resource_uri is e.g. "/temperature" (URI segment), but the
-  // ROS 2 topic name is e.g. "/sensor/temperature". We look up the entity's topics from the
-  // cache and find the one whose name ends with the resource_path.
+  // For data triggers, resolve the resource_path to a ROS 2 topic of the entity, as a deferred retry does:
+  // "/temperature" binds to "/sensor/temperature".
   std::string resolved_topic_name;
   if (parsed->collection == "data" && !parsed->resource_path.empty()) {
-    const auto & cache = ctx_.node()->get_thread_safe_cache();
-    auto aggregated = cache.get_entity_data(entity_id);
-    for (const auto & topic : aggregated.topics) {
-      // Match: topic.name ends with the resource_path (e.g., topic "/sensor/temperature"
-      // ends with "/temperature"). Also accept exact match.
-      if (topic.name == parsed->resource_path ||
-          (topic.name.size() > parsed->resource_path.size() &&
-           topic.name.compare(topic.name.size() - parsed->resource_path.size(), parsed->resource_path.size(),
-                              parsed->resource_path) == 0)) {
-        resolved_topic_name = topic.name;
-        break;
-      }
-    }
+    resolved_topic_name = resolve_trigger_topic(ctx_.services().entity_cache(), entity_id, parsed->resource_path);
     if (resolved_topic_name.empty() && entity_result->is_plugin) {
       // Plugin data points are enumerable right now, so a name the plugin does
       // not have can be rejected outright with a suggestion - parking it would
@@ -241,7 +227,7 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
       // cache lags the plugin's live node map by up to one refresh cycle
       // (the retry budget is sized against it in gateway_node), and a
       // genuinely topic-less point surfaces through the retry-expiry warning.
-      auto * pmgr = ctx_.node()->get_plugin_manager();
+      auto * pmgr = ctx_.services().plugin_manager();
       std::optional<nlohmann::json> content;
       if (pmgr != nullptr) {
         if (auto * data_prov = pmgr->get_data_provider_for_entity(entity_id)) {
@@ -262,8 +248,8 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
       // a bridge with a dead PLC link answers 200 with connected=false and an
       // empty list, which must read as "unreadable right now", never as "this
       // entity has zero data points".
-      if (content && EntityFreezeFrameCapture::content_has_live_data(*content)) {
-        const auto values = EntityFreezeFrameCapture::values_from_list_content(*content);
+      if (content && FreezeFrameSource::content_has_live_data(*content)) {
+        const auto values = FreezeFrameSource::values_from_list_content(*content);
         if (values.is_object()) {
           std::vector<std::string> names;
           names.reserve(values.size());
@@ -287,10 +273,10 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
       }
     }
     if (resolved_topic_name.empty()) {
-      RCLCPP_WARN(HandlerContext::logger(),
-                  "Could not resolve resource_path '%s' to a ROS 2 topic for entity '%s'. "
-                  "Topic subscription will be attempted when topic becomes available.",
-                  parsed->resource_path.c_str(), entity_id.c_str());
+      MEDKIT_LOG_WARN(HandlerContext::logger(),
+                      "Could not resolve resource_path '%s' to a data source for entity '%s'. "
+                      "The trigger resolves it when the entity serves the item.",
+                      parsed->resource_path.c_str(), entity_id.c_str());
     }
   }
 
@@ -596,7 +582,7 @@ std::string TriggerHandlers::extract_entity_type(const std::string & path) {
     case SovdEntityType::SERVER:
     case SovdEntityType::UNKNOWN:
     default:
-      RCLCPP_WARN(HandlerContext::logger(), "Unexpected entity type in trigger path: %s", path.c_str());
+      MEDKIT_LOG_WARN(HandlerContext::logger(), "Unexpected entity type in trigger path: %s", path.c_str());
       return "apps";
   }
 }
@@ -611,7 +597,8 @@ tl::expected<TriggerParsedResourceUri, std::string> TriggerHandlers::parse_resou
     parsed.entity_type = match[1].str();
     parsed.entity_id = match[2].str();
     parsed.collection = match[3].str();
-    parsed.resource_path = match[4].matched ? match[4].str() : "";
+    // Percent-decoded as the GET path is, before the '..' check.
+    parsed.resource_path = match[4].matched ? httplib::detail::decode_url(match[4].str(), false) : "";
 
     // Security: reject '..' as a path segment (not as substring of e.g. '/..foo')
     if (!parsed.resource_path.empty()) {

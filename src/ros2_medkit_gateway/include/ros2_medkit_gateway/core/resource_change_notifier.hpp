@@ -20,7 +20,9 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -78,6 +80,9 @@ class ResourceChangeNotifier {
   NotifierSubscriptionId subscribe(NotifierFilter filter, NotifierCallback callback);
 
   /// Remove a subscription by ID. No-op if ID not found.
+  /// From another thread: returns once the callback is not running, and the callback is never called again.
+  /// From inside a notifier callback: returns at once, the current invocation continues, and the callback is not
+  /// called again after it returns. The caller must not hold a lock that the callback takes.
   void unsubscribe(NotifierSubscriptionId id);
 
   /// Report a resource change. Non-blocking - pushes to async work queue.
@@ -108,10 +113,17 @@ class ResourceChangeNotifier {
   /// Worker thread loop - processes queued changes.
   void worker_loop();
 
+  /// Calls the callback of `id` with `change` unless it was unsubscribed.
+  void deliver(NotifierSubscriptionId id, const ResourceChange & change);
+
   // Subscription storage (separate mutex to avoid contention with queue)
   std::mutex sub_mutex_;
-  std::unordered_map<NotifierSubscriptionId, SubscriptionEntry> subscriptions_;
+  std::unordered_map<NotifierSubscriptionId, std::shared_ptr<const SubscriptionEntry>> subscriptions_;
   std::atomic<uint64_t> next_id_{1};
+  /// The subscription whose callback the worker runs, empty when none. Guarded by sub_mutex_.
+  std::optional<NotifierSubscriptionId> running_id_;
+  /// Signalled when running_id_ clears.
+  std::condition_variable running_cv_;
 
   // Async work queue
   std::mutex queue_mutex_;
@@ -126,6 +138,8 @@ class ResourceChangeNotifier {
   ErrorLoggerFn error_logger_;
 
   // Worker thread lifecycle
+  /// Set by the worker on start. Declared before worker_thread_ so its initialisation does not overwrite the value.
+  std::atomic<std::thread::id> worker_id_{std::thread::id{}};
   std::atomic<bool> shutdown_flag_{false};
   std::atomic<int> active_notify_count_{0};
   std::mutex drain_mutex_;

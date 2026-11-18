@@ -15,12 +15,20 @@
 #include "ros2_medkit_gateway/core/http/handlers/bulkdata_handlers.hpp"
 
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
+#include "ros2_medkit_gateway/core/faults/rosbag_recording.hpp"
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <type_traits>
@@ -30,14 +38,16 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <yaml-cpp/yaml.h>
 
 #include "ros2_medkit_gateway/core/http/entity_path_utils.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/dto/bulkdata.hpp"
 #include "ros2_medkit_gateway/dto/entities.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 using json = nlohmann::json;
@@ -60,6 +70,96 @@ tl::expected<EntityPathInfo, ErrorInfo> parse_path(const http::TypedRequest & re
     return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Invalid entity path"));
   }
   return *info;
+}
+
+/// A regular file that is not a symlink. A link inside a bag could point at any file on the host.
+bool is_plain_file(const std::filesystem::path & path) {
+  std::error_code ec;
+  return std::filesystem::symlink_status(path, ec).type() == std::filesystem::file_type::regular && !ec;
+}
+
+/// @p bag_path normalised, without a trailing slash. The fault manager normalises the same way.
+std::filesystem::path normalized_bag_dir(const std::string & bag_path) {
+  std::filesystem::path bag = std::filesystem::path(bag_path).lexically_normal();
+  if (!bag.has_filename()) {
+    bag = bag.parent_path();
+  }
+  return bag;
+}
+
+/// rosbag2_bagfile_information.relative_file_paths from <bag>/metadata.yaml. nullopt when the
+/// file is missing, a symlink, unreadable, or not that shape. The fault manager reads the field
+/// the same way (core/rosbag_served_size.cpp).
+std::optional<std::vector<std::string>> rosbag_relative_file_paths(const std::string & bag_path) {
+  const std::filesystem::path metadata_path = normalized_bag_dir(bag_path) / "metadata.yaml";
+  if (!is_plain_file(metadata_path)) {
+    return std::nullopt;
+  }
+  try {
+    const YAML::Node root = YAML::LoadFile(metadata_path.string());
+    if (!root.IsMap()) {
+      return std::nullopt;
+    }
+    const YAML::Node info = root["rosbag2_bagfile_information"];
+    if (!info || !info.IsMap()) {
+      return std::nullopt;
+    }
+    const YAML::Node paths = info["relative_file_paths"];
+    if (!paths || !paths.IsSequence()) {
+      return std::nullopt;
+    }
+    std::vector<std::string> names;
+    names.reserve(paths.size());
+    for (const auto & entry : paths) {
+      if (!entry.IsScalar()) {
+        return std::nullopt;
+      }
+      names.push_back(entry.as<std::string>());
+    }
+    return names;
+  } catch (const std::exception &) {
+    return std::nullopt;
+  }
+}
+
+/// @p relative_name inside @p bag_path when it is a direct child with a .db3 or .mcap extension.
+/// An absolute or `..` name would otherwise pick any file on the host. Lexical only; callers
+/// check the file with is_plain_file().
+std::optional<std::filesystem::path> rosbag_named_storage_file(const std::string & bag_path,
+                                                               const std::string & relative_name) {
+  const std::filesystem::path bag = normalized_bag_dir(bag_path);
+  std::filesystem::path named = (bag / relative_name).lexically_normal();
+  if (named.parent_path() != bag) {
+    return std::nullopt;
+  }
+  const std::string ext = named.extension().string();
+  if (ext != ".db3" && ext != ".mcap") {
+    return std::nullopt;
+  }
+  return named;
+}
+
+/// The first regular ``.db3`` or ``.mcap`` @p dir yields, in directory order.
+/// Empty when there is none or the directory cannot be walked.
+std::string first_storage_file_in(const std::string & dir) {
+  std::error_code ec;
+  std::filesystem::directory_iterator it(dir, ec);
+  if (ec) {
+    return "";
+  }
+  for (const std::filesystem::directory_iterator end; it != end; it.increment(ec)) {
+    if (ec) {
+      return "";
+    }
+    if (!is_plain_file(it->path())) {
+      continue;
+    }
+    const auto ext = it->path().extension().string();
+    if (ext == ".db3" || ext == ".mcap") {
+      return it->path().string();
+    }
+  }
+  return "";
 }
 
 }  // namespace
@@ -86,29 +186,11 @@ std::vector<std::string> BulkDataHandlers::download_media_types() {
 }
 
 std::string BulkDataHandlers::resolve_rosbag_file_path(const std::string & path) {
-  // If it's a regular file, return as-is
-  if (std::filesystem::is_regular_file(path)) {
-    return path;
-  }
-
-  // If it's a directory (rosbag2 directory structure), find the db3/mcap file inside
-  if (std::filesystem::is_directory(path)) {
-    for (const auto & entry : std::filesystem::directory_iterator(path)) {
-      if (entry.is_regular_file()) {
-        auto ext = entry.path().extension().string();
-        // Look for db3 (sqlite3 format) or mcap files
-        if (ext == ".db3" || ext == ".mcap") {
-          return entry.path().string();
-        }
-      }
-    }
-  }
-
-  return "";  // File not found
+  return detail::rosbag_storage(path).served_file;
 }
 
 std::vector<std::string> BulkDataHandlers::get_source_filters(const EntityInfo & entity) const {
-  return detail::compute_bulkdata_source_filters(ctx_.node()->get_thread_safe_cache(), entity);
+  return detail::compute_bulkdata_source_filters(ctx_.services().entity_cache(), entity);
 }
 
 namespace detail {
@@ -119,6 +201,58 @@ std::string rosbag_recording_id(const std::string & file_path) {
     p = p.parent_path();  // tolerate a trailing slash
   }
   return p.filename().string();
+}
+
+RosbagStorage rosbag_storage(const std::string & bag_path) {
+  // Only the std::error_code overloads: this runs once per listing row, and a
+  // throw fails the whole listing for one unreadable bag.
+  RosbagStorage storage;
+  std::error_code ec;
+
+  // A bare storage file is one storage file and has no metadata.yaml to ask.
+  if (std::filesystem::is_regular_file(bag_path, ec) && !ec) {
+    storage.served_file = bag_path;
+    storage.file_count = 1;
+    return storage;
+  }
+  if (!std::filesystem::is_directory(bag_path, ec) || ec) {
+    return storage;
+  }
+
+  // Metadata that names files decides alone. The served file is the first name,
+  // where the recording starts. When that file is missing or the name is not
+  // followable, nothing is served: a later segment or a stray beside it is not
+  // the start of the recording, and the response could not say which file it is.
+  if (const auto names = rosbag_relative_file_paths(bag_path); names && !names->empty()) {
+    storage.file_count = names->size();
+    if (const auto named = rosbag_named_storage_file(bag_path, names->front()); named && is_plain_file(*named)) {
+      storage.served_file = named->string();
+    }
+    return storage;
+  }
+
+  // No metadata, unreadable metadata or an empty list: the bag does not say what
+  // it holds, so directory order picks the file and the count stays unknown.
+  storage.served_file = first_storage_file_in(bag_path);
+  return storage;
+}
+
+std::optional<uint64_t> rosbag_served_bytes(const RosbagStorage & storage) {
+  // Measured here only for a recording held in one storage file. A split keeps
+  // the row's figure, the fault manager's sum of the same named files.
+  if (storage.file_count != std::size_t{1} || storage.served_file.empty()) {
+    return std::nullopt;
+  }
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(storage.served_file, ec);
+  if (ec) {
+    return std::nullopt;
+  }
+  return static_cast<uint64_t>(size);
+}
+
+std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path) {
+  return rosbag_served_bytes(rosbag_storage(bag_path));
 }
 
 std::vector<std::string> rosbag_attached_fault_codes(const nlohmann::json & rosbag_data,
@@ -157,8 +291,10 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     std::string recording_id;
     std::string format;
     uint64_t size_bytes{0};
+    std::optional<std::size_t> storage_files;
     double duration_sec{0.0};
     int64_t created_at_ns{0};
+    bool manifest{false};
     std::vector<std::string> fault_codes;
   };
   std::vector<RecordingEntry> recordings;
@@ -206,9 +342,14 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     // Default to sqlite3 (the historical FaultManager default) when a bag predates
     // the persisted format field; the per-bag metadata normally carries the real one.
     entry.format = row.value("format", "sqlite3");
-    entry.size_bytes = row.value("size_bytes", uint64_t{0});
+    // One metadata read per row gives the served size and the file count. Without a
+    // single served file the row's own figure stands.
+    const auto storage = rosbag_storage(row.value("file_path", ""));
+    entry.size_bytes = rosbag_served_bytes(storage).value_or(row.value("size_bytes", uint64_t{0}));
+    entry.storage_files = storage.file_count;
     entry.duration_sec = row.value("duration_sec", 0.0);
     entry.created_at_ns = created_at_ns;
+    entry.manifest = row.value("manifest", false);
     entry.fault_codes.push_back(fault_code);
     index_by_recording.emplace(recording_id, recordings.size());
     recordings.push_back(std::move(entry));
@@ -232,6 +373,15 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
                                          // Redundant with the descriptor id, kept because
                                          // clients already group on it.
                                          {"recording_id", entry.recording_id}};
+    if (entry.manifest) {
+      // Present only when true: its absence is what a recording without a manifest looks like.
+      (*descriptor.x_medkit)["manifest"] = true;
+    }
+    // Omitted when the bag does not say. A default of one would claim the
+    // recording is whole, which is the one thing this field exists to establish.
+    if (entry.storage_files) {
+      (*descriptor.x_medkit)["storage_files"] = *entry.storage_files;
+    }
     descriptors.push_back(std::move(descriptor));
   }
   return descriptors;
@@ -268,6 +418,14 @@ std::vector<std::string> compute_bulkdata_source_filters(const ThreadSafeEntityC
 
 }  // namespace detail
 
+namespace {
+/// Whether the fault manager serves the `rosbags` category. When it does not, the category is unknown.
+bool rosbags_served(const HandlerContext & ctx) {
+  auto * fault_mgr = ctx.services().fault_manager();
+  return fault_mgr != nullptr && fault_mgr->serves_rosbags();
+}
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // GET /{entity}/bulk-data - list categories
 // ---------------------------------------------------------------------------
@@ -288,9 +446,11 @@ http::Result<dto::BulkDataCategoryList> BulkDataHandlers::list_categories(const 
     return tl::unexpected(make_error(400, ERR_COLLECTION_NOT_SUPPORTED, access.error().message));
   }
 
-  // Build categories list: "rosbags" always available + BulkDataStore categories.
+  // Build categories list: "rosbags" when the fault manager serves them + BulkDataStore categories.
   dto::BulkDataCategoryList response;
-  response.items.push_back("rosbags");  // Always available via FaultManager
+  if (rosbags_served(ctx_)) {
+    response.items.push_back("rosbags");
+  }
 
   auto * store = ctx_.bulk_data_store();
   if (store) {
@@ -327,9 +487,9 @@ BulkDataHandlers::list_descriptors(const http::TypedRequest & req) {
     return tl::unexpected(make_error(400, ERR_INVALID_REQUEST, "Missing category"));
   }
 
-  if (category == "rosbags") {
+  if (category == "rosbags" && rosbags_served(ctx_)) {
     // === Rosbags: served via FaultManager ===
-    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto fault_mgr = ctx_.services().fault_manager();
 
     // Get source filters for this entity (single for most, multiple for functions).
     // Functions aggregate rosbags from all hosting apps.
@@ -349,13 +509,19 @@ BulkDataHandlers::list_descriptors(const http::TypedRequest & req) {
       }
     }
 
-    // Collect rosbags across all source filters
+    // Collect rosbags across all source filters. A listing that could not read every
+    // one of them is refused rather than served short: a 200 here is a complete list.
     std::vector<json> all_rosbags;
     for (const auto & source_filter : source_filters) {
       auto rosbags_result = fault_mgr->list_rosbags(source_filter);
-      if (rosbags_result.success && rosbags_result.data.contains("rosbags")) {
-        for (const auto & rosbag : rosbags_result.data["rosbags"]) {
-          all_rosbags.push_back(rosbag);
+      if (!rosbags_result.success) {
+        return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "Recordings could not be listed",
+                                         json{{"details", rosbags_result.error_message}}));
+      }
+      if (rosbags_result.data.contains("rosbags")) {
+        for (auto rosbag : rosbags_result.data["rosbags"]) {
+          rosbag["manifest"] = faults::recording_has_manifest(rosbag.value("file_path", std::string{}));
+          all_rosbags.push_back(std::move(rosbag));
         }
       }
     }
@@ -430,7 +596,7 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
   std::string mimetype;
   std::string filename;
 
-  if (category == "rosbags") {
+  if (category == "rosbags" && rosbags_served(ctx_)) {
     // === Rosbags: served via FaultManager ===
     //
     // The id is a recording id. A pre-#620 URL carrying a fault code still resolves:
@@ -438,7 +604,7 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     // recording of this fault", which is what a fault-code URL has always returned.
     // Both routes end up holding a recording before anything is authorized, so there
     // is exactly one authorization semantic, not two.
-    auto fault_mgr = ctx_.node()->get_fault_manager();
+    auto fault_mgr = ctx_.services().fault_manager();
 
     auto rosbag_result = fault_mgr->get_rosbag(bulk_data_id);
     if (!rosbag_result.success || !rosbag_result.data.contains("file_path")) {
@@ -491,7 +657,8 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     // URL is not the segment the client sent.
     filename = rosbag_result.data.value("recording_id", bulk_data_id) + "." + format;
 
-    // Rosbag2 emits a directory layout - resolve the inner db3/mcap file.
+    // Only the storage file is served, not metadata.yaml. When the listing size differs from
+    // Content-Length, see "One recording, one size" in docs/api/rest.rst.
     actual_path = resolve_rosbag_file_path(file_path);
   } else {
     // === Non-rosbag categories: served via BulkDataStore ===
@@ -516,13 +683,22 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
     return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, "Failed to read bulk-data file"));
   }
 
-  // Verify the resolved file is a readable regular file and grab its size for
-  // Content-Length; if either check fails we surface the legacy 500.
-  std::error_code ec;
-  auto file_size = std::filesystem::file_size(actual_path, ec);
-  if (ec) {
+  // One descriptor serves every range, so the bytes cannot change between the check and the read.
+  // O_NOFOLLOW refuses a file swapped for a symlink after resolving; O_NONBLOCK keeps a FIFO from
+  // blocking the open, and fstat then rejects it.
+  const int fd = ::open(actual_path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+  if (fd < 0) {
     return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, "Failed to read bulk-data file"));
   }
+  const std::shared_ptr<int> file(new int(fd), [](const int * owned) {
+    ::close(*owned);
+    delete owned;
+  });
+  struct stat file_stat {};
+  if (::fstat(*file, &file_stat) != 0 || !S_ISREG(file_stat.st_mode)) {
+    return tl::unexpected(make_error(500, ERR_INTERNAL_ERROR, "Failed to read bulk-data file"));
+  }
+  const auto file_size = static_cast<uint64_t>(file_stat.st_size);
 
   // Sanitise the filename for the Content-Disposition header. The framework
   // emits `attachment; filename="<sanitised>"`; embedded quotes are mapped to
@@ -534,33 +710,27 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
   resp.content_type = mimetype;
   resp.filename = safe_name;
   resp.supports_ranges = true;
-  resp.total_size = static_cast<uint64_t>(file_size);
+  resp.total_size = file_size;
   // 64 KB chunks, matching the legacy `stream_file_to_response` block size.
   static constexpr std::size_t kChunkSize = 64 * 1024;
-  // Capture file path by value into the provider closure. cpp-httplib invokes
-  // the provider on a worker thread for each range, so each call re-opens the
-  // file rather than holding a long-lived ifstream that would race the next
-  // request on the same handler instance.
-  resp.provider = [path = actual_path](uint64_t offset, uint64_t length, httplib::DataSink & sink) -> bool {
-    std::ifstream file(path, std::ios::binary);
-    if (!file.is_open()) {
-      return false;
-    }
-    file.seekg(static_cast<std::streamoff>(offset));
-    if (!file.good()) {
-      return false;
-    }
+  // cpp-httplib calls the provider on worker threads, once per range. pread keeps no file offset,
+  // so concurrent calls on the shared descriptor are safe.
+  resp.provider = [file](uint64_t offset, uint64_t length, httplib::DataSink & sink) -> bool {
     uint64_t remaining = length;
+    uint64_t position = offset;
     std::vector<char> buf(std::min<uint64_t>(remaining, kChunkSize));
-    while (remaining > 0 && file.good()) {
-      auto to_read = static_cast<std::size_t>(std::min<uint64_t>(remaining, kChunkSize));
-      file.read(buf.data(), static_cast<std::streamsize>(to_read));
-      auto bytes_read = static_cast<std::size_t>(file.gcount());
-      if (bytes_read == 0) {
+    while (remaining > 0) {
+      const auto to_read = static_cast<std::size_t>(std::min<uint64_t>(remaining, kChunkSize));
+      const ssize_t bytes_read = ::pread(*file, buf.data(), to_read, static_cast<off_t>(position));
+      if (bytes_read < 0 && errno == EINTR) {
+        continue;
+      }
+      if (bytes_read <= 0) {
         break;
       }
-      sink.write(buf.data(), bytes_read);
-      remaining -= bytes_read;
+      sink.write(buf.data(), static_cast<std::size_t>(bytes_read));
+      remaining -= static_cast<uint64_t>(bytes_read);
+      position += static_cast<uint64_t>(bytes_read);
     }
     return remaining == 0;
   };

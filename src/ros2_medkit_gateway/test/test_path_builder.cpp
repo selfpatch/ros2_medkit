@@ -18,6 +18,7 @@
 
 #include "../src/openapi/path_builder.hpp"
 #include "../src/openapi/schema_builder.hpp"
+#include "ros2_medkit_gateway/ros2/ros2_type_schema_provider.hpp"
 
 using ros2_medkit_gateway::ActionInfo;
 using ros2_medkit_gateway::ServiceInfo;
@@ -27,7 +28,8 @@ using ros2_medkit_gateway::openapi::SchemaBuilder;
 
 class PathBuilderTest : public ::testing::Test {
  protected:
-  SchemaBuilder schema_builder_;
+  ros2_medkit_gateway::ros2::Ros2TypeSchemaProvider schemas_;
+  SchemaBuilder schema_builder_{schemas_};
   PathBuilder path_builder_{schema_builder_};
 };
 

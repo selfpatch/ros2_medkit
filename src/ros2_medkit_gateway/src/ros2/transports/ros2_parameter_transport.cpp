@@ -25,7 +25,7 @@ namespace ros2_medkit_gateway::ros2 {
 
 Ros2ParameterTransport::Ros2ParameterTransport(rclcpp::Node * node, double service_timeout_sec,
                                                double negative_cache_ttl_sec, std::size_t client_cache_size,
-                                               std::size_t defaults_cache_size)
+                                               std::size_t defaults_cache_size, const std::string & client_node_name)
   : node_(node)
   , service_timeout_sec_(service_timeout_sec)
   , negative_cache_ttl_sec_(negative_cache_ttl_sec)
@@ -40,11 +40,14 @@ Ros2ParameterTransport::Ros2ParameterTransport(rclcpp::Node * node, double servi
   , param_clients_(client_cache_size) {
   // Create internal node for parameter client operations early.
   // Must be in DDS graph before any parameter queries for fast service discovery.
+  // On the gateway's context: a host may run the gateway on a private one and never
+  // initialise the default context.
   rclcpp::NodeOptions options;
+  options.context(node_->get_node_base_interface()->get_context());
   options.start_parameter_services(false);
   options.start_parameter_event_publisher(false);
   options.use_global_arguments(false);
-  param_node_ = std::make_shared<rclcpp::Node>("_param_client_node", options);
+  param_node_ = std::make_shared<rclcpp::Node>(client_node_name, options);
 
   // Store own node FQN for self-query detection.
   own_node_fqn_ = node_->get_fully_qualified_name();
@@ -240,8 +243,9 @@ rclcpp::FutureReturnCode Ros2ParameterTransport::spin_for(const FutureT & future
   if (shutdown_requested_.load() || !node) {
     return rclcpp::FutureReturnCode::INTERRUPTED;
   }
-  // Free-function overload spins a fresh SingleThreadedExecutor over the node
-  // (collecting all current entities, including a just-created client) for up to
+  // Free-function overload spins a fresh SingleThreadedExecutor on the node's own
+  // context (rclcpp builds it from node->get_context()) over the node, collecting
+  // all current entities including a just-created client, for up to
   // service_timeout_sec, then tears it down - no persistent executor to reconcile
   // with param_node_'s teardown. Serialised by spin_mutex_ (held by the caller),
   // so only one spin runs on the node at a time.

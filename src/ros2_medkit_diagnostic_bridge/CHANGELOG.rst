@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_diagnostic_bridge
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* Reporter parameters out of range fall back to their defaults with a warning: a ``default_threshold`` above INT_MAX falls back to 3 and a ``bypass_severity`` of 256 to 2. 0.7.0 narrowed them to 1 and 0, so a WARN went through at once (`#739 <https://github.com/selfpatch/ros2_medkit/pull/739>`_)
+* Contributors: @bburda
+
 0.7.0 (2026-08-27)
 ------------------
 * The ``hardware_id`` of a diagnostic message is passed through as the fault's source id, so a fault raised from ``/diagnostics`` is attributed to the device the publisher named rather than to the bridge (`#622 <https://github.com/selfpatch/ros2_medkit/pull/622>`_)

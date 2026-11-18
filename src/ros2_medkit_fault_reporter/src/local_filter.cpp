@@ -15,6 +15,7 @@
 #include "ros2_medkit_fault_reporter/local_filter.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace ros2_medkit_fault_reporter {
 
@@ -27,8 +28,9 @@ void LocalFilter::validate_config() {
   if (config_.default_threshold < 1) {
     config_.default_threshold = 1;
   }
-  // Ensure window is positive
-  if (config_.default_window_sec <= 0.0) {
+  // "<= 0" alone is false for NaN, so test the valid range and negate it.
+  const bool window_valid = std::isfinite(config_.default_window_sec) && config_.default_window_sec > 0.0;
+  if (!window_valid) {
     config_.default_window_sec = 1.0;
   }
 }

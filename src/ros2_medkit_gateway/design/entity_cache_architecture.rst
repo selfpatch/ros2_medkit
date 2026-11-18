@@ -110,10 +110,10 @@ the discovery pipeline, not the cache rebuild, driven by two things:
    intermediate containers. These schemas are immutable per type and are not
    read from the discovered entities at all - the ``/operations`` handler
    already resolves them on demand. Discovery now leaves ``type_info`` empty;
-   the handler resolves it lazily and ``TypeIntrospection`` caches the
-   assembled per-type ``type_info`` as a shared, immutable object
-   (``get_service_type_info`` / ``get_action_type_info``), so repeated requests
-   reuse it.
+   the handler resolves it lazily through ``TypeSchemaProvider``
+   (``service_type_info`` / ``action_type_info``), whose ROS implementation
+   caches the assembled per-type ``type_info`` as a shared, immutable object,
+   so repeated requests reuse it.
 
 2. **Refresh frequency.** The rclcpp graph event fires many times per second
    under churn, running the full discovery pipeline each time. Graph events are

@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_topic_beacon
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* Configuration values are bounded: ``max_messages_per_second`` at 10000 (0.7.0 took any larger value, ``+inf`` too), ``beacon_ttl_sec`` and ``beacon_expiry_sec`` at 2147483647 s, and ``max_hints`` at 1..2147483647 (`#660 <https://github.com/selfpatch/ros2_medkit/pull/660>`_)
+* Contributors: @bburda
+
 0.7.0 (2026-08-27)
 ------------------
 * Build and test only: every integration launch test runs on its own DDS domain, taken when the test starts and released when it ends, so a crash frees the domain the same way an ordinary exit does (`#551 <https://github.com/selfpatch/ros2_medkit/pull/551>`_, `#597 <https://github.com/selfpatch/ros2_medkit/pull/597>`_). The usable band excludes the domains whose RTPS port slice falls inside the kernel ephemeral port range, where any process on the machine can steal a port and kill a node with a bind failure

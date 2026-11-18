@@ -43,6 +43,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include <filesystem>
@@ -57,6 +58,16 @@
 namespace ros2_medkit_gateway {
 
 namespace {
+
+// gateway_node blocks SIGINT and SIGTERM until startup ends, so a stop sent during the startup
+// sweep is pending and rclcpp::ok() stays true. sigpending() reports it on any thread.
+bool shutdown_signal_pending() {
+  sigset_t pending;
+  if (sigpending(&pending) != 0) {
+    return false;
+  }
+  return sigismember(&pending, SIGINT) == 1 || sigismember(&pending, SIGTERM) == 1;
+}
 
 // Flush one path's data to the device. Returns the reason on failure.
 std::string fsync_path(const std::string & path, bool is_directory) {
@@ -696,7 +707,11 @@ void OpcuaPlugin::set_context(PluginContext & context) {
     // this plugin's threads (see fault_client_group_).
     fault_client_group_ = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive,
                                                       /*automatically_add_to_executor_with_node=*/false);
-    fault_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+    // On the gateway's context: a host that runs the gateway on a private context never
+    // initialises the default one.
+    rclcpp::ExecutorOptions executor_options;
+    executor_options.context = node->get_node_base_interface()->get_context();
+    fault_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>(executor_options);
     fault_executor_->add_callback_group(fault_client_group_, node->get_node_base_interface());
     fault_clients_->report = create_client_in_group<ros2_medkit_msgs::srv::ReportFault>(
         node, "/fault_manager/report_fault", fault_client_group_);
@@ -1851,6 +1866,12 @@ void OpcuaPlugin::send_or_buffer(PendingFaultDispatch entry) {
 }
 
 void OpcuaPlugin::flush_pending_reports() {
+  // One flush at a time, from the swap to the last dispatch. Flushes run on the
+  // poll thread, the event pump thread and the REST thread; without this, one
+  // thread could swap out an older batch and dispatch it after another thread
+  // dispatched a newer one, so a clear could reach the fault manager before
+  // the raise it answers.
+  std::lock_guard<std::mutex> dispatch_lock(dispatch_mutex_);
   // Keep the reports buffered until the sink is discoverable (checked outside the
   // lock; rclcpp client state is thread-safe).
   if (!fault_clients_->report || !fault_clients_->report->service_is_ready()) {
@@ -2432,8 +2453,7 @@ void OpcuaPlugin::run_startup_discovery() {
   // the report comes out in full. It is cancellable too, but not by shutdown():
   // this runs inside set_context(), i.e. during node construction and before the
   // executor spins, so nothing can call shutdown() until this returns. What ends
-  // it is the SIGINT / SIGTERM that rclcpp's own handler turns into
-  // !rclcpp::ok() - see discovery_cancelled().
+  // it is a SIGINT / SIGTERM - see discovery_cancelled().
   std::string selected_uri;
   const auto chosen = discover_endpoint(
       discovery_config_, endpoint_configured_, discovery_scan_fn_, discovery_identify_fn_,
@@ -2482,7 +2502,7 @@ bool OpcuaPlugin::discovery_cancelled() const {
   // host that built its node on a private context leaves the default one
   // uninitialised and every sweep would cancel before it started. The rule
   // itself, and why both signals are needed, lives in discovery_cancelled_for.
-  return discovery_cancelled_for_context(shutdown_requested_.load(), context_);
+  return discovery_cancelled_for_context(shutdown_requested_.load(), context_) || shutdown_signal_pending();
 }
 
 OpcuaPlugin::DiscoveryReporter OpcuaPlugin::discovery_reporter(std::string * previous_outcome) const {

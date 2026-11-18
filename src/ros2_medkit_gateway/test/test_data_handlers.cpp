@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 
+#include "null_gateway_services.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/data_handlers.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
@@ -41,7 +42,7 @@ class DataHandlersTest : public ::testing::Test {
   CorsConfig cors_{};
   AuthConfig auth_{};
   TlsConfig tls_{};
-  HandlerContext ctx_{nullptr, cors_, auth_, tls_, nullptr};
+  HandlerContext ctx_{ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr};
   DataHandlers handlers_{ctx_};
 };
 

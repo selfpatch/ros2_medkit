@@ -48,9 +48,10 @@ configuration always overrides the zero-config fallback when present.
    watchdog does, goes through debounce and healing, and nothing on that path
    deletes the snapshots: with ``healing_enabled`` the fault heals once its
    counter reaches ``healing_threshold``, without it (the default) it stays
-   CONFIRMED, and its snapshots stay either way. Starting with healing disabled takes the
-   value snapshots of leftover HEALED rows as it reclassifies them, without a
-   clear at all. ``snapshots.retain_on_clear: true`` keeps the value snapshots
+   CONFIRMED, and its snapshots stay either way. Starting with healing disabled, globally or for
+   a code through its own ``healing_enabled: false``, takes the value snapshots
+   of that code's leftover HEALED rows as it reclassifies them, without a clear
+   at all. ``snapshots.retain_on_clear: true`` keeps the value snapshots
    across all of it, and only those. The rosbag recording is not covered by that
    setting. A clear deletes the recording under
    ``snapshots.rosbag.auto_cleanup``, unless that is off or
@@ -75,11 +76,13 @@ Quick Start
 
       ros2 launch ros2_medkit_gateway gateway.launch.py
 
-3. **When a fault is confirmed, query its snapshots:**
+3. **When a fault is confirmed, read its snapshots from the fault itself:**
+
+   They are returned inline, under ``environment_data.snapshots``.
 
    .. code-block:: bash
 
-      curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots
+      curl http://localhost:8080/api/v1/apps/motor_controller/faults/MOTOR_OVERHEAT
 
 Configuration Options
 ---------------------
@@ -115,7 +118,8 @@ Configure snapshot capture via fault manager parameters:
      - Maximum message size in bytes (larger messages skipped)
    * - ``snapshots.background_capture``
      - ``false``
-     - Use background subscriptions (caches latest message)
+     - Use background subscriptions (caches latest message). A topic that
+       appears after the fault manager starts is subscribed once it does.
    * - ``snapshots.recapture_cooldown_sec``
      - ``60.0``
      - Minimum seconds between snapshot captures for the same fault code.
@@ -577,11 +581,14 @@ Rosbag Configuration Options
    * - ``snapshots.rosbag.max_bag_size_mb``
      - ``50``
      - Maximum size per bag file in MB. When exceeded, rosbag2 creates
-       additional segment files.
+       additional segment files. A recording split this way is fetched file by
+       file, see :ref:`below <tutorial-split-recording>`.
    * - ``snapshots.rosbag.max_total_storage_mb``
      - ``500``
      - Total storage limit for all bag files. Oldest bags are automatically
-       deleted when this limit is exceeded. A recording shared by a burst of
+       deleted when this limit is exceeded. The recording that was just written
+       is never one of them: when it alone is over the limit it is kept, a
+       warning is logged, and every older bag is deleted. A recording shared by a burst of
        faults counts once towards the total, and eviction removes a whole
        burst's bag at a time.
    * - ``snapshots.rosbag.max_bags_per_fault``
@@ -828,11 +835,52 @@ recordings had their own identity keep working.
 
 The ``-J`` flag uses the server-provided filename from ``Content-Disposition`` header.
 
-**3. Play back the rosbag:**
+.. _tutorial-split-recording:
+
+**A recording split across several files.** A recording larger than
+``max_bag_size_mb`` is several storage files, and the download above serves the
+first of them. The fault manager writes a ``manifest.json`` next to the files
+when it closes the recording. It lists the files in order, with the size and
+sha256 of each. In the listing, ``x-medkit.storage_files`` gives the number of
+files, and ``"manifest": true`` says that the recording has a manifest. Fetch the
+manifest, then each file by its position in it:
 
 .. code-block:: bash
 
-   ros2 bag play MOTOR_OVERHEAT.mcap
+   BASE=http://localhost:8080/api/v1/apps/motor_controller/bulk-data/rosbags/fault_MOTOR_OVERHEAT_1738664999000
+
+   curl -s $BASE/manifest -o manifest.json
+   mkdir fault_MOTOR_OVERHEAT_1738664999000
+   for i in $(seq 0 $(($(jq '.files | length' manifest.json) - 1))); do
+     name=$(jq -r ".files[$i].name" manifest.json)
+     curl -s $BASE/files/$i -o fault_MOTOR_OVERHEAT_1738664999000/$name
+     echo "$(jq -r ".files[$i].sha256" manifest.json)  fault_MOTOR_OVERHEAT_1738664999000/$name" | sha256sum -c
+   done
+
+The directory now holds the storage files but no ``metadata.yaml``, so ROS 2
+cannot open it as a bag yet. ``ros2 bag reindex`` reads the files and writes
+``metadata.yaml`` again:
+
+.. code-block:: bash
+
+   ros2 bag reindex -s $(jq -r .format manifest.json) fault_MOTOR_OVERHEAT_1738664999000
+   ros2 bag info fault_MOTOR_OVERHEAT_1738664999000
+
+An interrupted file download resumes with ``Range: bytes=<offset>-``. See
+:ref:`rest-rosbag-recording-files` for the manifest fields and the error
+answers.
+
+**3. Play back the rosbag:**
+
+A recording downloaded as one file plays from that file. A split recording
+plays from its directory, once it is reindexed, so every file is played in
+order:
+
+.. code-block:: bash
+
+   ros2 bag play fault_MOTOR_OVERHEAT_1738664999000.mcap
+
+   ros2 bag play fault_MOTOR_OVERHEAT_1738664999000
 
 **Via ROS 2 service (alternative):**
 

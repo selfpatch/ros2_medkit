@@ -76,8 +76,10 @@ class MyLifecycleNode : public rclcpp_lifecycle::LifecycleNode {
 - **Simple API**: Just call `report()` to report a fault
 - **Lifecycle node support**: Construct from a regular `Node` or an `rclcpp_lifecycle::LifecycleNode`
 - **Local Filtering** (optional): Suppress repeated faults until threshold is met
+- **Confirmed delivery**: each report is kept until the FaultManager answers, and sent again if it does not
 - **Per-fault tracking**: Each fault_code has independent filtering
 - **Severity bypass**: High-severity faults bypass local filtering
+- **ROS-free core**: `ReporterCore` (filtering and report building) builds without ROS, see below
 
 ## API
 
@@ -93,7 +95,7 @@ reporter_->report("MOTOR_OVERHEAT",
 
 ### `report_passed(fault_code)` (Advanced)
 
-Report that a fault condition has cleared. Use this when FaultManager is configured with debounce filtering and healing enabled.
+Report that a fault condition has cleared. PASSED events are filtered by the same threshold and window as FAILED events. Use this when FaultManager is configured with debounce filtering and healing enabled.
 
 ```cpp
 reporter_->report_passed("MOTOR_OVERHEAT");
@@ -125,6 +127,89 @@ my_node:
 | `fault_reporter.local_filtering.default_threshold` | int | 3 | Reports needed before forwarding |
 | `fault_reporter.local_filtering.default_window_sec` | double | 10.0 | Time window in seconds |
 | `fault_reporter.local_filtering.bypass_severity` | int | 2 | Severity level that bypasses filtering |
+
+A `default_threshold` above `INT_MAX` or a `bypass_severity` outside `[0, 255]` is replaced by its
+default and logged as a warning. A `default_threshold` below 1 becomes 1. A `default_window_sec` that
+is NaN, infinite or not positive becomes 1.0. These last two are not logged.
+
+## Delivery
+
+`report()` and `report_passed()` return at once. The reporter keeps each request until the
+FaultManager answers it, and sends it again when no response comes within `ack_timeout_sec`. After
+`max_attempts` requests it logs a warning that names the fault code and drops the report. A client
+can see the service as ready before the server has matched it, and a request sent then is lost. This
+retry covers that gap.
+
+- **Order:** per fault code only one request is in flight, and later ones wait behind it. The manager
+  receives the events of one code in the order they were reported.
+- **Cap:** at most `max_pending` reports wait for a response, all codes of one reporter together. A
+  report past the cap is dropped with a warning and the older ones are kept.
+- **Not ready:** a report made while the service is not ready is dropped at once, as before.
+- **Client queue:** the client holds 100 requests and 100 responses (the default service QoS holds
+  10). The responses include answers to every other client of the service, which the client drops
+  when it reads them. If more than 100 requests wait for the manager, or more than 100 answers
+  arrive while the node is not spun, the oldest are dropped. Their reports are sent again after
+  `ack_timeout_sec`. The FaultManager's request queue is `report_fault_queue_depth`.
+- **Duplicates:** if the manager answers too late (the retry timer resends between 1 and 1.5 times
+  `ack_timeout_sec` after a send), or a response is lost, the report is sent again and the manager
+  processes every copy it receives. A repeated FAILED counts toward the manager's debounce.
+- **Spinning:** responses and retries need the node to be spun. Every constructor puts the retry
+  timer on the node; the raw interfaces constructor without a timers interface uses the node's
+  default callback group.
+- **Retry while not ready:** a retry is sent whether or not the service is ready, and it counts toward
+  `max_attempts`. A FaultManager that restarts within `ack_timeout_sec` x `max_attempts` (5 s by
+  default) gets the pending reports. After a crash the dead server can look ready for some seconds.
+- **Destroyed reporter:** destroying a reporter does not cancel its reports. The ones still waiting
+  are sent until confirmed or dropped after `max_attempts`, as long as the node is spun.
+- **Shutdown:** when the ROS context shuts down, each report still waiting is dropped with a warning
+  that names its fault code. Reports of a destroyed reporter whose node is gone wait until then.
+
+| Parameter | Type | Default | Range | Why |
+|-----------|------|---------|-------|-----|
+| `fault_reporter.delivery.ack_timeout_sec` | double | 0.5 | 0.05 - 60 | Well above a local round trip, short enough to recover within a second |
+| `fault_reporter.delivery.max_attempts` | int | 10 | 1 - 100 | With the default timeout a report is kept for 5 s |
+| `fault_reporter.delivery.max_pending` | int | 1024 | 1 - 100000 | Bounds memory when the manager does not answer |
+
+A value outside its range (a NaN timeout, an integer beyond the range) is replaced by its default and
+logged as a warning.
+
+## ROS-free core
+
+The package has two parts. The core compiles without ROS and without DDS setup.
+`scripts/check_cores_without_ros` builds it with plain CMake, runs a check program against it with no
+ROS, and fails when the program links rclcpp. The unit test `test_validate_filter_params` links only
+the core. The other unit tests link `fault_reporter_lib`, which uses rclcpp.
+
+- **Core** (`fault_reporter_core`, static library): `core::ReporterCore` and `LocalFilter`. The core
+  applies the local filter, builds a `ros2_medkit::fault_detection::FaultReport` and hands each report
+  that passed the filter to a sink function (`core::ReportSink`). `core::validate_filter_params()` turns
+  raw int64 and double parameter values into a valid `FilterConfig` and reports the replaced values as
+  warnings. `LocalFilter` is guarded by a mutex. The core links only the header-only
+  `ros2_medkit_fault_detection`, so it needs no library besides the C++17 standard library.
+- **ROS adapter** (`fault_reporter_lib`, shared library): `FaultReporter` reads the ROS parameters,
+  owns the `ReportFault` service client and passes a sink to the core that sends the request.
+
+The core and the neutral types (`ros2_medkit_fault_detection/fault_types.hpp`) carry no ROS type.
+
+### Plain-CMake build
+
+`cmake/fault_reporter_core.cmake` is plain CMake (3.16 or newer, C++17), no ament. The ament build
+includes it by path, and so does `scripts/check_cores_without_ros`. The two package directories
+`ros2_medkit_fault_detection` and `ros2_medkit_fault_reporter` must stay side by side, because the file
+finds the detection header at `../ros2_medkit_fault_detection/include`.
+
+```cpp
+#include "ros2_medkit_fault_reporter/core/reporter_core.hpp"
+
+namespace core = ros2_medkit_fault_reporter::core;
+core::ReporterCore reporter("my_source", ros2_medkit_fault_reporter::FilterConfig{},
+                            [](const ros2_medkit::fault_detection::FaultReport & report) { /* send it */ });
+reporter.report("SENSOR_FAILURE", ros2_medkit::fault_detection::severity::kError, "timeout");
+```
+
+There is one definition of the target. It is not installed or exported.
+`scripts/check_cores_without_ros/run.sh` builds and runs the core on Ubuntu 20.04 with gcc 9, the oldest
+compiler the cores are checked with.
 
 ## Advanced: Debounce Integration
 

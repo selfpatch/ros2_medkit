@@ -154,21 +154,6 @@ for peer communication.
        ``false`` (default), auth tokens are **never** sent to peers - this
        prevents token leakage to untrusted or mDNS-discovered peers. Only
        enable when all peers are trusted and share the same JWT configuration.
-
-       Sharing the JWT configuration means the signing secret, the algorithm
-       and the issuer, and also ``auth.token_expiry_seconds`` and
-       ``auth.refresh_token_expiry_seconds``. A peer records a revocation for a
-       token it did not issue and holds it for that token's refresh expiry plus
-       its OWN access expiry, so a peer configured with a shorter access expiry
-       drops the record while the issuer's tokens are still inside theirs, and
-       the revocation lapses there. The refresh expiry matters the same way: a
-       peer keeps a foreign record for at most its own refresh lifetime, so an
-       issuer with a longer one can go on refreshing a token the peer has
-       already forgotten.
-
-       The role a forwarded token grants is the peer's own: each gateway reads
-       ``sub`` against its ``auth.clients`` and applies the role listed there,
-       so the ``role`` claim in the token does not travel.
    * - ``aggregation.peer_auth_header``
      - string
      - ``""``
@@ -189,6 +174,8 @@ for peer communication.
        for - so a discovered peer that requires authentication stays
        unreachable rather than being handed this gateway's credential. The
        value is redacted from the configurations API, like ``auth.jwt_secret``.
+       ``ros2 param get`` reads it back as ``<set at start>`` or empty, and
+       it cannot be changed at runtime.
 
        This is separate from ``forward_auth``, which forwards an end user's
        token per request. Where both apply, a caller's own token wins, so
@@ -429,8 +416,10 @@ When aggregation is enabled, entities from peers are merged with local entities:
 - **Apps**: Prefixed on collision. If a remote App has the same ID as a local
   one, the remote App's ID is prefixed with ``peername__`` (double underscore).
   For example, App ``camera_driver`` from peer ``arm`` becomes
-  ``arm__camera_driver``. Apps represent individual ROS 2 nodes with unique
-  behavior.
+  ``arm__camera_driver``, and a Function host of that peer that names it does
+  too. Apps represent individual ROS 2 nodes with unique behavior. The
+  aggregator does not filter a peer's Apps again: the peer applied its own
+  ``filter_internal_nodes``.
 
 Requests for remote entities are transparently forwarded to the owning peer.
 The routing table maps entity IDs to peer names.
@@ -503,6 +492,14 @@ into the local response. This applies to:
 - ``GET /api/v1/{entity_type}/{id}/configurations``
 - ``GET /api/v1/{entity_type}/{id}/logs``
 - ``GET /api/v1/faults`` (global fault list)
+
+The global fault list reaches the whole chain: in A -> B -> C, ``GET
+/api/v1/faults`` on A lists the faults of A, B and C. Each gateway adds its own
+id to an ``X-Medkit-Fan-Out-Visited`` header on the peer requests and does not
+ask a peer whose id is already there. Two gateways that list each other as
+peers therefore do not pass the request back and forth. If B cannot reach C,
+A's answer is partial and names ``subsystem_b/subsystem_c`` in
+``failed_peers``.
 
 If a peer request fails during fan-out (peer unreachable or non-2xx response),
 the response body includes:

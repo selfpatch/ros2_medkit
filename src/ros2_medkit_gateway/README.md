@@ -66,9 +66,11 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 
 ### Bulk Data Endpoints
 
-- `GET /api/v1/{entity}/{id}/bulk-data` - List bulk-data categories (rosbags + configured)
+- `GET /api/v1/{entity}/{id}/bulk-data` - List bulk-data categories (configured, plus `rosbags` when the fault manager serves them)
 - `GET /api/v1/{entity}/{id}/bulk-data/{category}` - List bulk-data items in a category
 - `GET /api/v1/{entity}/{id}/bulk-data/{category}/{item_id}` - Download a bulk-data file
+- `GET /api/v1/{entity}/{id}/bulk-data/rosbags/{recording_id}/manifest` - Manifest of a rosbag recording: its storage files in order, with size and sha256
+- `GET /api/v1/{entity}/{id}/bulk-data/rosbags/{recording_id}/files/{index}` - Download one storage file of a rosbag recording (supports `Range`)
 - `POST /api/v1/{entity}/{id}/bulk-data/{category}` - Upload bulk data (components/apps only)
 - `DELETE /api/v1/{entity}/{id}/bulk-data/{category}/{item_id}` - Delete bulk data (components/apps only)
 
@@ -980,12 +982,13 @@ Faults represent errors or warnings reported by system components. The gateway p
 
 - `GET /api/v1/faults` - List all faults across the system (convenience API for dashboards)
 - `GET /api/v1/faults/stream` - Real-time fault event stream via Server-Sent Events (SSE)
-- `GET /api/v1/faults/{fault_code}/snapshots` - Get topic snapshots captured when fault was confirmed
-- `GET /api/v1/faults/{fault_code}/snapshots/bag` - Download rosbag file for fault (if rosbag capture enabled)
 - `GET /api/v1/components/{component_id}/faults` - List faults for a specific component
 - `GET /api/v1/components/{component_id}/faults/{fault_code}` - Get a specific fault
-- `GET /api/v1/components/{component_id}/faults/{fault_code}/snapshots` - Get snapshots for a component's fault
 - `DELETE /api/v1/components/{component_id}/faults/{fault_code}` - Clear a fault
+
+Snapshots are not a separate endpoint. A fault response carries them inline in
+`environment_data.snapshots[]`, and a rosbag recording is downloaded through the
+bulk-data endpoints (`GET /api/v1/{entity-path}/bulk-data/rosbags/{id}`).
 
 #### GET /api/v1/faults
 
@@ -1103,79 +1106,12 @@ curl http://localhost:8080/api/v1/components/nav2_controller/faults
 }
 ```
 
-#### GET /api/v1/faults/{fault_code}/snapshots
+#### Snapshots
 
-Get topic snapshots captured when a fault transitioned to CONFIRMED status. Snapshots provide system state at the moment of fault confirmation for debugging purposes.
-
-**Query Parameters:**
-- `topic` - (optional) Filter by specific topic name
-
-**Example:**
-```bash
-curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots
-curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots?topic=/joint_states
-```
-
-**Response (200 OK):**
-```json
-{
-  "fault_code": "MOTOR_OVERHEAT",
-  "captured_at": 1735830000.123,
-  "topics": {
-    "/joint_states": {
-      "message_type": "sensor_msgs/msg/JointState",
-      "data": {"name": ["joint1"], "position": [1.57]}
-    },
-    "/cmd_vel": {
-      "message_type": "geometry_msgs/msg/Twist",
-      "data": {"linear": {"x": 0.5}, "angular": {"z": 0.1}}
-    }
-  }
-}
-```
-
-**Response (200 OK - No snapshots):**
-```json
-{
-  "fault_code": "MOTOR_OVERHEAT",
-  "topics": {}
-}
-```
-
-**Response (404 Not Found):**
-```json
-{
-  "error": "Fault not found",
-  "fault_code": "NONEXISTENT_FAULT"
-}
-```
-
-#### GET /api/v1/components/{component_id}/faults/{fault_code}/snapshots
-
-Get topic snapshots for a specific component's fault. Same as the system-wide endpoint but scoped to a component.
-
-**Query Parameters:**
-- `topic` - (optional) Filter by specific topic name
-
-**Example:**
-```bash
-curl http://localhost:8080/api/v1/components/motor_controller/faults/MOTOR_OVERHEAT/snapshots
-```
-
-**Response (200 OK):**
-```json
-{
-  "component_id": "motor_controller",
-  "fault_code": "MOTOR_OVERHEAT",
-  "captured_at": 1735830000.123,
-  "topics": {
-    "/motor/temperature": {
-      "message_type": "sensor_msgs/msg/Temperature",
-      "data": {"temperature": 85.5, "variance": 0.1}
-    }
-  }
-}
-```
+Snapshots captured when a fault transitioned to CONFIRMED are returned inline
+with the fault itself, in `environment_data.snapshots[]` of
+`GET /api/v1/{entity-path}/faults/{fault_code}`. There is no separate snapshot
+endpoint.
 
 **Snapshot Configuration:**
 
@@ -1214,45 +1150,30 @@ default_topics:
   - /diagnostics
 ```
 
-#### GET /api/v1/faults/{fault_code}/snapshots/bag
+#### Rosbag Recordings
 
-Download the rosbag file associated with a fault. This endpoint is only available when rosbag capture is enabled in FaultManager.
+Rosbag capture provides "black box" style recording - a ring buffer continuously
+records configured topics, and when a fault is confirmed the buffer is flushed to
+a bag file. This captures system state both **before and after** fault
+confirmation.
 
-Rosbag capture provides "black box" style recording - a ring buffer continuously records configured topics, and when a fault is confirmed, the buffer is flushed to a bag file. This allows capturing system state both **before and after** fault confirmation.
+A recording is listed and downloaded through the bulk-data endpoints:
+`GET /api/v1/{entity-path}/bulk-data/rosbags` for the descriptors and
+`GET /api/v1/{entity-path}/bulk-data/rosbags/{recording_id}` for the bytes. The
+download serves one storage file, verbatim, named `<recording_id>.<format>`
+(`.mcap` or `.sqlite3`). It is not an archive and it does not include the bag's
+`metadata.yaml`.
 
-**Example:**
-```bash
-# Download rosbag archive
-curl -O -J http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag
-
-# Or save with custom filename
-curl http://localhost:8080/api/v1/faults/MOTOR_OVERHEAT/snapshots/bag -o motor_fault.tar.gz
-```
-
-**Response (200 OK):**
-- For directory-based bags (default rosbag2 format): compressed tar.gz archive containing the full bag directory with metadata.yaml and all storage segments
-- Content-Type: `application/gzip`
-- Content-Disposition: `attachment; filename="fault_MOTOR_OVERHEAT_20260124_153045.tar.gz"`
-
-The archive can be extracted and played directly with `ros2 bag play`.
-
-**Response (404 Not Found - Fault or rosbag not found):**
-```json
-{
-  "error": "Rosbag not found",
-  "fault_code": "MOTOR_OVERHEAT",
-  "details": "No rosbag file associated with this fault"
-}
-```
-
-**Response (404 Not Found - Rosbag file deleted):**
-```json
-{
-  "error": "Rosbag file not found",
-  "fault_code": "MOTOR_OVERHEAT",
-  "details": "File was deleted or moved"
-}
-```
+For a recording held in a single storage file, which is the normal case, the
+descriptor `size` is that file's length and therefore the length of the
+download. A recording that grew past `snapshots.rosbag.max_bag_size_mb` is split
+across several storage files. The download then hands over the first file the
+recording's own metadata names, and fails if that file is missing. It never
+serves another file in its place. `x-medkit.storage_files` says how many files
+the metadata names, and `size` is the sum of those files, the `total_bytes` of
+the recording's manifest, so it exceeds the download's `Content-Length`. See
+[the size rule](../../docs/api/rest.rst) in the REST API reference for the full
+statement.
 
 **Rosbag Configuration:**
 
@@ -1280,16 +1201,30 @@ ros2 run ros2_medkit_fault_manager fault_manager_node \
 ```
 
 **Playback downloaded rosbag:**
+
+The downloaded file is a bag in itself. Point `ros2 bag` straight at it, with no
+unpacking step and no `--storage` flag - rosbag2 reads the storage id out of the
+file, so the same two commands work for `.mcap` and for `.sqlite3`.
+
 ```bash
-# Extract the downloaded archive
-tar -xzf fault_MOTOR_OVERHEAT_20260124_153045.tar.gz
+# Inspect the downloaded file
+ros2 bag info fault_MOTOR_OVERHEAT_1738664999000.mcap
 
-# Play back the bag
-ros2 bag play fault_MOTOR_OVERHEAT_1735830000/
-
-# Inspect bag contents
-ros2 bag info fault_MOTOR_OVERHEAT_1735830000/
+# Play it back
+ros2 bag play fault_MOTOR_OVERHEAT_1738664999000.mcap
 ```
+
+```bash
+# The same, for a recording captured with snapshots.rosbag.format: sqlite3
+ros2 bag info fault_MOTOR_OVERHEAT_1738664999000.sqlite3
+ros2 bag play fault_MOTOR_OVERHEAT_1738664999000.sqlite3
+```
+
+A lone storage file needs no `metadata.yaml` beside it: both commands read the
+topics, the message count and the duration out of the file itself.
+
+On Humble, reading `.mcap` needs the plugin installed first:
+`sudo apt install ros-humble-rosbag2-storage-mcap`.
 
 **Differences from JSON Snapshots:**
 
@@ -1507,10 +1442,10 @@ TLS (Transport Layer Security) enables encrypted HTTPS communication. TLS is **d
 | `server.tls.enabled`         | bool   | `false` | Enable/disable TLS. When enabled, server uses HTTPS instead of HTTP.       |
 | `server.tls.cert_file`       | string | (required if enabled) | Path to PEM-encoded certificate file.                         |
 | `server.tls.key_file`        | string | (required if enabled) | Path to PEM-encoded private key file.                         |
-| `server.tls.ca_file`         | string | `""`    | CA that signs CLIENT certificates. Setting it enables mutual TLS and REQUIRES a client certificate from every caller. |
+| `server.tls.ca_file`         | string | `""`    | Optional CA certificate (reserved for future mutual TLS support).          |
 | `server.tls.min_version`     | string | `"1.2"` | Minimum TLS version: `"1.2"` (compatible) or `"1.3"` (more secure).        |
 
-> **Note:** Mutual TLS is available: set `server.tls.ca_file`.
+> **Note:** Mutual TLS (client certificate verification) is planned for a future release.
 
 **Roles and Permissions:**
 
@@ -1570,6 +1505,7 @@ ros2 launch ros2_medkit_gateway gateway.launch.py \
 | `server_host`         | `127.0.0.1`                           | Host to bind the REST server (`127.0.0.1` or `0.0.0.0`). Launch-arg only.                           |
 | `server_port`         | `8080`                                | Port for the REST API. Launch-arg only.                                                              |
 | `refresh_interval_ms` | `30000`                               | Safety-backstop refresh interval in ms (graph events drive the primary refresh). Launch-arg only.    |
+| `cors_allowed_origins` | `http://localhost:3000,http://localhost:5173` | Comma-separated browser origins, matched exactly (`http://127.0.0.1:3000` is not `http://localhost:3000`). A value replaces the defaults; empty disables CORS. With a custom `config_file` and this argument unset, CORS comes from the config files only. |
 
 ### Authentication Configuration Examples
 
@@ -1748,8 +1684,30 @@ curl --cacert ./certs/ca.crt https://localhost:8443/api/v1
 
 The package compiles into two layered static libraries with a strict dependency direction:
 
-- **`gateway_core`** - middleware-neutral business logic. Sources live under `src/core/` and headers under `include/ros2_medkit_gateway/core/`. Links only header-only and C-level externals (cpp-httplib, nlohmann/json, yaml-cpp, tl::expected, jwt-cpp, OpenSSL, SQLite, dl). Carries no rclcpp / rcl_interfaces / message-package dependency. Hosts the neutral HTTP request handlers, JWT authentication, fault model (debounce, storage, cache, correlation), peer aggregation, manifest parsing, the entity cache, the neutral managers (lock, bulk-data, subscription, script, update, plugin), and every provider interface contract.
-- **`gateway_ros2`** - ROS adapter layer. Compiles the remaining sources under `src/` and links `gateway_core` publicly via `medkit_target_dependencies`. Hosts `GatewayNode` (the `rclcpp::Node` entry point), the ROS-coupled managers (data access, operation, configuration, fault facade, log, trigger), runtime discovery, the native topic sampler, and the ROS-specific provider default implementations.
+- **`gateway_core`** - the ROS-free layer, defined in `cmake/gateway_core.cmake`. Sources: `src/core/`, the HTTP server and REST server, `src/http/handlers/`, `src/openapi/`, the plugin manager and loader, aggregation, and the script manager. Headers live under `include/ros2_medkit_gateway/core/` and the neighbouring `http/`, `plugins/` and `aggregation/` directories. Links only header-only and C-level externals (cpp-httplib, nlohmann/json, yaml-cpp, tl::expected, jwt-cpp, OpenSSL, SQLite, dl). Carries no rclcpp / rcl_interfaces / message-package dependency.
+- **`gateway_ros2`** - the ROS adapters. Compiles the remaining sources under `src/` and links `gateway_core` publicly via `medkit_target_dependencies`. Hosts `GatewayNode` (the `rclcpp::Node` entry point), the ROS transports and providers, runtime discovery, the native topic sampler, and the plugin context of the node (a `CorePluginContext` whose `node()` is the gateway node).
+
+The core compiles and is tested without ROS and without DDS setup. `cmake/gateway_core.cmake` is plain CMake. The ament build includes it by path, and so does `scripts/check_cores_without_ros`, which links `gateway_core`:
+
+```cmake
+include(path/to/ros2_medkit_gateway/cmake/gateway_core.cmake)
+target_link_libraries(check_cores_without_ros PRIVATE gateway_core)
+```
+
+The file takes a target the including build already defines, else `find_package`, else the copy vendored in `src/vendored/` (cpp-httplib, jwt-cpp, tl::expected). An existing `httplib::httplib` target is reused when it is older than 0.20 (or has no version), because 0.20 removed the multipart API the handlers use. `gateway_core` requires C++17 from its consumers (`cxx_std_17` is a public compile feature) and works with CMake 3.16. `-DENABLE_SWAGGER_UI=ON` works in both builds and needs network access and `xxd` at configure time. The check implements `GatewayServices` with minimal stand-ins and starts `RESTServer`. A program that hosts the core names its server through `RestConfig::server_name`, `vendor_name` and `server_version` (`name` and `version` on `GET /`, `vendor_info` on `GET /version-info`, and the OpenAPI title and version). The defaults are the ROS 2 node's values. `scripts/check_cores_without_ros/` builds and runs it on Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with.
+
+A program that hosts the core gets the cyclic-subscription samplers and the bulk-data store from the core, and passes the following:
+
+- **Samplers.** `register_builtin_samplers(services)` (`core/builtin_samplers.hpp`) registers `data`, `faults`, `configurations` and `logs` on `services.sampler_registry()`, plus `updates` when `services.update_manager()` is set. Each sampler reads through the same managers and helpers as its GET route. A `data` subscription on an entity a plugin owns reads through that plugin's `DataProvider` (or its `x-plc-data` route), and on any other entity through `services.data_access_manager()` and its `TopicDataProvider`. A collection with no manager behind it answers with the error text of its GET route, not a crash. The host passes `GatewayServices` (it must outlive the samplers) and registers a subscription transport itself, for example `SseTransportProvider`. `GET /` reports `cyclic_subscriptions` true only when a transport and at least one sampler are registered.
+- **Bulk data.** `BulkDataConfig` (`core/config.hpp`: `storage_dir`, `max_upload_size`, `categories`, with the defaults of the `bulk_data.*` parameters) and `make_bulk_data_store(config)` (`core/managers/bulk_data_store.hpp`) build the store. The host returns it from `GatewayServices::bulk_data_store()` before it starts `RESTServer`, which sizes the upload limit from it. The `rosbags` category is listed only when `FaultServiceTransport::serves_rosbags()` is true; otherwise a request for it answers 404 like any unknown category. The default is true; a host whose fault manager records no rosbags overrides it. `GET /` reports `bulk_data` true only when a store exists or rosbags are served.
+- **Freeze frames.** `make_freeze_frame_capture(config, events, plugins)` (`core/faults/freeze_frame_capture.hpp`) builds a `FreezeFrameCapture`. On a `fault_confirmed` event it reads the data of each reporting source through the same path as `GET /{entity}/data` (`plugin_data_readers()` in `core/data/data_item_reader.hpp`: the plugin's `DataProvider`, else its `x-plc-data` route) and keeps the frames, so the fault detail's `environment_data` carries a `freeze_frame` with the values from the confirmation. The host passes a `FreezeFrameCaptureConfig` (`enabled` = `entity_freeze_frame.enabled`, default true; `max_faults`, default 256, the oldest fault's frames are evicted past it), a `FaultEventSource` (the capture subscribes on construction and its subscription ends on destruction; a source serves several subscribers, so this can be the source the host returns from `GatewayServices::fault_events()`, which the fault SSE stream subscribes to), and the `PluginManager` that owns the entities. The factory returns null when the configuration is disabled or no plugin is loaded. The host returns the capture from `GatewayServices::freeze_frames()` and keeps it alive as long as the services. Optional: a `StandingFaultLister` that frames faults already confirmed at start, and an `EventsReadyWaiter` that holds the lister until the event feed delivers. An entity no plugin serves gets no frame. The ROS 2 node feeds the same class from the fault manager's events topic (`EntityFreezeFrameCapture`).
+- **Lock expiry.** `LockReaper(locks, subscriptions, interval_sec, logger)` (`core/managers/lock_reaper.hpp`) calls `LockManager::cleanup_expired()` every `interval_sec` (`LockConfig::cleanup_interval`, default 30, raised to 1 when lower) on a thread it owns. For each expired lock whose scope is empty or includes `cyclic-subscriptions` it removes the cyclic subscriptions of the locked entity. `subscriptions` may be null. The destructor and `stop()` join the thread. Without a reaper a host keeps expired locks until it calls `cleanup_expired()` itself. The ROS 2 node runs the same class.
+- **Scripts.** `make_script_host(config, plugin_backend)` (`core/managers/script_manager.hpp`) returns a `ScriptManager` and, when no plugin backend is given and `ScriptsConfig::scripts_dir` is not empty, the `DefaultScriptProvider` (fork/execvp) behind it. `ScriptsConfig` (`core/script_types.hpp`) has the defaults of the `scripts.*` parameters, and `entries` carries predefined scripts. The host returns `host.manager` from `GatewayServices::script_manager()` and keeps the `ScriptHost` alive as long as the services. With neither a backend nor a directory the script routes answer 501.
+- **Aggregation.** `AggregationHost(config, listen_port, mdns_name, logger)` (`core/aggregation/aggregation_host.hpp`) builds the `AggregationManager` from an `AggregationConfig` (the defaults of the `aggregation.*` parameters; the host range-checks values it reads from its own configuration) and, when `announce` or `discover` is set, the mDNS discovery that adds and removes peers and ignores this gateway's own announcements. The host passes `host.manager()` to `RESTServer::set_aggregation_manager()` and calls `host.merge_peers(areas, components, apps, functions)` on every entity refresh, before it fills the entity cache. The call merges the peers' entities into the four vectors and publishes the routing table, the leaf warnings and the per-entity peer contributors. It does nothing while there is no peer. Call `host.shutdown()` before `RESTServer::stop()`.
+- **Triggers.** `make_trigger_host(config, notifier, conditions, wiring)` (`core/trigger_host.hpp`) builds the `SqliteTriggerStore` and the `TriggerManager`, wires the entity hierarchy, entity existence and topic lookups to `wiring.cache`, and restores persistent triggers. `TriggerHostConfig` has the names and defaults of the `triggers.*` parameters (`enabled`, `max_triggers`, `on_restart_behavior`, `storage_path`), and `data_poll_interval_ms` (default 1000, clamped to 100-60000 ms), which the node does not read. `register_builtin_conditions()` fills the `ConditionRegistry`. The host passes the manager to `RESTServer::set_trigger_handlers()` and returns it from `GatewayServices::trigger_manager()`. A trigger past `max_triggers` answers 503. Where its events come from is chosen by the wiring: `fault_events` (a `FaultEventSource`; it serves several subscribers, so this can be the source the host returns from `GatewayServices::fault_events()`) starts a `TriggerFaultFeed` that subscribes to it and turns each fault event into a `faults` notification, and a fault trigger fires on it. The feed's subscription ends when the host is destroyed. A data trigger reads from `topic_transport` (a `TopicSubscriptionTransport`, the ROS 2 node's choice) when its topic is known, else from `polled_plugins`: a `PollingDataItemSource` that reads the item through `read_plugin_data_item`, as `GET /{entity}/data/{item}` does once per `data_poll_interval_ms`, starting at once. The item name is the trigger `resource` path percent-decoded as the GET path is. It delivers the `data` field of the body (the whole body when there is none), so a trigger `path` is relative to the value, as it is for a topic. A host without topics sets only `polled_plugins`; a host with neither gets data triggers that never fire. The trigger's condition runs on every sample, so `EnterRange` fires once at the crossing and `OnChange` at each difference. An item that cannot be read in a round delivers nothing in that round. Keep the host alive as long as the services. The ROS 2 node uses the same builder with its topic transport and feeds fault triggers through `TriggerFaultSubscriber`, a `Ros2FaultEventSource` under a `TriggerFaultFeed`.
+- **Plugin context.** `make_core_plugin_context(services, wiring)` (`core/plugins/core_plugin_context.hpp`) builds the context for plugins from `GatewayServices`: entities and the entity snapshot from `entity_cache()`, locks from `lock_manager()`, faults from `fault_manager()`, samplers from `sampler_registry()`. The host passes it to `PluginManager::set_context()` and keeps it alive as long as the plugins. `CorePluginContextWiring` carries what `GatewayServices` does not: getters for the change notifier and the condition registry (a null getter or a null result gives the plugin a null), a getter for the `AggregationManager` (the fault listings add the peers' faults), a callback for `notify_entities_changed()` (none: the call is ignored) and a sink for notices. The context is a `RosPluginContext`, so `as_ros_plugin_context()` is valid for every plugin, and its `node()` returns null: a plugin that needs ROS checks for it and declines to start. Plugins that use no ROS (a provider, a route, an introspection source) run unchanged. `PluginManager::load_plugins()` loads them from shared objects as on the node. The ROS 2 node derives its context from the same class and overrides only `node()`.
+- **Fault-trigger engine.** `make_fault_trigger_host(config, wiring)` (`core/fault_trigger_host.hpp`) builds the threshold-rule engine behind `/apps/{id}/fault-triggers` and the thread that evaluates its rules. `FaultTriggerHostConfig` has the names and defaults of the `fault_triggers.*` parameters (`enabled`, `poll_interval_ms`, raised to 50 ms and capped at `INT_MAX`, `storage_path`). The wiring has the entity cache, the `PluginManager` the rules read their values from (through the plugin's `x-plc-data` route), and the `FaultManager` a crossed rule reports to and clears through. The factory returns null when the configuration is disabled or no plugin is loaded. The host returns the engine from `GatewayServices::fault_trigger_engine()`; without it the routes answer 501. The engine consumes no fault events. The fault it reports confirms in the fault manager and reaches the fault SSE stream, the freeze-frame capture and fault triggers through the host's event source. Destroy the host before the plugins and the fault manager go. The ROS 2 node uses the same builder.
+- **Lifecycle.** `RESTServer` takes a `LifecycleStateReader` or null. A host without one passes null. `GET /{entity}/status` then reports `ready` for an online app and `notReady` for an offline one, also when the app exposes the lifecycle services, because graph presence is the only signal left. A component is ready unless every app it hosts is offline. `PUT /{entity}/status/{action}` answers 501 unless a plugin `LifecycleProvider` serves the entity.
 
 The `gateway_node` executable and existing test targets link `gateway_ros2`, so they transitively get both layers from a single dependency. The neutral contract is enforced by two CTest checks:
 

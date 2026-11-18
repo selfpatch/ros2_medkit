@@ -29,6 +29,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/capture_thread_pool.hpp"
+#include "ros2_medkit_fault_manager/ros2/ros_log_sink.hpp"
 
 using ros2_medkit_fault_manager::CaptureThreadPool;
 using ros2_medkit_fault_manager::EnqueueResult;
@@ -36,8 +37,9 @@ using ros2_medkit_fault_manager::QueueFullPolicy;
 
 namespace {
 
-rclcpp::Logger test_logger() {
-  return rclcpp::get_logger("test_capture_thread_pool");
+ros2_medkit_fault_manager::ros2::RosLogSink & test_logger() {
+  static ros2_medkit_fault_manager::ros2::RosLogSink sink;
+  return sink;
 }
 
 // Capture_fn that records every invocation and blocks each job until released,

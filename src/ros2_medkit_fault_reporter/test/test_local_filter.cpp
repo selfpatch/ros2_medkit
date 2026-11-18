@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cmath>
 #include <thread>
 
 #include "ros2_medkit_fault_reporter/local_filter.hpp"
@@ -47,6 +48,10 @@ TEST_F(LocalFilterTest, FilterDisabledAlwaysForwards) {
   // Should forward on first call when filtering is disabled
   EXPECT_TRUE(filter_->should_forward("TEST_FAULT", Fault::SEVERITY_INFO));
   EXPECT_TRUE(filter_->should_forward("TEST_FAULT", Fault::SEVERITY_INFO));
+}
+
+TEST_F(LocalFilterTest, NanWindowFallsBackToOneSecond) {
+  EXPECT_EQ(LocalFilter(FilterConfig{true, 3, std::nan(""), 2}).config().default_window_sec, 1.0);
 }
 
 TEST_F(LocalFilterTest, ThresholdNotMetFilters) {

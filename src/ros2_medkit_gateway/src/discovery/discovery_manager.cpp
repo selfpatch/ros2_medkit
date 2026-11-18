@@ -317,6 +317,22 @@ std::vector<Function> DiscoveryManager::discover_functions(const std::vector<App
   return runtime_introspection_->discover_functions(apps);
 }
 
+std::unordered_set<std::string>
+DiscoveryManager::introspection_only_function_ids(const std::vector<Function> & functions) {
+  if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {
+    return {};
+  }
+  if (config_.mode == DiscoveryMode::HYBRID) {
+    std::lock_guard<std::mutex> lock(result_mutex_);
+    return cached_result_.introspection_only_function_ids;
+  }
+  std::unordered_set<std::string> ids;
+  for (const auto & func : functions) {
+    ids.insert(func.id);
+  }
+  return ids;
+}
+
 std::optional<Area> DiscoveryManager::get_area(const std::string & id) {
   // In MANIFEST_ONLY mode, use direct manifest lookup (O(1))
   if (config_.mode == DiscoveryMode::MANIFEST_ONLY && manifest_manager_ && manifest_manager_->is_manifest_active()) {

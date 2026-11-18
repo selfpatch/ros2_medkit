@@ -64,6 +64,20 @@ namespace ros2_medkit_gateway::ros2 {
  */
 class Ros2ParameterTransport : public ParameterTransport {
  public:
+  /// Maximum entries in the per-node AsyncParametersClient cache before
+  /// least-recently-used eviction. Kept moderate because each entry is heavy: an
+  /// AsyncParametersClient owns several DDS service clients on param_node_.
+  /// Evicting one is transparent - the next query rebuilds the client.
+  static constexpr std::size_t kMaxParamClientCacheSize = 256;
+
+  /// Maximum entries in each per-node default-value cache before
+  /// least-recently-used eviction. Much larger than the client cache because a
+  /// parameter map is orders of magnitude lighter than an AsyncParametersClient,
+  /// AND because evicting a default is NOT transparent: a re-seed can rebase what
+  /// "default" means. A large cap keeps defaults eviction exceptional on any
+  /// realistic graph while still bounding memory.
+  static constexpr std::size_t kMaxDefaultsCacheSize = 8192;
+
   /**
    * @param node Non-owning ROS node used to declare parameters and to derive
    *             the gateway's own FQN for the self-node short circuit.
@@ -83,10 +97,13 @@ class Ros2ParameterTransport : public ParameterTransport {
    *                            because a parameter map is far lighter than an
    *                            AsyncParametersClient, so evicting a default (which
    *                            can rebase "default" to a current value) stays rare.
+   * @param client_node_name Name of the internal client node. Each transport in one
+   *                         process needs its own.
    */
   Ros2ParameterTransport(rclcpp::Node * node, double service_timeout_sec, double negative_cache_ttl_sec,
                          std::size_t client_cache_size = kMaxParamClientCacheSize,
-                         std::size_t defaults_cache_size = kMaxDefaultsCacheSize);
+                         std::size_t defaults_cache_size = kMaxDefaultsCacheSize,
+                         const std::string & client_node_name = "_param_client_node");
 
   ~Ros2ParameterTransport() override;
 
@@ -260,20 +277,6 @@ class Ros2ParameterTransport : public ParameterTransport {
 
   /// Maximum entries in negative cache before hard eviction.
   static constexpr size_t kMaxNegativeCacheSize = 500;
-
-  /// Maximum entries in the per-node AsyncParametersClient cache before
-  /// least-recently-used eviction. Kept moderate because each entry is heavy: an
-  /// AsyncParametersClient owns several DDS service clients on param_node_.
-  /// Evicting one is transparent - the next query rebuilds the client.
-  static constexpr std::size_t kMaxParamClientCacheSize = 256;
-
-  /// Maximum entries in each per-node default-value cache before
-  /// least-recently-used eviction. Much larger than the client cache because a
-  /// parameter map is orders of magnitude lighter than an AsyncParametersClient,
-  /// AND because evicting a default is NOT transparent: a re-seed can rebase what
-  /// "default" means. A large cap keeps defaults eviction exceptional on any
-  /// realistic graph while still bounding memory.
-  static constexpr std::size_t kMaxDefaultsCacheSize = 8192;
 
   /// Margin added to service_timeout_sec_ for spin_mutex acquisition timeout.
   /// Must exceed service_timeout_sec_ to avoid spurious TIMEOUT errors.

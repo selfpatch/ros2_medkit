@@ -27,6 +27,7 @@ import json
 import threading
 import time
 import unittest
+from urllib.parse import quote
 
 import launch_testing
 import launch_testing.actions
@@ -158,6 +159,48 @@ class TestMultiCollectionSubscriptions(GatewayTestCase):
         self.assertIn('observed_resource', data)
         self.assertIn('event_source', data)
         self.assertTrue(data['event_source'].endswith('/events'))
+
+    def _assert_encoded_topic_matches_get(self, encoded):
+        """Check that a subscription on an encoded topic URI delivers what GET returns."""
+        resource = f'/api/v1/apps/{self.app_id}/data/{encoded}'
+        r = self._create_subscription(resource, interval='fast')
+        self.assertEqual(r.status_code, 201, f'Create failed: {r.text}')
+        body = r.json()
+        self.addCleanup(self._delete_subscription, body['id'])
+        self.assertEqual(body['observed_resource'], resource)
+
+        event = None
+        with requests.get(
+                self.BASE_URL.removesuffix(API_BASE_PATH) + body['event_source'],
+                stream=True, timeout=15) as stream:
+            for line in stream.iter_lines(decode_unicode=True):
+                if line and line.startswith('data:'):
+                    event = json.loads(line[len('data:'):].strip())
+                    break
+        self.assertIsNotNone(event, 'SSE stream ended without an event')
+
+        get = requests.get(f'{self.BASE_URL}/apps/{self.app_id}/data/{encoded}',
+                           timeout=5)
+        self.assertEqual(get.status_code, 200, get.text)
+        self.assertNotIn('error', event, f'Sample failed: {event}')
+        sample = event['payload']
+        self.assertEqual(sample['id'], get.json()['id'])
+        self.assertEqual(set(sample['data']), set(get.json()['data']))
+
+    def test_encoded_topic_subscription_matches_get(self):
+        """Topic path encoded without its leading slash.
+
+        @verifies REQ_INTEROP_089
+        """
+        self._assert_encoded_topic_matches_get(
+            quote(self.topic_id.lstrip('/'), safe=''))
+
+    def test_encoded_topic_with_leading_slash_matches_get(self):
+        """Topic id encoded as listed, leading slash included.
+
+        @verifies REQ_INTEROP_089
+        """
+        self._assert_encoded_topic_matches_get(quote(self.topic_id, safe=''))
 
     def test_faults_subscription_create(self):
         """Create a subscription on faults collection.

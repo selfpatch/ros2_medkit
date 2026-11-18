@@ -78,10 +78,6 @@ class MockTopicTransport : public TopicTransport {
     return {sample_publishers_, 0};
   }
 
-  ros2_medkit_serialization::TypeIntrospection * get_type_introspection() const override {
-    return nullptr;
-  }
-
   uint64_t sample_publishers_ = 1;
   // Failure-path knobs. When publish_success_ is false, publish() throws to
   // match the real Ros2TopicTransport contract. When sample_success_ is false,

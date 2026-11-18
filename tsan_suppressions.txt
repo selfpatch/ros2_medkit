@@ -165,3 +165,9 @@ race:rclcpp::GenericClient::create_response*
 # our code" rule, scoped to the service-call path only. The race itself is
 # entirely a library one; we are on the stack only as the caller of the client.
 race:ros2_medkit_gateway::OperationManager::call_service*
+# The same response handoff on the action send_goal path. The executor thread drops
+# its copy of the SendGoal response in uninstrumented librclcpp
+# (Executor::execute_client) and can free it there after our ~shared_ptr in
+# send_goal. No create_response frame is on these reports, so the entries above
+# do not match them.
+race:ros2_medkit_gateway::ros2::Ros2ActionTransport::send_goal*

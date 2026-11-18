@@ -118,6 +118,42 @@ reclassification of HEALED faults run only at startup, so they are skipped when 
 be reached then. Snapshot capture starts with the first answer of the server. The bags of a fault
 cleared while the server cannot be reached are not deleted then.
 
+Report Queue
+~~~~~~~~~~~~
+
+.. code-block:: yaml
+
+   fault_manager:
+     ros__parameters:
+       report_fault_queue_depth: 100       # Requests ~/report_fault holds until read (1-65536)
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 15 60
+
+   * - Parameter
+     - Default
+     - Description
+   * - ``report_fault_queue_depth``
+     - ``100``
+     - Requests ``~/report_fault`` holds until the node reads them. The same depth applies to the
+       answers that clients have not acknowledged yet. Read once at startup; setting it on a
+       running node is refused. A value outside 1 to 65536 is clamped to the nearest end with a
+       warning.
+
+Past the depth the middleware drops requests without an answer. Size it for the requests that
+can arrive at once: a FaultReporter has one request in flight per fault code, and the OPC UA plugin
+sends up to 256 buffered reports at once when the fault manager becomes reachable.
+
+- ``FaultReporter`` sends a dropped report again after ``ack_timeout_sec``.
+- graph_watchdog and the gateway's fault triggers report again on their next tick while the
+  condition holds.
+- The OPC UA plugin reports once per alarm transition, so a dropped report is lost.
+
+A deep queue that the node reads slowly also costs duplicates: a FaultReporter request that waits
+longer than ``ack_timeout_sec`` is sent again while the first copy is still in the queue, and the
+manager processes both. A repeated FAILED counts toward the debounce.
+
 Debounce Settings
 ~~~~~~~~~~~~~~~~~
 
@@ -142,7 +178,8 @@ The fault manager uses AUTOSAR DEM-style debounce filtering to prevent fault fla
    * - ``confirmation_threshold``
      - ``-1``
      - Number of FAILED events to confirm fault. Negative values mean more events needed.
-       Use ``-3`` to require 3 FAILED events before confirmation.
+       Use ``-3`` to require 3 FAILED events before confirmation. Values outside
+       -2147483647 to 2147483647 are clamped to the nearest end with a warning.
    * - ``healing_enabled``
      - ``false``
      - When true, PASSED events can heal confirmed faults.
@@ -150,7 +187,8 @@ The fault manager uses AUTOSAR DEM-style debounce filtering to prevent fault fla
      - ``3``
      - Counter value at which a fault heals, not a number of events. Healing costs
        ``healing_threshold`` minus the counter the fault confirmed at, so with the
-       default ``-1`` it takes four PASSED events.
+       default ``-1`` it takes four PASSED events. Values outside -2147483647 to 2147483647
+       are clamped to the nearest end with a warning.
    * - ``auto_confirm_after_sec``
      - ``0.0``
      - Auto-confirm prefailed faults after this duration. Set to 0 to disable.
@@ -304,11 +342,108 @@ threshold overrides:
 
    When multiple entities report the same ``fault_code``, each event applies the
    thresholds resolved from that event's ``source_id``. This means the debounce
-   behavior follows the reporting entity, not the fault.
+   behavior follows the reporting entity, not the fault. The debounce counter,
+   however, belongs to the fault code, so the two entities share one counter under
+   two policies - see `Per-Fault-Code Thresholds`_ for what that does and how to
+   settle it. The node warns when it happens.
 
    ``auto_confirm_after_sec`` is global-only and cannot be overridden per-entity.
    Critical faults skip debounce and confirm on their first occurrence; that is
    built in, not a parameter, so it can be neither disabled nor set per entity.
+
+Per-Fault-Code Thresholds
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Per-entity thresholds are the right tool when you know which subsystems are noisy but not
+which codes they will emit. They have one limit: the debounce counter is kept per
+``fault_code``, while the override is chosen per ``source_id``. Two entities reporting one
+code therefore share a counter and debounce it under two policies, and the report that
+happens to arrive decides the transition:
+
+.. code-block:: text
+
+   motor  (confirmation_threshold=-5) reports OVERHEAT -> counter=-1, PREFAILED
+   lidar  (confirmation_threshold=-1) reports OVERHEAT -> counter=-1, CONFIRMED
+
+The motor's policy was bypassed. Per-fault_code thresholds are the layer that removes
+that: they are matched on the code itself, so they resolve the same whoever reports.
+
+.. code-block:: yaml
+
+   fault_manager:
+     ros__parameters:
+       # Path to YAML file with per-fault_code overrides
+       fault_thresholds:
+         config_file: "/etc/ros2_medkit/fault_thresholds.yaml"
+
+The file is a map of fault codes to threshold overrides, the same three fields an entity
+override carries:
+
+.. code-block:: yaml
+
+   # fault_thresholds.yaml
+   MOTOR_OVERHEAT:
+     confirmation_threshold: -5    # five events, whoever reports them
+     healing_threshold: 10
+
+   LIDAR_FAIL:
+     confirmation_threshold: -1    # instant
+     healing_threshold: 1
+
+.. list-table::
+   :header-rows: 1
+   :widths: 35 15 50
+
+   * - Parameter
+     - Default
+     - Description
+   * - ``fault_thresholds.config_file``
+     - ``""``
+     - Path to YAML file with per-fault_code threshold overrides. Empty = disabled.
+
+**How the layers combine:**
+
+- Three layers, each applied on top of the last: the **global** defaults, then the
+  **entity** override whose prefix matches the reporting ``source_id``, then the
+  **fault code's** own override. A field a layer does not set is left as the layer below
+  had it, so ``fault_code`` > ``source_id`` > global for every field independently.
+- Matching on the code is **exact**. A fault code is an identifier, not a path: an entry
+  for ``MOTOR`` does not capture ``MOTOR_OVERHEAT`` the way ``/sensors`` captures
+  ``/sensors/lidar``.
+- A code that is not listed resolves exactly as it did before: entity override if one
+  matches, global otherwise. The layer is opt-in and changes nothing on its own.
+- Like the entity file, this one is loaded once at node startup. Changes require a restart.
+- At startup, a HEALED fault is reclassified to CLEARED when its code has healing disabled.
+  The code's entry in this file decides, and the global ``healing_enabled`` applies when the
+  entry does not set it. Entity overrides are not used here, because a stored fault belongs
+  to its code and can have several sources.
+
+.. note::
+
+   An override that names only some fields settles only those. If ``MOTOR_OVERHEAT`` pins
+   ``confirmation_threshold`` but not ``healing_threshold``, the healing direction still
+   follows whichever entity reported, and the node still reports the conflict below. Pin
+   all three fields to settle a code completely.
+
+**When one code is debounced two ways**
+
+The node resolves the policy for every report, and warns the first time two sources resolve
+different policies for one code:
+
+.. code-block:: text
+
+   [WARN] Fault code 'OVERHEAT' is debounced two ways: '/powertrain/motor/left' resolves
+   confirmation=-5 healing_enabled=false healing=10, '/sensors/lidar/front' resolves
+   confirmation=-1 healing_enabled=true healing=1. The debounce counter belongs to the
+   fault code, so whichever source reports decides the transition and the other policy is
+   bypassed. Pin confirmation_threshold, healing_enabled and healing_threshold for this code
+   in fault_thresholds.config_file.
+
+The warning names both sources and both resolved policies, and is emitted **once per fault
+code** for the life of the node, so a busy reporter does not turn it into a log storm. It
+is a diagnostic, not an error: the configuration is legal and the fault is still debounced,
+just not under a policy an operator chose. Giving the code an entry in
+``fault_thresholds.config_file`` that pins all three fields ends it.
 
 Snapshot Configuration
 ----------------------
@@ -324,15 +459,15 @@ Basic Snapshot Settings
      ros__parameters:
        snapshots:
          enabled: true                     # Enable snapshot capture
-         background_capture: false         # Capture in background thread
+         background_capture: false         # Cache configured topics instead of sampling on confirm
          timeout_sec: 1.0                  # Timeout for topic sampling
          max_message_size: 65536           # Max message size in bytes (64KB)
          default_topics: []                # Topics to capture for all faults
          config_file: ""                   # Path to YAML config file
          recapture_cooldown_sec: 60.0      # Min seconds between snapshot captures per fault
          max_per_fault: 10                 # Max snapshots stored per fault code (0 = unlimited)
-         capture_pool_size: 2              # Max concurrent capture threads (>= 1)
-         capture_queue_depth: 16           # Max pending captures before policy applies (>= 1)
+         capture_pool_size: 2              # Max concurrent capture threads (1-64)
+         capture_queue_depth: 16           # Max pending captures before policy applies (1-65536)
          capture_queue_full_policy: reject_newest  # reject_newest | drop_oldest
 
 .. list-table::
@@ -347,7 +482,11 @@ Basic Snapshot Settings
      - Master switch to enable/disable snapshot capture.
    * - ``snapshots.background_capture``
      - ``false``
-     - Capture snapshots in background thread (non-blocking).
+     - Keep a subscription to every configured topic and capture its latest
+       cached message, instead of sampling the topic when the fault confirms.
+       A topic the graph does not know yet at startup is checked for once a
+       second and subscribed as soon as it appears, so the fault manager may
+       start before the nodes whose topics it captures.
    * - ``snapshots.timeout_sec``
      - ``1.0``
      - Timeout for sampling each topic.
@@ -385,14 +524,16 @@ Basic Snapshot Settings
        ``max_per_fault``, which still bounds growth either way.
    * - ``snapshots.capture_pool_size``
      - ``2``
-     - Max concurrent capture threads under a fault storm (>= 1). The capture pool is
+     - Max concurrent capture threads under a fault storm (1 to 64; a value outside the range
+       is clamped to the nearest end with a warning). The capture pool is
        shared and created when snapshots **or** rosbag is enabled, so these parameters
        bound both. ``capture_pool_size`` parallelizes freeze-frame snapshot capture
        only; rosbag stays single-writer regardless - correlated faults confirming
        inside one post-roll window share a single recording.
    * - ``snapshots.capture_queue_depth``
      - ``16``
-     - Max pending captures before the full-queue policy applies (>= 1).
+     - Max pending captures before the full-queue policy applies (1 to 65536; a value outside
+       the range is clamped to the nearest end with a warning).
    * - ``snapshots.capture_queue_full_policy``
      - ``reject_newest``
      - Policy when the queue is full: ``reject_newest`` or ``drop_oldest``.
@@ -491,12 +632,17 @@ Capture continuous rosbag recordings around fault events.
      - Start recording only when first fault occurs.
    * - ``rosbag.max_bag_size_mb``
      - ``50``
-     - Maximum size per rosbag file (MB).
+     - Maximum size per rosbag file (MB). A recording past it is split into
+       several storage files. A warning is logged at startup when this is larger
+       than ``max_total_storage_mb``.
    * - ``rosbag.max_total_storage_mb``
      - ``500``
      - Maximum total storage for all rosbags (MB). A recording shared by a
        burst of faults counts once towards the total, and eviction removes a
-       whole burst's bag at a time (oldest first).
+       whole burst's bag at a time (oldest first). The recording that was just
+       stored is never evicted by its own sweep. If it alone is larger than the
+       limit it is kept, a warning is logged, and the storage stays over the
+       limit until a newer recording replaces it.
    * - ``rosbag.max_bags_per_fault``
      - ``1``
      - How many recordings one fault code keeps. Past the cap the oldest is
@@ -594,6 +740,22 @@ runs again on the next capture.
 A post-fault-only bag on a quiet or heavily filtered system can contain zero
 messages. It still finalises normally on both ``mcap`` and ``sqlite3``, is listed
 by the bulk-data endpoints and can be downloaded; only its payload is empty.
+
+**What a closed recording contains.** The recording directory holds the storage
+files rosbag2 wrote, its ``metadata.yaml``, and a ``manifest.json`` the fault
+manager writes once the writer is closed and before the recording is listed. The
+manifest names the storage files in ``metadata.yaml`` order, each with its size
+and sha256, and their total size. It is written to a temporary file and renamed
+into place, and it is never rewritten. Hashing reads every file once, so closing a
+large recording takes that much longer. If the manifest cannot be written, a
+warning is logged and the recording is still listed, without one. Recordings made
+before this feature have no manifest and get none.
+
+**Recording names are unique.** A recording directory is named
+``fault_<code>_<milliseconds>``. When that name is already taken, the timestamp is
+moved on by one millisecond until a free name is found, so a new recording never
+opens inside an earlier one's directory, and a capture that fails to open removes
+only the directory it created itself.
 
 **What ``duration_sec`` on a stored bag means.** The value returned by
 ``~/get_rosbag`` and the gateway's bulk-data listing is the span the recording was
@@ -722,6 +884,10 @@ Complete Example
        # Per-entity debounce overrides
        entity_thresholds:
          config_file: "/etc/ros2_medkit/entity_thresholds.yaml"
+
+       # Per-fault_code debounce overrides (applied on top of the entity ones)
+       fault_thresholds:
+         config_file: "/etc/ros2_medkit/fault_thresholds.yaml"
 
        # Snapshots
        snapshots:

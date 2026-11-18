@@ -17,12 +17,14 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -32,15 +34,23 @@
 #include <thread>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+#include <rosbag2_storage/bag_metadata.hpp>
+#include <rosbag2_storage/metadata_io.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <yaml-cpp/yaml.h>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rcutils/logging.h"
+#include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
+#include "ros2_medkit_fault_manager/core/recording_manifest.hpp"
+#include "ros2_medkit_fault_manager/core/rosbag_served_size.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
+#include "test_log_sink.hpp"
 
 using ros2_medkit_fault_manager::FaultStorage;
 using ros2_medkit_fault_manager::InMemoryFaultStorage;
@@ -575,6 +585,263 @@ TEST(RosbagHighBandwidthTopicTest, MatchesSensorStreamsButNotLookalikes) {
   EXPECT_FALSE(RosbagCapture::is_high_bandwidth_topic("/cmd_vel"));
 }
 
+// === Reported size vs stored size ===
+// A recording is stored as a directory and served as a single file. The row keeps the
+// directory total, because that is what the recording costs against the storage quota
+// (see ABoundaryRecordingSplitsAndReportsTheWholeBag, which pins that). What the API
+// reports is the other number: the bytes a download of it transfers.
+
+namespace {
+
+/// A bag directory whose metadata.yaml is written by rosbag2's own MetadataIo, the document a real bag carries.
+class ServedBytesBag {
+ public:
+  explicit ServedBytesBag(const std::string & label) {
+    dir_ = std::filesystem::temp_directory_path() /
+           ("served_bytes_" + std::to_string(::getpid()) + "_" + label + "_" + std::to_string(counter_++));
+    std::filesystem::create_directories(dir_);
+  }
+
+  ~ServedBytesBag() {
+    std::error_code ec;
+    std::filesystem::remove_all(dir_, ec);
+  }
+
+  ServedBytesBag(const ServedBytesBag &) = delete;
+  ServedBytesBag & operator=(const ServedBytesBag &) = delete;
+  ServedBytesBag(ServedBytesBag &&) = delete;
+  ServedBytesBag & operator=(ServedBytesBag &&) = delete;
+
+  /// Write a storage file of @p bytes and return its name, relative to the bag.
+  std::string add_storage_file(const std::string & name, size_t bytes) {
+    std::ofstream out(dir_ / name, std::ios::binary);
+    out << std::string(bytes, 'x');
+    return name;
+  }
+
+  void write_metadata(const std::vector<std::string> & relative_file_paths) {
+    rosbag2_storage::BagMetadata metadata;
+    metadata.storage_identifier = "sqlite3";
+    metadata.relative_file_paths = relative_file_paths;
+    metadata.duration = std::chrono::nanoseconds(0);
+    metadata.starting_time = std::chrono::time_point<std::chrono::high_resolution_clock>(std::chrono::nanoseconds(0));
+    metadata.message_count = 0;
+    rosbag2_storage::MetadataIo().write_metadata(dir_.string(), metadata);
+  }
+
+  /// What the row stores: every regular file under the directory.
+  size_t directory_total() const {
+    size_t total = 0;
+    for (const auto & entry : std::filesystem::recursive_directory_iterator(dir_)) {
+      if (entry.is_regular_file()) {
+        total += entry.file_size();
+      }
+    }
+    return total;
+  }
+
+  size_t file_size_of(const std::string & name) const {
+    return std::filesystem::file_size(dir_ / name);
+  }
+
+  const std::filesystem::path & dir() const {
+    return dir_;
+  }
+  std::string path() const {
+    return dir_.string();
+  }
+
+ private:
+  std::filesystem::path dir_;
+  static int counter_;
+};
+
+int ServedBytesBag::counter_ = 0;
+
+}  // namespace
+
+TEST(RosbagServedBytesTest, ReportsTheStorageFileNotTheDirectoryTotal) {
+  ServedBytesBag bag("single");
+  const std::string db3 = bag.add_storage_file("recording_0.db3", 4096);
+  bag.write_metadata({db3});
+
+  const size_t served = bag.file_size_of(db3);
+  const size_t stored_total = bag.directory_total();
+  // Not vacuous: metadata.yaml is on disk too, so the two numbers really differ.
+  ASSERT_GT(stored_total, served) << "metadata.yaml did not land, so there is nothing to tell apart";
+
+  EXPECT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), served)
+      << "the reported size must be what a download transfers";
+  EXPECT_NE(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), stored_total)
+      << "metadata.yaml is not served, so it must not be counted";
+}
+
+TEST(RosbagServedBytesTest, AnUnreadableMetadataFallsBackToTheStoredTotalNotToZero) {
+  // Positive control on the same harness: with the metadata intact this bag does
+  // answer with its storage file, so a fallback below is the damaged metadata and
+  // not a helper that never resolves anything.
+  ServedBytesBag bag("damaged");
+  const std::string db3 = bag.add_storage_file("recording_0.db3", 2048);
+  bag.write_metadata({db3});
+  const size_t stored_total = bag.directory_total();
+  ASSERT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), bag.file_size_of(db3))
+      << "control: an intact bag resolves its storage file";
+
+  // Now break only the metadata, leaving the storage file untouched.
+  {
+    std::ofstream out(bag.dir() / "metadata.yaml", std::ios::binary | std::ios::trunc);
+    out << "rosbag2_bagfile_information: [this is not a mapping\n";
+  }
+  const size_t stored_total_after = bag.directory_total();
+  EXPECT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total_after), stored_total_after)
+      << "an unparseable metadata.yaml falls back to the stored total";
+  EXPECT_NE(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total_after), 0u)
+      << "and never to zero, which would describe the recording as empty";
+}
+
+TEST(RosbagServedBytesTest, AMissingMetadataFallsBackToTheStoredTotal) {
+  // A bag written before metadata was kept, or one whose metadata was lost.
+  ServedBytesBag bag("nometa");
+  bag.add_storage_file("recording_0.db3", 1024);
+  const size_t stored_total = bag.directory_total();
+
+  EXPECT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), stored_total);
+}
+
+TEST(RosbagServedBytesTest, ANamedFileThatIsNotOnDiskFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("ghost");
+  bag.add_storage_file("recording_0.db3", 1024);
+  bag.write_metadata({"recording_1.db3"});  // names a segment that was never written
+  const size_t stored_total = bag.directory_total();
+
+  EXPECT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), stored_total);
+}
+
+namespace {
+
+/// A name the size helper follows only when it lands on a storage file inside the
+/// bag directory. Every case below is checked twice on one bag: first with an
+/// in-bag name, which must answer with that file, and then with @p
+/// unfollowable_name, which must answer with the stored total. The control is what
+/// separates the rule from a metadata document rosbag2 wrote but cannot read back -
+/// both would fall back, for entirely different reasons.
+void expect_unfollowable_name_falls_back(ServedBytesBag & bag, const std::string & unfollowable_name,
+                                         const std::string & in_bag_name) {
+  bag.write_metadata({in_bag_name});
+  ASSERT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), bag.directory_total()),
+            bag.file_size_of(in_bag_name))
+      << "the in-bag control name was not followed, so this bag says nothing about " << unfollowable_name;
+
+  bag.write_metadata({unfollowable_name});
+  const size_t stored_total = bag.directory_total();
+  EXPECT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), stored_total)
+      << "a name pointing outside the bag was measured as the recording: " << unfollowable_name;
+}
+
+}  // namespace
+
+// A name in metadata.yaml decides which file on the host this helper measures and
+// reports as the recording's size, so it is followed only when it lands on a
+// storage file that is a direct child of the bag directory. Path concatenation
+// enforces none of that: an absolute name replaces the bag directory and a `..`
+// name climbs out of it.
+TEST(RosbagServedBytesTest, ANameThatClimbsOutOfTheBagFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("escape");
+  const std::string in_bag = bag.add_storage_file("recording_0.db3", 4096);
+
+  const std::string outside_name = "served_bytes_outside_" + std::to_string(::getpid()) + ".db3";
+  const auto outside = bag.dir().parent_path() / outside_name;
+  {
+    std::ofstream out(outside, std::ios::binary);
+    out << std::string(8192, 'o');
+  }
+  ASSERT_TRUE(std::filesystem::is_regular_file(outside)) << "the file the name points at was not created";
+
+  expect_unfollowable_name_falls_back(bag, "../" + outside_name, in_bag);
+
+  std::error_code ec;
+  std::filesystem::remove(outside, ec);
+}
+
+TEST(RosbagServedBytesTest, AnAbsoluteNameFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("absolute");
+  const std::string in_bag = bag.add_storage_file("recording_0.db3", 4096);
+
+  ServedBytesBag elsewhere("absolute_target");
+  elsewhere.add_storage_file("recording_0.db3", 8192);
+  const std::string absolute_name = (elsewhere.dir() / "recording_0.db3").string();
+  ASSERT_TRUE(std::filesystem::is_regular_file(absolute_name));
+  expect_unfollowable_name_falls_back(bag, absolute_name, in_bag);
+
+  // A host file that is not a recording at all, which is what an absolute name
+  // reaches for when this is an attack and not a stale bag.
+  expect_unfollowable_name_falls_back(bag, "/etc/hostname", in_bag);
+}
+
+TEST(RosbagServedBytesTest, ANameInASubdirectoryFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("nested");
+  const std::string in_bag = bag.add_storage_file("recording_0.db3", 4096);
+
+  std::filesystem::create_directories(bag.dir() / "sub");
+  {
+    std::ofstream out(bag.dir() / "sub" / "segment.db3", std::ios::binary);
+    out << std::string(8192, 's');
+  }
+  ASSERT_TRUE(std::filesystem::is_regular_file(bag.dir() / "sub" / "segment.db3"));
+  expect_unfollowable_name_falls_back(bag, "sub/segment.db3", in_bag);
+}
+
+TEST(RosbagServedBytesTest, ANameWithoutAStorageExtensionFallsBackToTheStoredTotal) {
+  ServedBytesBag bag("text");
+  const std::string in_bag = bag.add_storage_file("recording_0.db3", 4096);
+  bag.add_storage_file("recording_0.txt", 8192);
+  ASSERT_TRUE(std::filesystem::is_regular_file(bag.dir() / "recording_0.txt"));
+  expect_unfollowable_name_falls_back(bag, "recording_0.txt", in_bag);
+}
+
+TEST(RosbagServedBytesTest, ASingleNamedFileIsSizedEvenWithAStrayFileBesideIt) {
+  // A leftover segment or a copy sitting beside the recording must not change
+  // which file is measured. The metadata names one file and that is the file.
+  //
+  // This is also the fault manager's half of a cross-package agreement: the
+  // gateway sizes the same directory shape through its own resolver, and its
+  // TheMetadataNamesTheStorageFileRatherThanDirectoryOrder pins the same rule:
+  // the size follows the file the metadata names, whichever file the directory
+  // yields first. Directory order decided the gateway's answer until it read
+  // this field too, and the two sides reported different sizes for one recording.
+  ServedBytesBag bag("stray");
+  const std::string named = bag.add_storage_file("recording_0.db3", 4096);
+  bag.add_storage_file("recording_1.db3", 65536);
+  bag.write_metadata({named});
+  const size_t stored_total = bag.directory_total();
+
+  const size_t reported = ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total);
+  EXPECT_EQ(reported, bag.file_size_of(named));
+  EXPECT_EQ(reported, 4096u) << "the rule the gateway's listing follows for this shape: the file the bag names";
+  EXPECT_NE(reported, bag.file_size_of("recording_1.db3")) << "the stray file is not the recording";
+  EXPECT_NE(reported, stored_total);
+}
+
+TEST(RosbagServedBytesTest, ASplitRecordingIsSizedByTheSumOfItsNamedFiles) {
+  // Past max_bag_size_mb rosbag2 splits a recording across several storage files.
+  // The size is the sum of the files metadata.yaml names, which is the manifest's
+  // total_bytes, without metadata.yaml itself.
+  ServedBytesBag bag("split");
+  const std::string first = bag.add_storage_file("recording_0.db3", 4096);
+  const std::string second = bag.add_storage_file("recording_1.db3", 2048);
+  bag.write_metadata({first, second});
+  const size_t stored_total = bag.directory_total();
+  ASSERT_GT(stored_total, 4096u + 2048u) << "metadata.yaml has to make the two totals differ";
+
+  const size_t reported = ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total);
+  EXPECT_EQ(reported, 4096u + 2048u);
+  EXPECT_NE(reported, bag.file_size_of(first)) << "one segment is not the recording";
+
+  // A named file that cannot be measured leaves no sum, so the stored total stands.
+  std::filesystem::remove(std::filesystem::path(bag.path()) / second);
+  EXPECT_EQ(ros2_medkit_fault_manager::core::rosbag_served_bytes(bag.path(), stored_total), stored_total);
+}
+
 // Fault lifecycle tests
 
 TEST_F(RosbagCaptureTest, OnFaultPrefailedWhileDisabled) {
@@ -792,6 +1059,132 @@ TEST_F(RosbagCaptureTest, EvictionKeepsGoingWhenTheSharedBagIsNotEnough) {
   EXPECT_FALSE(std::filesystem::exists(solo_path));
 }
 
+// @verifies REQ_INTEROP_088
+TEST_F(RosbagCaptureTest, EvictionNeverDeletesTheRecordingJustStored) {
+  // A recording larger than the whole quota is the newest row, so an oldest-first
+  // sweep that stops only under the quota would delete it right after it was written.
+  const auto older_path = (temp_dir_ / "fault_OLDER_1000").string();
+  const auto newest_path = (temp_dir_ / "fault_NEWEST_2000").string();
+  std::filesystem::create_directories(older_path);
+  std::filesystem::create_directories(newest_path);
+
+  ros2_medkit_fault_manager::RosbagFileInfo older;
+  older.fault_code = "OLDER";
+  older.file_path = older_path;
+  older.format = "mcap";
+  older.size_bytes = 300;
+  older.created_at_ns = 1000;
+  storage_->store_rosbag_file(older);
+
+  ros2_medkit_fault_manager::RosbagFileInfo newest;
+  newest.fault_code = "NEWEST";
+  newest.file_path = newest_path;
+  newest.format = "mcap";
+  newest.size_bytes = 2000;
+  newest.created_at_ns = 2000;
+  storage_->store_rosbag_file(newest);
+
+  auto evicted = RosbagCapture::evict_bags_over_quota(storage_.get(), 1000, "fault_NEWEST_2000");
+
+  EXPECT_EQ(evicted, std::vector<std::string>{older_path});
+  EXPECT_FALSE(std::filesystem::exists(older_path));
+  EXPECT_TRUE(std::filesystem::exists(newest_path));
+  ASSERT_TRUE(storage_->get_rosbag_file("NEWEST").has_value());
+  // Still over the quota: that is the state the caller warns about.
+  EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 2000u);
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(RosbagCaptureTest, EvictionSkipsTheKeptRecordingWhereverItSorts) {
+  // The kept recording is not always last: rows are ordered by their own timestamps.
+  const auto kept_path = (temp_dir_ / "fault_KEPT_1000").string();
+  const auto later_path = (temp_dir_ / "fault_LATER_2000").string();
+  std::filesystem::create_directories(kept_path);
+  std::filesystem::create_directories(later_path);
+
+  ros2_medkit_fault_manager::RosbagFileInfo kept;
+  kept.fault_code = "KEPT";
+  kept.file_path = kept_path;
+  kept.format = "mcap";
+  kept.size_bytes = 900;
+  kept.created_at_ns = 1000;
+  storage_->store_rosbag_file(kept);
+
+  ros2_medkit_fault_manager::RosbagFileInfo later;
+  later.fault_code = "LATER";
+  later.file_path = later_path;
+  later.format = "mcap";
+  later.size_bytes = 900;
+  later.created_at_ns = 2000;
+  storage_->store_rosbag_file(later);
+
+  auto evicted = RosbagCapture::evict_bags_over_quota(storage_.get(), 1000, "fault_KEPT_1000");
+
+  EXPECT_EQ(evicted, std::vector<std::string>{later_path});
+  EXPECT_TRUE(std::filesystem::exists(kept_path));
+  EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 900u);
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(RosbagCaptureTest, ABagPathTakenByARecordingIsNotHandedOutAgain) {
+  const std::string base = temp_dir_.string();
+  const auto first = RosbagCapture::claim_bag_path(base, "SAME_MS", 1785441426087);
+  ASSERT_TRUE(first.has_value());
+  EXPECT_EQ(*first, base + "/fault_SAME_MS_1785441426087");
+  // What the writer does next: create the directory. The claim is then released.
+  std::filesystem::create_directories(*first);
+  std::ofstream(std::filesystem::path(*first) / "data") << "recording";
+  RosbagCapture::release_bag_path_claim(*first);
+
+  const auto second = RosbagCapture::claim_bag_path(base, "SAME_MS", 1785441426087);
+  ASSERT_TRUE(second.has_value());
+  EXPECT_EQ(*second, base + "/fault_SAME_MS_1785441426088");
+  EXPECT_FALSE(std::filesystem::exists(*second));
+  EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(*first) / "data"));
+  RosbagCapture::release_bag_path_claim(*second);
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(RosbagCaptureTest, TwoCapturesOpeningOnTheSameMillisecondGetDistinctPaths) {
+  // Neither writer has created its directory yet: the claim alone keeps them apart.
+  const std::string base = temp_dir_.string();
+  const auto first = RosbagCapture::claim_bag_path(base, "RACE", 1785441426087);
+  const auto second = RosbagCapture::claim_bag_path(base, "RACE", 1785441426087);
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(second.has_value());
+  EXPECT_NE(*first, *second);
+  EXPECT_EQ(*second, base + "/fault_RACE_1785441426088");
+
+  RosbagCapture::release_bag_path_claim(*first);
+  RosbagCapture::release_bag_path_claim(*second);
+  EXPECT_TRUE(std::filesystem::is_empty(temp_dir_)) << "a released claim leaves nothing behind";
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(RosbagCaptureTest, NoBagPathUnderAnUnusableStorageDirectory) {
+  const auto blocked = temp_dir_ / "blocked_storage";
+  std::ofstream(blocked) << "not a directory";
+  EXPECT_FALSE(RosbagCapture::claim_bag_path(blocked.string(), "ANY", 1785441426087).has_value());
+}
+
+// @verifies REQ_INTEROP_088
+TEST(RosbagConfigValidationTest, WarnsWhenOneStorageFileMayExceedTheWholeQuota) {
+  const auto warns_about_the_quota = [](int64_t max_bag_size_mb, int64_t max_total_storage_mb) {
+    ros2_medkit_fault_manager::core::FaultManagerConfig config;
+    config.snapshots_rosbag_enabled = true;
+    config.snapshots_rosbag_max_bag_size_mb = max_bag_size_mb;
+    config.snapshots_rosbag_max_total_storage_mb = max_total_storage_mb;
+    const auto notices = config.validate();
+    return std::any_of(notices.begin(), notices.end(), [](const auto & notice) {
+      return notice.text.find("max_bag_size_mb") != std::string::npos &&
+             notice.text.find("max_total_storage_mb") != std::string::npos;
+    });
+  };
+  EXPECT_TRUE(warns_about_the_quota(600, 500));
+  EXPECT_FALSE(warns_about_the_quota(500, 500));
+  EXPECT_FALSE(warns_about_the_quota(50, 500));
+}
+
 // Clock arithmetic behind the recording's monotonic origin. Driven directly because
 // nothing acting on a RosbagCapture can produce a wall-clock step, and without one the
 // bound never engages: a buffered message is always younger than the capture itself.
@@ -968,7 +1361,7 @@ class RosbagNonStandardThrowStorage : public InMemoryFaultStorage {
 /// Storage counting fault lookups, which is what resolving an entity scope costs.
 class RosbagFaultLookupCountingStorage : public InMemoryFaultStorage {
  public:
-  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override {
+  std::optional<fd::FaultRecord> get_fault(const std::string & fault_code) const override {
     ++lookups;
     return InMemoryFaultStorage::get_fault(fault_code);
   }
@@ -979,7 +1372,7 @@ class RosbagFaultLookupCountingStorage : public InMemoryFaultStorage {
 /// Storage that cannot read faults, as the PostgreSQL backend does while its server is down.
 class RosbagFaultLookupFailingStorage : public InMemoryFaultStorage {
  public:
-  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & /*fault_code*/) const override {
+  std::optional<fd::FaultRecord> get_fault(const std::string & /*fault_code*/) const override {
     ++lookups;
     throw FaultStorage::IgnorableConnectionException("database unreachable");
   }
@@ -1009,6 +1402,44 @@ class SlowMetadataStorage : public InMemoryFaultStorage {
     std::this_thread::sleep_for(std::chrono::milliseconds(400));
     InMemoryFaultStorage::store_rosbag_files(infos);
   }
+};
+
+/// Storage whose metadata write blocks until the test releases it, standing in for a
+/// disk or a database that is slow while a large recording is stored. It records the
+/// bag path it was handed, so the test can look at the directory while the store waits.
+class GatedMetadataStorage : public InMemoryFaultStorage {
+ public:
+  void store_rosbag_files(const std::vector<ros2_medkit_fault_manager::RosbagFileInfo> & infos) override {
+    {
+      std::unique_lock<std::mutex> lock(gate_mutex);
+      bag_path = infos.empty() ? std::string() : infos.front().file_path;
+      entered = true;
+      gate_cv.notify_all();
+      gate_cv.wait_for(lock, std::chrono::seconds(30), [this]() {
+        return released;
+      });
+    }
+    InMemoryFaultStorage::store_rosbag_files(infos);
+  }
+
+  void release() {
+    std::lock_guard<std::mutex> lock(gate_mutex);
+    released = true;
+    gate_cv.notify_all();
+  }
+
+  bool wait_entered(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lock(gate_mutex);
+    return gate_cv.wait_for(lock, timeout, [this]() {
+      return entered;
+    });
+  }
+
+  std::mutex gate_mutex;
+  std::condition_variable gate_cv;
+  bool entered = false;
+  bool released = false;
+  std::string bag_path;
 };
 
 class RosbagCaptureIntegrationTest : public RosbagCaptureTest {
@@ -1091,6 +1522,15 @@ class RosbagCaptureIntegrationTest : public RosbagCaptureTest {
   /// only when a message was written on it, so this doubles as a content check.
   bool bag_has_topic(const std::string & bag_path, const std::string & topic) const {
     return read_bag_metadata(bag_path).find(topic) != std::string::npos;
+  }
+
+  /// A finalised bag's manifest.json, or a null value when it has none.
+  nlohmann::json read_manifest(const std::string & bag_path) const {
+    std::ifstream file(std::filesystem::path(bag_path) / "manifest.json");
+    if (!file.is_open()) {
+      return nullptr;
+    }
+    return nlohmann::json::parse(file, nullptr, false);
   }
 
   /// Bag directories the capture left under the test storage path.
@@ -1181,8 +1621,8 @@ TEST_F(RosbagCaptureIntegrationTest, AcknowledgingDuringThePostRollKeepsAConfigu
   storage.set_max_rosbags_per_fault(rosbag_config.max_bags_per_fault);
 
   rclcpp::Clock clock;
-  storage.report_fault_event("ACK_MID_ROLL", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                             ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "mid roll", "/node", clock.now(),
+  storage.report_fault_event("ACK_MID_ROLL", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                             "mid roll", "/node", clock.now().nanoseconds(),
                              ros2_medkit_fault_manager::DebounceConfig{});
 
   auto snapshot_config = create_snapshot_config();
@@ -1197,6 +1637,7 @@ TEST_F(RosbagCaptureIntegrationTest, AcknowledgingDuringThePostRollKeepsAConfigu
   capture.on_fault_cleared("ACK_MID_ROLL");
 
   spin_for(std::chrono::milliseconds(900));  // past the post-roll and the finalize
+  capture.wait_for_stored_recordings();
 
   EXPECT_FALSE(storage.get_rosbag_files("ACK_MID_ROLL").empty())
       << "the post-roll finalize deleted a history on_fault_cleared had decided to keep";
@@ -1253,6 +1694,105 @@ TEST_F(RosbagCaptureIntegrationTest, MultipleFaultsHandled) {
   capture.stop();
 }
 
+// @verifies REQ_INTEROP_088
+TEST_F(RosbagCaptureIntegrationTest, StoringARecordingDoesNotHoldTheExecutor) {
+  // The post-fault timer runs on the executor, the only thread of the fault manager.
+  // Hashing every storage file and storing the rows there held every fault manager
+  // service and the capture subscriptions for as long as the disk and the store took.
+  // The store below waits until it is released, so a store on the executor would hold
+  // the spin below for the whole wait.
+  GatedMetadataStorage gated;
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_sec = 10.0;
+  rosbag_config.duration_after_sec = 0.3;
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), &gated, rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/store_off_executor_probe");
+  capture.on_fault_confirmed("STORE_OFF_EXECUTOR");
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  auto longest_spin = std::chrono::steady_clock::duration::zero();
+  while (!gated.wait_entered(std::chrono::milliseconds(0)) && std::chrono::steady_clock::now() < deadline) {
+    const auto before = std::chrono::steady_clock::now();
+    spin_some_once(node_);
+    longest_spin = std::max(longest_spin, std::chrono::steady_clock::now() - before);
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(gated.wait_entered(std::chrono::seconds(5))) << "the recording never reached the store";
+  // The timer has fired and the store is waiting now. The executor must still run.
+  const auto before = std::chrono::steady_clock::now();
+  spin_some_once(node_);
+  longest_spin = std::max(longest_spin, std::chrono::steady_clock::now() - before);
+  EXPECT_LT(longest_spin, std::chrono::seconds(5)) << "the executor waited on the store";
+
+  // The manifest is written before the row is stored, never after.
+  std::string bag_path;
+  {
+    std::lock_guard<std::mutex> lock(gated.gate_mutex);
+    bag_path = gated.bag_path;
+  }
+  EXPECT_TRUE(read_manifest(bag_path).is_object()) << "the row was being stored before the manifest existed";
+  EXPECT_FALSE(gated.get_rosbag_file("STORE_OFF_EXECUTOR").has_value());
+
+  gated.release();
+  capture.wait_for_stored_recordings();
+  auto row = gated.get_rosbag_file("STORE_OFF_EXECUTOR");
+  ASSERT_TRUE(row.has_value());
+  EXPECT_EQ(row->file_path, bag_path);
+  capture.stop();
+}
+
+TEST_F(RosbagCaptureIntegrationTest, AClearWhileTheRowIsStoredTakesTheRowWithIt) {
+  // The store worker checks that the fault is not cleared, then inserts its row. A clear
+  // landing between the two ran its delete before the insert and left a row, and the
+  // bag, for a cleared fault. Here the store holds the insert while the clear arrives:
+  // the clear's delete has to wait for the insert, and then takes the row.
+  GatedMetadataStorage gated;
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_sec = 10.0;
+  rosbag_config.duration_after_sec = 0.3;
+  rosbag_config.auto_cleanup = true;
+  rosbag_config.max_bags_per_fault = 1;
+  rclcpp::Clock clock;
+  gated.report_fault_event("CLEARED_IN_STORE", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                           "store race", "/node", clock.now().nanoseconds(),
+                           ros2_medkit_fault_manager::DebounceConfig{});
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), &gated, rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/clear_during_store_probe");
+  capture.on_fault_confirmed("CLEARED_IN_STORE");
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!gated.wait_entered(std::chrono::milliseconds(0)) && std::chrono::steady_clock::now() < deadline) {
+    spin_for(std::chrono::milliseconds(10));
+  }
+  ASSERT_TRUE(gated.wait_entered(std::chrono::seconds(5))) << "the recording never reached the store";
+  std::string bag_path;
+  {
+    std::lock_guard<std::mutex> lock(gated.gate_mutex);
+    bag_path = gated.bag_path;
+  }
+
+  // The worker found the fault not cleared and is inside the insert. The clear marks
+  // the fault in the store, then runs the hook, as FaultManagerCore does.
+  ASSERT_TRUE(gated.clear_fault("CLEARED_IN_STORE"));
+  auto cleared = std::async(std::launch::async, [&capture]() {
+    capture.on_fault_cleared("CLEARED_IN_STORE");
+  });
+  EXPECT_EQ(cleared.wait_for(std::chrono::milliseconds(500)), std::future_status::timeout)
+      << "the clear's delete ran while the row was still being inserted";
+
+  gated.release();
+  cleared.get();
+  capture.wait_for_stored_recordings();
+  EXPECT_TRUE(gated.get_rosbag_files("CLEARED_IN_STORE").empty()) << "a cleared fault kept its row";
+  EXPECT_FALSE(std::filesystem::exists(bag_path)) << "a cleared fault kept its bag";
+  capture.stop();
+}
+
 TEST_F(RosbagCaptureIntegrationTest, FaultConfirmedDuringPostRollGetsTheSameBag) {
   // Correlated faults arrive in a burst. The one that confirms while the first
   // fault's post-roll is still running used to be skipped outright and ended up
@@ -1271,6 +1811,7 @@ TEST_F(RosbagCaptureIntegrationTest, FaultConfirmedDuringPostRollGetsTheSameBag)
 
   // Let the post-fault timer fire and finalise the recording.
   spin_for(std::chrono::milliseconds(1600));
+  capture.wait_for_stored_recordings();
 
   auto root = storage_->get_rosbag_file("ROOT_CAUSE");
   ASSERT_TRUE(root.has_value()) << "the first fault must produce a bag";
@@ -1295,6 +1836,7 @@ TEST_F(RosbagCaptureIntegrationTest, ClearingOneFaultOfABurstKeepsTheSharedBag) 
   capture.on_fault_confirmed("ROOT_CAUSE");
   capture.on_fault_confirmed("CORRELATED");
   spin_for(std::chrono::milliseconds(1600));
+  capture.wait_for_stored_recordings();
 
   auto root = storage_->get_rosbag_file("ROOT_CAUSE");
   ASSERT_TRUE(root.has_value());
@@ -1422,6 +1964,7 @@ TEST_F(RosbagCaptureIntegrationTest, BurstFullyClearedDuringPostRollDiscardsTheB
 
   // Let the post-roll timer fire with nothing left to register.
   spin_for(std::chrono::milliseconds(1500));
+  capture.wait_for_stored_recordings();
 
   EXPECT_FALSE(storage_->get_rosbag_file("ROOT_CAUSE").has_value());
   EXPECT_FALSE(storage_->get_rosbag_file("CORRELATED").has_value());
@@ -1486,11 +2029,11 @@ TEST_F(RosbagCaptureIntegrationTest, AttachedFaultTopicsJoinTheEntityScopedRecor
   auto pub_b = node_b->create_publisher<std_msgs::msg::String>("/scope_topic_b", 10);
 
   rclcpp::Clock clock;
-  storage_->report_fault_event("FAULT_A", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "fault a", "/scope_source_a", clock.now(),
+  storage_->report_fault_event("FAULT_A", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "fault a", "/scope_source_a", clock.now().nanoseconds(),
                                ros2_medkit_fault_manager::DebounceConfig{});
-  storage_->report_fault_event("FAULT_B", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "fault b", "/scope_source_b", clock.now(),
+  storage_->report_fault_event("FAULT_B", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "fault b", "/scope_source_b", clock.now().nanoseconds(),
                                ros2_medkit_fault_manager::DebounceConfig{});
 
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
@@ -1858,12 +2401,12 @@ TEST_F(RosbagCaptureIntegrationTest, EntityScopedPostFaultOnlyBagCarriesOnlyTheF
   auto pub_b = node_b->create_publisher<std_msgs::msg::String>("/boundary_scope_b", 10);
 
   rclcpp::Clock clock;
-  storage_->report_fault_event("SCOPED_A", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "scoped a", "/boundary_scope_source_a",
-                               clock.now(), ros2_medkit_fault_manager::DebounceConfig{});
-  storage_->report_fault_event("SCOPED_B", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "scoped b", "/boundary_scope_source_b",
-                               clock.now(), ros2_medkit_fault_manager::DebounceConfig{});
+  storage_->report_fault_event("SCOPED_A", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "scoped a", "/boundary_scope_source_a", clock.now().nanoseconds(),
+                               ros2_medkit_fault_manager::DebounceConfig{});
+  storage_->report_fault_event("SCOPED_B", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "scoped b", "/boundary_scope_source_b", clock.now().nanoseconds(),
+                               ros2_medkit_fault_manager::DebounceConfig{});
 
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   capture.start();
@@ -1924,12 +2467,12 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingKeepsItsScopeWhileTheOldF
   auto pub_b = node_b->create_publisher<std_msgs::msg::String>("/scope_race_b", 10);
 
   rclcpp::Clock clock;
-  storage_->report_fault_event("SCOPE_RACE_A", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "scope race a", "/scope_race_source_a",
-                               clock.now(), ros2_medkit_fault_manager::DebounceConfig{});
-  storage_->report_fault_event("SCOPE_RACE_B", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "scope race b", "/scope_race_source_b",
-                               clock.now(), ros2_medkit_fault_manager::DebounceConfig{});
+  storage_->report_fault_event("SCOPE_RACE_A", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "scope race a", "/scope_race_source_a", clock.now().nanoseconds(),
+                               ros2_medkit_fault_manager::DebounceConfig{});
+  storage_->report_fault_event("SCOPE_RACE_B", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "scope race b", "/scope_race_source_b", clock.now().nanoseconds(),
+                               ros2_medkit_fault_manager::DebounceConfig{});
 
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   capture.start();
@@ -1947,11 +2490,24 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingKeepsItsScopeWhileTheOldF
   // The racer is the capture pool and this thread is the executor, the production
   // shape. Only the racer ever confirms B, so no two threads call on_fault_confirmed
   // for the same fault, as the contract requires. Its calls attach while A records
-  // and the first one after the guard drops takes the boundary path.
+  // and the first one after the guard drops takes the boundary path. It stops there:
+  // a later call would open another recording of B once the boundary one closes, and
+  // that one starts from whatever the buffer holds, so it is not the bag under test.
   std::atomic<bool> stop_racer{false};
-  std::thread racer([&capture, &stop_racer]() {
+  const auto boundary_bag_opened = [this]() {
+    for (const auto & entry : std::filesystem::directory_iterator(temp_dir_)) {
+      if (entry.path().filename().string().rfind("fault_SCOPE_RACE_B_", 0) == 0) {
+        return true;
+      }
+    }
+    return false;
+  };
+  std::thread racer([&capture, &stop_racer, &boundary_bag_opened]() {
     while (!stop_racer.load()) {
       capture.on_fault_confirmed("SCOPE_RACE_B");
+      if (boundary_bag_opened()) {
+        return;
+      }
       std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
   });
@@ -1974,6 +2530,13 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingKeepsItsScopeWhileTheOldF
   ASSERT_TRUE(wait_for_row("SCOPE_RACE_B", std::chrono::milliseconds(12000)));
   auto row_b = storage_->get_rosbag_file("SCOPE_RACE_B");
   ASSERT_TRUE(row_b.has_value());
+  size_t b_recordings = 0;
+  for (const auto & entry : std::filesystem::directory_iterator(temp_dir_)) {
+    if (entry.path().filename().string().rfind("fault_SCOPE_RACE_B_", 0) == 0) {
+      ++b_recordings;
+    }
+  }
+  ASSERT_EQ(b_recordings, 1u) << "the row under test may not be B's boundary recording";
   ASSERT_GT(bag_message_count(row_b->file_path), 0) << "B's recording finalised empty, so its scope was never tested";
   EXPECT_TRUE(bag_has_topic(row_b->file_path, "/scope_race_b")) << "B's bag is missing its own faulting node's topic";
   EXPECT_FALSE(bag_has_topic(row_b->file_path, "/scope_race_a"))
@@ -2095,6 +2658,7 @@ TEST_F(RosbagCaptureIntegrationTest, BoundaryFaultClearedDuringItsOwnWindowDisca
   spin_for(std::chrono::milliseconds(200));
   capture.on_fault_cleared("CLEARED_BOUNDARY");
   spin_for(std::chrono::milliseconds(2000));  // past the window, finalise ran
+  capture.wait_for_stored_recordings();
 
   EXPECT_FALSE(storage_->get_rosbag_file("CLEARED_BOUNDARY").has_value());
   EXPECT_EQ(count_bag_dirs(), 0u) << "the bag of a fault cleared inside its own window must be discarded";
@@ -2116,6 +2680,7 @@ TEST_F(RosbagCaptureIntegrationTest, MetadataStoreFailureDiscardsTheBagInsteadOf
   capture.start();
   capture.on_fault_confirmed("STORE_FAILS");  // empty buffer -> post-fault-only
   spin_for(std::chrono::milliseconds(1200));  // past the window, finalise ran
+  capture.wait_for_stored_recordings();
 
   ASSERT_GT(failing_storage.store_attempts, 0u)
       << "the recording never reached the metadata store, so no row and no directory prove nothing";
@@ -2136,17 +2701,27 @@ TEST_F(RosbagCaptureIntegrationTest, AFailingQuotaSweepKeepsTheBagItJustStored) 
   auto rosbag_config = create_rosbag_config();
   rosbag_config.duration_sec = 2.0;
   rosbag_config.duration_after_sec = 0.3;
-  // The bottom endpoint of the documented range. Every stored bag is over a zero
+  // The bottom endpoint of the documented range. Any stored bag is over a zero
   // quota, so the sweep always reaches its delete and always throws - no reliance on
-  // how large the bag happens to be.
+  // how large the bags happen to be.
   rosbag_config.max_total_storage_mb = 0;
   auto snapshot_config = create_snapshot_config();
+  // The recording just stored is never swept, so the sweep needs an older one to
+  // reach its delete.
+  ros2_medkit_fault_manager::RosbagFileInfo older;
+  older.fault_code = "OLDER";
+  older.file_path = (temp_dir_ / "fault_OLDER_1000").string();
+  older.format = "mcap";
+  older.size_bytes = 1;
+  older.created_at_ns = 1000;
+  sweep_failing_storage.store_rosbag_file(older);
   RosbagCapture capture(node_.get(), &sweep_failing_storage, rosbag_config, snapshot_config);
 
   capture.start();
   fill_buffer("/sweep_failure_probe");
   capture.on_fault_confirmed("SWEEP_FAILS");
   spin_for(std::chrono::milliseconds(1200));  // past the window, finalise ran
+  capture.wait_for_stored_recordings();
 
   auto row = sweep_failing_storage.get_rosbag_file("SWEEP_FAILS");
   ASSERT_TRUE(row.has_value()) << "the metadata store succeeded, so its row must be there";
@@ -2215,18 +2790,94 @@ TEST_F(RosbagCaptureIntegrationTest, TheStorageQuotaEngagesOnABoundaryRecording)
   {
     auto strict = create_rosbag_config();
     strict.duration_after_sec = 0.4;
-    // The bottom of the range: no bag fits, so the sweep evicts every recording it
-    // is handed, the one just stored included.
+    // The bottom of the range: no bag fits, so the sweep evicts every older
+    // recording. The one just stored is over the quota on its own and stays.
     strict.max_total_storage_mb = 0;
     RosbagCapture capture(node_.get(), storage_.get(), strict, snapshot_config);
     capture.start();
     capture.on_fault_confirmed("QUOTA_TIGHT");
-    spin_for(std::chrono::milliseconds(1500));
+    ASSERT_TRUE(wait_for_row("QUOTA_TIGHT", std::chrono::milliseconds(8000)))
+        << "a recording larger than the quota was deleted by its own sweep";
+    // The sweep runs on the store worker right after the row is stored.
+    capture.wait_for_stored_recordings();
+    EXPECT_TRUE(std::filesystem::exists(storage_->get_rosbag_file("QUOTA_TIGHT")->file_path));
 
-    EXPECT_FALSE(storage_->get_rosbag_file("QUOTA_TIGHT").has_value())
+    EXPECT_FALSE(storage_->get_rosbag_file("QUOTA_ROOMY").has_value())
         << "the quota did not engage on a post-fault-only recording";
     capture.stop();
   }
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(RosbagCaptureIntegrationTest, ARecordingWithoutAPostRollCarriesAManifestToo) {
+  // The other finalisation path: no post-fault window, so the bag is closed and
+  // stored inside the confirmation itself.
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_after_sec = 0.0;
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/manifest_immediate_probe");
+  capture.on_fault_confirmed("MANIFEST_IMMEDIATE");
+
+  auto row = storage_->get_rosbag_file("MANIFEST_IMMEDIATE");
+  ASSERT_TRUE(row.has_value());
+  const auto manifest = read_manifest(row->file_path);
+  ASSERT_TRUE(manifest.is_object()) << "a recording closed without a post-roll carries no manifest.json";
+  EXPECT_EQ(manifest["manifest_version"], 1);
+  EXPECT_EQ(manifest["recording_id"], row->recording_id);
+  EXPECT_EQ(manifest["created_at_ns"], row->created_at_ns);
+  ASSERT_EQ(manifest["files"].size(), 1u);
+  const auto file = std::filesystem::path(row->file_path) / manifest["files"][0]["name"].get<std::string>();
+  EXPECT_EQ(manifest["files"][0]["size"], std::filesystem::file_size(file));
+  EXPECT_EQ(manifest["total_bytes"], std::filesystem::file_size(file));
+  EXPECT_EQ(manifest["files"][0]["sha256"],
+            ros2_medkit_fault_manager::core::sha256_file_hex(file.string()).value_or(""));
+
+  // One recording, and no path claim left next to it.
+  EXPECT_EQ(count_bag_dirs(), 1u);
+  capture.stop();
+}
+
+// @verifies REQ_INTEROP_088
+TEST_F(RosbagCaptureIntegrationTest, ARecordingNeverTakesOverAnExistingBagDirectory) {
+  // The bag name carries the millisecond the path is generated in, and nothing made
+  // that unique. A capture landing on a name an earlier recording owns failed to
+  // open - and its cleanup then removed the earlier recording's directory. Every
+  // millisecond of the next 600 is taken here, so the confirmation below collides
+  // whenever it runs inside that window.
+  constexpr int64_t kTakenMs = 600;
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_after_sec = 0.0;
+  auto snapshot_config = create_snapshot_config();
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
+
+  capture.start();
+  fill_buffer("/path_collision_probe");
+
+  const int64_t first_taken_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+          .count();
+  std::vector<std::filesystem::path> taken;
+  for (int64_t offset = 0; offset < kTakenMs; ++offset) {
+    taken.push_back(temp_dir_ / RosbagCapture::bag_directory_name("PATH_COLLISION", first_taken_ms + offset));
+    std::filesystem::create_directories(taken.back());
+    std::ofstream(taken.back() / "earlier_recording") << "kept";
+  }
+
+  capture.on_fault_confirmed("PATH_COLLISION");
+
+  auto row = storage_->get_rosbag_file("PATH_COLLISION");
+  ASSERT_TRUE(row.has_value()) << "a taken bag name cost the fault its recording";
+  EXPECT_TRUE(std::filesystem::exists(std::filesystem::path(row->file_path) / "metadata.yaml"));
+  for (const auto & earlier : taken) {
+    ASSERT_NE(earlier.string(), row->file_path) << "the recording was written into an earlier one's directory";
+    ASSERT_TRUE(std::filesystem::exists(earlier / "earlier_recording")) << earlier << " was removed";
+  }
+  // One new directory, and no path claim left next to it.
+  EXPECT_EQ(count_bag_dirs(), static_cast<size_t>(kTakenMs) + 1u);
+  capture.stop();
 }
 
 TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingSplitsAndReportsTheWholeBag) {
@@ -2257,11 +2908,42 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingSplitsAndReportsTheWholeB
 
   size_t data_files = 0;
   for (const auto & entry : std::filesystem::directory_iterator(row->file_path)) {
-    if (entry.is_regular_file() && entry.path().filename() != "metadata.yaml") {
+    const auto name = entry.path().filename();
+    if (entry.is_regular_file() && name != "metadata.yaml" && name != "manifest.json") {
       ++data_files;
     }
   }
   ASSERT_GT(data_files, 1u) << "the recording never split, so the sum over the split is untested";
+
+  // The manifest names every file of the split, in metadata.yaml order, with the
+  // size and sha256 the file has on disk.
+  const auto manifest = read_manifest(row->file_path);
+  ASSERT_TRUE(manifest.is_object()) << "a finalised recording carries no manifest.json";
+  EXPECT_EQ(manifest["recording_id"], row->recording_id);
+  EXPECT_EQ(manifest["format"], "mcap");
+  EXPECT_EQ(manifest["created_at_ns"], row->created_at_ns);
+  ASSERT_EQ(manifest["files"].size(), data_files);
+  const auto metadata = YAML::LoadFile((std::filesystem::path(row->file_path) / "metadata.yaml").string());
+  const auto relative_paths = metadata["rosbag2_bagfile_information"]["relative_file_paths"];
+  ASSERT_EQ(relative_paths.size(), data_files);
+  uint64_t total_bytes = 0;
+  for (size_t i = 0; i < data_files; ++i) {
+    const auto & entry = manifest["files"][i];
+    const std::string name = entry["name"];
+    EXPECT_EQ(name, relative_paths[i].as<std::string>());
+    const auto file = std::filesystem::path(row->file_path) / name;
+    EXPECT_EQ(entry["size"], std::filesystem::file_size(file));
+    EXPECT_EQ(entry["sha256"], ros2_medkit_fault_manager::core::sha256_file_hex(file.string()).value_or(""));
+    total_bytes += entry["size"].get<uint64_t>();
+  }
+  EXPECT_EQ(manifest["total_bytes"], total_bytes);
+
+  // The stored size is the whole directory, manifest included.
+  size_t directory_bytes = 0;
+  for (const auto & entry : std::filesystem::directory_iterator(row->file_path)) {
+    directory_bytes += entry.file_size();
+  }
+  EXPECT_EQ(row->size_bytes, directory_bytes);
   EXPECT_GT(row->size_bytes, 1024u * 1024u) << "the stored size covers one file of the split rather than the bag";
   EXPECT_GT(bag_message_count(row->file_path), 0);
 
@@ -2289,17 +2971,17 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultAttachingToABoundaryRecordingWidensIt
   auto pub_bystander = node_bystander->create_publisher<std_msgs::msg::String>("/widen_bystander", 10);
 
   rclcpp::Clock clock;
-  storage_->report_fault_event("WIDEN_C", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "widen c", "/widen_source_c", clock.now(),
+  storage_->report_fault_event("WIDEN_C", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "widen c", "/widen_source_c", clock.now().nanoseconds(),
                                ros2_medkit_fault_manager::DebounceConfig{});
-  storage_->report_fault_event("WIDEN_D", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "widen d", "/widen_source_d", clock.now(),
+  storage_->report_fault_event("WIDEN_D", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "widen d", "/widen_source_d", clock.now().nanoseconds(),
                                ros2_medkit_fault_manager::DebounceConfig{});
   // The fault that opens the boundary recording needs a reported source too, or its
   // scope resolves to nothing and the recording degrades to writing every topic -
   // which is what the bystander assertion below catches.
-  storage_->report_fault_event("WIDEN_C2", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "widen c2", "/widen_source_c", clock.now(),
+  storage_->report_fault_event("WIDEN_C2", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "widen c2", "/widen_source_c", clock.now().nanoseconds(),
                                ros2_medkit_fault_manager::DebounceConfig{});
 
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
@@ -2448,15 +3130,16 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultClearedWhileItsBagWasOpeningGetsNoRow
   auto snapshot_config = create_snapshot_config();
 
   rclcpp::Clock clock;
-  storage_->report_fault_event("CLEARED_WHILE_OPENING", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
+  storage_->report_fault_event("CLEARED_WHILE_OPENING", fd::ReportKind::kFailed,
                                ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "cleared while opening", "/test_source",
-                               clock.now(), ros2_medkit_fault_manager::DebounceConfig{});
+                               clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
 
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   capture.start();
   capture.on_fault_confirmed("CLEARED_WHILE_OPENING");
   storage_->clear_fault("CLEARED_WHILE_OPENING");
   spin_for(std::chrono::milliseconds(1500));
+  capture.wait_for_stored_recordings();
 
   EXPECT_FALSE(storage_->get_rosbag_file("CLEARED_WHILE_OPENING").has_value())
       << "a fault cleared before its recording finalised kept a row nothing will ever remove";
@@ -2483,12 +3166,10 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultPastTheAttachmentCapStillGetsItsTopic
 
   rclcpp::Clock clock;
   const ros2_medkit_fault_manager::DebounceConfig debounce{};
-  storage_->report_fault_event("CAP_PRIMARY", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "cap primary", "/cap_primary_source",
-                               clock.now(), debounce);
-  storage_->report_fault_event("CAP_LATE", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                               ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "cap late", "/cap_late_source",
-                               clock.now(), debounce);
+  storage_->report_fault_event("CAP_PRIMARY", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "cap primary", "/cap_primary_source", clock.now().nanoseconds(), debounce);
+  storage_->report_fault_event("CAP_LATE", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "cap late", "/cap_late_source", clock.now().nanoseconds(), debounce);
 
   RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config);
   capture.start();
@@ -2508,9 +3189,8 @@ TEST_F(RosbagCaptureIntegrationTest, AFaultPastTheAttachmentCapStillGetsItsTopic
   // late fault's topic into the bag for a reason that has nothing to do with the cap.
   for (int i = 0; i < 40; ++i) {
     const std::string filler = "CAP_FILLER_" + std::string(i < 10 ? "0" : "") + std::to_string(i);
-    storage_->report_fault_event(filler, ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                                 ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "cap filler", "/cap_primary_source",
-                                 clock.now(), debounce);
+    storage_->report_fault_event(filler, fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                                 "cap filler", "/cap_primary_source", clock.now().nanoseconds(), debounce);
     capture.on_fault_confirmed(filler);
   }
   capture.on_fault_confirmed("CAP_LATE");
@@ -2570,9 +3250,9 @@ TEST_F(RosbagCaptureIntegrationTest, ReconfirmingTheRecordingsOwnFaultResolvesNo
   auto pub = source->create_publisher<std_msgs::msg::String>("/reconfirm_probe", 10);
 
   rclcpp::Clock clock;
-  storage_ptr->report_fault_event("RECONFIRMED", ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                                  ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "reconfirmed", "/reconfirm_source",
-                                  clock.now(), ros2_medkit_fault_manager::DebounceConfig{});
+  storage_ptr->report_fault_event("RECONFIRMED", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                                  "reconfirmed", "/reconfirm_source", clock.now().nanoseconds(),
+                                  ros2_medkit_fault_manager::DebounceConfig{});
 
   RosbagCapture capture(node_.get(), storage_ptr, rosbag_config, snapshot_config);
   capture.start();

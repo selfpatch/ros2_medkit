@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "../src/openapi/route_registry.hpp"
+#include "null_gateway_services.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/health_handlers.hpp"
 #include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
@@ -55,11 +56,11 @@ using ros2_medkit_gateway::openapi::RouteRegistry;
 
 namespace dto = ros2_medkit_gateway::dto;
 
-// HealthHandlers has no dependency on GatewayNode or AuthManager:
+// HealthHandlers has no dependency on a ROS node or AuthManager:
 // - get_health builds dto::Health (free-standing)
 // - get_version_info builds dto::VersionInfo (free-standing)
 // - get_root reads ctx_.auth_config() and ctx_.tls_config() (both disabled by default)
-// All tests use a null GatewayNode and null AuthManager which is safe for these handlers.
+// All tests use services with no managers and a null AuthManager, which is safe for these handlers.
 
 namespace {
 
@@ -107,7 +108,8 @@ class HealthHandlersTest : public ::testing::Test {
   AuthConfig auth_config_{};  // enabled = false by default
   TlsConfig tls_config_{};    // enabled = false by default
   RouteRegistry route_registry_;
-  HandlerContext ctx_{nullptr, cors_config_, auth_config_, tls_config_, nullptr};
+  HandlerContext ctx_{ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                      nullptr};
   HealthHandlers handlers_{ctx_, &route_registry_};
 
   httplib::Request req_;
@@ -118,7 +120,7 @@ class HealthHandlersTest : public ::testing::Test {
   }
 
   HandlerContext make_context(const AuthConfig & auth, const TlsConfig & tls) {
-    return HandlerContext(nullptr, cors_config_, auth, tls, nullptr);
+    return HandlerContext(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth, tls, nullptr);
   }
 };
 
@@ -130,8 +132,8 @@ TEST_F(HealthHandlersTest, HandleHealthResponseContainsStatusHealthy) {
   EXPECT_EQ(result->status, "healthy");
 }
 
-TEST_F(HealthHandlersTest, HandleHealthNullNodeOmitsDiscovery) {
-  // ctx_ uses nullptr for GatewayNode, so discovery info should not be present
+TEST_F(HealthHandlersTest, HandleHealthWithoutDiscoveryOmitsDiscovery) {
+  // The services have no discovery manager, so discovery info is not present
   auto result = handlers_.get_health(typed_req_);
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->status, "healthy");

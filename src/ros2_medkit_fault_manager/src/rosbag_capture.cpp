@@ -36,6 +36,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "ros2_medkit_fault_manager/core/recording_manifest.hpp"
 #include "ros2_medkit_fault_manager/time_utils.hpp"
 
 namespace ros2_medkit_fault_manager {
@@ -297,6 +298,17 @@ RosbagCapture::RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const 
 RosbagCapture::~RosbagCapture() {
   stop();
 
+  // The worker drains its queue before it exits, so a recording that a post-fault
+  // timer closed after stop() is still stored.
+  {
+    std::lock_guard<std::mutex> lock(store_mutex_);
+    store_stopping_ = true;
+  }
+  store_cv_.notify_all();
+  if (store_thread_.joinable()) {
+    store_thread_.join();
+  }
+
   // Whatever stop() did not close is closed here, explicitly, rather than left to
   // implicit member destruction - which would run ~Writer under no lock at all and
   // is the one destruction site in this class that cannot be found by looking for
@@ -338,6 +350,7 @@ void RosbagCapture::stop() {
   // cleared so a confirmation after a restart opens its own bag rather than
   // attaching to a recording whose timer is gone.
   finalize_post_fault_recording();
+  wait_for_stored_recordings();
 
   if (discovery_retry_timer_) {
     discovery_retry_timer_->cancel();
@@ -367,6 +380,46 @@ void RosbagCapture::stop() {
 
 bool RosbagCapture::is_running() const {
   return running_.load();
+}
+
+void RosbagCapture::wait_for_stored_recordings() {
+  std::unique_lock<std::mutex> lock(store_mutex_);
+  store_cv_.wait(lock, [this]() {
+    return store_queue_.empty() && !store_busy_;
+  });
+}
+
+void RosbagCapture::enqueue_closed_recording(ClosedRecording recording) {
+  {
+    std::lock_guard<std::mutex> lock(store_mutex_);
+    store_queue_.push_back(std::move(recording));
+    if (!store_thread_.joinable()) {
+      store_thread_ = std::thread([this]() {
+        store_worker_loop();
+      });
+    }
+  }
+  store_cv_.notify_all();
+}
+
+void RosbagCapture::store_worker_loop() {
+  std::unique_lock<std::mutex> lock(store_mutex_);
+  while (true) {
+    store_cv_.wait(lock, [this]() {
+      return !store_queue_.empty() || store_stopping_;
+    });
+    if (store_queue_.empty()) {
+      return;
+    }
+    ClosedRecording recording = std::move(store_queue_.front());
+    store_queue_.pop_front();
+    store_busy_ = true;
+    lock.unlock();
+    store_closed_recording(recording);
+    lock.lock();
+    store_busy_ = false;
+    store_cv_.notify_all();
+  }
 }
 
 void RosbagCapture::on_fault_prefailed(const std::string & fault_code) {
@@ -560,6 +613,8 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
     // The size is measured after the close: metadata.yaml exists only once the
     // writer is gone, and nothing here still needs either lock.
 
+    const int64_t created_at_ns = get_wall_clock_ns();
+    write_manifest(bag_path, created_at_ns);
     size_t bag_size = calculate_bag_size(bag_path);
 
     RosbagFileInfo info;
@@ -575,7 +630,7 @@ void RosbagCapture::on_fault_confirmed(const std::string & fault_code) {
     // serialised against each other by the node-level rosbag mutex.
     info.duration_sec = recording_span_sec;
     info.size_bytes = bag_size;
-    info.created_at_ns = get_wall_clock_ns();
+    info.created_at_ns = created_at_ns;
 
     if (store_rows_or_discard_bag({info}, bag_path)) {
       RCLCPP_INFO(node_->get_logger(), "Bag file created: %s (%.2f MB)", bag_path.c_str(),
@@ -619,7 +674,9 @@ void RosbagCapture::on_fault_cleared(const std::string & fault_code) {
   }
 
   // Delete the bag file for this fault. Called from the clear service, where a throw terminates the process.
+  // Under clear_rows_mutex_: a row the store worker is inserting lands before this delete, never after.
   try {
+    std::lock_guard<std::mutex> rows_lock(clear_rows_mutex_);
     if (storage_->delete_rosbag_file(fault_code)) {
       RCLCPP_INFO(node_->get_logger(), "Auto-cleanup: deleted bag file for fault '%s'", fault_code.c_str());
     }
@@ -1101,15 +1158,14 @@ void RosbagCapture::discard_active_writer(const std::string & bag_path) {
 }
 
 std::optional<std::string> RosbagCapture::open_bag_writer(const std::string & fault_code) {
-  std::string bag_path = generate_bag_path(fault_code);
+  auto claimed = generate_bag_path(fault_code);
+  if (!claimed) {
+    RCLCPP_ERROR(node_->get_logger(), "No free bag path for fault '%s'", fault_code.c_str());
+    return std::nullopt;
+  }
+  std::string bag_path = std::move(*claimed);
 
   try {
-    // Create parent directory if needed
-    std::filesystem::path bag_dir(bag_path);
-    if (!bag_dir.parent_path().empty()) {
-      std::filesystem::create_directories(bag_dir.parent_path());
-    }
-
     rosbag2_storage::StorageOptions storage_options;
     storage_options.uri = bag_path;
     storage_options.storage_id = config_.format;
@@ -1124,6 +1180,8 @@ std::optional<std::string> RosbagCapture::open_bag_writer(const std::string & fa
     std::lock_guard<std::mutex> plock(plugin_mutex());
     auto writer = std::make_unique<rosbag2_cpp::Writer>();
     writer->open(storage_options);
+    // The directory exists now and keeps the name by itself.
+    release_bag_path_claim(bag_path);
 
     // Published into the member only once it is open, under writer_mutex_ and
     // nested inside plugin_mutex(). This is the one place the two are held
@@ -1142,8 +1200,10 @@ std::optional<std::string> RosbagCapture::open_bag_writer(const std::string & fa
     // them), so discard_active_writer() is free to take them again in its own
     // order. active_writer_ is untouched by a failed open - the writer only
     // reaches the member once open() has returned - so this is here for the
-    // partial directory on disk.
+    // partial directory on disk. The path was free when it was claimed, so
+    // whatever is there now is this capture's.
     discard_active_writer(bag_path);
+    release_bag_path_claim(bag_path);
     return std::nullopt;
   }
 }
@@ -1312,7 +1372,35 @@ std::string RosbagCapture::bag_directory_name(const std::string & fault_code, in
   return prefix + fault_code.substr(0, kept) + "_" + fnv1a_hex(fault_code) + suffix;
 }
 
-std::string RosbagCapture::generate_bag_path(const std::string & fault_code) const {
+std::optional<std::string> RosbagCapture::claim_bag_path(const std::string & base_path, const std::string & fault_code,
+                                                         int64_t timestamp_ms) {
+  std::error_code ec;
+  std::filesystem::create_directories(base_path, ec);
+  if (ec) {
+    return std::nullopt;
+  }
+  constexpr int kMaxAttempts = 1000;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    std::string candidate = base_path + "/" + bag_directory_name(fault_code, timestamp_ms + attempt);
+    // create_directory is atomic: of two captures racing for one name, one gets the claim.
+    if (!std::filesystem::create_directory(candidate + kBagPathClaimSuffix, ec) || ec) {
+      ec.clear();
+      continue;
+    }
+    if (!std::filesystem::exists(candidate, ec)) {
+      return candidate;
+    }
+    release_bag_path_claim(candidate);
+  }
+  return std::nullopt;
+}
+
+void RosbagCapture::release_bag_path_claim(const std::string & bag_path) {
+  std::error_code ec;
+  std::filesystem::remove(bag_path + kBagPathClaimSuffix, ec);
+}
+
+std::optional<std::string> RosbagCapture::generate_bag_path(const std::string & fault_code) const {
   std::string base_path;
 
   if (config_.storage_path.empty()) {
@@ -1322,13 +1410,14 @@ std::string RosbagCapture::generate_bag_path(const std::string & fault_code) con
     base_path = config_.storage_path;
   }
 
-  // Create unique name with timestamp
   auto now = std::chrono::system_clock::now();
   auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
 
-  return base_path + "/" + bag_directory_name(fault_code, timestamp);
+  return claim_bag_path(base_path, fault_code, timestamp);
 }
 
+// Directory total: what the recording costs against max_total_storage_mb and what eviction frees.
+// The API reports the named storage files instead, see core::rosbag_served_bytes().
 size_t RosbagCapture::calculate_bag_size(const std::string & bag_path) const {
   size_t total_size = 0;
 
@@ -1349,7 +1438,8 @@ size_t RosbagCapture::calculate_bag_size(const std::string & bag_path) const {
   return total_size;
 }
 
-std::vector<std::string> RosbagCapture::evict_bags_over_quota(FaultStorage * storage, size_t max_bytes) {
+std::vector<std::string> RosbagCapture::evict_bags_over_quota(FaultStorage * storage, size_t max_bytes,
+                                                              const std::string & keep_recording_id) {
   size_t current_bytes = storage->get_total_rosbag_storage_bytes();
   if (current_bytes <= max_bytes) {
     return {};
@@ -1379,6 +1469,9 @@ std::vector<std::string> RosbagCapture::evict_bags_over_quota(FaultStorage * sto
   for (const auto & path : paths_oldest_first) {
     if (current_bytes <= max_bytes) {
       break;
+    }
+    if (!keep_recording_id.empty() && recording_by_path[path] == keep_recording_id) {
+      continue;
     }
 
     // By RECORDING, not by fault code. The unit being evicted is a bag, and a
@@ -1419,28 +1512,96 @@ int64_t RosbagCapture::bounded_history_ns(int64_t now_wall_ns, int64_t oldest_ms
   return std::clamp<int64_t>(difference(now_wall_ns, oldest_msg_wall_ns), 0, uptime_ns);
 }
 
-void RosbagCapture::enforce_storage_limits() {
-  for (const auto & path : evict_bags_over_quota(storage_, config_.max_total_storage_mb * 1024 * 1024)) {
+void RosbagCapture::enforce_storage_limits(const std::string & keep_recording_id) {
+  const size_t max_bytes = config_.max_total_storage_mb * 1024 * 1024;
+  for (const auto & path : evict_bags_over_quota(storage_, max_bytes, keep_recording_id)) {
     RCLCPP_INFO(node_->get_logger(), "Deleted old bag '%s' to enforce storage limit", path.c_str());
+  }
+  // Everything older is gone by now, so what is left over the quota is the kept recording alone.
+  if (!keep_recording_id.empty() && storage_->get_total_rosbag_storage_bytes() > max_bytes) {
+    RCLCPP_WARN(node_->get_logger(),
+                "Recording '%s' alone exceeds snapshots.rosbag.max_total_storage_mb (%zu MB); it is kept, and the "
+                "storage stays over the limit until a newer recording replaces it",
+                keep_recording_id.c_str(), config_.max_total_storage_mb);
   }
 }
 
-bool RosbagCapture::store_rows_or_discard_bag(const std::vector<RosbagFileInfo> & rows, const std::string & bag_path) {
+void RosbagCapture::write_manifest(const std::string & bag_path, int64_t created_at_ns) {
+  try {
+    if (const auto error = core::write_recording_manifest(bag_path, created_at_ns)) {
+      RCLCPP_WARN(node_->get_logger(), "No manifest written for recording '%s': %s", bag_path.c_str(), error->c_str());
+    }
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(node_->get_logger(), "No manifest written for recording '%s': %s", bag_path.c_str(), e.what());
+  }
+}
+
+bool RosbagCapture::row_still_wanted(const std::string & code) {
+  // Same rule as on_fault_cleared: without auto_cleanup, or with a history
+  // configured, a cleared fault keeps its black box. Checking only auto_cleanup
+  // here let an acknowledgement arriving during the post-roll drop every row and
+  // delete the bag, while on_fault_cleared had just decided to keep it.
+  if (!config_.auto_cleanup || keeps_history()) {
+    return true;
+  }
+  // A throw terminates the store worker's process. A store that cannot answer keeps
+  // the row: the bag stays referenced.
+  std::optional<fd::FaultRecord> fault;
+  try {
+    fault = storage_->get_fault(code);
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(node_->get_logger(), "Could not read fault '%s' before storing its bag, keeping its row: %s",
+                code.c_str(), e.what());
+    return true;
+  }
+  // Absent is not cleared. A caller driving the capture directly, or a fault the
+  // store never saw, must keep its row - only a fault the store still holds AND
+  // reports as cleared loses one.
+  return !fault.has_value() || fault->status != fd::fault_status::kCleared;
+}
+
+bool RosbagCapture::store_rows_or_discard_bag(std::vector<RosbagFileInfo> rows, const std::string & bag_path) {
   // Reported rather than logged inside the handler, because a handler cannot throw
   // here and building the message is the one part that could.
   const char * store_error = nullptr;
   std::string store_error_text;
-  try {
-    storage_->store_rosbag_files(rows);
-  } catch (const std::exception & e) {
-    store_error_text = e.what();
-    store_error = store_error_text.c_str();
-  } catch (...) {
-    // The storage interface promises nothing about what a backend throws, and this
-    // function is called from a path that reaches ~RosbagCapture through stop().
-    // An escape there terminates the process during shutdown.
-    store_error_text = "unknown exception";
-    store_error = store_error_text.c_str();
+  {
+    // A fault cleared meanwhile gets no row. The store is asked, not a flag captured
+    // earlier: on_fault_cleared() drops a code from the recording state only when the
+    // guard was published at the moment the clear arrived. The check and the insert
+    // hold clear_rows_mutex_, which on_fault_cleared() holds for its delete, and the
+    // store marks a fault cleared before on_fault_cleared() runs. So a clear either
+    // shows here as cleared, or its delete runs after the insert and takes the row.
+    std::lock_guard<std::mutex> lock(clear_rows_mutex_);
+    rows.erase(std::remove_if(rows.begin(), rows.end(),
+                              [this](const RosbagFileInfo & row) {
+                                return !row_still_wanted(row.fault_code);
+                              }),
+               rows.end());
+    if (!rows.empty()) {
+      try {
+        storage_->store_rosbag_files(rows);
+      } catch (const std::exception & e) {
+        store_error_text = e.what();
+        store_error = store_error_text.c_str();
+      } catch (...) {
+        // The storage interface promises nothing about what a backend throws, and this
+        // function is called from a path that reaches ~RosbagCapture through stop().
+        // An escape there terminates the process during shutdown.
+        store_error_text = "unknown exception";
+        store_error = store_error_text.c_str();
+      }
+    }
+  }
+
+  if (rows.empty()) {
+    // Every fault of the recording was cleared before its row was stored; nothing
+    // references the bag, so it goes the way auto-cleanup would have taken it.
+    std::error_code ec;
+    std::filesystem::remove_all(bag_path, ec);
+    RCLCPP_INFO(node_->get_logger(), "Bag file discarded (all its faults cleared before it was stored): %s",
+                bag_path.c_str());
+    return false;
   }
 
   if (store_error != nullptr) {
@@ -1472,7 +1633,7 @@ bool RosbagCapture::store_rows_or_discard_bag(const std::vector<RosbagFileInfo> 
   // charged against max_total_storage_mb, which sums rows. A missed sweep costs a late
   // quota, and the next capture runs it again.
   try {
-    enforce_storage_limits();
+    enforce_storage_limits(rows.empty() ? std::string() : rows.front().recording_id);
   } catch (const std::exception & e) {
     RCLCPP_WARN(node_->get_logger(), "Failed to enforce the rosbag storage limit after storing '%s': %s",
                 bag_path.c_str(), e.what());
@@ -1594,79 +1755,58 @@ void RosbagCapture::finalize_post_fault_recording() {
   // is written by the destructor.
   destroy_writer_under_plugin_lock(closing_writer);
 
-  // Calculate final size and store metadata
-  size_t bag_size = calculate_bag_size(bag_path);
+  // Hashing reads every storage file, and the store and the quota sweep wait on the
+  // fault store. On the executor thread that would hold every fault manager service
+  // and the capture subscriptions for as long as it takes, so the rest is the store
+  // worker's. The row is stored only after the manifest is written, so a recording
+  // is never listed before its manifest exists.
+  ClosedRecording recording;
+  recording.bag_path = std::move(bag_path);
+  recording.fault_code = std::move(fault_code);
+  recording.attached_fault_codes = std::move(attached);
+  recording.duration_sec = recording_span_sec;
+  recording.created_at_ns = get_wall_clock_ns();
+  enqueue_closed_recording(std::move(recording));
+}
 
-  RosbagFileInfo info;
-  info.recording_id = rosbag_recording_id(bag_path);
-  info.file_path = bag_path;
-  info.format = config_.format;
-  // The real span of the recording, not the configured pre+post window. A
-  // post-fault-only bag reports roughly duration_after_sec, and a bag flushed from
-  // a partly-filled buffer reports what it holds.
-  info.duration_sec = recording_span_sec;
-  info.size_bytes = bag_size;
-  info.created_at_ns = get_wall_clock_ns();
+void RosbagCapture::store_closed_recording(const ClosedRecording & recording) {
+  try {
+    const std::string & bag_path = recording.bag_path;
+    write_manifest(bag_path, recording.created_at_ns);
+    size_t bag_size = calculate_bag_size(bag_path);
 
-  // One recording, one row per fault it covers: the correlated faults that
-  // confirmed inside this window each need their own lookup key to serve it.
-  //
-  // A fault cleared meanwhile gets none. on_fault_cleared() drops the code from the
-  // recording state, but only when the guard was already published at the moment the
-  // clear arrived - a fault cleared while its own recording was still being opened
-  // slips past that, and its row would then survive with nothing left to remove it,
-  // keeping the bag referenced for good. The store knows the current answer, so ask
-  // it rather than trust a flag captured earlier. Only under auto_cleanup: without
-  // it, a cleared fault is meant to keep its black box.
-  const auto wants_a_row = [this](const std::string & code) {
-    // Same rule as on_fault_cleared: without auto_cleanup, or with a history
-    // configured, a cleared fault keeps its black box. Checking only auto_cleanup
-    // here let an acknowledgement arriving during the post-roll drop every row and
-    // delete the bag, while on_fault_cleared had just decided to keep it.
-    if (!config_.auto_cleanup || keeps_history()) {
-      return true;
+    RosbagFileInfo info;
+    info.recording_id = rosbag_recording_id(bag_path);
+    info.file_path = bag_path;
+    info.format = config_.format;
+    // The real span of the recording, not the configured pre+post window. A
+    // post-fault-only bag reports roughly duration_after_sec, and a bag flushed from
+    // a partly-filled buffer reports what it holds.
+    info.duration_sec = recording.duration_sec;
+    info.size_bytes = bag_size;
+    info.created_at_ns = recording.created_at_ns;
+    // One recording, one row per fault it covers: the correlated faults that
+    // confirmed inside this window each need their own lookup key to serve it. Which
+    // of them still get one is decided in store_rows_or_discard_bag().
+    std::vector<RosbagFileInfo> rows;
+    if (!recording.fault_code.empty()) {
+      info.fault_code = recording.fault_code;
+      rows.push_back(info);
     }
-    // Runs on the post-fault timer, where a throw terminates the process. A store that cannot answer
-    // keeps the row: the bag stays referenced.
-    std::optional<ros2_medkit_msgs::msg::Fault> fault;
-    try {
-      fault = storage_->get_fault(code);
-    } catch (const std::exception & e) {
-      RCLCPP_WARN(node_->get_logger(), "Could not read fault '%s' before storing its bag, keeping its row: %s",
-                  code.c_str(), e.what());
-      return true;
+    for (const auto & code : recording.attached_fault_codes) {
+      info.fault_code = code;
+      rows.push_back(info);
     }
-    // Absent is not cleared. A caller driving the capture directly, or a fault the
-    // store never saw, must keep its row - only a fault the store still holds AND
-    // reports as cleared loses one.
-    return !fault.has_value() || fault->status != ros2_medkit_msgs::msg::Fault::STATUS_CLEARED;
-  };
 
-  std::vector<RosbagFileInfo> rows;
-  if (!fault_code.empty() && wants_a_row(fault_code)) {
-    info.fault_code = fault_code;
-    rows.push_back(info);
-  }
-  for (const auto & code : attached) {
-    if (!wants_a_row(code)) {
-      continue;
+    if (store_rows_or_discard_bag(std::move(rows), bag_path)) {
+      RCLCPP_INFO(node_->get_logger(), "Bag file completed: %s (%.2f MB, %.1fs, %zu attached fault(s))",
+                  bag_path.c_str(), static_cast<double>(bag_size) / (1024.0 * 1024.0), info.duration_sec,
+                  recording.attached_fault_codes.size());
     }
-    info.fault_code = code;
-    rows.push_back(info);
-  }
-
-  if (rows.empty()) {
-    // Every fault of the burst was cleared while the post-roll ran; nothing
-    // references the bag, so it goes the way auto-cleanup would have taken it.
-    std::error_code ec;
-    std::filesystem::remove_all(bag_path, ec);
-    RCLCPP_INFO(node_->get_logger(), "Bag file discarded (all its faults cleared during post-roll): %s",
-                bag_path.c_str());
-  } else if (store_rows_or_discard_bag(rows, bag_path)) {
-    // A store that fails discards the bag for the same reason the all-cleared branch
-    // above does, and says so in its own log line.
-    RCLCPP_INFO(node_->get_logger(), "Bag file completed: %s (%.2f MB, %.1fs, %zu attached fault(s))", bag_path.c_str(),
-                static_cast<double>(bag_size) / (1024.0 * 1024.0), info.duration_sec, attached.size());
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(node_->get_logger(), "Failed to store recording '%s': %s", recording.bag_path.c_str(), e.what());
+  } catch (...) {
+    RCLCPP_WARN(node_->get_logger(), "Failed to store recording '%s': unknown exception", recording.bag_path.c_str());
   }
 }
 

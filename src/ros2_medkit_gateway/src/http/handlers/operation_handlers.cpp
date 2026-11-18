@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/handlers/operation_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -32,14 +33,15 @@
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/http/member_qualified_id.hpp"
 #include "ros2_medkit_gateway/core/http/operation_item_id.hpp"
+#include "ros2_medkit_gateway/core/managers/data_access_manager.hpp"
 #include "ros2_medkit_gateway/core/managers/operation_manager.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/operation_provider.hpp"
+#include "ros2_medkit_gateway/core/types/type_schema_provider.hpp"
 #include "ros2_medkit_gateway/dto/json_writer.hpp"
 #include "ros2_medkit_gateway/dto/operations.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
-#include "ros2_medkit_serialization/type_introspection.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
@@ -297,7 +299,7 @@ http::Result<MemberDispatch> dispatch_execution_to_owner(const HandlerContext & 
                                                          const std::string & operation_id,
                                                          const std::string & execution_id) {
   const auto entity_info = ctx.get_entity_info(entity_id);
-  const auto & cache = ctx.node()->get_thread_safe_cache();
+  const auto & cache = ctx.services().entity_cache();
   auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
   if (!lookup) {
     return MemberDispatch::kServeLocally;
@@ -361,7 +363,7 @@ std::string sovd_status_from_ros2(ActionGoalStatus status) {
 /// returned by the runtime discovery branch. Shared by list_operations and
 /// get_operation so the wire shape is identical for both.
 dto::XMedkitOperationItem build_service_xmedkit(const ServiceInfo & svc, const std::string & entity_id,
-                                                ros2_medkit_serialization::TypeIntrospection * type_introspection) {
+                                                TypeSchemaProvider & type_schemas) {
   dto::XMedkitRos2 ros2;
   ros2.service = svc.full_path;
   ros2.type = svc.type;
@@ -372,22 +374,25 @@ dto::XMedkitOperationItem build_service_xmedkit(const ServiceInfo & svc, const s
   x_medkit.entity_id = entity_id;
   x_medkit.source = "ros2_medkit_gateway";
 
-  if (type_introspection != nullptr && !svc.type.empty()) {
+  if (!svc.type.empty()) {
+    // The provider caches the schemas per type and shares them, so repeated
+    // /operations requests do not rebuild them.
     try {
-      // Schemas are assembled once per type and cached (shared) in
-      // TypeIntrospection, so repeated /operations requests reuse them instead
-      // of rebuilding + deep-copying (issue #442).
-      x_medkit.type_info = *type_introspection->get_service_type_info(svc.type);
+      if (auto type_info = type_schemas.service_type_info(svc.type)) {
+        x_medkit.type_info = *type_info;
+      } else {
+        MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s'", svc.type.c_str());
+      }
     } catch (const std::exception & e) {
-      RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s", svc.type.c_str(),
-                   e.what());
+      MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for service '%s': %s", svc.type.c_str(),
+                       e.what());
     }
   }
   return x_medkit;
 }
 
 dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std::string & entity_id,
-                                               ros2_medkit_serialization::TypeIntrospection * type_introspection) {
+                                               TypeSchemaProvider & type_schemas) {
   dto::XMedkitRos2 ros2;
   ros2.action = act.full_path;
   ros2.type = act.type;
@@ -398,11 +403,16 @@ dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std
   x_medkit.entity_id = entity_id;
   x_medkit.source = "ros2_medkit_gateway";
 
-  if (type_introspection != nullptr && !act.type.empty()) {
+  if (!act.type.empty()) {
     try {
-      x_medkit.type_info = *type_introspection->get_action_type_info(act.type);
+      if (auto type_info = type_schemas.action_type_info(act.type)) {
+        x_medkit.type_info = *type_info;
+      } else {
+        MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s'", act.type.c_str());
+      }
     } catch (const std::exception & e) {
-      RCLCPP_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(), e.what());
+      MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Could not get type info for action '%s': %s", act.type.c_str(),
+                       e.what());
     }
   }
   return x_medkit;
@@ -437,7 +447,7 @@ tl::expected<ActionGoalInfo, ErrorInfo> owned_goal(const HandlerContext & ctx, O
     // this gate any aggregate could name the owner of someone else's goal and
     // read, stop or cancel it from an unrelated URI.
     const auto entity_info = ctx.get_entity_info(entity_id);
-    const auto & cache = ctx.node()->get_thread_safe_cache();
+    const auto & cache = ctx.services().entity_cache();
     if (auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id)) {
       const auto parsed = http::parse_member_qualified_id(operation_id, lookup->ops.is_aggregated);
       if (parsed.has_member && names_a_member(lookup->ops, parsed.member_id) &&
@@ -618,7 +628,7 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
 
   // Delegate to plugin OperationProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * pmgr = ctx_.services().plugin_manager();
     auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
     if (op_prov == nullptr) {
       return tl::make_unexpected(
@@ -631,32 +641,31 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
       }
       return *result;
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
+                       entity_id.c_str(), e.what());
       return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
     } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
       return tl::make_unexpected(
           make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
   }
 
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
   if (!lookup) {
     return tl::make_unexpected(lookup.error());
   }
   const auto & ops = lookup->ops;
-  RCLCPP_DEBUG(HandlerContext::logger(), "Listing operations for %s '%s': %zu services, %zu actions",
-               lookup->entity_type.c_str(), entity_id.c_str(), ops.services.size(), ops.actions.size());
+  MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Listing operations for %s '%s': %zu services, %zu actions",
+                   lookup->entity_type.c_str(), entity_id.c_str(), ops.services.size(), ops.actions.size());
 
   // Build OperationItem list (services + actions). The wire shape is shared
   // with handle_get_operation so build_service_xmedkit / build_action_xmedkit
   // are factored out into the anon-ns helpers above.
   dto::Collection<dto::OperationItem> collection;
-  auto data_access_mgr = ctx_.node()->get_data_access_manager();
-  auto type_introspection = data_access_mgr->get_type_introspection();
+  auto & type_schemas = *ctx_.services().type_schemas();
 
   // How many operations the DECLARED tree carries under each short name. This
   // is the same count `create_execution` refuses on, and it is read here so the
@@ -721,9 +730,9 @@ http::Result<dto::Collection<dto::OperationItem>> OperationHandlers::list_operat
     item.proximity_proof_required = false;
     item.asynchronous_execution = asynchronous;
     if constexpr (std::is_same_v<std::decay_t<decltype(op)>, ServiceInfo>) {
-      item.x_medkit = build_service_xmedkit(op, entity_id, type_introspection);
+      item.x_medkit = build_service_xmedkit(op, entity_id, type_schemas);
     } else {
-      item.x_medkit = build_action_xmedkit(op, entity_id, type_introspection);
+      item.x_medkit = build_action_xmedkit(op, entity_id, type_schemas);
     }
     if (auto owner = ops.owner_by_path.find(op.full_path); owner != ops.owner_by_path.end() && ops.is_aggregated) {
       item.x_medkit->member_ids = std::vector<std::string>{owner->second};
@@ -877,7 +886,7 @@ http::Result<dto::OperationDetail> OperationHandlers::get_operation(const http::
   const auto entity_info = *entity_result;
 
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * pmgr = ctx_.services().plugin_manager();
     auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
     if (op_prov == nullptr) {
       return tl::make_unexpected(
@@ -892,18 +901,18 @@ http::Result<dto::OperationDetail> OperationHandlers::get_operation(const http::
       detail.item = std::move(*result);
       return detail;
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
+                       entity_id.c_str(), e.what());
       return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
     } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
       return tl::make_unexpected(
           make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
   }
 
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
   if (!lookup) {
     return tl::make_unexpected(lookup.error());
@@ -935,8 +944,7 @@ http::Result<dto::OperationDetail> OperationHandlers::get_operation(const http::
     return tl::make_unexpected(std::move(*ambiguous));
   }
 
-  auto data_access_mgr = ctx_.node()->get_data_access_manager();
-  auto type_introspection = data_access_mgr->get_type_introspection();
+  auto & type_schemas = *ctx_.services().type_schemas();
 
   dto::OperationDetail detail;
   // The id echoes what was requested, so a caller that took a qualified id out
@@ -946,12 +954,12 @@ http::Result<dto::OperationDetail> OperationHandlers::get_operation(const http::
     detail.item.name = resolved.service->name;
     detail.item.proximity_proof_required = false;
     detail.item.asynchronous_execution = false;
-    detail.item.x_medkit = build_service_xmedkit(*resolved.service, entity_id, type_introspection);
+    detail.item.x_medkit = build_service_xmedkit(*resolved.service, entity_id, type_schemas);
   } else {
     detail.item.name = resolved.action->name;
     detail.item.proximity_proof_required = false;
     detail.item.asynchronous_execution = true;
-    detail.item.x_medkit = build_action_xmedkit(*resolved.action, entity_id, type_introspection);
+    detail.item.x_medkit = build_action_xmedkit(*resolved.action, entity_id, type_schemas);
   }
 
   // A retained member's operation is still described, because the description
@@ -1004,7 +1012,7 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
   // `OperationExecutionResult` envelope. Pre-typed plugins kept the raw JSON
   // body shape, so the wire format is unchanged.
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * pmgr = ctx_.services().plugin_manager();
     auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
     if (op_prov == nullptr) {
       return tl::make_unexpected(
@@ -1036,19 +1044,19 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
       }
       return SuccessPair{ResultVariant{std::move(*result)}, http::ResponseAttachments{}};
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
+                       entity_id.c_str(), e.what());
       return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
     } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
       return tl::make_unexpected(
           make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
   }
 
   // Runtime discovery branch.
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
   if (!lookup) {
     return tl::make_unexpected(lookup.error());
@@ -1109,7 +1117,7 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
   const std::optional<ServiceInfo> & service_info = resolved.service;
   const std::optional<ActionInfo> & action_info = resolved.action;
 
-  auto * operation_mgr = ctx_.node()->get_operation_manager();
+  auto * operation_mgr = ctx_.services().operation_manager();
 
   // ---- Action (asynchronous: 202 + Location) ----
   if (action_info.has_value()) {
@@ -1220,7 +1228,7 @@ http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executio
   // provider still decides whether the operation exists at all, so a typo is a
   // miss here and not an empty success.
   if (entity_info.is_plugin) {
-    auto * pmgr = ctx_.node()->get_plugin_manager();
+    auto * pmgr = ctx_.services().plugin_manager();
     auto * op_prov = pmgr ? pmgr->get_operation_provider_for_entity(entity_id) : nullptr;
     if (op_prov == nullptr) {
       return tl::make_unexpected(
@@ -1233,12 +1241,12 @@ http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executio
       }
       return collection;
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s", entity_id.c_str(),
-                   e.what());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw for entity '%s': %s",
+                       entity_id.c_str(), e.what());
       return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
     } catch (...) {
-      RCLCPP_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
-                   entity_id.c_str());
+      MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin OperationProvider threw unknown exception for entity '%s'",
+                       entity_id.c_str());
       return tl::make_unexpected(
           make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
     }
@@ -1250,7 +1258,7 @@ http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executio
   // did not exist - immediately after the same entity listed the operation.
   // `resolve_entity_operations` is the same lookup `list_operations` uses, so
   // the two endpoints now agree on what an entity's operations are.
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
   if (!lookup) {
     return tl::make_unexpected(lookup.error());
@@ -1303,7 +1311,7 @@ http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executio
   // to stay different, because a client reading a collection of executions
   // cannot otherwise tell a synchronous operation from a mistyped id.
   if (resolved.action.has_value()) {
-    auto * operation_mgr = ctx_.node()->get_operation_manager();
+    auto * operation_mgr = ctx_.services().operation_manager();
     for (const auto & goal : operation_mgr->get_goals_for_action(resolved.action->full_path)) {
       // An action reachable through several entities is one action with one
       // set of goals, so the collection has to say whose executions it lists.
@@ -1364,7 +1372,7 @@ http::Result<dto::OperationExecution> OperationHandlers::get_execution(const htt
     }
   }
 
-  auto * operation_mgr = ctx_.node()->get_operation_manager();
+  auto * operation_mgr = ctx_.services().operation_manager();
   auto goal_info = owned_goal(ctx_, operation_mgr, entity_id, operation_id, execution_id);
   if (!goal_info) {
     return tl::make_unexpected(goal_info.error());
@@ -1436,7 +1444,7 @@ http::Result<http::NoContent> OperationHandlers::cancel_execution(const http::Ty
     }
   }
 
-  auto * operation_mgr = ctx_.node()->get_operation_manager();
+  auto * operation_mgr = ctx_.services().operation_manager();
   auto goal_info = owned_goal(ctx_, operation_mgr, entity_id, operation_id, execution_id);
   if (!goal_info) {
     return tl::make_unexpected(goal_info.error());
@@ -1506,7 +1514,7 @@ OperationHandlers::update_execution(const http::TypedRequest & req, const dto::E
 
   const std::string capability = body.capability;
 
-  auto * operation_mgr = ctx_.node()->get_operation_manager();
+  auto * operation_mgr = ctx_.services().operation_manager();
   auto goal_info = owned_goal(ctx_, operation_mgr, entity_id, operation_id, execution_id);
   if (!goal_info) {
     return tl::make_unexpected(goal_info.error());

@@ -16,6 +16,9 @@ The gateway can be configured via:
 Out-of-range values
 -------------------
 
+Every ``server.*``, ``sse.*`` and ``docs.*`` parameter is read once, when the
+gateway starts. A later ``ros2 param set`` does not change the running server.
+
 Where a parameter documents a valid range, that range is enforced when the value
 is read at startup, and an out-of-range value is never accepted in silence. What
 happens next differs by parameter, in one of three ways.
@@ -129,7 +132,7 @@ TLS/HTTPS Configuration
    * - ``server.tls.ca_file``
      - string
      - ``""``
-     - CA that signs CLIENT certificates. Setting it turns on mutual TLS and makes a client certificate **required**: a caller that presents none is rejected during the handshake, before any request is read, so every bearer-token client without a certificate goes off the air. Leave empty for ordinary server-only TLS.
+     - Path to CA certificate file (reserved for mutual TLS).
    * - ``server.tls.min_version``
      - string
      - ``"1.2"``
@@ -384,6 +387,8 @@ Configure how the gateway connects to the fault manager services and event topic
        values, marked ``connected: false`` in the snapshot's ``x-medkit`` block.
        Explicit snapshot config in the fault manager always wins when present.
        Only active when plugins are loaded.
+       A program that hosts the gateway core without ROS sets the same switch
+       as ``FreezeFrameCaptureConfig::enabled`` (see the gateway README).
 
 When ``fault_manager.namespace`` is set, the gateway also subscribes to the matching
 fault event topic (for example ``/robot1/fault_manager/events`` instead of the default
@@ -526,6 +531,14 @@ Per node name, on every read of the graph:
   graph resolves no publisher or subscriber for the node (a service or client is a request
   and a reply endpoint, so it counts too);
 * an entry without an enclave for a name the gateway has never seen running is listed.
+
+A restarted node listed next to a leftover of its name needs one more step. The DDS RMWs
+answer a query for one node's services from the first entry of the name, in participant
+order, and that entry can be the leftover, which has no endpoints. For such a node the
+gateway takes its services and actions from the writers on each service's reply topic
+(``rr/<service>Reply``), which only the running node owns. A read that finds such a node
+makes one endpoint query per service an App can list: parameter and other internal services
+are skipped.
 
 A leftover is left out of ``GET /apps`` and ``GET /apps/{id}``, out of the Functions
 derived from namespaces, and out of the bare-name collision check that would otherwise
@@ -685,7 +698,7 @@ Bulk Data Storage
 -----------------
 
 Configure file-based bulk data storage for uploads (calibration files, firmware, etc.).
-The ``rosbags`` category is always available via the Fault Manager and does not need
+The ``rosbags`` category is served by the Fault Manager and does not need
 configuration.
 
 .. list-table::
@@ -722,8 +735,9 @@ Example:
 
 .. note::
 
-   The ``rosbags`` category is always available through the Fault Manager and cannot be
-   used for uploads or deletes. It is automatically included in the category list.
+   The ``rosbags`` category is available through the Fault Manager and cannot be
+   used for uploads or deletes. It is included in the category list whenever the Fault
+   Manager serves rosbags, which is always the case on the ROS 2 node.
 
 .. note::
 
@@ -832,6 +846,13 @@ Example:
          storage:
            path: "/var/lib/ros2_medkit/triggers.db"
 
+A program that hosts the gateway core instead of the ROS 2 node sets the same
+values in ``TriggerHostConfig`` (``enabled``, ``max_triggers``,
+``on_restart_behavior``, ``storage_path``). It has one more setting, which the
+node does not read: ``data_poll_interval_ms`` (default ``1000``, clamped to
+``100`` - ``60000`` with a warning) is the period at which a data trigger on an
+item a plugin serves reads that item. A trigger has no interval of its own.
+
 Fault-trigger rules
 ^^^^^^^^^^^^^^^^^^^
 
@@ -923,11 +944,8 @@ See :doc:`/api/rest` for rate limiting response headers and 429 behavior.
 Authentication
 --------------
 
-JWT-based authentication with Role-Based Access Control (RBAC). Off in
-``config/gateway_params.yaml`` and on in ``config/gateway_params.secure.yaml``,
-which also sets ``require_auth_for`` to ``all``. With authentication on and no
-``jwt_secret`` the gateway refuses to start, because a half-protected gateway
-is the one outcome the setting exists to prevent.
+JWT-based authentication with Role-Based Access Control (RBAC). Disabled by
+default for local development.
 
 .. list-table::
    :header-rows: 1
@@ -940,15 +958,15 @@ is the one outcome the setting exists to prevent.
    * - ``auth.enabled``
      - bool
      - ``false``
-     - Enable/disable JWT authentication.
+     - Enable/disable JWT authentication. ``MEDKIT_JWT_SECRET`` turns it on and ``MEDKIT_AUTH_DISABLED=1`` turns it off, whatever this says. Reads back the value in force.
    * - ``auth.jwt_secret``
      - string
      - ``""``
-     - JWT signing secret. For HS256: the shared secret string. For RS256: path to the private key file (PEM format), read once at startup, so a rotated key takes effect at the next restart. Setting ``MEDKIT_JWT_SECRET`` while the algorithm is RS256 is refused at startup: the variable carries a secret and RS256 wants a path.
+     - JWT signing secret. For HS256: the shared secret string. For RS256: path to the private key file (PEM format). ``MEDKIT_JWT_SECRET`` overrides it; set but empty, that variable stops the gateway, and with RS256 it is refused. Read back as ``<from MEDKIT_JWT_SECRET>``, ``<set at start>`` or empty, never as the value.
    * - ``auth.jwt_public_key``
      - string
      - ``""``
-     - Path to public key file for RS256. Required for RS256, optional for HS256. Read once at startup - it verifies every token, so re-reading it per request would charge each one a file open - which means a rotated key takes effect at the next restart.
+     - Path to public key file for RS256. Required for RS256, optional for HS256.
    * - ``auth.jwt_algorithm``
      - string
      - ``"HS256"``
@@ -956,23 +974,15 @@ is the one outcome the setting exists to prevent.
    * - ``auth.token_expiry_seconds``
      - int
      - ``3600``
-     - Access token validity period in seconds (1 hour). Under
-       ``aggregation.forward_auth``, a peer's value must be at least the issuing
-       gateway's: a revocation the peer records for a token it did not issue is
-       held for this long past that token's refresh expiry, so a shorter value
-       here lets the revocation lapse while the issuer's token still verifies.
+     - Access token validity period in seconds (1 hour).
    * - ``auth.refresh_token_expiry_seconds``
      - int
      - ``86400``
      - Refresh token validity period in seconds (24 hours). Must be >= ``token_expiry_seconds``.
-       Gateways sharing a signing configuration should share this value too: a
-       revocation recorded here for a token another gateway issued is kept no
-       longer than this value, so an issuer with a longer one can go on
-       refreshing a token this gateway has already forgotten.
    * - ``auth.require_auth_for``
      - string
      - ``"write"``
-     - When to require authentication: ``"none"`` (auth endpoints still available), ``"write"`` (POST/PUT/DELETE only), or ``"all"`` (every request).
+     - When to require authentication: ``"none"`` (auth endpoints still available), ``"write"`` (POST/PUT/DELETE only), or ``"all"`` (every request). ``MEDKIT_JWT_SECRET`` forces ``"all"``. Reads back the value in force, ``"none"`` while authentication is off.
    * - ``auth.issuer``
      - string
      - ``"ros2_medkit_gateway"``
@@ -980,39 +990,15 @@ is the one outcome the setting exists to prevent.
    * - ``auth.clients``
      - string[]
      - ``[]``
-     - Pre-configured clients as ``"client_id:client_secret:role"`` strings.
-   * - ``auth.public_routes``
-     - string[]
-     - ``[]``
-     - Routes answered with no credential, each written ``"METHOD /path"``. Layers over ``require_auth_for`` and only ever removes a requirement. Matched exactly, no wildcards. Every entry is logged at ``WARN`` on startup, and a malformed entry stops the gateway - whatever ``auth.enabled`` says, because a list that cannot be read is a configuration error whenever it is set. A blank entry is skipped, so ``[""]`` (how a ROS 2 YAML file writes an empty sequence) means no routes.
+     - Pre-configured clients as ``"client_id:client_secret:role"`` strings. ``MEDKIT_CLIENTS`` replaces the list when ``MEDKIT_JWT_SECRET`` is set. Read back as ``<id>:<sentinel>:<role>``.
 
-What a token is checked against
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.. note::
 
-An access token is accepted when all three of these hold: the signature
-verifies under the configured secret, the expiry is in the future, and the
-client named in ``sub`` exists here and is enabled. The role it grants is the
-one **this** gateway's ``auth.clients`` gives that client; the ``role`` claim in
-the token says what the issuing gateway granted and is not consulted.
-
-The gateway also keeps a record of every refresh token it has issued, and that
-record is a **denylist**: a record marked revoked refuses the access tokens
-minted from it, and a token the gateway holds no record of is judged on the
-three checks above.
-
-Two deployments depend on the second half. A gateway that has restarted holds
-no records - they live in process memory - so an allowlist would log every
-client out at every restart. And under ``aggregation.forward_auth`` a peer
-receives tokens another gateway minted, which it will never have a record of;
-see :doc:`/config/aggregation`.
-
-The cost, stated so nobody is surprised by it: **a revoked token is honoured
-again after a restart**, for at most ``auth.token_expiry_seconds`` - the
-longest a live access token can outlast the record that was lost. While the
-process runs, a revocation holds for the full life of every token it withdraws.
-Where a revocation must survive a restart, disable the client
-(``auth.clients``): that check runs on every request and is read from
-configuration, so it holds across a restart.
+   The three variables ``MEDKIT_JWT_SECRET``, ``MEDKIT_CLIENTS`` and
+   ``MEDKIT_AUTH_DISABLED`` are read by the gateway node and override every
+   ``auth.*`` source; see :doc:`/tutorials/authentication`. All ``auth.*``
+   parameters and ``aggregation.peer_auth_header`` are read once at start: a
+   ``ros2 param set`` or ``ros2 param load`` of them is refused.
 
 .. note::
 
@@ -1044,48 +1030,6 @@ Example:
          token_expiry_seconds: 3600
          clients: ["admin:REPLACE_WITH_STRONG_SECRET:admin", "viewer:REPLACE_WITH_STRONG_SECRET:viewer"]
 
-Opening a route to uncredentialed callers
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Under ``require_auth_for: "all"`` - the secure profile's setting - the only
-routes answered without a credential are ``/api/v1/auth/*``, because
-authentication cannot bootstrap through a door that demands the credential it
-hands out. Health is not special and is refused like everything else.
-
-When something that cannot hold a credential has to reach a route, name it:
-
-.. code-block:: yaml
-
-   auth:
-     public_routes: ["GET /api/v1/health"]
-
-Matching is exact. ``GET /api/v1/health`` opens that method on that path and
-nothing else - not ``HEAD``, not ``/api/v1/healthz``, not the subtree. Wildcards
-are rejected, because accepting one and matching it literally would open
-nothing while reading as though it opened a subtree. A malformed entry stops
-the gateway, where dropping it silently would leave a route protected that the
-operator believes is reachable.
-
-An anonymous caller on such a route gets a reduced body: ``GET /health`` answers
-with five keys and no more: ``status``, ``timestamp``, ``warnings`` (always
-empty here), ``warning_schema_version``, and ``x-medkit-reduced: true`` so a
-monitor can tell a withheld answer from a clean one. A credential still returns
-the whole document.
-
-The cut follows this list. Under ``require_auth_for: "write"`` every GET is
-answered without a credential because of the requirement level, and no route
-was singled out, so ``GET /health`` returns its full body there - discovery,
-entity cache, linking and all.
-
-One case is wider than the list: with authentication enabled and the auth
-manager unavailable, ``/health`` answers the reduced body whatever the route.
-That path means the gateway cannot evaluate the question at all, and liveness
-is what it says when the check itself is unavailable.
-
-Most liveness probes need no entry at all. A ``401`` already proves the process
-is up and answering HTTP, so a probe that accepts ``200``, ``401`` and ``403``
-works against any auth configuration and leaves nothing open. Prefer that.
-
 See :doc:`/tutorials/authentication` for a complete setup tutorial.
 
 Plugin Framework
@@ -1111,6 +1055,10 @@ that are automatically detected and wired into the gateway's subsystem managers.
      - string
      - (required)
      - Absolute path to the plugin ``.so`` file. Must exist and have ``.so`` extension.
+   * - ``plugins.<name>.<key>``
+     - any
+     - (none)
+     - Plugin config, read at start and passed to ``configure()``. Not served as a ROS parameter.
 
 Plugin loading lifecycle:
 
@@ -1346,7 +1294,7 @@ components and apps to prevent concurrent modification.
    * - ``locking.cleanup_interval``
      - int
      - ``30``
-     - Seconds between expired lock cleanup sweeps
+     - Seconds between expired lock cleanup sweeps. Values below ``1`` are raised to ``1``. The sweep runs on a thread of the gateway core (``LockReaper``).
    * - ``locking.defaults.components.lock_required_scopes``
      - [string]
      - ``[""]``

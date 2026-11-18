@@ -705,7 +705,24 @@ void PeerClient::check_health() {
     headers.emplace("Authorization", peer_auth_header_);
   }
   auto result = client_->Get(std::string(API_PREFIX) + "/health", headers);
-  healthy_.store(result && result->status == 200);
+  const bool healthy = result && result->status == 200;
+  std::string instance_id;
+  if (healthy) {
+    auto body = nlohmann::json::parse(result->body, nullptr, false);
+    if (body.is_object() && body.contains("x-medkit-instance-id") && body["x-medkit-instance-id"].is_string()) {
+      instance_id = body["x-medkit-instance-id"].get<std::string>();
+    }
+  }
+  {
+    std::lock_guard<std::mutex> id_lock(instance_id_mutex_);
+    instance_id_ = std::move(instance_id);
+  }
+  healthy_.store(healthy);
+}
+
+std::string PeerClient::instance_id() const {
+  std::lock_guard<std::mutex> lock(instance_id_mutex_);
+  return instance_id_;
 }
 
 tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
@@ -912,14 +929,8 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       app.declared_source = app.source;
       app.source = peer_source;
     }
-    // Filter ROS 2 internal nodes (underscore prefix convention) at source.
-    // These are noise nodes like _param_client_node that should never appear
-    // as SOVD entities.
-    entities.apps.erase(std::remove_if(entities.apps.begin(), entities.apps.end(),
-                                       [](const App & app) {
-                                         return !app.id.empty() && app.id[0] == '_';
-                                       }),
-                        entities.apps.end());
+    // No internal-node filter here: the peer applied its own, and an id that
+    // starts with '_' can name a visible node whose name collided.
 
     // Fetch each app's operations and data. Neither is ever declared in a
     // manifest - both are discovered from the ROS graph - so the only record of

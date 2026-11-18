@@ -47,6 +47,46 @@ package "ros2_medkit_fault_manager" {
         + get_storage(): FaultStorage&
     }
 
+    package "core (no ROS)" {
+        class FaultManagerCore {
+            + report(report): ReportOutcome
+            + clear(code, skip_correlation_auto_clear): ClearOutcome
+            + list(query): ListOutcome
+            + get(code): FaultDetail
+            + record_transition(...): void
+            + tick(wall_now_ns): void
+        }
+
+        class EventSink <<interface>> {
+            + publish(event): void
+        }
+
+        class CaptureHooks <<interface>> {
+            + capture_now(code): CaptureResult
+            + on_prefailed(code): void
+            + on_cleared(code): void
+        }
+
+        class WallClock <<interface>> {
+            + now_ns(): int64
+        }
+
+        class LogSink <<interface>> {
+            + log(level, logger, message): void
+        }
+
+        class FaultManagerConfig <<struct>> {
+            + validate(): vector<ConfigNotice>
+        }
+    }
+
+    package "ROS adapter" {
+        class RosEventSink
+        class RosCaptureHooks
+        class SystemWallClock
+        class RosLogSink
+    }
+
     abstract class FaultStorage <<interface>> {
         + {abstract} report_fault(): bool
         + {abstract} list_faults(): vector<Fault>
@@ -77,7 +117,18 @@ FaultManagerNode -up-|> "rclcpp::Node" : extends
 InMemoryFaultStorage -up-|> FaultStorage : implements
 
 ' Composition
-FaultManagerNode *-down-> InMemoryFaultStorage : owns
+FaultManagerNode *-down-> FaultManagerCore : owns
+FaultManagerCore --> EventSink : publishes events
+FaultManagerCore --> CaptureHooks : requests captures
+FaultManagerCore --> WallClock : reads
+FaultManagerCore --> LogSink : logs
+FaultManagerCore *-down-> FaultStorage : owns
+FaultManagerCore ..> FaultManagerConfig : built from
+RosEventSink -up-|> EventSink
+RosCaptureHooks -up-|> CaptureHooks
+SystemWallClock -up-|> WallClock
+RosLogSink -up-|> LogSink
+
 
 ' InMemoryFaultStorage contains FaultStates
 InMemoryFaultStorage o-right-> FaultState : contains many

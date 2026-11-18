@@ -30,6 +30,7 @@
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
+#include "test_log_sink.hpp"
 
 using ros2_medkit_fault_manager::InMemoryFaultStorage;
 using ros2_medkit_fault_manager::SnapshotCapture;
@@ -401,8 +402,8 @@ TEST_F(SnapshotCaptureTest, BackgroundCaptureCachesFreezeFrame) {
     }
   });
 
-  // The constructor sets up the background subscription only for a topic whose type the graph
-  // already carries, so wait for it before constructing.
+  // Waiting for the type keeps this test on the constructor's subscribe path; a topic that
+  // appears only after construction is BackgroundCaptureSubscribesToATopicThatAppearsAfterStartup.
   await_topic_type(node_, "/plc/temperature");
 
   SnapshotConfig config;
@@ -439,6 +440,51 @@ TEST_F(SnapshotCaptureTest, BackgroundCaptureCachesFreezeFrame) {
   EXPECT_EQ(snapshots.back().message_type, "std_msgs/msg/Float64");
 }
 
+// A fault manager that starts with the robot routinely comes up before the
+// publisher it is configured to capture (#696). The publisher here is created
+// only after the capture is constructed, which is that start order.
+// @verifies REQ_INTEROP_088
+TEST_F(SnapshotCaptureTest, BackgroundCaptureSubscribesToATopicThatAppearsAfterStartup) {
+  const std::string topic = "/plc/late_temperature";
+  SnapshotConfig config;
+  config.enabled = true;
+  config.background_capture = true;
+  config.fault_specific["PLC_LATE_TEMP_HIGH"] = {topic};
+  SnapshotCapture capture(node_.get(), storage_.get(), config);
+
+  auto pub = node_->create_publisher<std_msgs::msg::Float64>(topic, rclcpp::QoS(10));
+  ScopedPublisherThread pub_thread([&pub](std::atomic<bool> & stop) {
+    while (!stop.load()) {
+      std_msgs::msg::Float64 msg;
+      msg.data = 77.25;
+      pub->publish(msg);
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  });
+
+  bool got_frame = false;
+  const auto start = std::chrono::steady_clock::now();
+  while (!got_frame && std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
+    spin_some_once(node_);
+    capture.capture("PLC_LATE_TEMP_HIGH");
+    auto frame = storage_->get_freeze_frame("PLC_LATE_TEMP_HIGH");
+    got_frame = frame.has_value() && frame->data != "{}";
+    if (!got_frame) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+  ASSERT_TRUE(got_frame) << "the background cache never carried " << topic << ", which appeared after startup";
+
+  auto parsed = nlohmann::json::parse(storage_->get_freeze_frame("PLC_LATE_TEMP_HIGH")->data);
+  ASSERT_TRUE(parsed.contains(topic));
+  EXPECT_DOUBLE_EQ(parsed[topic]["data"].get<double>(), 77.25);
+
+  // One subscription, however many checks it took to find the topic. That a
+  // found topic is not handed over again on later checks is pinned by
+  // PendingTopicWatcherTest, which can afford to wait out many periods.
+  EXPECT_EQ(node_->count_subscribers(topic), 1u);
+}
+
 // @verifies REQ_INTEROP_088
 TEST_F(SnapshotCaptureTest, UnconfiguredFaultWritesNoFreezeFrame) {
   SnapshotConfig config;
@@ -472,8 +518,9 @@ class EntityDefaultCaptureTest : public SnapshotCaptureTest {
   /// Store a CONFIRMED fault whose reporting source is this test node.
   void store_fault_from_this_node(const std::string & fault_code) {
     ros2_medkit_fault_manager::DebounceConfig debounce;  // threshold -1: first FAILED confirms
-    storage_->report_fault_event(fault_code, 0 /*EVENT_FAILED*/, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
-                                 "test fault", node_->get_fully_qualified_name(), rclcpp::Clock().now(), debounce);
+    storage_->report_fault_event(fault_code, fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                                 "test fault", node_->get_fully_qualified_name(), rclcpp::Clock().now().nanoseconds(),
+                                 debounce);
   }
 
   /// Wait until this node's publisher on @p topic is visible on the graph.
@@ -617,8 +664,8 @@ TEST_F(EntityDefaultCaptureTest, UnresolvableSourceWritesNoRow) {
 
   // Plugin-style bare entity id: not a live node, resolves to no topics.
   ros2_medkit_fault_manager::DebounceConfig debounce;
-  storage_->report_fault_event("PLC_FAULT", 0 /*EVENT_FAILED*/, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
-                               "plc fault", "beckhoff_plc_app", rclcpp::Clock().now(), debounce);
+  storage_->report_fault_event("PLC_FAULT", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "plc fault", "beckhoff_plc_app", rclcpp::Clock().now().nanoseconds(), debounce);
 
   capture.capture("PLC_FAULT");
 
@@ -639,8 +686,8 @@ TEST_F(EntityDefaultCaptureTest, BarePluginIdNeverMatchesSameNamedNode) {
   SnapshotCapture capture(node_.get(), storage_.get(), config);
 
   ros2_medkit_fault_manager::DebounceConfig debounce;
-  storage_->report_fault_event("BARE_ID_FAULT", 0 /*EVENT_FAILED*/, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
-                               "plugin fault", node_->get_name(), rclcpp::Clock().now(), debounce);
+  storage_->report_fault_event("BARE_ID_FAULT", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
+                               "plugin fault", node_->get_name(), rclcpp::Clock().now().nanoseconds(), debounce);
 
   ScopedPublisherThread pub_thread([&pub](std::atomic<bool> & stop) {
     while (!stop.load()) {
@@ -672,9 +719,8 @@ void await_publisher(const std::shared_ptr<rclcpp::Node> & node, const std::stri
 /// Put the fault in the store as CONFIRMED, the way a real confirmation would.
 void confirm_fault(ros2_medkit_fault_manager::FaultStorage * storage, const std::string & code) {
   rclcpp::Clock clock;
-  storage->report_fault_event(code, ros2_medkit_msgs::srv::ReportFault::Request::EVENT_FAILED,
-                              ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "test", "/node", clock.now(),
-                              ros2_medkit_fault_manager::DebounceConfig{});
+  storage->report_fault_event(code, fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR, "test",
+                              "/node", clock.now().nanoseconds(), ros2_medkit_fault_manager::DebounceConfig{});
 }
 
 }  // namespace

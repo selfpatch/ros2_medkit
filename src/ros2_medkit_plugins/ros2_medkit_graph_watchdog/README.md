@@ -721,7 +721,10 @@ measurement resetting the clock entirely. The rejected alternative, current-caus
 is more literal ("report exactly what is true right now") but makes a node that flaps
 between the two causes flap the fault surface too - a raise/clear/raise churn across two
 different fault codes for a node whose actual situation (still cannot be measured, either
-way) never changed.
+way) never changed. While the clock is still climbing, an unreadable read takes the cause at
+once: it proves the node has a `get_state` service. A not-managed read takes it only after six
+consecutive matched ticks, because a starting node is listed before its lifecycle services and a
+dying one can lose them a sweep before its App leaves the graph.
 
 **Absence continues the last CORROBORATED observation, it never erases.** A node not
 matched at all this tick is ABSENT, a separate fact from any observed state (there is no
@@ -1761,12 +1764,12 @@ bringup-quiesce centrally so no individual detector has to reimplement it.
   still arrive without being asked for; one that reads non-active says the node
   was `lifecycle_expectation`'s all along, and `node_death` releases it while it
   is still alive rather than reporting a death later. Ownership EARNED from a
-  measurement (or from a node with no lifecycle at all) is never released that
-  way: a node that went `active`, deactivated and then died is still
-  `node_death`'s to report. `lifecycle_expectation` latches only the EARNED
-  ground, and ANDs it with the node being ONLINE, because `node_death` skips an
-  offline app before it ever consults the gate. Both detectors read the one
-  shared answer on the same tick rather than each guessing from a label.
+  label read as `active` is never released that way: a node that went `active`,
+  deactivated and then died is still `node_death`'s to report. A node admitted
+  with no lifecycle record is not held that firmly. Discovery can show a node
+  before its lifecycle services, so a non-active label that arrives later still
+  takes it back. `lifecycle_expectation` keeps no copy of this answer: it reads
+  `node_death`'s current key set on every tick.
   The two NEGATIVE answers are kept apart for the same reason the positive ones
   are: `unclaimed` means nothing is known yet (still warming up, or still being
   asked about) and `disowned` means the graph has said whose node this is. Only

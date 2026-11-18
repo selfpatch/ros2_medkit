@@ -158,46 +158,7 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
 
       // Reassign representative if the cleared fault was the representative
       if (pending_cluster.representative_code == fault_code) {
-        for (const auto & rule : config_.rules) {
-          if (rule.id == pending_it->first) {
-            switch (rule.representative) {
-              case Representative::FIRST: {
-                auto & sevs = pending_it->second.fault_severities;
-                const std::string & first_code = codes.front();
-                pending_cluster.representative_code = first_code;
-                auto sev_it = sevs.find(first_code);
-                pending_cluster.representative_severity = (sev_it != sevs.end()) ? sev_it->second : "";
-                break;
-              }
-              case Representative::HIGHEST_SEVERITY: {
-                auto & sevs = pending_it->second.fault_severities;
-                std::string best_code = codes.front();
-                int best_rank = -1;
-                for (const auto & code : codes) {
-                  auto sev_it = sevs.find(code);
-                  int rank = (sev_it != sevs.end()) ? severity_rank(sev_it->second) : 0;
-                  if (rank > best_rank) {
-                    best_rank = rank;
-                    best_code = code;
-                  }
-                }
-                pending_cluster.representative_code = best_code;
-                auto best_sev_it = sevs.find(best_code);
-                pending_cluster.representative_severity = (best_sev_it != sevs.end()) ? best_sev_it->second : "";
-                break;
-              }
-              case Representative::MOST_RECENT: {
-                auto & sevs = pending_it->second.fault_severities;
-                const std::string & most_recent_code = codes.back();
-                pending_cluster.representative_code = most_recent_code;
-                auto sev_it = sevs.find(most_recent_code);
-                pending_cluster.representative_severity = (sev_it != sevs.end()) ? sev_it->second : "";
-                break;
-              }
-            }
-            break;
-          }
-        }
+        reassign_representative(pending_cluster, pending_it->second.fault_severities);
       }
 
       ++pending_it;
@@ -209,18 +170,14 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
       auto & active_cluster = active_it->second;
       auto & codes = active_cluster.fault_codes;
       codes.erase(std::remove(codes.begin(), codes.end(), fault_code), codes.end());
+      auto & active_sevs = active_cluster_severities_[cluster_id];
+      active_sevs.erase(fault_code);
 
       if (codes.empty()) {
         active_clusters_.erase(active_it);
+        active_cluster_severities_.erase(cluster_id);
       } else if (active_cluster.representative_code == fault_code) {
-        // Sync representative from pending cluster (already updated above)
-        for (const auto & [rule_id, pending] : pending_clusters_) {
-          if (pending.data.cluster_id == cluster_id) {
-            active_cluster.representative_code = pending.data.representative_code;
-            active_cluster.representative_severity = pending.data.representative_severity;
-            break;
-          }
-        }
+        reassign_representative(active_cluster, active_sevs);
       }
     }
 
@@ -425,8 +382,36 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const std:
 
       if (elapsed > static_cast<int64_t>(rule.window_ms)) {
         // Window expired, start new cluster
+        if (active_clusters_.find(pending_it->second.data.cluster_id) == active_clusters_.end()) {
+          for (const auto & old_code : pending_it->second.data.fault_codes) {
+            fault_to_cluster_.erase(old_code);
+          }
+        }
         pending_clusters_.erase(pending_it);
         pending_it = pending_clusters_.end();
+      }
+    }
+
+    // Keep faults that already belong to an active cluster for this rule in that cluster
+    auto existing_cluster_it = fault_to_cluster_.find(fault_code);
+    if (existing_cluster_it != fault_to_cluster_.end()) {
+      auto active_it = active_clusters_.find(existing_cluster_it->second);
+      if (active_it != active_clusters_.end() && active_it->second.rule_id == rule.id) {
+        auto & active_cluster = active_it->second;
+        active_cluster.last_at = now_system;
+        update_member_severity(rule, active_cluster, active_cluster_severities_[active_cluster.cluster_id], fault_code,
+                               severity);
+        if (pending_it != pending_clusters_.end() && pending_it->second.data.cluster_id == active_cluster.cluster_id) {
+          pending_it->second.data.last_at = now_system;
+          update_member_severity(rule, pending_it->second.data, pending_it->second.fault_severities, fault_code,
+                                 severity);
+        }
+        ProcessFaultResult result;
+        result.cluster_id = active_cluster.cluster_id;
+        if (rule.show_as_single && fault_code != active_cluster.representative_code) {
+          result.should_mute = true;
+        }
+        return result;
       }
     }
 
@@ -462,6 +447,7 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const std:
     // Check for duplicate
     if (std::find(cluster.fault_codes.begin(), cluster.fault_codes.end(), fault_code) != cluster.fault_codes.end()) {
       // Already in cluster - ensure consistent muting for duplicates
+      update_member_severity(rule, cluster, pending.fault_severities, fault_code, severity);
       ProcessFaultResult result;
       result.cluster_id = cluster.cluster_id;
       if (rule.show_as_single && fault_code != cluster.representative_code &&
@@ -500,26 +486,19 @@ std::optional<ProcessFaultResult> CorrelationEngine::try_auto_cluster(const std:
     ProcessFaultResult result;
     result.cluster_id = cluster.cluster_id;
 
-    // Check if cluster threshold reached
-    if (cluster.fault_codes.size() >= rule.min_count) {
-      // Check if cluster is newly activated (first time reaching threshold)
-      bool newly_activated = (active_clusters_.find(cluster.cluster_id) == active_clusters_.end());
+    // Sync active cluster if already active or if threshold reached for the first time
+    bool already_active = (active_clusters_.find(cluster.cluster_id) != active_clusters_.end());
+    if (already_active || cluster.fault_codes.size() >= rule.min_count) {
+      active_clusters_[cluster.cluster_id] = cluster;
+      active_cluster_severities_[cluster.cluster_id] = pending.fault_severities;
 
-      // Move to active clusters
-      if (newly_activated) {
-        active_clusters_[cluster.cluster_id] = cluster;
-
-        // Retroactively mute all non-representative faults added before threshold
-        if (rule.show_as_single) {
-          for (const auto & code : cluster.fault_codes) {
-            if (code != cluster.representative_code && code != fault_code) {
-              result.retroactive_mute_codes.push_back(code);
-            }
+      // Retroactively mute all non-representative faults added before threshold
+      if (!already_active && rule.show_as_single) {
+        for (const auto & code : cluster.fault_codes) {
+          if (code != cluster.representative_code && code != fault_code) {
+            result.retroactive_mute_codes.push_back(code);
           }
         }
-      } else {
-        // Update existing
-        active_clusters_[cluster.cluster_id] = cluster;
       }
 
       // Mute non-representative faults
@@ -539,6 +518,70 @@ std::string CorrelationEngine::generate_cluster_id(const std::string & rule_id) 
   std::ostringstream oss;
   oss << rule_id << "_" << cluster_counter_;
   return oss.str();
+}
+
+void CorrelationEngine::update_member_severity(const CorrelationRule & rule, ClusterData & cluster,
+                                               std::map<std::string, std::string> & fault_severities,
+                                               const std::string & fault_code, const std::string & severity) const {
+  fault_severities[fault_code] = severity;
+  if (rule.representative != Representative::HIGHEST_SEVERITY) {
+    return;
+  }
+  if (cluster.representative_code == fault_code) {
+    // A downgraded representative may no longer be the highest
+    reassign_representative(cluster, fault_severities);
+  } else if (severity_rank(severity) > severity_rank(cluster.representative_severity)) {
+    cluster.representative_code = fault_code;
+    cluster.representative_severity = severity;
+  }
+}
+
+void CorrelationEngine::reassign_representative(ClusterData & cluster,
+                                                const std::map<std::string, std::string> & fault_severities) const {
+  const auto & codes = cluster.fault_codes;
+  if (codes.empty()) {
+    return;
+  }
+
+  for (const auto & rule : config_.rules) {
+    if (rule.id != cluster.rule_id) {
+      continue;
+    }
+
+    switch (rule.representative) {
+      case Representative::FIRST: {
+        const std::string & first_code = codes.front();
+        cluster.representative_code = first_code;
+        auto sev_it = fault_severities.find(first_code);
+        cluster.representative_severity = (sev_it != fault_severities.end()) ? sev_it->second : "";
+        break;
+      }
+      case Representative::HIGHEST_SEVERITY: {
+        std::string best_code = codes.front();
+        int best_rank = -1;
+        for (const auto & code : codes) {
+          auto sev_it = fault_severities.find(code);
+          int rank = (sev_it != fault_severities.end()) ? severity_rank(sev_it->second) : 0;
+          if (rank > best_rank) {
+            best_rank = rank;
+            best_code = code;
+          }
+        }
+        cluster.representative_code = best_code;
+        auto best_sev_it = fault_severities.find(best_code);
+        cluster.representative_severity = (best_sev_it != fault_severities.end()) ? best_sev_it->second : "";
+        break;
+      }
+      case Representative::MOST_RECENT: {
+        const std::string & most_recent_code = codes.back();
+        cluster.representative_code = most_recent_code;
+        auto sev_it = fault_severities.find(most_recent_code);
+        cluster.representative_severity = (sev_it != fault_severities.end()) ? sev_it->second : "";
+        break;
+      }
+    }
+    break;
+  }
 }
 
 }  // namespace correlation

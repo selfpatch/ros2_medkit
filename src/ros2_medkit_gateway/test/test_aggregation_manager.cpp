@@ -17,7 +17,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <deque>
 #include <future>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <thread>
@@ -25,12 +27,21 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/test_support/refused_port.hpp"
 
 using namespace ros2_medkit_gateway;
 
-// Use a port that nothing listens on for connection-refused tests
-constexpr int DEAD_PORT = 59999;
-static const std::string DEAD_URL = "http://127.0.0.1:" + std::to_string(DEAD_PORT);
+// URL of the index-th port that refuses every connection. Each port stays bound and never
+// listens for the life of this test binary.
+static std::string dead_url(size_t index) {
+  static std::mutex mutex;
+  static std::deque<test_support::RefusedPort> ports;
+  std::lock_guard<std::mutex> lock(mutex);
+  while (ports.size() <= index) {
+    ports.emplace_back();
+  }
+  return ports[index].http_url();
+}
 
 // =============================================================================
 // Helper: build AggregationConfig with unreachable static peers
@@ -43,7 +54,7 @@ static AggregationConfig make_config(size_t num_peers) {
 
   for (size_t i = 0; i < num_peers; ++i) {
     AggregationConfig::PeerConfig peer;
-    peer.url = "http://127.0.0.1:" + std::to_string(DEAD_PORT + static_cast<int>(i));
+    peer.url = dead_url(i);
     peer.name = "peer_" + std::to_string(i);
     config.peers.push_back(peer);
   }
@@ -510,10 +521,10 @@ TEST(AggregationManager, get_peer_url_returns_url_for_known_peer) {
   AggregationManager manager(config);
 
   std::string url = manager.get_peer_url("peer_0");
-  EXPECT_EQ(url, "http://127.0.0.1:" + std::to_string(DEAD_PORT));
+  EXPECT_EQ(url, dead_url(0));
 
   std::string url1 = manager.get_peer_url("peer_1");
-  EXPECT_EQ(url1, "http://127.0.0.1:" + std::to_string(DEAD_PORT + 1));
+  EXPECT_EQ(url1, dead_url(1));
 }
 
 TEST(AggregationManager, get_peer_url_returns_empty_for_unknown_peer) {
@@ -710,7 +721,7 @@ TEST(AggregationManager, forward_auth_config_propagated_to_peer_clients) {
   config.forward_auth = false;
 
   AggregationConfig::PeerConfig peer;
-  peer.url = "http://127.0.0.1:" + std::to_string(DEAD_PORT);
+  peer.url = dead_url(0);
   peer.name = "test_peer";
   config.peers.push_back(peer);
 
@@ -1783,6 +1794,153 @@ TEST(AggregationManager, fan_out_get_partial_results_one_peer_fails) {
   EXPECT_TRUE(result.is_partial);
   ASSERT_EQ(result.failed_peers.size(), 1u);
   EXPECT_EQ(result.failed_peers[0], "peer_bad");
+}
+
+TEST(AggregationManager, instance_id_is_random_per_manager) {
+  AggregationConfig config;
+  config.enabled = true;
+  AggregationManager first(config);
+  AggregationManager second(config);
+  EXPECT_EQ(first.instance_id().size(), 32u);
+  EXPECT_EQ(first.instance_id().find_first_not_of("0123456789abcdef"), std::string::npos);
+  EXPECT_NE(first.instance_id(), second.instance_id());
+}
+
+TEST(AggregationManager, fan_out_get_sends_extra_headers_next_to_no_fan_out) {
+  MockPeerServer mock;
+  std::string captured_visited;
+  bool captured_no_fan_out = false;
+  mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
+    res.set_content(R"({"status":"healthy"})", "application/json");
+  });
+  mock.server().Get("/api/v1/faults", [&](const httplib::Request & req, httplib::Response & res) {
+    captured_visited = req.get_header_value(kFanOutVisitedHeader);
+    captured_no_fan_out = req.has_header("X-Medkit-No-Fan-Out");
+    res.set_content(R"({"items":[]})", "application/json");
+  });
+  int port = mock.start();
+
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "peer";
+  config.peers.push_back(peer);
+
+  AggregationManager manager(config);
+  manager.check_all_health();
+  ASSERT_EQ(manager.healthy_peer_count(), 1u);
+
+  auto result = manager.fan_out_get("/api/v1/faults", "", nullptr, {{kFanOutVisitedHeader, "aaaa,bbbb"}});
+
+  EXPECT_FALSE(result.is_partial);
+  EXPECT_EQ(captured_visited, "aaaa,bbbb");
+  EXPECT_TRUE(captured_no_fan_out);
+}
+
+namespace {
+
+/// A peer answering /health with `instance_id` and /faults with `faults_body`.
+void serve_fault_peer(MockPeerServer & mock, const std::string & instance_id, const std::string & faults_body,
+                      int * fault_calls) {
+  mock.server().Get("/api/v1/health", [instance_id](const httplib::Request &, httplib::Response & res) {
+    nlohmann::json body = {{"status", "healthy"}};
+    if (!instance_id.empty()) {
+      body["x-medkit-instance-id"] = instance_id;
+    }
+    res.set_content(body.dump(), "application/json");
+  });
+  mock.server().Get("/api/v1/faults", [faults_body, fault_calls](const httplib::Request &, httplib::Response & res) {
+    ++*fault_calls;
+    res.set_content(faults_body, "application/json");
+  });
+}
+
+AggregationConfig one_peer_config(int port) {
+  AggregationConfig config;
+  config.enabled = true;
+  config.timeout_ms = 5000;
+  AggregationConfig::PeerConfig peer;
+  peer.url = "http://127.0.0.1:" + std::to_string(port);
+  peer.name = "peer_b";
+  config.peers.push_back(peer);
+  return config;
+}
+
+}  // namespace
+
+TEST(AggregationManager, fan_out_get_does_not_ask_a_peer_already_on_the_visited_path) {
+  MockPeerServer mock;
+  int fault_calls = 0;
+  serve_fault_peer(mock, "bbbb", R"({"items":[{"fault_code":"X"}]})", &fault_calls);
+  AggregationManager manager(one_peer_config(mock.start()));
+  manager.check_all_health();
+  ASSERT_EQ(manager.healthy_peer_count(), 1u);
+
+  auto skipped = manager.fan_out_get("/api/v1/faults", "", nullptr, {{kFanOutVisitedHeader, "aaaa, bbbb"}});
+  EXPECT_EQ(fault_calls, 0);
+  EXPECT_TRUE(skipped.merged_items.empty());
+  EXPECT_FALSE(skipped.is_partial);
+
+  auto asked = manager.fan_out_get("/api/v1/faults", "", nullptr, {{kFanOutVisitedHeader, "aaaa"}});
+  EXPECT_EQ(fault_calls, 1);
+  EXPECT_EQ(asked.merged_items.size(), 1u);
+}
+
+TEST(AggregationManager, fan_out_get_asks_a_peer_whose_id_is_unknown) {
+  // A peer that predates the instance id cannot be recognised; it is asked and
+  // its own visited check answers.
+  MockPeerServer mock;
+  int fault_calls = 0;
+  serve_fault_peer(mock, "", R"({"items":[]})", &fault_calls);
+  AggregationManager manager(one_peer_config(mock.start()));
+  manager.check_all_health();
+  ASSERT_EQ(manager.healthy_peer_count(), 1u);
+
+  manager.fan_out_get("/api/v1/faults", "", nullptr, {{kFanOutVisitedHeader, "aaaa"}});
+  EXPECT_EQ(fault_calls, 1);
+}
+
+TEST(AggregationManager, fan_out_get_reports_a_peer_that_answered_partial) {
+  MockPeerServer mock;
+  int fault_calls = 0;
+  serve_fault_peer(mock, "bbbb",
+                   R"({"items":[{"fault_code":"B"}],"x-medkit":{"partial":true,"failed_peers":["peer_c"],)"
+                   R"("peer_failures":[{"peer":"peer_c","reason":"timeout"}]}})",
+                   &fault_calls);
+  AggregationManager manager(one_peer_config(mock.start()));
+  manager.check_all_health();
+  ASSERT_EQ(manager.healthy_peer_count(), 1u);
+
+  auto result = manager.fan_out_get("/api/v1/faults", "");
+
+  EXPECT_EQ(result.merged_items.size(), 1u);
+  EXPECT_TRUE(result.is_partial);
+  ASSERT_EQ(result.failed_peers.size(), 1u);
+  EXPECT_EQ(result.failed_peers[0], "peer_b/peer_c");
+  ASSERT_EQ(result.peer_failures.size(), 1u);
+  EXPECT_EQ(result.peer_failures[0].peer, "peer_b/peer_c");
+  EXPECT_EQ(result.peer_failures[0].reason, "timeout");
+}
+
+TEST(AggregationManager, fan_out_get_reads_a_malformed_partial_peer_without_throwing) {
+  MockPeerServer mock;
+  int fault_calls = 0;
+  serve_fault_peer(mock, "bbbb",
+                   R"({"items":[],"x-medkit":{"partial":true,"failed_peers":["peer_c",7],)"
+                   R"("peer_failures":[{"peer":3},{"peer":"peer_c","reason":false}]}})",
+                   &fault_calls);
+  AggregationManager manager(one_peer_config(mock.start()));
+  manager.check_all_health();
+  ASSERT_EQ(manager.healthy_peer_count(), 1u);
+
+  auto result = manager.fan_out_get("/api/v1/faults", "");
+
+  EXPECT_TRUE(result.is_partial);
+  ASSERT_EQ(result.peer_failures.size(), 1u);
+  EXPECT_EQ(result.peer_failures[0].peer, "peer_b/peer_c");
+  EXPECT_EQ(result.peer_failures[0].reason, "unreachable");
 }
 
 TEST(AggregationManager, fan_out_get_forwards_auth_header_when_enabled) {

@@ -27,7 +27,7 @@ package "ros2_medkit_fault_reporter" {
         - node_: rclcpp::Node::SharedPtr
         - source_id_: string
         - client_: ServiceClient<ReportFault>
-        - filter_: LocalFilter
+        - core_: ReporterCore
         - logger_: rclcpp::Logger
         --
         + FaultReporter(node, source_id, service_name)
@@ -35,8 +35,18 @@ package "ros2_medkit_fault_reporter" {
         + is_service_ready(): bool
         + filter(): const LocalFilter&
         --
-        - load_parameters(): void
-        - send_report(fault_code, severity, description): void
+        - load_parameters(node_params, logger): FilterConfig {static}
+        - send_report(report: FaultReport): void
+    }
+
+    class ReporterCore {
+        - source_id_: string
+        - filter_: LocalFilter
+        - sink_: ReportSink
+        --
+        + report(fault_code, severity, description): bool
+        + report_passed(fault_code): bool
+        + filter(): const LocalFilter&
     }
 
     class LocalFilter {
@@ -77,8 +87,11 @@ package "ros2_medkit_fault_manager" {
 ' FaultReporter uses rclcpp::Node
 FaultReporter --> "rclcpp::Node" : uses
 
-' FaultReporter owns LocalFilter
-FaultReporter *-down-> LocalFilter : owns
+' FaultReporter owns ReporterCore
+FaultReporter *-down-> ReporterCore : owns
+
+' ReporterCore owns LocalFilter
+ReporterCore *-down-> LocalFilter : owns
 
 ' LocalFilter uses config
 LocalFilter --> FilterConfig : configured by

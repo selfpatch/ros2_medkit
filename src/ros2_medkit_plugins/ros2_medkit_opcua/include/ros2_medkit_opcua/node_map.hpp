@@ -206,6 +206,12 @@ struct NodeMapEntry {
   // this through the shared ``fault_detection::evaluate`` regardless of mode.
   std::optional<ros2_medkit::fault_detection::DetectionRule> detection;
 
+  // How long ``detection``'s condition must hold before the point raises a
+  // fault, from ``raise_after_samples`` / ``raise_after_ms``. The default raises
+  // on the first active sample. Under a subscription the samples become a wait
+  // in time (see ``DetectionPipeline``).
+  ros2_medkit::fault_detection::RaiseQualifier raise_qualifier;
+
   bool has_range() const {
     return min_value.has_value() && max_value.has_value();
   }

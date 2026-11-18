@@ -32,6 +32,7 @@ include(ROS2MedkitWarnings)
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(ros2_medkit_fault_detection REQUIRED)
 find_package(ros2_medkit_msgs REQUIRED)
 find_package(ros2_medkit_serialization REQUIRED)
 if(POSTGRES_SUPPORT)
@@ -115,26 +116,20 @@ find_package(rosbag2_storage REQUIRED)
 
 medkit_detect_compat_defs()
 
+# ROS-free core: storage, threshold resolver, correlation engine and audit log
+include(cmake/fault_manager_core.cmake)
+
 # Library target (shared between executable and tests)
 set(FAULT_MANAGER_FILES
     src/capture_thread_pool.cpp
     src/fault_manager_node.cpp
-    src/fault_storage.cpp
-    src/sqlite_fault_storage.cpp
-    src/fault_audit_log.cpp
+    src/pending_topic_watcher.cpp
     src/snapshot_capture.cpp
     src/rosbag_capture.cpp
-    src/correlation/types.cpp
-    src/correlation/config_parser.cpp
-    src/correlation/pattern_matcher.cpp
-    src/correlation/correlation_engine.cpp
-    src/entity_threshold_resolver.cpp
+    src/ros2/fault_msg_conversions.cpp
+    src/ros2/ros_event_sink.cpp
+    src/ros2/ros_log_sink.cpp
 )
-if(POSTGRES_SUPPORT)
-  list(APPEND FAULT_MANAGER_FILES
-    src/postgres_fault_storage.cpp
-  )
-endif()
 add_library(fault_manager_lib STATIC
   ${FAULT_MANAGER_FILES}
 )
@@ -152,22 +147,9 @@ medkit_target_dependencies(fault_manager_lib PUBLIC
   rosbag2_storage
 )
 
-set(FAULT_MANAGER_TARGET_LIBS
-    SQLite::SQLite3
-    nlohmann_json::nlohmann_json
-    yaml-cpp::yaml-cpp
-    OpenSSL::Crypto
-)
-
-if(POSTGRES_SUPPORT)
-  # libpq directly as well: the connection string is checked with PQconninfoParse.
-  list(APPEND FAULT_MANAGER_TARGET_LIBS
-    pqxx
-    PostgreSQL::PostgreSQL
-  )
-endif()
 target_link_libraries(fault_manager_lib PUBLIC
-  ${FAULT_MANAGER_TARGET_LIBS}
+  fault_manager_core
+  ros2_medkit_fault_detection::ros2_medkit_fault_detection
 )
 
 medkit_apply_compat_defs(fault_manager_lib)
@@ -242,10 +224,20 @@ endif()
   medkit_add_gtest(test_fault_audit_log test/test_fault_audit_log.cpp)
   target_link_libraries(test_fault_audit_log fault_manager_lib)
 
+  # Recording manifest (file list, sizes, sha256). Plain C++ core, no ROS node.
+  medkit_add_gtest(test_recording_manifest test/test_recording_manifest.cpp)
+  target_link_libraries(test_recording_manifest fault_manager_core)
+  medkit_test_needs_no_domain(test_recording_manifest)
+
   # Snapshot capture tests
   medkit_add_gtest(test_snapshot_capture test/test_snapshot_capture.cpp)
   target_link_libraries(test_snapshot_capture fault_manager_lib)
   medkit_target_dependencies(test_snapshot_capture rclcpp ros2_medkit_msgs std_msgs)
+
+  # Pending topic watcher tests (topics a capture waits for until they appear)
+  medkit_add_gtest(test_pending_topic_watcher test/test_pending_topic_watcher.cpp)
+  target_link_libraries(test_pending_topic_watcher fault_manager_lib)
+  medkit_target_dependencies(test_pending_topic_watcher rclcpp std_msgs)
 
   # Rosbag capture tests. The suite drives real post-roll windows (multi-second
   # buffer fills and timer waits), so it needs more than the 60s default.
@@ -270,6 +262,11 @@ endif()
   target_link_libraries(test_entity_thresholds fault_manager_lib)
   medkit_target_dependencies(test_entity_thresholds rclcpp ros2_medkit_msgs)
 
+  # Fault-code threshold resolver tests
+  medkit_add_gtest(test_fault_code_thresholds test/test_fault_code_thresholds.cpp)
+  target_link_libraries(test_fault_code_thresholds fault_manager_lib)
+  medkit_target_dependencies(test_fault_code_thresholds rclcpp ros2_medkit_msgs)
+
   # Integration tests
   install(DIRECTORY test
     DESTINATION share/${PROJECT_NAME}
@@ -278,16 +275,22 @@ endif()
   medkit_add_launch_test(test_integration test/integration/test_integration.test.py TIMEOUT 60
     LABELS "integration")
 
-  medkit_add_launch_test(test_rosbag_integration test/integration/test_rosbag_integration.test.py TIMEOUT 90
+  medkit_add_launch_test(test_rosbag_integration test/integration/test_rosbag_integration.test.py TIMEOUT 150
     LABELS "integration")
 
   # Launches without snapshots.rosbag.format, so the parameter default (mcap)
   # is what is under test rather than an operator's explicit choice.
-  medkit_add_launch_test(test_rosbag_default_format test/integration/test_rosbag_default_format.test.py TIMEOUT 90
+  medkit_add_launch_test(test_rosbag_default_format test/integration/test_rosbag_default_format.test.py TIMEOUT 150
     LABELS "integration")
 
   medkit_add_launch_test(test_entity_thresholds_integration test/integration/test_entity_thresholds_integration.test.py
     TIMEOUT 60 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_code_thresholds_integration
+    test/integration/test_fault_code_thresholds_integration.test.py TIMEOUT 60 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_code_healing_restart
+    test/integration/test_fault_code_healing_restart.test.py TIMEOUT 120 LABELS "integration")
 
   # Drives healing with the event counts a one-event-per-transition reporter
   # actually sends: one FAILED per raise, one PASSED per clear. Parametrized over
@@ -320,6 +323,11 @@ endif()
   # filter, over two full post-fault windows plus discovery.
   medkit_add_launch_test(test_rosbag_boundary_scope test/integration/test_rosbag_boundary_scope.test.py TIMEOUT 180
     LABELS "integration")
+
+  # Core orchestration under parallel callers. Plain C++ core, no ROS node.
+  medkit_add_gtest(test_fault_manager_core_concurrency test/test_fault_manager_core_concurrency.cpp)
+  target_link_libraries(test_fault_manager_core_concurrency fault_manager_core)
+  medkit_test_needs_no_domain(test_fault_manager_core_concurrency)
 
   # CaptureThreadPool unit tests
   medkit_add_gtest(test_capture_thread_pool test/test_capture_thread_pool.cpp)

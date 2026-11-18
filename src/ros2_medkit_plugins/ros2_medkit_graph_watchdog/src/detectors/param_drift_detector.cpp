@@ -591,9 +591,13 @@ class ParamDriftDetector : public Detector {
       for (const auto & [name, _] : policy_.config().expect) {
         fresh->expect_names.push_back(name);
       }
-      fresh->transport = transport_factory_ ? transport_factory_(ctx.gateway_node)
-                                            : std::make_unique<ros2_medkit_gateway::ros2::Ros2ParameterTransport>(
-                                                  ctx.gateway_node, kParamServiceTimeoutSec, kNegativeCacheTtlSec);
+      fresh->transport = transport_factory_
+                             ? transport_factory_(ctx.gateway_node)
+                             : std::make_unique<ros2_medkit_gateway::ros2::Ros2ParameterTransport>(
+                                   ctx.gateway_node, kParamServiceTimeoutSec, kNegativeCacheTtlSec,
+                                   ros2_medkit_gateway::ros2::Ros2ParameterTransport::kMaxParamClientCacheSize,
+                                   ros2_medkit_gateway::ros2::Ros2ParameterTransport::kMaxDefaultsCacheSize,
+                                   "_graph_watchdog_param_client");
       reader_thread_ = std::thread(reader_loop, fresh);
       io_ = std::move(fresh);
       // Register a pre-shutdown callback: it runs while the context is STILL valid (before

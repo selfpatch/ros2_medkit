@@ -96,6 +96,9 @@ class FaultManager {
   /// Check if fault manager services are available.
   bool is_available() const;
 
+  /// Whether the fault manager can serve rosbag files (forwards to transport).
+  bool serves_rosbags() const;
+
   /// Wait for fault manager services to become available (forwards to transport).
   bool wait_for_services(std::chrono::duration<double> timeout);
 

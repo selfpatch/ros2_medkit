@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/handlers/lock_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <chrono>
 #include <ctime>
@@ -38,7 +39,7 @@ namespace {
 /// for unrelated entity ids.
 ErrorInfo make_internal_error(const char * where, const std::string & message, const std::exception & e,
                               json params = {}) {
-  RCLCPP_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
+  MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
   if (params.is_null()) {
     params = json::object();
   }

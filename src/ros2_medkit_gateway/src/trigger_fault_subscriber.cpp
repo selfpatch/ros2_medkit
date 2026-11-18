@@ -14,81 +14,20 @@
 
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
 
+#include <utility>
+
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
-#include "ros2_medkit_gateway/ros2/conversions/fault_msg_conversions.hpp"
 
 namespace ros2_medkit_gateway {
 
 TriggerFaultSubscriber::TriggerFaultSubscriber(rclcpp::Node * node, ResourceChangeNotifier & notifier)
-  : notifier_(notifier), logger_(node->get_logger()) {
-  const auto fault_events_topic = build_fault_manager_events_topic(node);
-  subscription_ = node->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
-      fault_events_topic, rclcpp::QoS(100).reliable(),
-      [this](const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
-        on_fault_event(msg);
-      });
-
-  RCLCPP_INFO(logger_, "TriggerFaultSubscriber initialized, subscribed to %s", fault_events_topic.c_str());
-}
-
-TriggerFaultSubscriber::~TriggerFaultSubscriber() {
-  subscription_.reset();
+  : source_(*node, build_fault_manager_events_topic(node)), feed_(source_, notifier) {
+  RCLCPP_INFO(node->get_logger(), "TriggerFaultSubscriber initialized, subscribed to %s",
+              build_fault_manager_events_topic(node).c_str());
 }
 
 void TriggerFaultSubscriber::set_node_to_entity_resolver(NodeToEntityFn resolver) {
-  node_to_entity_resolver_ = std::move(resolver);
-}
-
-void TriggerFaultSubscriber::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
-  // Convert fault to JSON using the same helper as SSEFaultHandler
-  nlohmann::json fault_json = ros2::conversions::fault_to_json(msg->fault);
-  fault_json["event_type"] = msg->event_type;
-
-  // Derive entity_id from reporting_sources (first source, if available).
-  // In hybrid/manifest mode, the resolver maps ROS FQNs to manifest entity IDs.
-  // Falls back to last-segment extraction for runtime_only mode or when the
-  // resolver cannot map the FQN.
-  std::string entity_id;
-  if (!msg->fault.reporting_sources.empty()) {
-    auto raw_fqn = msg->fault.reporting_sources[0];
-
-    // Try resolving ROS FQN to manifest entity ID
-    if (node_to_entity_resolver_) {
-      entity_id = node_to_entity_resolver_(raw_fqn);
-    }
-
-    // Fallback: extract last path segment (backward compat for runtime_only)
-    if (entity_id.empty()) {
-      auto last_slash = raw_fqn.rfind('/');
-      entity_id = (last_slash != std::string::npos) ? raw_fqn.substr(last_slash + 1) : raw_fqn;
-    }
-  }
-
-  // Map event_type to ChangeType. fault_cleared covers the manual clear AND
-  // the auto-heal; both remove the fault from the active set, so both are
-  // DELETED. Consumers needing the distinction read the payload's "status"
-  // (CLEARED vs HEALED) - change_type itself has no reader today.
-  ChangeType change_type = ChangeType::UPDATED;
-  if (msg->event_type == "fault_confirmed") {
-    change_type = ChangeType::CREATED;
-  } else if (msg->event_type == "fault_cleared") {
-    change_type = ChangeType::DELETED;
-  }
-
-  // Skip dispatch if entity_id could not be determined (no reporting sources
-  // or FQN was just "/"). Prevents unintended catch-all matching.
-  if (entity_id.empty()) {
-    return;
-  }
-
-  // Prefix fault_code with '/' to match the resource_path format produced by
-  // parse_resource_uri() (e.g. "/fault_001"), so fault triggers with a specific
-  // resource_path can match.
-  auto resource_path = "/" + msg->fault.fault_code;
-  notifier_.notify("faults", entity_id, resource_path, fault_json, change_type);
-
-  RCLCPP_DEBUG(logger_, "Forwarded fault event to notifier: %s for %s (entity=%s)", msg->event_type.c_str(),
-               msg->fault.fault_code.c_str(), entity_id.c_str());
+  feed_.set_node_to_entity_resolver(std::move(resolver));
 }
 
 }  // namespace ros2_medkit_gateway

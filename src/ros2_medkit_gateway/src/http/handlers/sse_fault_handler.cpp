@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/http/handlers/sse_fault_handler.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -28,16 +29,16 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_json.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/models/error_info.hpp"
-#include "ros2_medkit_gateway/fault_manager_paths.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/detail/primitives.hpp"
-#include "ros2_medkit_gateway/ros2/conversions/fault_msg_conversions.hpp"
 
 namespace ros2_medkit_gateway {
 namespace handlers {
+
+namespace fd = ros2_medkit::fault_detection;
 
 namespace {
 
@@ -61,20 +62,16 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
                             ? keepalive_interval
                             : std::chrono::seconds(kKeepaliveIntervalSec)) {
   if (keepalive_interval <= std::chrono::milliseconds::zero()) {
-    RCLCPP_WARN(HandlerContext::logger(),
-                "Non-positive SSE keepalive override %" PRId64 "ms rejected; using default %ds",
-                keepalive_interval.count(), kKeepaliveIntervalSec);
+    MEDKIT_LOG_WARN(HandlerContext::logger(),
+                    "Non-positive SSE keepalive override %" PRId64 "ms rejected; using default %ds",
+                    keepalive_interval.count(), kKeepaliveIntervalSec);
   }
 
-  const auto fault_events_topic = build_fault_manager_events_topic(ctx_.node());
-
-  // Create subscription to fault events topic
-  // Use fully qualified topic name since FaultManager publishes on ~/events
-  subscription_ = ctx_.node()->create_subscription<ros2_medkit_msgs::msg::FaultEvent>(
-      fault_events_topic, rclcpp::QoS(100).reliable(),
-      [this](const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
-        on_fault_event(msg);
-      });
+  if (auto * fault_source = ctx_.services().fault_events(); fault_source != nullptr) {
+    fault_subscription_ = fault_source->subscribe([this](const fd::FaultEventRecord & event) {
+      on_fault_event(event);
+    });
+  }
 
   // The aggregation manager is looked up per call rather than captured here:
   // it is wired onto the context during gateway start-up and this handler is
@@ -104,14 +101,13 @@ SSEFaultHandler::SSEFaultHandler(HandlerContext & ctx, std::shared_ptr<SSEClient
         on_peer_event(event);
       });
 
-  RCLCPP_INFO(HandlerContext::logger(), "SSE fault handler initialized, subscribed to %s, max_clients=%zu",
-              fault_events_topic.c_str(), client_tracker_->max_clients());
+  MEDKIT_LOG_INFO(HandlerContext::logger(), "SSE fault handler initialized, event source %s, max_clients=%zu",
+                  fault_subscription_ ? "attached" : "absent", client_tracker_->max_clients());
 }
 
 SSEFaultHandler::~SSEFaultHandler() {
   // Signal shutdown and wake up any waiting clients
   request_shutdown();
-  subscription_.reset();
   // Before the queue-lock wait below: closing a peer stream joins its reader
   // thread, and that thread may be inside on_peer_event holding nothing but
   // wanting queue_mutex_.
@@ -130,6 +126,7 @@ SSEFaultHandler::~SSEFaultHandler() {
 }
 
 void SSEFaultHandler::request_shutdown() {
+  fault_subscription_.reset();
   if (peer_relay_) {
     peer_relay_->shutdown();
   }
@@ -168,7 +165,7 @@ std::deque<SSEFaultHandler::QueuedEvent>::iterator SSEFaultHandler::find_superse
     if (!entry.auto_cleared_codes.empty()) {
       continue;
     }
-    if (updates_only && entry.event_type != ros2_medkit_msgs::msg::FaultEvent::EVENT_UPDATED) {
+    if (updates_only && entry.event_type != fd::fault_event_type::kUpdated) {
       continue;
     }
     if (newest_index[key] != i) {
@@ -238,13 +235,13 @@ SSEFaultHandler::EvictionStats SSEFaultHandler::evict_to_capacity_locked() {
   return stats;
 }
 
-void SSEFaultHandler::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::ConstSharedPtr & msg) {
+void SSEFaultHandler::on_fault_event(const fd::FaultEventRecord & event) {
   // Snapshot entity context before acquiring the queue lock so cache state
   // is pinned to the fault arrival timestamp and the formatting path stays
   // lock-free with respect to the cache.
-  auto entity = resolve_entity_context(msg->fault);
+  auto entity = resolve_entity_context(event.fault);
   QueuedEvent queued;
-  queued.event = *msg;
+  queued.event = event;
   queued.entity = std::move(entity);
   enqueue(std::move(queued));
 }
@@ -252,8 +249,8 @@ void SSEFaultHandler::on_fault_event(const ros2_medkit_msgs::msg::FaultEvent::Co
 void SSEFaultHandler::on_peer_event(const StreamEvent & event) {
   auto payload = nlohmann::json::parse(event.data, nullptr, false);
   if (payload.is_discarded() || !payload.is_object()) {
-    RCLCPP_WARN(HandlerContext::logger(), "Discarding unparseable fault event relayed from peer '%s'",
-                event.peer_name.c_str());
+    MEDKIT_LOG_WARN(HandlerContext::logger(), "Discarding unparseable fault event relayed from peer '%s'",
+                    event.peer_name.c_str());
     return;
   }
 
@@ -333,18 +330,18 @@ void SSEFaultHandler::enqueue(QueuedEvent queued) {
     const auto previous = dropped_events_.fetch_add(stats.dropped);
     const auto total = previous + stats.dropped;
     if (previous == 0 || (total / kDropLogEveryN) > (previous / kDropLogEveryN)) {
-      RCLCPP_WARN(HandlerContext::logger(),
-                  "SSE fault event lost: %zu event(s) dropped total for %zu slow client(s) "
-                  "(buffer cap=%zu, %zu coalesced so far)",
-                  total, stats.slow_clients, kMaxBufferedEvents, coalesced_events_.load());
+      MEDKIT_LOG_WARN(HandlerContext::logger(),
+                      "SSE fault event lost: %zu event(s) dropped total for %zu slow client(s) "
+                      "(buffer cap=%zu, %zu coalesced so far)",
+                      total, stats.slow_clients, kMaxBufferedEvents, coalesced_events_.load());
     }
   }
 
   // Notify all waiting clients
   queue_cv_.notify_all();
 
-  RCLCPP_DEBUG(HandlerContext::logger(), "Received fault event: %s for %s (id=%" PRIu64 ")", event_type.c_str(),
-               fault_code.c_str(), event_id);
+  MEDKIT_LOG_DEBUG(HandlerContext::logger(), "Received fault event: %s for %s (id=%" PRIu64 ")", event_type.c_str(),
+                   fault_code.c_str(), event_id);
 }
 
 namespace {
@@ -533,8 +530,8 @@ http::Result<http::SseStream> SSEFaultHandler::sse_stream(const http::TypedReque
   const auto & raw_req = req.raw_for_framework();
 #pragma GCC diagnostic pop
   if (!client_tracker_->try_connect()) {
-    RCLCPP_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
-                client_tracker_->max_clients(), raw_req.remote_addr.c_str());
+    MEDKIT_LOG_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
+                    client_tracker_->max_clients(), raw_req.remote_addr.c_str());
     ErrorInfo err;
     err.code = ERR_SERVICE_UNAVAILABLE;
     err.message = "Maximum number of SSE clients reached. Please try again later.";
@@ -542,8 +539,8 @@ http::Result<http::SseStream> SSEFaultHandler::sse_stream(const http::TypedReque
     return tl::make_unexpected(std::move(err));
   }
 
-  RCLCPP_INFO(HandlerContext::logger(), "SSE fault client connected from %s (%zu/%zu)", raw_req.remote_addr.c_str(),
-              client_tracker_->connected_clients(), client_tracker_->max_clients());
+  MEDKIT_LOG_INFO(HandlerContext::logger(), "SSE fault client connected from %s (%zu/%zu)", raw_req.remote_addr.c_str(),
+                  client_tracker_->connected_clients(), client_tracker_->max_clients());
 
   const uint64_t last_event_id = parse_last_event_id(req.header("Last-Event-ID").value_or(std::string{}));
 
@@ -554,7 +551,7 @@ http::Result<http::SseStream> SSEFaultHandler::sse_stream(const http::TypedReque
   // analogous to the legacy `handle_stream`'s 3-arg overload.
   auto release_guard = std::shared_ptr<void>(nullptr, [this, addr = raw_req.remote_addr](void *) {
     client_tracker_->disconnect();
-    RCLCPP_INFO(HandlerContext::logger(), "SSE fault client disconnected from %s", addr.c_str());
+    MEDKIT_LOG_INFO(HandlerContext::logger(), "SSE fault client disconnected from %s", addr.c_str());
   });
 
   // An aggregating gateway relaying from another sends X-Medkit-No-Fan-Out,
@@ -573,8 +570,8 @@ http::Result<http::SseStream> SSEFaultHandler::sse_stream(const http::TypedReque
 void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Response & res) {
   // Check if we're at the combined SSE client limit before accepting connection
   if (!client_tracker_->try_connect()) {
-    RCLCPP_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
-                client_tracker_->max_clients(), req.remote_addr.c_str());
+    MEDKIT_LOG_WARN(HandlerContext::logger(), "SSE client limit reached (%zu), rejecting connection from %s",
+                    client_tracker_->max_clients(), req.remote_addr.c_str());
     // The legacy raw-route entry calls the framework primitive directly via
     // the friend gate; the HandlerContext public send_* surface has been
     // pruned and the typed `sse_stream` path is the production route.
@@ -586,8 +583,8 @@ void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Respo
     return;
   }
 
-  RCLCPP_INFO(HandlerContext::logger(), "SSE fault client connected from %s (%zu/%zu)", req.remote_addr.c_str(),
-              client_tracker_->connected_clients(), client_tracker_->max_clients());
+  MEDKIT_LOG_INFO(HandlerContext::logger(), "SSE fault client connected from %s (%zu/%zu)", req.remote_addr.c_str(),
+                  client_tracker_->connected_clients(), client_tracker_->max_clients());
 
   const uint64_t last_event_id =
       req.has_header("Last-Event-ID") ? parse_last_event_id(req.get_header_value("Last-Event-ID")) : 0;
@@ -611,8 +608,8 @@ void SSEFaultHandler::handle_stream(const httplib::Request & req, httplib::Respo
       },
       [this, addr = req.remote_addr](bool success) {
         client_tracker_->disconnect();
-        RCLCPP_INFO(HandlerContext::logger(), "SSE fault client disconnected from %s (success=%d)", addr.c_str(),
-                    success);
+        MEDKIT_LOG_INFO(HandlerContext::logger(), "SSE fault client disconnected from %s (success=%d)", addr.c_str(),
+                        success);
       });
 }
 
@@ -655,11 +652,17 @@ std::string SSEFaultHandler::format_sse_event(const QueuedEvent & queued) {
 
   nlohmann::json json_event;
   json_event["event_type"] = sanitized_event_type;
-  json_event["fault"] = ros2::conversions::fault_to_json(queued.event.fault);
+  json_event["fault"] = fault_record_to_json(queued.event.fault);
 
   // Convert timestamp to seconds with nanosecond precision
-  double timestamp_sec =
-      static_cast<double>(queued.event.timestamp.sec) + static_cast<double>(queued.event.timestamp.nanosec) * 1e-9;
+  constexpr int64_t kNsPerSec = 1000000000LL;
+  int64_t timestamp_s = queued.event.timestamp_ns / kNsPerSec;
+  int64_t timestamp_rem = queued.event.timestamp_ns % kNsPerSec;
+  if (timestamp_rem < 0) {
+    --timestamp_s;
+    timestamp_rem += kNsPerSec;
+  }
+  double timestamp_sec = static_cast<double>(timestamp_s) + static_cast<double>(timestamp_rem) * 1e-9;
   json_event["timestamp"] = timestamp_sec;
 
   // Correlation payload: symptom codes auto-cleared with this event's root
@@ -691,7 +694,7 @@ std::string SSEFaultHandler::format_sse_event(const QueuedEvent & queued) {
 }
 
 std::optional<SSEFaultHandler::EntityContext>
-SSEFaultHandler::resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fault) const {
+SSEFaultHandler::resolve_entity_context(const fd::FaultRecord & fault) const {
   if (fault.reporting_sources.empty()) {
     return std::nullopt;
   }
@@ -704,7 +707,7 @@ SSEFaultHandler::resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fau
     return std::nullopt;
   }
 
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
 
   // Manifest / hybrid mode: the linking step populated node_to_app with the
   // ROS FQN -> manifest app id mapping. Try both FQN forms (with and without
@@ -738,10 +741,10 @@ SSEFaultHandler::resolve_entity_context(const ros2_medkit_msgs::msg::Fault & fau
   }
 
   if (entity_id.empty()) {
-    RCLCPP_DEBUG(HandlerContext::logger(),
-                 "SSE fault event: no entity match for reporting source '%s' (fault_code='%s'); "
-                 "omitting x-medkit extension",
-                 raw_fqn.c_str(), fault.fault_code.c_str());
+    MEDKIT_LOG_DEBUG(HandlerContext::logger(),
+                     "SSE fault event: no entity match for reporting source '%s' (fault_code='%s'); "
+                     "omitting x-medkit extension",
+                     raw_fqn.c_str(), fault.fault_code.c_str());
     return std::nullopt;
   }
 

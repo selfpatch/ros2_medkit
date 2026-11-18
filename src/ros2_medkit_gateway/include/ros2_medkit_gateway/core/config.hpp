@@ -14,10 +14,47 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/version.hpp"
+
 namespace ros2_medkit_gateway {
+
+/// How the server names itself to clients. The defaults describe the ROS 2 node.
+struct ServerIdentity {
+  /// `name` on `GET /` and the title of the OpenAPI documents.
+  std::string server_name{"ROS 2 Medkit Gateway"};
+  /// `vendor_info.name` on `GET /version-info`.
+  std::string vendor_name{"ros2_medkit"};
+  /// `version` on `GET /`, `vendor_info.version` and the OpenAPI document version.
+  std::string server_version{kGatewayVersion};
+};
+
+/// Raw configuration values the REST layer reads. Clamping happens where the value is used.
+/// A program that hosts the core sets the `ServerIdentity` fields to its own values.
+struct RestConfig : ServerIdentity {
+  int64_t http_thread_pool_size{2};
+  int64_t keep_alive_timeout_sec{2};
+  int64_t sse_keepalive_interval_sec{30};
+  int64_t sse_max_duration_sec{3600};
+  bool docs_enabled{true};
+  std::string server_host{"localhost"};
+  int64_t server_port{8080};
+  /// Logger name the REST server reports its warnings under.
+  std::string logger_name{"rest_server"};
+};
+
+/// Where uploaded bulk data goes and what a host accepts. The defaults are the node's `bulk_data.*` defaults.
+struct BulkDataConfig {
+  /// Base directory of the stored files.
+  std::string storage_dir{"/tmp/ros2_medkit_bulk_data"};
+  /// Largest accepted upload in bytes. 0 means unlimited. A negative value is refused and the default is used.
+  int64_t max_upload_size{104857600};
+  /// Accepted upload categories. Empty names are dropped. `rosbags` is never listed here.
+  std::vector<std::string> categories;
+};
 
 /**
  * @brief TLS/HTTPS configuration settings
@@ -26,8 +63,7 @@ namespace ros2_medkit_gateway {
  * When enabled, the gateway will start an HTTPS server instead of HTTP.
  */
 struct TlsConfig {
-  /// Whether TLS is enabled. False matches config/gateway_params.yaml, the
-  /// default profile; config/gateway_params.secure.yaml sets it true.
+  /// Whether TLS is enabled (default: false for backward compatibility)
   bool enabled{false};
 
   /// Path to PEM-encoded certificate file

@@ -197,16 +197,16 @@ class PluginContext {
   /**
    * @brief Get the ResourceChangeNotifier for publishing or subscribing to resource changes.
    *
-   * Always returns a valid pointer - ResourceChangeNotifier is created unconditionally
-   * in GatewayNode regardless of trigger configuration.
+   * Valid on the ROS 2 gateway node regardless of trigger configuration. A host
+   * that gives its context no notifier answers null.
    */
   virtual ResourceChangeNotifier * get_resource_change_notifier() = 0;
 
   /**
    * @brief Get the ConditionRegistry for registering custom trigger condition evaluators.
    *
-   * Always returns a valid pointer - ConditionRegistry is created unconditionally
-   * in GatewayNode regardless of trigger configuration.
+   * Valid on the ROS 2 gateway node regardless of trigger configuration. A host
+   * that gives its context no registry answers null.
    */
   virtual ConditionRegistry * get_condition_registry() = 0;
 

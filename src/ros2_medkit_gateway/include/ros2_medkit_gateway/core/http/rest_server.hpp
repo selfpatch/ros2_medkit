@@ -41,7 +41,8 @@ class RouteRegistry;
 namespace ros2_medkit_gateway {
 
 class AggregationManager;
-class GatewayNode;
+class GatewayServices;
+class LifecycleStateReader;
 class TriggerManager;
 
 /**
@@ -60,8 +61,9 @@ class TriggerManager;
  */
 class RESTServer {
  public:
-  RESTServer(GatewayNode * node, const std::string & host, int port, const CorsConfig & cors_config,
-             const AuthConfig & auth_config, const RateLimitConfig & rate_limit_config,
+  RESTServer(GatewayServices & services, std::shared_ptr<LifecycleStateReader> lifecycle_reader,
+             const std::string & host, int port, const CorsConfig & cors_config, const AuthConfig & auth_config,
+             const RateLimitConfig & rate_limit_config, const RestConfig & rest_config,
              const TlsConfig & tls_config = TlsConfig{});
   ~RESTServer();
 
@@ -112,7 +114,7 @@ class RESTServer {
   void set_cors_headers(httplib::Response & res, const std::string & origin) const;
   bool is_origin_allowed(const std::string & origin) const;
 
-  GatewayNode * node_;
+  GatewayServices & services_;
   std::string host_;
   int port_;
   CorsConfig cors_config_;
@@ -122,19 +124,6 @@ class RESTServer {
   std::unique_ptr<AuthMiddleware> auth_middleware_;
   std::unique_ptr<RateLimiter> rate_limiter_;
 
- public:
-  /// The manager holding this server's clients and refresh records, or nullptr
-  /// while authentication is off.
-  ///
-  /// Borrowed, owned here. Exposed so the node can drive the periodic sweep of
-  /// expired refresh records: the store lives for the life of the process and a
-  /// deployment that only ever refreshes tokens reaches no other code that
-  /// would clear it.
-  AuthManager * auth_manager() const {
-    return auth_manager_.get();
-  }
-
- private:
   // HTTP/HTTPS server manager
   std::unique_ptr<HttpServerManager> http_server_;
 

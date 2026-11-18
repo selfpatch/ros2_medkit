@@ -276,9 +276,11 @@ if(BUILD_TESTING)
     test_aggregator_only_configurations
     test_leaf_collision_aggregation
     test_startup_param_clamp_warnings
+    test_rest_logger_names
     test_aggregation_time_budgets
     test_peer_failure_reasons
-    test_relay_peer_credential)
+    test_relay_peer_credential
+    test_mutual_peer_faults)
   set(_MULTI_GATEWAY_DOMAINS 4)
 
   # Two-gateway tests that need the second gateway isolated from the first and
@@ -287,10 +289,11 @@ if(BUILD_TESTING)
   # four where two are used takes two away from whatever the runner could
   # otherwise have started alongside it.
   set(_TWO_GATEWAY_TESTS
+    test_aggregated_function_hosts
     test_peer_recovery
     test_triggers_restore_before_discovery
     test_aggregator_fault_stream
-    test_forward_auth_across_gateways)
+    test_aggregated_colliding_node_names)
   set(_TWO_GATEWAY_DOMAINS 2)
 
   # Tests whose polling budgets do not fit the glob's default timeout. Keyed by
@@ -363,6 +366,8 @@ if(BUILD_TESTING)
     test_relay_peer_credential 300
     test_aggregator_fault_stream 420
     test_auth_policy_contract 300
+    # One gateway process per case, each waiting for its startup line or its exit.
+    test_env_auth_contract 600
     test_rosbag_boundary_download 180
     test_rosbag_history_download 180
     test_grouping_entity_aggregation 300

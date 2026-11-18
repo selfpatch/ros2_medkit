@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -23,11 +24,11 @@
 #include <string>
 #include <vector>
 
-#include "rclcpp/rclcpp.hpp"
-#include "ros2_medkit_msgs/msg/fault.hpp"
-#include "ros2_medkit_msgs/srv/report_fault.hpp"
+#include "ros2_medkit_fault_detection/fault_types.hpp"
 
 namespace ros2_medkit_fault_manager {
+
+namespace fd = ros2_medkit::fault_detection;
 
 /// Debounce configuration for fault filtering.
 ///
@@ -38,7 +39,7 @@ namespace ros2_medkit_fault_manager {
 /// cannot flip them. One consequence is a latch delay: a fault that becomes active again is not
 /// immediately back in the default (CONFIRMED-only) list - it can take up to
 /// (healing_threshold - confirmation_threshold) reports to re-confirm. During that window
-/// last_occurred still reflects the activity; occurrence_count does not (it only counts
+/// last_occurred_ns still reflects the activity; occurrence_count does not (it only counts
 /// the edge that started this occurrence, not every report within it).
 struct DebounceConfig {
   /// Confirmation threshold (typically negative). Fault is CONFIRMED when counter <= this value,
@@ -88,28 +89,25 @@ bool is_near_miss(bool is_failed_event, const std::string & resulting_status);
 /// defaults (-1 / 3). Returns true if the config was already valid.
 bool sanitize_debounce_config(DebounceConfig & config);
 
-/// Internal fault state stored in memory
+/// Internal fault state stored in memory. Times are wall-clock ns >= 0; 0 means never.
 struct FaultState {
   std::string fault_code;
   uint8_t severity{0};
   std::string description;
-  rclcpp::Time first_occurred;
-  rclcpp::Time last_occurred;
+  int64_t first_occurred_ns{0};
+  int64_t last_occurred_ns{0};
   uint32_t occurrence_count{0};  ///< Count of genuine occurrences (new fault + each re-raise after CLEARED)
   std::string status;
   std::set<std::string> reporting_sources;
 
   // Debounce state (internal, not exposed in Fault.msg)
-  int32_t debounce_counter{0};      ///< FAILED decrements (-1), PASSED increments (+1)
-  rclcpp::Time last_failed_time{};  ///< Timestamp of last FAILED event
-  rclcpp::Time last_passed_time{};  ///< Timestamp of last PASSED event
+  int32_t debounce_counter{0};  ///< FAILED decrements (-1), PASSED increments (+1)
+  int64_t last_failed_ns{0};    ///< Wall-clock ns of last FAILED event (0 = never)
+  int64_t last_passed_ns{0};    ///< Wall-clock ns of last PASSED event (0 = never)
 
-  /// Convert to ROS 2 message
-  ros2_medkit_msgs::msg::Fault to_msg() const;
+  /// Convert to the neutral record.
+  fd::FaultRecord to_record() const;
 };
-
-/// Event type alias for convenience
-using EventType = ros2_medkit_msgs::srv::ReportFault::Request;
 
 /// Snapshot data captured when a fault is confirmed
 /// One captured topic value. A confirmation writes one of these PER TOPIC, and
@@ -225,30 +223,30 @@ class FaultStorage {
 
   /// Report a fault event (FAILED or PASSED)
   /// @param fault_code Global fault identifier
-  /// @param event_type EVENT_FAILED (0) or EVENT_PASSED (1)
+  /// @param kind Whether the report is a FAILED or a PASSED event
   /// @param severity Fault severity level (only used for FAILED events)
   /// @param description Human-readable description (only used for FAILED events)
   /// @param source_id Reporting source identifier
-  /// @param timestamp Current time for tracking
+  /// @param timestamp_ns Wall-clock time of the event, ns (>= 0)
   /// @param config Debounce configuration to apply for this event (resolved per-entity by the node)
   /// @return true if this is a new occurrence (new fault or reactivated CLEARED fault),
   ///         false if existing active fault was updated
-  virtual bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
-                                  const std::string & description, const std::string & source_id,
-                                  const rclcpp::Time & timestamp, const DebounceConfig & config) = 0;
+  virtual bool report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
+                                  const std::string & description, const std::string & source_id, int64_t timestamp_ns,
+                                  const DebounceConfig & config) = 0;
 
   /// Get faults matching filter criteria
   /// @param filter_by_severity Whether to filter by severity
   /// @param severity Severity level to filter (if filter_by_severity is true)
   /// @param statuses List of statuses to include (empty = CONFIRMED only)
   /// @return Vector of matching faults
-  virtual std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
-                                                                const std::vector<std::string> & statuses) const = 0;
+  virtual std::vector<fd::FaultRecord> list_faults(bool filter_by_severity, uint8_t severity,
+                                                   const std::vector<std::string> & statuses) const = 0;
 
   /// Get a single fault by fault_code
   /// @param fault_code The fault code to look up
   /// @return The fault if found, nullopt otherwise
-  virtual std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const = 0;
+  virtual std::optional<fd::FaultRecord> get_fault(const std::string & fault_code) const = 0;
 
   /// Clear a fault by fault_code (manual acknowledgment). Drops the fault's per-topic snapshots;
   /// the freeze-frame and the near-miss series are RETAINED, because they outlive a single fault
@@ -264,9 +262,9 @@ class FaultStorage {
   virtual bool contains(const std::string & fault_code) const = 0;
 
   /// Check and confirm PREFAILED faults that have been pending too long (time-based confirmation)
-  /// @param current_time Current timestamp for age calculation
+  /// @param now_ns Wall-clock time for age calculation, ns
   /// @return Fault codes that were confirmed by this call (so the caller can audit each).
-  virtual std::vector<std::string> check_time_based_confirmation(const rclcpp::Time & current_time) = 0;
+  virtual std::vector<std::string> check_time_based_confirmation(int64_t now_ns) = 0;
 
   /// Set maximum snapshots per fault code (0 = unlimited)
   virtual void set_max_snapshots_per_fault(size_t /*max_count*/) {
@@ -461,13 +459,19 @@ class FaultStorage {
 
   /// Get all stored faults regardless of status (for filtering)
   /// @return Vector of all faults in storage
-  virtual std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const = 0;
+  virtual std::vector<fd::FaultRecord> get_all_faults() const = 0;
 
-  /// One-time startup cleanup: reclassify HEALED faults as CLEARED. Called when healing is disabled,
-  /// so a HEALED row left by a previous (healing-enabled) run does not behave inconsistently under
-  /// the latch. Default is a no-op (in-memory storage starts empty).
+  /// Predicate for reclassify_healed_as_cleared: true keeps that fault code HEALED.
+  using KeepHealedFn = std::function<bool(const std::string & fault_code)>;
+
+  /// One-time startup cleanup: reclassify HEALED faults as CLEARED, so a HEALED row left by a
+  /// previous (healing-enabled) run does not behave inconsistently under the latch.
+  /// Default is a no-op (in-memory storage starts empty).
+  /// @param keep_healed Codes for which this returns true stay HEALED (their own healing is still
+  ///        enabled). Empty means reclassify every HEALED fault.
   /// @return fault codes of the reclassified faults, so the caller can audit each transition
-  virtual std::vector<std::string> reclassify_healed_as_cleared() {
+  virtual std::vector<std::string> reclassify_healed_as_cleared(const KeepHealedFn & keep_healed = {}) {
+    (void)keep_healed;
     return {};
   }
 
@@ -487,14 +491,14 @@ class InMemoryFaultStorage : public FaultStorage {
   void set_debounce_config(const DebounceConfig & config) override;
   DebounceConfig get_debounce_config() const override;
 
-  bool report_fault_event(const std::string & fault_code, uint8_t event_type, uint8_t severity,
-                          const std::string & description, const std::string & source_id,
-                          const rclcpp::Time & timestamp, const DebounceConfig & config) override;
+  bool report_fault_event(const std::string & fault_code, fd::ReportKind kind, uint8_t severity,
+                          const std::string & description, const std::string & source_id, int64_t timestamp_ns,
+                          const DebounceConfig & config) override;
 
-  std::vector<ros2_medkit_msgs::msg::Fault> list_faults(bool filter_by_severity, uint8_t severity,
-                                                        const std::vector<std::string> & statuses) const override;
+  std::vector<fd::FaultRecord> list_faults(bool filter_by_severity, uint8_t severity,
+                                           const std::vector<std::string> & statuses) const override;
 
-  std::optional<ros2_medkit_msgs::msg::Fault> get_fault(const std::string & fault_code) const override;
+  std::optional<fd::FaultRecord> get_fault(const std::string & fault_code) const override;
 
   bool clear_fault(const std::string & fault_code) override;
 
@@ -502,7 +506,7 @@ class InMemoryFaultStorage : public FaultStorage {
 
   bool contains(const std::string & fault_code) const override;
 
-  std::vector<std::string> check_time_based_confirmation(const rclcpp::Time & current_time) override;
+  std::vector<std::string> check_time_based_confirmation(int64_t now_ns) override;
 
   void set_max_snapshots_per_fault(size_t max_count) override;
   void set_retain_snapshots_on_clear(bool retain) override;
@@ -534,8 +538,8 @@ class InMemoryFaultStorage : public FaultStorage {
   size_t get_total_rosbag_storage_bytes() const override;
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
-  std::vector<ros2_medkit_msgs::msg::Fault> get_all_faults() const override;
-  std::vector<std::string> reclassify_healed_as_cleared() override;
+  std::vector<fd::FaultRecord> get_all_faults() const override;
+  std::vector<std::string> reclassify_healed_as_cleared(const KeepHealedFn & keep_healed = {}) override;
 
  private:
   /// Update fault status based on debounce counter and given config
@@ -544,7 +548,7 @@ class InMemoryFaultStorage : public FaultStorage {
   /// Append one entry to the near-miss series for @p state and evict the oldest entries beyond
   /// max_near_misses_per_fault_. Caller holds mutex_ and has already applied the report to @p state.
   void record_near_miss(const FaultState & state, const DebounceConfig & config, uint8_t severity,
-                        const std::string & source_id, const rclcpp::Time & timestamp);
+                        const std::string & source_id, int64_t timestamp_ns);
 
   /// Whether a fault other than @p fault_code still references @p file_path.
   /// One recording can back several faults of the same burst, so the bag must

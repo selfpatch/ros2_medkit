@@ -83,8 +83,12 @@ an entity on the same node never runs a client destructor on a gateway executor 
 
 **Subscription** - registers OPC-UA monitored items and receives change notifications at
 ``subscription_interval_ms``. Lower CPU cost on large node sets, but requires a running OPC-UA
-client event loop. Kept as an opt-in path because many PLC servers have limits on the number
-of active subscriptions.
+client event loop. The poll thread is that loop: between two polls it iterates the client once
+per ``subscription_interval_ms`` (at least every 20 ms, at most once per ``poll_interval_ms``),
+so a change reaches the plugin within about one publishing interval whatever the poll cadence.
+The iterate stays on the poll thread because the data-change callbacks evaluate alarms against
+the node map, which only that thread reads without a lock. Kept as an opt-in path because many
+PLC servers have limits on the number of active subscriptions.
 
 Both modes share the same ``PollSnapshot`` output structure, so downstream consumers
 (``OpcuaPlugin::publish_values``, REST handlers, fault mapping) are agnostic to the source.
@@ -102,6 +106,36 @@ edge-triggered callbacks:
 
 The plugin keeps per-fault state only long enough to detect edges; the fault manager owns
 persistence and fault lifecycle.
+
+A point may also set ``raise_after_samples`` and ``raise_after_ms``, so the condition has
+to persist before the raise. ``DetectionPipeline`` sits between the cached values and the
+callbacks. It feeds each evaluation through the shared ``RaiseQualifierFilter`` and decides
+which evaluations are new samples:
+
+- Polling reads every point each cycle, so a value that did not arrive in this cycle is
+  left over from a failed read. It is skipped, and every point keeps its state.
+- A subscription reports changes only, so there are no samples to count. The pipeline
+  applies ``RaiseQualifier::for_change_notifications(poll_interval_ms)``: a samples rule
+  becomes a wait of ``(N - 1)`` poll intervals, or ``raise_after_ms`` when that is longer.
+  The point's own data change is fresh and starts the wait. While a fault waits, the poll
+  loop rechecks once per ``poll_interval_ms`` and, when ``subscription_interval_ms`` is
+  shorter than the poll, after every ``subscription_interval_ms`` step, so the wait ends on
+  time. A recheck, like a pass caused by another point's change, is not fresh: it ends a
+  wait but starts none. A point that has not reported since the link came back is skipped,
+  so a value from before an outage never counts. A recheck after an iterate that found the
+  link closed is skipped, and a poll whose read closed the link restarts every wait before
+  it is evaluated, so no wait ends on time that was not seen.
+- ``evaluate_alarms`` runs on the poll thread, on the event pump thread with native alarms
+  on, and on any thread that makes a synchronous client call (open62541 delivers subscription
+  callbacks during those as well). It works out the raise and clear edges and hands them to the plugin under
+  one lock, and the plugin sends its buffered reports one batch at a time, so a clear is
+  never sent before a raise that was worked out earlier. The fault manager serves
+  ``ReportFault`` and ``ClearFault`` as two services, so two requests sent within a moment of
+  each other are not guaranteed to be handled in the order they were sent.
+
+When the connection drops, faults that are still waiting start over, because nothing was
+observed while the link was down. Faults already raised stay raised. The clear is never
+delayed.
 
 Read-only is a property of the build
 ====================================

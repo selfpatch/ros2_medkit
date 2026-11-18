@@ -97,6 +97,9 @@ class TestDataProviderPlugin : public GatewayPlugin,
                      {"unit", "degC"}});
     items.push_back(
         {{"id", "pressure"}, {"name", "Pressure"}, {"category", "currentData"}, {"value", 3.2}, {"unit", "bar"}});
+    // Names that need percent-encoding in a URI, like PLC symbols.
+    items.push_back({{"id", "\"DB1\".temp"}, {"name", "DB1 temp"}, {"category", "currentData"}, {"value", 7.5}});
+    items.push_back({{"id", "Motor Speed"}, {"name", "Motor Speed"}, {"category", "currentData"}, {"value", 1450}});
     return dto::DataListResult{nlohmann::json{{"items", std::move(items)}}};
   }
 

@@ -15,6 +15,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <unordered_map>

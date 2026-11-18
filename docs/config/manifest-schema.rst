@@ -250,7 +250,13 @@ controls exactly one thing: whether the manifest claims *exclusivity* over the
 hierarchy. ``true`` (the default) means a declared parent-child relationship is
 the whole truth and runtime-discovered members are dropped. ``false`` means the
 manifest stops claiming exclusivity, so runtime-discovered hosts and children
-join the union instead of being discarded.
+join the union instead of being discarded. A Function then still keeps only the
+hosts that name an App or Component the gateway serves (see
+:ref:`the rule for Function hosts <discovery-function-hosts>`), so a runtime
+host joins only when the gateway serves its node under that runtime id, an
+unmanifested node under ``warn`` for example. A node bound to a manifest App is
+served under the App's id, so its runtime id joins only when the App's id
+equals the node's name, and the host is then that App.
 
 Against that layer pair it changes nothing else. (A discovery plugin is a
 third layer and widens this - see **Mechanism** below.) In particular it does
@@ -275,7 +281,8 @@ mechanism suggests:
 
 - **hierarchy** - the one that shows. Collection fields (``depends_on``, a
   Function's ``hosted_by`` list) become the union of the manifest's and the
-  runtime layer's, rather than the manifest's alone. The scalar hierarchy
+  runtime layer's, rather than the manifest's alone, and a Function's hosts are
+  then reduced to the Apps and Components the gateway serves. The scalar hierarchy
   fields are unchanged: an App's ``is_located_on``, a Component's ``area``,
   ``parent_component_id``, ``fqn`` and ``namespace``, and an Area's
   ``namespace`` and ``parent_area``.
@@ -877,7 +884,7 @@ Schema
      - id: string              # Required - unique identifier
        name: string            # Required - human-readable name
        category: string        # Optional - classification
-       hosted_by: [string]     # Required - list of app IDs
+       hosted_by: [string]     # Optional - app or component IDs
        depends_on: [string]    # Optional - function IDs
        description: string     # Optional - detailed description
        tags: [string]          # Optional - tags for filtering
@@ -904,8 +911,10 @@ Fields
      - Human-readable name
    * - ``hosted_by``
      - [string]
-     - Yes
-     - List of app IDs that implement this function
+     - No
+     - IDs of the apps and components that implement this function. An ID
+       that names no entity in the manifest is rule ``R009`` (see
+       `Validation`_).
    * - ``category``
      - string
      - No
@@ -1227,7 +1236,6 @@ Manifests are validated during loading. The validator checks:
 - ``manifest_version`` must be present and equal to "1.0"
 - All entities must have ``id`` and ``name``
 - Apps with ``ros_binding`` must have ``node_name`` or ``topic_namespace``
-- Functions must have at least one entry in ``hosted_by``
 - Scripts must have ``id``, ``path``, and ``format``
 - ``format`` must be one of: ``bash``, ``python``, ``sh``
 
@@ -1236,7 +1244,13 @@ Manifests are validated during loading. The validator checks:
 - ``area`` references must point to valid area IDs
 - ``is_located_on`` must point to valid component IDs
 - ``depends_on`` must point to valid app/function IDs
-- ``hosted_by`` must point to valid app IDs
+- ``hosted_by`` IDs must name an entity the manifest declares (``R009``). The
+  rule is a warning: under the default
+  ``discovery.manifest_strict_validation: true`` the manifest fails to load,
+  with ``false`` the warning is logged and the manifest loads. A Function hosts
+  only Apps and Components the gateway serves, so a host that names another
+  kind of entity, or nothing, is dropped (see
+  :ref:`the rule for Function hosts <discovery-function-hosts>`).
 
 **Uniqueness:**
 
@@ -1248,12 +1262,12 @@ Manifests are validated during loading. The validator checks:
 - IDs should contain only alphanumeric characters and hyphens
 - IDs should not start with numbers
 
-Validation errors are reported with the path to the invalid field:
+Each finding is logged with its rule ID and the path to the invalid field:
 
 .. code-block:: text
 
-   Validation error at apps[2].ros_binding: 'node_name' or 'topic_namespace' required
-   Validation error at functions[0].hosted_by[1]: App 'unknown-app' not found
+   Manifest error: [R007] ERROR: App 'lidar-driver' references non-existent component: lidar-unit (at apps/lidar-driver/component)
+   Manifest warning: [R009] WARNING: Function 'nav-function' hosts non-existent entity: unknown-app (at functions/nav-function/hosts)
 
 .. seealso::
 

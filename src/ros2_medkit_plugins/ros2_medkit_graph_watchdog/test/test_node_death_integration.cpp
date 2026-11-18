@@ -74,8 +74,8 @@ std::unique_ptr<Detector> make_node_death() {
 // Aggregated fault source: no Component in the test snapshot, so graph_source_id() falls
 // back to this literal (see aggregated_fault.hpp).
 constexpr const char * kGraphSource = "graph_watchdog";
-// source_id of the requests flush_reports() sends; no count or lookup in this file reads it.
-constexpr const char * kFlushSource = "nd_it_flush";
+// fault_code of the flush_reports() request; the sink does not record it.
+constexpr const char * kFlushBarrier = "TEST_FLUSH_BARRIER";
 
 /// Captures rcutils log output for as long as it is alive and restores the console handler
 /// on every exit path.
@@ -162,6 +162,10 @@ class NodeDeathIntegrationTest : public ::testing::Test {
     srv_ = sink_->create_service<ReportFault>(
         "/fault_manager/report_fault",
         [](const std::shared_ptr<ReportFault::Request> & req, const std::shared_ptr<ReportFault::Response> & resp) {
+          if (req->fault_code == kFlushBarrier) {
+            resp->accepted = true;
+            return;
+          }
           {
             std::lock_guard<std::mutex> lk(mtx_);
             received_.push_back(*req);
@@ -179,6 +183,10 @@ class NodeDeathIntegrationTest : public ::testing::Test {
     spin_ = std::thread([]() {
       exec_->spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!exec_->is_spinning()) {
+      std::this_thread::yield();
+    }
     ASSERT_TRUE(client_->wait_for_service(5s));
   }
 
@@ -199,8 +207,18 @@ class NodeDeathIntegrationTest : public ::testing::Test {
   // Per-test isolation for the shared plumbing above: a stale response delivered late from
   // a PREVIOUS case must never be read as evidence by the NEXT one.
   void SetUp() override {
+    ASSERT_TRUE(flush_reports());
     std::lock_guard<std::mutex> lk(mtx_);
     received_.clear();
+  }
+
+  /// Round trip on client_ behind every report sent so far. The sink serves requests one at a
+  /// time in arrival order, so when this returns true every earlier report is in received_.
+  static bool flush_reports() {
+    auto req = std::make_shared<ReportFault::Request>();
+    req->fault_code = kFlushBarrier;
+    auto result = client_->async_send_request(req);
+    return result.wait_for(5s) == std::future_status::ready;
   }
 
   DetectorContext make_ctx(ReliabilityGate * gate) {
@@ -254,14 +272,6 @@ class NodeDeathIntegrationTest : public ::testing::Test {
       }
     }
     return n;
-  }
-
-  /// Wait until the fake service recorded every report sent so far: it answers one client's
-  /// requests in order. False if no answer came in time.
-  static bool flush_reports() {
-    auto request = std::make_shared<ReportFault::Request>();
-    request->source_id = kFlushSource;
-    return client_->async_send_request(request).future.wait_for(5s) == std::future_status::ready;
   }
 
   bool any_failed_desc_contains(const std::string & source_id, const std::vector<std::string> & needles) {
@@ -350,9 +360,9 @@ TEST_F(NodeDeathIntegrationTest, N9_PeerAggregatedAppsAreNeverTracked) {
   for (int i = 6; i <= 12; ++i) {
     gate.update(snapshot_, static_cast<std::uint64_t>(i));
     det->tick(ctx);
-    std::this_thread::sleep_for(5ms);
+    ASSERT_TRUE(flush_reports());
   }
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_EQ(det->tracked_count_for_test(), 0u);
   EXPECT_EQ(count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED), 0u);
 }
@@ -495,7 +505,7 @@ TEST_F(NodeDeathIntegrationTest, N11_TrackedCountStaysBoundedUnderChurnAndShrink
     run_tick({app_of("alive_a"), app_of("alive_b")});
   }
   EXPECT_EQ(det->tracked_count_for_test(), 2u) << "the allowlisted, durably-suppressed victim must have been reclaimed";
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_FALSE(any_failed_desc_contains(kGraphSource, {"/victim"}))
       << "an allowlisted death must never be reported in the first place";
 }
@@ -542,7 +552,7 @@ TEST_F(NodeDeathIntegrationTest, N11_TrackedNodeCapBoundsUnsuppressedChurnAndKee
   // kCap. Without the cap this would grow past 20, unbounded for the life of the process.
   constexpr std::size_t kCap = 3;
   EXPECT_LE(max_seen, kCap + 1) << "tracked_node_cap must actually engage under scale past it";
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_TRUE(any_failed_desc_contains(kGraphSource, {"more node(s) disappeared"}))
       << "identities the cap forced out of individual tracking must still count as content, "
          "or a death the cap collapsed would silently heal instead of staying raised";
@@ -590,7 +600,7 @@ TEST_F(NodeDeathIntegrationTest, CapC1_GraphLargerThanTheDefaultCapStillReportsA
   gate.update(snapshot_, 2);
   det->tick(ctx);  // misses(1) > miss_grace(0): dead
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_TRUE(any_failed_desc_contains(kGraphSource, {"n000"}))
       << "the one node that actually died among 513 present ones must still be reported - a "
          "cap that evicts present entries to make room can lose exactly this death";
@@ -617,7 +627,7 @@ TEST_F(NodeDeathIntegrationTest, CapC2_ChurnUnderCapPressureNeverFabricatesADeat
                    // (3) exceeds tracked_node_cap(2): the exact capacity pressure that used
                    // to force make_room() to collapse entries before grace.
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_EQ(count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED), 0u)
       << "none of a/b/c has crossed miss_grace yet - capacity pressure alone must never "
          "report any of them dead early";
@@ -636,7 +646,7 @@ TEST_F(NodeDeathIntegrationTest, CapC2_ChurnUnderCapPressureNeverFabricatesADeat
   det->tick(ctx);  // b, c miss 3 > miss_grace: genuinely, individually dead - the departed
                    // count (2) no longer exceeds the cap(2), so nothing is collapsed
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_TRUE(any_failed_desc_contains(kGraphSource, {"/b"}));
   EXPECT_TRUE(any_failed_desc_contains(kGraphSource, {"/c"}));
   EXPECT_EQ(det->tracked_count_for_test(), 4u) << "anchor and a (idle), b and c (departed) - none collapsed";
@@ -666,7 +676,7 @@ TEST_F(NodeDeathIntegrationTest, CapCollapsedDeathClearsOnceTheGraphRecoversAndT
   gate.update(snapshot_, 2);
   det->tick(ctx);  // both miss 1 > miss_grace(0): matured; departed count(2) > cap(1): collapsed
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   ASSERT_EQ(det->tracked_count_for_test(), 1u)
       << "precondition: both identities collapsed - only the anchor (idle, uncapped) remains";
   ASSERT_TRUE(any_failed_desc_contains(kGraphSource, {"more node(s) disappeared"}))
@@ -676,7 +686,7 @@ TEST_F(NodeDeathIntegrationTest, CapCollapsedDeathClearsOnceTheGraphRecoversAndT
   gate.update(snapshot_, 3);
   det->tick(ctx);
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_EQ(count_faults(kGraphSource, ReportFault::Request::EVENT_PASSED), 0u)
       << "merely returning must NOT by itself clear a collapsed death - collapsed_dead_count_ "
          "stays raised until an operator actually acts on the cap-saturation warning";
@@ -687,7 +697,7 @@ TEST_F(NodeDeathIntegrationTest, CapCollapsedDeathClearsOnceTheGraphRecoversAndT
   gate.update(snapshot_, 4);  // a, b are present in this same, unchanged snapshot
   det->tick(ctx);
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_GT(count_faults(kGraphSource, ReportFault::Request::EVENT_PASSED), 0u)
       << "once reconfigured, a clean re-observation of an all-present graph must clear the "
          "fault - ever_raised_ survives reconfigure (see ReconfigureWhileAbsentDoesNot... "
@@ -922,7 +932,7 @@ TEST_F(NodeDeathIntegrationTest, C2_AllowlistNotNamedInSuppressWarnsAndDoesNotSu
     gate.update(snapshot_, t);
     det->tick(ctx);
   }
-  std::this_thread::sleep_for(100ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_TRUE(any_failed_desc_contains(kGraphSource, {"/x"}))
       << "an allowlist that suppress does not name must not suppress by itself";
 }
@@ -986,7 +996,7 @@ TEST_F(NodeDeathIntegrationTest, CleanShutdownDepartureAtMissGraceBoundaryIsSupp
     gate.update(snapshot_, t);
     det->tick(ctx);
   }
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_EQ(count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED), 0u)
       << "a clean departure must not be reported even at the very first tick suppression is "
          "evaluated for it";
@@ -1038,7 +1048,7 @@ TEST_F(NodeDeathIntegrationTest, CleanShutdownIsStillSuppressedWhenItsServicesLe
     gate.update(snapshot_, t);
     det->tick(ctx);
   }
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_EQ(count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED), 0u)
       << "the label expired before node_death's reclaim tick because the retention clock started "
          "when the SERVICES left, not when the App did - so a cleanly shut-down node was named in "
@@ -1074,7 +1084,7 @@ TEST_F(NodeDeathIntegrationTest, CleanShutdownDepartureIsReclaimedNotReRaisedPas
     gate.update(snapshot_, t);
     det->tick(ctx);
   }
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   // 1, not 0: anchor_app() stays present and armed for the whole run and is never pruned -
   // only "/clean" is ever eligible for reclaim.
   EXPECT_EQ(det->tracked_count_for_test(), 1u)
@@ -1131,7 +1141,7 @@ TEST_F(NodeDeathIntegrationTest, AllowlistIdFormSuppressesOnlyTheCollisionPrefix
   gate.update(snapshot_, 1);
   det->tick(ctx);  // misses(1) > miss_grace(0): both would be dead absent suppression
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_TRUE(any_failed_desc_contains(kGraphSource, {"/coll_b/calibration"}))
       << "the sibling the allowlist entry does not name must still be reported dead - "
          "otherwise this test cannot tell a working id-match from a suppressor that "
@@ -1168,7 +1178,7 @@ TEST_F(NodeDeathIntegrationTest, UngatedClearStaysSuppressedWhileAnUnrelatedNode
       << "precondition this test needs: something IS tracked, without this detector having "
          "ever raised anything";
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_EQ(count_faults(kGraphSource, ReportFault::Request::EVENT_PASSED), 0u)
       << "a fresh instance that has never itself raised GRAPH_NODE_DISAPPEARED must never "
          "clear it either, however many unrelated entities become tracked";
@@ -1211,7 +1221,7 @@ TEST_F(NodeDeathIntegrationTest, RestartedInstanceNeverClearsAFaultItDidNotRaise
       << "the returned node must be tracked and healthy, or this test is not about the quadrant "
          "where the node came back";
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_EQ(count_faults(kGraphSource, ReportFault::Request::EVENT_PASSED), 0u)
       << "a fresh instance emitted PASSED for a fault it never raised - it cannot know which "
          "node the stored record names, so this clear would be just as wrong for a node that "
@@ -1255,7 +1265,7 @@ TEST_F(NodeDeathIntegrationTest, AnEarnedKeyKeepsItsGroundAcrossTheOutageSoTheNe
   set_apps({anchor_app()});  // first death
   gate.update(snapshot_, 1);
   det->tick(ctx);
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   const auto after_first = count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED);
   ASSERT_GT(after_first, 0u) << "the first death was never reported, so there is no loop here yet";
 
@@ -1269,7 +1279,7 @@ TEST_F(NodeDeathIntegrationTest, AnEarnedKeyKeepsItsGroundAcrossTheOutageSoTheNe
   set_apps({anchor_app()});  // and it crashes again
   gate.update(snapshot_, 3);
   det->tick(ctx);
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_GT(count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED), after_first)
       << "the second death of a crash-looping node was reported by nobody - the key was handed "
          "back on the respawn because its earned ground had been pruned during the outage, and "
@@ -1335,7 +1345,7 @@ TEST_F(NodeDeathIntegrationTest, AnOfflineFlickerDoesNotEraseTheWithheldKeysWind
     det->tick(ctx);
   }
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_EQ(count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED), failed_before)
       << "an offline tick erased the withheld key and its window, so the flicker back online "
          "re-admitted a node the graph had measured as another detector's - and this detector "
@@ -1379,7 +1389,7 @@ TEST_F(NodeDeathIntegrationTest, AReleasedKeyIsTakenBackOnceItOutlivesTheDeathWi
   const auto failed_before = count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED);
   det->tick(ctx);  // misses(1) > miss_grace(0)
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_GT(count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED), failed_before)
       << "a node that stopped being managed and then died was reported by nobody - this detector "
          "refused it for the rest of its life over a lifecycle record that had been gone for "
@@ -1421,7 +1431,7 @@ TEST_F(NodeDeathIntegrationTest, AReleasedKeyIsNotReAdmittedWhenItsLifecycleReco
   const auto failed_before = count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED);
   det->tick(ctx);  // misses(1) > miss_grace(0)
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_EQ(count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED), failed_before)
       << "the key was handed back to lifecycle_expectation and then reported dead anyway - "
          "losing a lifecycle record is not a measurement that the node became this detector's, "
@@ -1443,7 +1453,7 @@ TEST_F(NodeDeathIntegrationTest, ClearFlowsOnceThisInstanceHasGenuinelyRaised) {
   gate.update(snapshot_, 1);
   det->tick(ctx);  // misses(1) > miss_grace(0): genuinely dead, genuinely raised
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   ASSERT_GT(count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED), 0u)
       << "precondition: this instance must have genuinely raised before the recovery below "
          "can prove anything about clearing";
@@ -1452,7 +1462,7 @@ TEST_F(NodeDeathIntegrationTest, ClearFlowsOnceThisInstanceHasGenuinelyRaised) {
   gate.update(snapshot_, 2);
   det->tick(ctx);
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_GT(count_faults(kGraphSource, ReportFault::Request::EVENT_PASSED), 0u)
       << "a genuine recovery after this instance has itself raised must still clear - the "
          "ungated-clear guard must suppress an UNEARNED clear, not an earned one";
@@ -1481,7 +1491,7 @@ TEST_F(NodeDeathIntegrationTest, EverRaisedTracksDeliveryNotIntentSoAnUndelivere
   gate.update(snapshot_, 1);
   det->tick(ctx);  // report.dead is non-empty, but Advisory mode declines to send it
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   ASSERT_EQ(count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED), 0u)
       << "precondition: Advisory mode must have genuinely suppressed the raise";
 
@@ -1494,7 +1504,7 @@ TEST_F(NodeDeathIntegrationTest, EverRaisedTracksDeliveryNotIntentSoAnUndelivere
   gate.update(snapshot_, 2);
   det->tick(ctx);
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_EQ(count_faults(kGraphSource, ReportFault::Request::EVENT_PASSED), 0u)
       << "no FAILED for this occurrence ever reached the wire, so no PASSED may either";
 }
@@ -1530,7 +1540,7 @@ TEST_F(NodeDeathIntegrationTest, AdvisoryModeStillObservesAndAccumulatesMissesWi
   EXPECT_EQ(det->tracked_count_for_test(), 2u)
       << "Advisory mode must still track victim and anchor exactly as Raise mode would";
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   ASSERT_EQ(count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED), 0u)
       << "precondition: Advisory mode must have genuinely suppressed the raise so far";
 
@@ -1538,7 +1548,7 @@ TEST_F(NodeDeathIntegrationTest, AdvisoryModeStillObservesAndAccumulatesMissesWi
   gate.update(snapshot_, 4);  // victim still absent - no recovery here
   det->tick(ctx);
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_GT(count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED), 0u)
       << "the very first Raise-mode tick must already raise, proving the miss count had "
          "already crossed miss_grace DURING the Advisory window rather than starting fresh";
@@ -1565,7 +1575,7 @@ TEST_F(NodeDeathIntegrationTest, ReconfigureWhileAbsentDoesNotWithholdAnEarnedCl
   gate.update(snapshot_, 1);
   det->tick(ctx);  // genuinely raised
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   ASSERT_GT(count_faults(kGraphSource, ReportFault::Request::EVENT_FAILED), 0u)
       << "precondition: this instance must have genuinely raised before the reconfigure below";
 
@@ -1577,7 +1587,7 @@ TEST_F(NodeDeathIntegrationTest, ReconfigureWhileAbsentDoesNotWithholdAnEarnedCl
   gate.update(snapshot_, 2);
   det->tick(ctx);
 
-  std::this_thread::sleep_for(50ms);
+  ASSERT_TRUE(flush_reports());
   EXPECT_GT(count_faults(kGraphSource, ReportFault::Request::EVENT_PASSED), 0u)
       << "a genuine recovery after a live reconfigure must still clear - the standing fault "
          "must not be stuck unable to ever heal for the rest of the process's life";

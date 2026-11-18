@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_log_bridge
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.0 (2026-08-27)
 ------------------
 * Two parameters were being swallowed. ``max_tracked_nodes`` was clamped into range with nothing written to the log, so a configuration file and the running process could disagree in silence. ``report_cooldown_sec`` was worse: the range check was written so that NaN passed it, then passed the "non-positive disables the cooldown" test, and reached ``Duration::from_seconds``, where the conversion is undefined - after which the cooldown window suppressed either every ERROR report or none, with no way to tell which from outside. Both are now validated with a positive, finite range test, and both configuration rows describe what the code does (`#607 <https://github.com/selfpatch/ros2_medkit/pull/607>`_)

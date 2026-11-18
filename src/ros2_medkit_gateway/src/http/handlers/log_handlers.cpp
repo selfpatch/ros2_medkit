@@ -28,8 +28,8 @@
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/logs/log_scope.hpp"
 #include "ros2_medkit_gateway/core/managers/log_manager.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_support.hpp"
 
 namespace ros2_medkit_gateway {
@@ -108,7 +108,7 @@ LogHandlers::get_logs(const http::TypedRequest & req) {
   }
   const auto & entity = *entity_result;
 
-  auto * log_mgr = ctx_.node()->get_log_manager();
+  auto * log_mgr = ctx_.services().log_manager();
   if (!log_mgr) {
     return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "LogManager not available"));
   }
@@ -138,7 +138,7 @@ LogHandlers::get_logs(const http::TypedRequest & req) {
   // component hosts); COMPONENT and AREA additionally merge the entity.fqn
   // namespace-prefix query, so a component whose apps are all external keeps
   // the ROS node entries under its namespace.
-  const auto & cache = ctx_.node()->get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   std::set<std::string> resolved;
   auto local_logs = logs::query_entity_logs(*log_mgr, cache, entity.sovd_type(), entity_id, entity.fqn, min_severity,
                                             context_filter, &resolved);
@@ -222,7 +222,7 @@ http::Result<dto::LogConfiguration> LogHandlers::get_logs_configuration(const ht
     return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
-  auto * log_mgr = ctx_.node()->get_log_manager();
+  auto * log_mgr = ctx_.services().log_manager();
   if (!log_mgr) {
     return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "LogManager not available"));
   }
@@ -261,7 +261,7 @@ http::Result<http::NoContent> LogHandlers::put_logs_configuration(const http::Ty
     return tl::unexpected(lock_err.error());
   }
 
-  auto * log_mgr = ctx_.node()->get_log_manager();
+  auto * log_mgr = ctx_.services().log_manager();
   if (!log_mgr) {
     return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "LogManager not available"));
   }

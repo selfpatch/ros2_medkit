@@ -151,6 +151,7 @@ add_library(ros2_medkit_opcua_plugin MODULE
   src/device_identity.cpp
   src/node_map.cpp
   src/opcua_poller.cpp
+  src/detection_pipeline.cpp
   src/network_discovery.cpp
   src/network_discovery_io.cpp
   src/address_space_browser.cpp
@@ -286,6 +287,7 @@ if(BUILD_TESTING)
     src/device_identity.cpp
     src/node_map.cpp
     src/opcua_poller.cpp
+    src/detection_pipeline.cpp
     src/network_discovery.cpp
     src/network_discovery_io.cpp
     src/address_space_browser.cpp
@@ -308,6 +310,36 @@ if(BUILD_TESTING)
     OpenSSL::SSL OpenSSL::Crypto
   )
 
+  # The plugin on a gateway whose context is private, with the default context never initialised
+  medkit_add_gtest(test_opcua_private_context
+    test/test_opcua_private_context.cpp
+    src/opcua_plugin.cpp
+    src/opcua_client.cpp
+    src/device_identity.cpp
+    src/node_map.cpp
+    src/opcua_poller.cpp
+    src/detection_pipeline.cpp
+    src/network_discovery.cpp
+    src/network_discovery_io.cpp
+    src/address_space_browser.cpp
+  )
+  target_include_directories(test_opcua_private_context PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_target_dependencies(test_opcua_private_context
+    ros2_medkit_msgs
+    ros2_medkit_gateway
+    ros2_medkit_fault_detection
+    rclcpp
+    std_msgs
+  )
+  target_link_libraries(test_opcua_private_context
+    open62541pp::open62541pp
+    nlohmann_json::nlohmann_json
+    yaml-cpp::yaml-cpp
+    OpenSSL::SSL OpenSSL::Crypto
+  )
+
   medkit_add_gtest(test_node_map
     test/test_node_map.cpp
     src/node_map.cpp
@@ -321,6 +353,27 @@ if(BUILD_TESTING)
     rclcpp
   )
   target_link_libraries(test_node_map
+    open62541pp::open62541pp
+    nlohmann_json::nlohmann_json
+    yaml-cpp::yaml-cpp
+  )
+
+  # The polled detection path between the poller's cached values and the fault
+  # callbacks: sample counting, raise qualifiers and outages, no server needed.
+  medkit_add_gtest(test_detection_pipeline
+    test/test_detection_pipeline.cpp
+    src/detection_pipeline.cpp
+    src/node_map.cpp
+  )
+  target_include_directories(test_detection_pipeline PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  medkit_target_dependencies(test_detection_pipeline
+    ros2_medkit_gateway
+    ros2_medkit_fault_detection
+    rclcpp
+  )
+  target_link_libraries(test_detection_pipeline
     open62541pp::open62541pp
     nlohmann_json::nlohmann_json
     yaml-cpp::yaml-cpp
@@ -352,6 +405,7 @@ if(BUILD_TESTING)
   medkit_add_gtest(test_opcua_poller
     test/test_opcua_poller.cpp
     src/opcua_poller.cpp
+    src/detection_pipeline.cpp
     src/opcua_client.cpp
     src/node_map.cpp
   )
@@ -512,9 +566,35 @@ if(BUILD_TESTING)
 
     install(TARGETS test_alarm_server
       RUNTIME DESTINATION lib/${PROJECT_NAME})
+
+    # OpcuaClient across a blackholed or cut link and back, against the
+    # fixture above behind an in-test TCP proxy.
+    medkit_add_gtest(test_opcua_client_reconnect
+      test/test_opcua_client_reconnect.cpp
+      src/opcua_client.cpp
+      TIMEOUT 120
+    )
+    add_dependencies(test_opcua_client_reconnect test_alarm_server)
+    target_compile_definitions(test_opcua_client_reconnect PRIVATE
+      TEST_ALARM_SERVER_BIN="$<TARGET_FILE:test_alarm_server>")
+    target_include_directories(test_opcua_client_reconnect PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    medkit_target_dependencies(test_opcua_client_reconnect
+      ros2_medkit_gateway
+      rclcpp
+    )
+    target_link_libraries(test_opcua_client_reconnect
+      open62541pp::open62541pp
+      nlohmann_json::nlohmann_json
+    )
     install(PROGRAMS
       test/fixtures/test_alarm_server/smoke_test.py
       test/fixtures/test_alarm_server/run_ctest.py
+      DESTINATION lib/${PROJECT_NAME})
+    # Start helper the installed scripts import; they sit in the same directory.
+    install(FILES
+      test/fixtures/test_alarm_server/alarm_fixture.py
       DESTINATION lib/${PROJECT_NAME})
 
     # CTest wrapper that boots test_alarm_server on an ephemeral port and runs
@@ -536,6 +616,17 @@ if(BUILD_TESTING)
     # LABELS assignment above, which would otherwise replace the declaration.
     medkit_test_needs_no_domain(test_alarm_server_smoke)
 
+    # The fixture on a port another process listens on prints no READY and
+    # exits; start_fixture then moves to a new port. Plain TCP, no ROS node.
+    add_test(NAME test_alarm_server_held_port
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/test_alarm_server/held_port_test.py"
+              "${CMAKE_BINARY_DIR}/test_alarm_server")
+    set_tests_properties(test_alarm_server_held_port PROPERTIES
+      LABELS "integration"
+      TIMEOUT 120)
+    medkit_test_needs_no_domain(test_alarm_server_held_port)
+
     # ---- Secured A&C integration test (issue #477) ------------------------
     # Drives the gateway's apply_security_config() success path against the
     # encryption-enabled fixture above: negotiates a Basic256Sha256 +
@@ -551,7 +642,10 @@ if(BUILD_TESTING)
       test/integration/gen_test_certs.sh
       test/integration/test_opcua_secured.test.py
       test/integration/test_opcua_read_only.test.py
+      test/integration/test_opcua_subscription_values.test.py
+      test/integration/test_opcua_raise_qualifier.test.py
       test/integration/test_opcua_comms_lost.test.py
+      test/integration/test_opcua_startup_sweep_signal.test.py
       DESTINATION lib/${PROJECT_NAME})
 
     # ---- Read-only / write-capable behaviour over real HTTP ----------------
@@ -568,6 +662,32 @@ if(BUILD_TESTING)
     # the timeout has to exceed the sum of the script's own wait deadlines so a
     # slow failing run still reaches its own diagnostics.
     set_tests_properties(test_opcua_read_only PROPERTIES
+      LABELS "integration"
+      TIMEOUT 900)
+    # Subscription mode with plain nodes and no event_alarms: values reach the
+    # plugin and its faults reach a real fault manager, over real HTTP against
+    # the fixture server. TIMEOUT stays above the sum of the script's waits.
+    medkit_add_wrapped_test(test_opcua_subscription_values
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_subscription_values.test.py"
+              "${CMAKE_BINARY_DIR}/test_alarm_server")
+    set_tests_properties(test_opcua_subscription_values PROPERTIES
+      LABELS "integration"
+      TIMEOUT 300)
+    # raise_after_samples / raise_after_ms through a real gateway and fault
+    # manager: a poll leg, a subscription leg and a subscription leg with a
+    # 60 s poll. Worst case of the subscription leg: fault manager 30 s, ready
+    # 90 s, checks and sleeps 40 s, 38 fixture writes at 2 s each 76 s, process
+    # stops 32 s, so about 268 s. The poll leg adds the frozen server: the 1
+    # seen 5 s, 1.5 s, link down 15 s, reconnect 30 s, the raise 8 s and 2
+    # writes 4 s, so about 332 s. The third: 30 + 90 + 8 s of waits, 2 writes
+    # 4 s, stops 32 s, so about 164 s. With the server (25 s start, 8 s stop)
+    # that is about 797 s.
+    medkit_add_wrapped_test(test_opcua_raise_qualifier
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_raise_qualifier.test.py"
+              "${CMAKE_BINARY_DIR}/test_alarm_server")
+    set_tests_properties(test_opcua_raise_qualifier PROPERTIES
       LABELS "integration"
       TIMEOUT 900)
     # This one boots a real gateway and fault manager, so it needs a domain, and
@@ -598,17 +718,30 @@ if(BUILD_TESTING)
       RESOURCE_LOCK opcua_tcp_4840
       TIMEOUT 1200)
 
+    # A signal during the startup discovery sweep ends the sweep and the gateway.
+    # Two cases, each bounded by its own 60 s start and 21 s exit deadlines.
+    # The silent listener binds TCP 4840.
+    medkit_add_wrapped_test(test_opcua_startup_sweep_signal
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_startup_sweep_signal.test.py")
+    set_tests_properties(test_opcua_startup_sweep_signal PROPERTIES
+      LABELS "integration"
+      RESOURCE_LOCK opcua_tcp_4840
+      TIMEOUT 240)
+
     # INV2: end-to-end identity test. Boots test_alarm_server as a subprocess and
     # proves connect -> device-info read -> AssetIdentity via both OpcuaClient and
     # OpcuaPlugin::introspect(). GTEST_SKIP when the fixture binary is missing.
     #
-    # TIMEOUT arithmetic. A passing run of this binary is 94 s on an idle box
-    # (the 27 E2Es take 89 s, 18 s of them fixed settle sleeps the tests carry).
-    # A failing test runs its whole wait budget before it reports; the largest
-    # is TheBridgeStaysBoundToItsOwnServerAcrossAddressAndSwap at 180 s (six
-    # 30 s waits) against 11 s when it passes. Twice the idle pace for a loaded
-    # or sanitizer runner (188 s) plus that one budget net of its passing time
-    # (169 s) is 357 s, so 360 lets one stuck test reach its own FAIL
+    # TIMEOUT arithmetic. A passing run of this binary is 111 s on an idle
+    # runner: 94 s for the 27 older E2Es (18 s of them fixed settle sleeps the
+    # tests carry) and 17 s for the blackholed-link alarm test, most of it the
+    # read timeout and the reconnect backoff. A failing test runs its whole wait
+    # budget before it reports; the largest is
+    # TheBridgeStaysBoundToItsOwnServerAcrossAddressAndSwap at 180 s (six 30 s
+    # waits) against 11 s when it passes. Twice the idle pace for a loaded or
+    # sanitizer runner (222 s) plus that one budget net of its passing time
+    # (169 s) is 391 s, so 400 lets one stuck test reach its own FAIL
     # diagnostics before CTest kills the run.
     medkit_add_gtest(test_opcua_identity
       test/test_opcua_identity.cpp
@@ -617,10 +750,11 @@ if(BUILD_TESTING)
       src/device_identity.cpp
       src/node_map.cpp
       src/opcua_poller.cpp
+      src/detection_pipeline.cpp
       src/network_discovery.cpp
       src/network_discovery_io.cpp
       src/address_space_browser.cpp
-      TIMEOUT 360
+      TIMEOUT 400
     )
     add_dependencies(test_opcua_identity test_alarm_server)
     set_tests_properties(test_opcua_identity PROPERTIES RESOURCE_LOCK opcua_tcp_4840)

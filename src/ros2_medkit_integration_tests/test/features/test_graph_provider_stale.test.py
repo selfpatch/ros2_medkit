@@ -283,13 +283,17 @@ class TestGraphProviderStale(GatewayTestCase):
             f'temp_sensor rejected publish_rate={rate_hz}: {result.results[0].reason}',
         )
 
-    def _poll_until_primary_active(self, *, timeout=40.0):
+    def _poll_until_primary_active(self, *, timeout=40.0, healthy=False):
         """Poll the function graph until the primary edge reports active.
 
         Mirrors test_graph_provider_greenwave.test.py's helper of the same
         name: requires a populated ``frequency_hz``, not just
         ``metrics_status == 'active'``, to skip past greenwave's own
         transient first sample(s).
+
+        With ``healthy``, it also waits for ``pipeline_status == 'healthy'``.
+        greenwave's rate is a rolling estimate, and its first non-zero sample
+        can read below the degraded ratio when the publisher stalls.
         """
 
         def _condition(data):
@@ -298,7 +302,8 @@ class TestGraphProviderStale(GatewayTestCase):
                 return None
             edge = self._find_edge(graph, PRIMARY_SOURCE_ID, PRIMARY_TARGET_ID)
             if (edge and edge['metrics'].get('metrics_status') == 'active'
-                    and edge['metrics'].get('frequency_hz') is not None):
+                    and edge['metrics'].get('frequency_hz') is not None
+                    and (not healthy or graph.get('pipeline_status') == 'healthy')):
                 return graph
             return None
 
@@ -314,7 +319,7 @@ class TestGraphProviderStale(GatewayTestCase):
 
         @verifies REQ_INTEROP_003
         """
-        graph = self._poll_until_primary_active()
+        graph = self._poll_until_primary_active(healthy=True)
         edge = self._find_edge(graph, PRIMARY_SOURCE_ID, PRIMARY_TARGET_ID)
         self.assertIsNotNone(edge, 'temp_sensor -> temp_monitor edge not in graph')
         self.assertEqual(edge['metrics']['metrics_status'], 'active')

@@ -27,11 +27,13 @@
 #include <thread>
 #include <unistd.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
+#include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
@@ -42,8 +44,10 @@
 #include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
+#include "ros2_medkit_gateway/test_support/refused_port.hpp"
 
 #include "../src/openapi/route_registry.hpp"
+#include "null_gateway_services.hpp"
 
 using namespace ros2_medkit_gateway;
 using namespace ros2_medkit_gateway::handlers;
@@ -62,10 +66,9 @@ using namespace ros2_medkit_gateway::handlers;
 // =============================================================================
 
 TEST(HandlerContextStaticTest, LoggerReturnsValidLogger) {
-  auto logger = HandlerContext::logger();
+  const auto & logger = HandlerContext::logger();
   // Just verify it doesn't throw and returns a valid logger name
-  EXPECT_NE(logger.get_name(), nullptr);
-  EXPECT_GT(strlen(logger.get_name()), 0);
+  EXPECT_EQ(logger.name(), "rest_server");
 }
 
 // =============================================================================
@@ -89,14 +92,16 @@ class HandlerContextCorsTest : public ::testing::Test {
 };
 
 TEST_F(HandlerContextCorsTest, IsOriginAllowedReturnsTrueForConfiguredOrigins) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   EXPECT_TRUE(ctx.is_origin_allowed("http://localhost:3000"));
   EXPECT_TRUE(ctx.is_origin_allowed("http://example.com"));
 }
 
 TEST_F(HandlerContextCorsTest, IsOriginAllowedReturnsFalseForUnknownOrigins) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   EXPECT_FALSE(ctx.is_origin_allowed("http://malicious.com"));
   EXPECT_FALSE(ctx.is_origin_allowed("http://localhost:8080"));
@@ -111,14 +116,16 @@ TEST_F(HandlerContextCorsTest, IsOriginAllowedWithWildcard) {
                              .with_credentials(false)  // Must be false with wildcard
                              .build();
 
-  HandlerContext ctx(nullptr, wildcard_config, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), wildcard_config, auth_config_, tls_config_,
+                     nullptr);
 
   EXPECT_TRUE(ctx.is_origin_allowed("http://any-site.com"));
   EXPECT_TRUE(ctx.is_origin_allowed("http://localhost:12345"));
 }
 
 TEST_F(HandlerContextCorsTest, SetCorsHeadersSetsAllHeaders) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
   httplib::Response res;
 
   ctx.set_cors_headers(res, "http://localhost:3000");
@@ -138,7 +145,7 @@ TEST_F(HandlerContextCorsTest, SetCorsHeadersWithoutCredentials) {
                     .with_credentials(false)
                     .build();
 
-  HandlerContext ctx(nullptr, config, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), config, auth_config_, tls_config_, nullptr);
   httplib::Response res;
 
   ctx.set_cors_headers(res, "http://localhost:3000");
@@ -153,7 +160,8 @@ TEST_F(HandlerContextCorsTest, SetCorsHeadersWithoutCredentials) {
 // =============================================================================
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdAcceptsValidIds) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   EXPECT_TRUE(ctx.validate_entity_id("engine").has_value());
   EXPECT_TRUE(ctx.validate_entity_id("engine_temp_sensor").has_value());
@@ -166,7 +174,8 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdAcceptsValidIds) {
 }
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsEmptyString) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   auto result = ctx.validate_entity_id("");
   EXPECT_FALSE(result.has_value());
@@ -174,7 +183,8 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsEmptyString) {
 }
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsTooLongIds) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   // Create a string longer than 256 characters
   std::string long_id(257, 'a');
@@ -185,7 +195,8 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsTooLongIds) {
 }
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsForwardSlash) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   auto result = ctx.validate_entity_id("path/injection");
   EXPECT_FALSE(result.has_value());
@@ -193,7 +204,8 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsForwardSlash) {
 }
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsSpecialCharacters) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   // Test various invalid characters
   EXPECT_FALSE(ctx.validate_entity_id("test@value").has_value());
@@ -209,7 +221,8 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsSpecialCharacters) {
 }
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsNonPrintableCharacters) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   // Test non-printable characters
   std::string with_null = "test";
@@ -223,7 +236,8 @@ TEST_F(HandlerContextCorsTest, ValidateEntityIdRejectsNonPrintableCharacters) {
 }
 
 TEST_F(HandlerContextCorsTest, ValidateEntityIdAcceptsMaxLengthId) {
-  HandlerContext ctx(nullptr, cors_config_, auth_config_, tls_config_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_config_, auth_config_, tls_config_,
+                     nullptr);
 
   // Create exactly 256 character string (max allowed)
   std::string max_id(256, 'a');
@@ -436,7 +450,7 @@ class HandlerContextForwardingTest : public ::testing::Test {
     agg_config.enabled = true;
     agg_config.timeout_ms = 200;
     AggregationConfig::PeerConfig peer;
-    peer.url = "http://127.0.0.1:59999";  // Unreachable port
+    peer.url = refused_peer_port_.http_url();
     peer.name = "peer_subsystem";
     agg_config.peers.push_back(peer);
     agg_mgr_ = std::make_unique<AggregationManager>(agg_config);
@@ -455,6 +469,8 @@ class HandlerContextForwardingTest : public ::testing::Test {
   CorsConfig cors_{};
   AuthConfig auth_{};
   TlsConfig tls_{};
+  // The peer's port: held for the fixture's lifetime, so a forward to it is refused at once.
+  test_support::RefusedPort refused_peer_port_;
   std::unique_ptr<AggregationManager> agg_mgr_;
 };
 
@@ -467,7 +483,7 @@ class HandlerContextForwardingTest : public ::testing::Test {
 // Verify get_entity_info marks entity as remote when aggregation manager is set
 // and entity is in the routing table.
 TEST_F(HandlerContextForwardingTest, GetEntityInfoSetsRemoteFieldsWithAggregation) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   auto info = ctx.get_entity_info("remote_sensor", SovdEntityType::COMPONENT);
@@ -480,7 +496,7 @@ TEST_F(HandlerContextForwardingTest, GetEntityInfoSetsRemoteFieldsWithAggregatio
 
 // Verify get_entity_info does NOT set remote fields when aggregation manager is null.
 TEST_F(HandlerContextForwardingTest, GetEntityInfoNoRemoteWithoutAggregation) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   // No aggregation manager set
 
   auto info = ctx.get_entity_info("remote_sensor", SovdEntityType::COMPONENT);
@@ -503,7 +519,7 @@ TEST_F(HandlerContextForwardingTest, GetEntityInfoNoRemoteWithoutAggregation) {
 // =============================================================================
 
 TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_SuccessReturnsEntityInfo) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   auto raw_req = make_request_with_path("/api/v1/components/local_ecu/data");
@@ -518,7 +534,7 @@ TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_SuccessReturnsE
 }
 
 TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_InvalidIdReturnsErrorInfo) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
 
   auto raw_req = make_request_with_path("/api/v1/components/bad%20id/data");
   http::TypedRequest typed_req(raw_req);
@@ -540,7 +556,7 @@ TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_InvalidIdReturn
 }
 
 TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_UnknownEntityReturnsErrorInfo) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   auto raw_req = make_request_with_path("/api/v1/components/nonexistent/data");
@@ -560,7 +576,7 @@ TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_UnknownEntityRe
 }
 
 TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_WrongTypeReturnsErrorInfo) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   // remote_driver is an App, but we ask the /components route for it
@@ -585,7 +601,7 @@ TEST_F(HandlerContextForwardingTest, TypedValidateEntityForRoute_ForwardedWhenRe
   // legacy overload returns kForwarded and that the typed overload alone (with
   // no installed sink) signals Forwarded without crashing.
 
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   auto raw_req = make_request_with_path("/api/v1/components/remote_sensor/data");
@@ -689,7 +705,7 @@ void expect_proxied_peer_unavailable(const httplib::Result & r) {
 }  // namespace
 
 TEST_F(HandlerContextForwardingTest, TypedBodyWrapperForwardsRemoteEntityWrite) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   openapi::RouteRegistry reg;
@@ -713,7 +729,7 @@ TEST_F(HandlerContextForwardingTest, TypedBodyWrapperForwardsRemoteEntityWrite) 
 }
 
 TEST_F(HandlerContextForwardingTest, TypedPostAlternatesWrapperForwardsRemoteEntity) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   openapi::RouteRegistry reg;
@@ -737,7 +753,7 @@ TEST_F(HandlerContextForwardingTest, TypedPostAlternatesWrapperForwardsRemoteEnt
 }
 
 TEST_F(HandlerContextForwardingTest, TypedDeleteAlternatesWrapperForwardsRemoteEntity) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   openapi::RouteRegistry reg;
@@ -760,7 +776,7 @@ TEST_F(HandlerContextForwardingTest, TypedDeleteAlternatesWrapperForwardsRemoteE
 }
 
 TEST_F(HandlerContextForwardingTest, TypedMultipartWrapperForwardsRemoteEntityUpload) {
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
   ctx.set_aggregation_manager(agg_mgr_.get());
 
   openapi::RouteRegistry reg;
@@ -821,7 +837,7 @@ TEST_F(HandlerContextForwardingTest, TypedValidateCollectionAccess_UnsupportedRe
 TEST_F(HandlerContextForwardingTest, TypedValidateLockAccess_AllowedWhenLockingDisabled) {
   // suite_node_ is created without a LockManager (default ctor path), so the
   // typed validator's phase-1 short-circuit kicks in and returns success.
-  HandlerContext ctx(suite_node_.get(), cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(*suite_node_, cors_, auth_, tls_, nullptr);
 
   EntityInfo entity;
   entity.id = "engine_ecu";
@@ -836,7 +852,7 @@ TEST_F(HandlerContextForwardingTest, TypedValidateLockAccess_AllowedWhenLockingD
 
 TEST_F(HandlerContextForwardingTest, TypedValidateLockAccess_AllowedWhenNodeNull) {
   // No GatewayNode -> the validator must allow access (phase-1 short-circuit).
-  HandlerContext ctx(nullptr, cors_, auth_, tls_, nullptr);
+  HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
 
   EntityInfo entity;
   entity.id = "engine_ecu";
@@ -902,10 +918,8 @@ TEST(FilterInternalNodeAppsTest, PreservesAllNormalNodes) {
   EXPECT_EQ(apps.size(), 3u);
 }
 
-TEST(FilterInternalNodeAppsTest, FiltersPeerPrefixedInternalNodes) {
-  // Remote entity: peer_subsystem___ros2cli_daemon
-  // The routing table maps this to peer "peer_subsystem", so after stripping
-  // the prefix we get "_ros2cli_daemon" which starts with '_' -> filtered.
+TEST(FilterInternalNodeAppsTest, KeepsPeerApps) {
+  // Both Apps have a routing entry, so the peer already filtered them.
   std::vector<App> apps;
   App remote_internal;
   remote_internal.id = "peer_subsystem___ros2cli_daemon";
@@ -923,15 +937,12 @@ TEST(FilterInternalNodeAppsTest, FiltersPeerPrefixedInternalNodes) {
 
   auto removed = filter_internal_node_apps(apps, routing, "/ros2_medkit_gateway");
 
-  EXPECT_EQ(removed, 1u);
-  ASSERT_EQ(apps.size(), 1u);
-  EXPECT_EQ(apps[0].id, "peer_subsystem__lidar_driver");
+  EXPECT_EQ(removed, 0u);
+  EXPECT_EQ(apps.size(), 2u);
 }
 
 TEST(FilterInternalNodeAppsTest, DoesNotStripPrefixWithoutRoutingEntry) {
-  // An entity ID that looks like it has a peer prefix but has no routing entry.
-  // Without routing, we don't know the peer name, so we check the raw ID.
-  // "peer__normal_node" has no routing entry, raw ID doesn't start with '_' -> kept.
+  // No routing entry, so the App is local and judged by its id, which does not start with '_'.
   std::vector<App> apps;
   App ambiguous;
   ambiguous.id = "peer__normal_node";
@@ -983,66 +994,56 @@ TEST(FilterInternalNodeAppsTest, MixedLocalAndRemoteInternalNodes) {
 
   auto removed = filter_internal_node_apps(apps, routing, "/ros2_medkit_gateway");
 
-  EXPECT_EQ(removed, 2u);
-  ASSERT_EQ(apps.size(), 2u);
-  // Verify the surviving apps
+  // Only the local internal node goes. The peer filtered its own Apps.
+  EXPECT_EQ(removed, 1u);
+  ASSERT_EQ(apps.size(), 3u);
   std::set<std::string> remaining_ids;
   for (const auto & app : apps) {
     remaining_ids.insert(app.id);
   }
   EXPECT_TRUE(remaining_ids.count("temp_sensor"));
   EXPECT_TRUE(remaining_ids.count("sub_b__actuator"));
-}
-
-TEST(FilterInternalNodeAppsTest, PeerPrefixMatchMustBeExact) {
-  // Entity ID: "my_peer__sensor" with routing mapping to peer "my_peer".
-  // After stripping "my_peer__", we get "sensor" which doesn't start with '_' -> kept.
-  // This verifies the prefix match is exact and doesn't over-strip.
-  std::vector<App> apps;
-  App app;
-  app.id = "my_peer__sensor";
-  apps.push_back(app);
-
-  std::unordered_map<std::string, std::string> routing;
-  routing["my_peer__sensor"] = "my_peer";
-
-  auto removed = filter_internal_node_apps(apps, routing, "/ros2_medkit_gateway");
-
-  EXPECT_EQ(removed, 0u);
-  ASSERT_EQ(apps.size(), 1u);
+  EXPECT_TRUE(remaining_ids.count("sub_b___parameter_bridge"));
 }
 
 namespace {
 
-App bound_app(const std::string & id, const std::string & fqn) {
+// Every fixture names its source. Runtime introspection gives the apps it
+// discovers "heuristic". Every other source is a declared or remote app.
+App bound_app(const std::string & id, const std::string & fqn, const std::string & source) {
   App app;
   app.id = id;
   app.name = id;
   app.bound_fqn = fqn;
+  app.source = source;
   return app;
 }
 
 }  // namespace
 
 TEST(FilterInternalNodeAppsTest, DropsTheGatewaysOwnHelperNodesButKeepsItsOwnNode) {
-  // The gateway creates "<self>_sub", "<self>_fault_clients" and
-  // "<self>_lifecycle_state_reader" in its own process. None starts with '_',
-  // so runtime introspection returns them as ordinary apps and the gateway ends
-  // up listing its own plumbing as diagnosable. Its own node is a different
-  // case and stays: its ROS parameters are served as that App's configurations.
+  // The gateway creates "_<self>_sub", "_<self>_fault_clients" and
+  // "_<self>_lifecycle_state_reader" in its own process. A declared app's id
+  // need not start with '_', so only the FQN test removes these. Its own node
+  // is a different case and stays: its ROS parameters are served as that App's
+  // configurations.
   const std::string self_fqn = "/ros2_medkit_gateway";
   std::vector<App> apps{
-      bound_app("ros2_medkit_gateway", self_fqn),
-      bound_app("ros2_medkit_gateway_sub", self_fqn + "_sub"),
-      bound_app("ros2_medkit_gateway_fault_clients", self_fqn + "_fault_clients"),
-      bound_app("ros2_medkit_gateway_lifecycle_state_reader", self_fqn + "_lifecycle_state_reader"),
-      // Positive controls on the same harness: a similarly suffixed FOREIGN
-      // node, a node whose name merely extends the gateway's, and the
-      // fault_manager, which is a separate diagnosable component even when it
-      // shares the process.
-      bound_app("other_gateway_sub", "/other_gateway_sub"),
-      bound_app("ros2_medkit_gateway_monitor", self_fqn + "_monitor"),
-      bound_app("fault_manager", "/fault_manager"),
+      bound_app("ros2_medkit_gateway", self_fqn, "heuristic"),
+      bound_app("ros2_medkit_gateway_sub", "/_ros2_medkit_gateway_sub", "manifest"),
+      bound_app("ros2_medkit_gateway_fault_clients", "/_ros2_medkit_gateway_fault_clients", "manifest"),
+      bound_app("ros2_medkit_gateway_lifecycle_state_reader", "/_ros2_medkit_gateway_lifecycle_state_reader",
+                "manifest"),
+      // Positive controls on the same harness: a declared app on a FOREIGN
+      // gateway's helper node, a declared app on a node that shares the
+      // helpers' "/_<self>" prefix, a plugin app with a protocol source on a
+      // node whose name starts with '_', and the fault_manager, which is a
+      // separate diagnosable component even when it shares the process. A
+      // declared app is judged by its id, so none of these is hidden.
+      bound_app("other_gateway_sub", "/_other_gateway_sub", "manifest"),
+      bound_app("ros2_medkit_gateway_monitor", "/_ros2_medkit_gateway_monitor", "manifest"),
+      bound_app("plc_bridge", "/plant/_driver", "opcua"),
+      bound_app("fault_manager", "/fault_manager", "heuristic"),
   };
 
   std::unordered_map<std::string, std::string> routing;
@@ -1054,14 +1055,14 @@ TEST(FilterInternalNodeAppsTest, DropsTheGatewaysOwnHelperNodesButKeepsItsOwnNod
     remaining.insert(app.id);
   }
   EXPECT_EQ(remaining, (std::set<std::string>{"ros2_medkit_gateway", "other_gateway_sub", "ros2_medkit_gateway_monitor",
-                                              "fault_manager"}));
+                                              "plc_bridge", "fault_manager"}));
 }
 
 TEST(FilterInternalNodeAppsTest, LeavesPeerHelperNodesToThePeer) {
   // A remote entity carrying the same FQN belongs to the peer that reported
   // it, so this gateway must not reach across and filter it.
   const std::string self_fqn = "/ros2_medkit_gateway";
-  std::vector<App> apps{bound_app("sub_b__ros2_medkit_gateway_sub", self_fqn + "_sub")};
+  std::vector<App> apps{bound_app("sub_b__ros2_medkit_gateway_sub", "/_ros2_medkit_gateway_sub", "peer:sub_b")};
 
   std::unordered_map<std::string, std::string> routing;
   routing["sub_b__ros2_medkit_gateway_sub"] = "sub_b";
@@ -1074,18 +1075,20 @@ TEST(FilterInternalNodeAppsTest, LeavesPeerHelperNodesToThePeer) {
 
 TEST(IsOwnGatewayHelperNodeTest, MatchesTheThreeHelperSuffixesExactlyAndNothingElse) {
   const std::string self_fqn = "/ros2_medkit_gateway";
-  EXPECT_TRUE(is_own_gateway_helper_node(self_fqn + "_sub", self_fqn));
-  EXPECT_TRUE(is_own_gateway_helper_node(self_fqn + "_fault_clients", self_fqn));
-  EXPECT_TRUE(is_own_gateway_helper_node(self_fqn + "_lifecycle_state_reader", self_fqn));
+  EXPECT_TRUE(is_own_gateway_helper_node("/_ros2_medkit_gateway_sub", self_fqn));
+  EXPECT_TRUE(is_own_gateway_helper_node("/_ros2_medkit_gateway_fault_clients", self_fqn));
+  EXPECT_TRUE(is_own_gateway_helper_node("/_ros2_medkit_gateway_lifecycle_state_reader", self_fqn));
 
   // The gateway's own node is not a helper: it carries the parameters SOVD
   // serves as configurations, so it stays a diagnosable App.
   EXPECT_FALSE(is_own_gateway_helper_node(self_fqn, self_fqn));
 
-  // Prefix neighbours are genuine peers, not ours.
-  EXPECT_FALSE(is_own_gateway_helper_node(self_fqn + "_monitor", self_fqn));
-  EXPECT_FALSE(is_own_gateway_helper_node(self_fqn + "2", self_fqn));
-  EXPECT_FALSE(is_own_gateway_helper_node("/other" + self_fqn + "_sub", self_fqn));
+  // Names that share the helpers' "/_<self>" prefix, or extend a helper name,
+  // are not helpers.
+  EXPECT_FALSE(is_own_gateway_helper_node("/_ros2_medkit_gateway_monitor", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/_ros2_medkit_gateway_sub2", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/_ros2_medkit_gateway_subX", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/other/_ros2_medkit_gateway_sub", self_fqn));
   EXPECT_FALSE(is_own_gateway_helper_node("/fault_manager", self_fqn));
 
   // An unknown self FQN claims nothing.
@@ -1094,30 +1097,25 @@ TEST(IsOwnGatewayHelperNodeTest, MatchesTheThreeHelperSuffixesExactlyAndNothingE
 }
 
 TEST(IsOwnGatewayHelperNodeTest, RecognizesHelpersOfANamespacedGateway) {
-  // A gateway moved on its own - `-r <gateway>:__ns:=/subsystem_b` - keeps the
-  // subscription node with it, because the executor passes the gateway's
-  // namespace, while the fault-client and lifecycle-reader nodes are built from
-  // the node name alone and stay in the process default namespace. All three
-  // are still this gateway's plumbing.
+  // A process-wide `-r __ns:=/subsystem_b` and a remap naming the gateway alone,
+  // `-r <gateway>:__ns:=/subsystem_b`, both leave every helper in the gateway's
+  // namespace: make_helper_node passes that namespace, and a rule naming the
+  // gateway does not match the helper's own name.
   const std::string self_fqn = "/subsystem_b/ros2_medkit_gateway";
-  EXPECT_TRUE(is_own_gateway_helper_node("/subsystem_b/ros2_medkit_gateway_sub", self_fqn));
-  EXPECT_TRUE(is_own_gateway_helper_node("/ros2_medkit_gateway_fault_clients", self_fqn));
-  EXPECT_TRUE(is_own_gateway_helper_node("/ros2_medkit_gateway_lifecycle_state_reader", self_fqn));
+  EXPECT_TRUE(is_own_gateway_helper_node("/subsystem_b/_ros2_medkit_gateway_sub", self_fqn));
+  EXPECT_TRUE(is_own_gateway_helper_node("/subsystem_b/_ros2_medkit_gateway_fault_clients", self_fqn));
+  EXPECT_TRUE(is_own_gateway_helper_node("/subsystem_b/_ros2_medkit_gateway_lifecycle_state_reader", self_fqn));
 
-  // A process-wide namespace remap moves all four together, so the in-namespace
-  // spelling has to keep working for the same two.
-  EXPECT_TRUE(is_own_gateway_helper_node("/subsystem_b/ros2_medkit_gateway_fault_clients", self_fqn));
-  EXPECT_TRUE(is_own_gateway_helper_node("/subsystem_b/ros2_medkit_gateway_lifecycle_state_reader", self_fqn));
+  // A helper-named node in another namespace belongs to a different gateway
+  // process and is that gateway's own filter's business.
+  EXPECT_FALSE(is_own_gateway_helper_node("/_ros2_medkit_gateway_sub", self_fqn));
 
-  // The subscription node always shares the gateway's namespace, so a
-  // root-namespace one belongs to a different gateway process and is that
-  // gateway's own filter's business.
-  EXPECT_FALSE(is_own_gateway_helper_node("/ros2_medkit_gateway_sub", self_fqn));
-
-  // Still nothing else: a peer in either namespace, and the gateway itself.
+  // Still nothing else: a name that shares the helpers' prefix in either
+  // namespace, and the gateway itself.
   EXPECT_FALSE(is_own_gateway_helper_node(self_fqn, self_fqn));
-  EXPECT_FALSE(is_own_gateway_helper_node("/subsystem_b/ros2_medkit_gateway_monitor", self_fqn));
-  EXPECT_FALSE(is_own_gateway_helper_node("/ros2_medkit_gateway_monitor", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/subsystem_b/_ros2_medkit_gateway_monitor", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/subsystem_b/_ros2_medkit_gateway_sub2", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/_ros2_medkit_gateway_monitor", self_fqn));
   EXPECT_FALSE(is_own_gateway_helper_node("/subsystem_b/fault_manager", self_fqn));
 }
 
@@ -1126,11 +1124,10 @@ TEST(FilterInternalNodeAppsTest, ReportsOnlyDeclaredAppsItDropsAsHelpers) {
   // saying so on every refresh would be noise. A DECLARED one is a manifest or
   // plugin entity being overridden, which the caller has to be able to log.
   const std::string self_fqn = "/ros2_medkit_gateway";
-  App runtime_helper = bound_app("ros2_medkit_gateway_sub", self_fqn + "_sub");
-  runtime_helper.source = "heuristic";
-  App declared_helper = bound_app("plc_bridge", self_fqn + "_fault_clients");
-  declared_helper.source = "manifest";
-  std::vector<App> apps{runtime_helper, declared_helper};
+  std::vector<App> apps{
+      bound_app("_ros2_medkit_gateway_sub", "/_ros2_medkit_gateway_sub", "heuristic"),
+      bound_app("plc_bridge", "/_ros2_medkit_gateway_fault_clients", "manifest"),
+  };
 
   std::unordered_map<std::string, std::string> routing;
   std::vector<std::string> dropped_declared;
@@ -1139,27 +1136,17 @@ TEST(FilterInternalNodeAppsTest, ReportsOnlyDeclaredAppsItDropsAsHelpers) {
   EXPECT_EQ(removed, 2u);
   EXPECT_TRUE(apps.empty());
   ASSERT_EQ(dropped_declared.size(), 1u);
-  EXPECT_EQ(dropped_declared[0], "plc_bridge -> /ros2_medkit_gateway_fault_clients");
+  EXPECT_EQ(dropped_declared[0], "plc_bridge -> /_ros2_medkit_gateway_fault_clients");
 }
 
-TEST(IsOwnGatewayHelperNodeTest, RecognizesAForeignRootHelperAsPlumbing) {
+TEST(IsOwnGatewayHelperNodeTest, LeavesAForeignRootGatewaysHelpersToThatGateway) {
   // Two gateways, both left at the default node name, one moved into a
-  // namespace: the namespaced one's root-dwelling helpers and the root one's
-  // are the SAME literal FQN, because both are built from the same node name in
-  // the same namespace. Nothing in the name can tell them apart, so a
-  // helper-named node in the root namespace is treated as plumbing whichever
-  // process created it. That is the deliberate trade: the alternative is
-  // serving and counting one's own helper nodes in every namespaced
-  // deployment, and a node named "<gateway>_fault_clients" is plumbing in
-  // either case - what it is does not depend on who owns it.
+  // namespace: each one's helpers live in its own namespace, so the FQN says
+  // whose they are. The root gateway's helpers are not the namespaced one's.
   const std::string self_fqn = "/subsystem_a/ros2_medkit_gateway";
-  EXPECT_TRUE(is_own_gateway_helper_node("/ros2_medkit_gateway_fault_clients", self_fqn));
-  EXPECT_TRUE(is_own_gateway_helper_node("/ros2_medkit_gateway_lifecycle_state_reader", self_fqn));
-
-  // The subscription node is the one case the name DOES settle: it always
-  // follows its gateway's namespace, so a root-namespace one is another
-  // process's and stays visible.
-  EXPECT_FALSE(is_own_gateway_helper_node("/ros2_medkit_gateway_sub", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/_ros2_medkit_gateway_fault_clients", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/_ros2_medkit_gateway_lifecycle_state_reader", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/_ros2_medkit_gateway_sub", self_fqn));
 
   // A foreign gateway's own node is never plumbing, in any namespace.
   EXPECT_FALSE(is_own_gateway_helper_node("/ros2_medkit_gateway", self_fqn));
@@ -1167,7 +1154,7 @@ TEST(IsOwnGatewayHelperNodeTest, RecognizesAForeignRootHelperAsPlumbing) {
 
   // A differently NAMED gateway's helpers are not ours: the bare name has to
   // match, so the rule does not reach across to a peer that was renamed.
-  EXPECT_FALSE(is_own_gateway_helper_node("/other_gateway_fault_clients", self_fqn));
+  EXPECT_FALSE(is_own_gateway_helper_node("/subsystem_a/_other_gateway_fault_clients", self_fqn));
 }
 
 TEST(RememberDroppedDeclaredAppsTest, ReportsTheSetOnceUntilItChanges) {
@@ -1175,21 +1162,21 @@ TEST(RememberDroppedDeclaredAppsTest, ReportsTheSetOnceUntilItChanges) {
   // refresh, so the same set must be reported once, not once per second.
   std::set<std::string> remembered;
 
-  const std::vector<std::string> one{"plc_bridge -> /ros2_medkit_gateway_fault_clients"};
+  const std::vector<std::string> one{"plc_bridge -> /_ros2_medkit_gateway_fault_clients"};
   EXPECT_TRUE(remember_dropped_declared_apps(one, remembered));
   EXPECT_FALSE(remember_dropped_declared_apps(one, remembered));
   EXPECT_FALSE(remember_dropped_declared_apps(one, remembered));
 
   // A changed set is news again.
-  const std::vector<std::string> two{"plc_bridge -> /ros2_medkit_gateway_fault_clients",
-                                     "aux_bridge -> /ros2_medkit_gateway_sub"};
+  const std::vector<std::string> two{"plc_bridge -> /_ros2_medkit_gateway_fault_clients",
+                                     "aux_bridge -> /_ros2_medkit_gateway_sub"};
   EXPECT_TRUE(remember_dropped_declared_apps(two, remembered));
   EXPECT_FALSE(remember_dropped_declared_apps(two, remembered));
 
   // Order is not a change: the caller builds this list from a vector whose
   // order follows discovery, which is not stable between refreshes.
-  const std::vector<std::string> two_reordered{"aux_bridge -> /ros2_medkit_gateway_sub",
-                                               "plc_bridge -> /ros2_medkit_gateway_fault_clients"};
+  const std::vector<std::string> two_reordered{"aux_bridge -> /_ros2_medkit_gateway_sub",
+                                               "plc_bridge -> /_ros2_medkit_gateway_fault_clients"};
   EXPECT_FALSE(remember_dropped_declared_apps(two_reordered, remembered));
 
   // Clearing says nothing, and it is remembered, so the same set coming back
@@ -1199,16 +1186,19 @@ TEST(RememberDroppedDeclaredAppsTest, ReportsTheSetOnceUntilItChanges) {
 }
 
 TEST(FilterInternalNodeAppsTest, DropsTheHelpersOfANamespacedGateway) {
-  // The same split at the level callers see: two of the three helpers of a
-  // namespaced gateway live in the root namespace, and without them being
-  // recognised the gateway lists its own plumbing.
+  // The same at the level callers see: a namespaced gateway's helpers share its
+  // namespace. An app id lacks their leading '_' when a name collision
+  // qualifies a runtime id with the namespace, as here, or when the app is
+  // declared.
   const std::string self_fqn = "/subsystem_b/ros2_medkit_gateway";
   std::vector<App> apps{
-      bound_app("ros2_medkit_gateway", self_fqn),
-      bound_app("ros2_medkit_gateway_sub", "/subsystem_b/ros2_medkit_gateway_sub"),
-      bound_app("ros2_medkit_gateway_fault_clients", "/ros2_medkit_gateway_fault_clients"),
-      bound_app("ros2_medkit_gateway_lifecycle_state_reader", "/ros2_medkit_gateway_lifecycle_state_reader"),
-      bound_app("other_gateway", "/subsystem_c/other_gateway"),
+      bound_app("ros2_medkit_gateway", self_fqn, "heuristic"),
+      bound_app("subsystem_b__ros2_medkit_gateway_sub", "/subsystem_b/_ros2_medkit_gateway_sub", "heuristic"),
+      bound_app("subsystem_b__ros2_medkit_gateway_fault_clients", "/subsystem_b/_ros2_medkit_gateway_fault_clients",
+                "heuristic"),
+      bound_app("subsystem_b__ros2_medkit_gateway_lifecycle_state_reader",
+                "/subsystem_b/_ros2_medkit_gateway_lifecycle_state_reader", "heuristic"),
+      bound_app("other_gateway", "/subsystem_c/other_gateway", "heuristic"),
   };
 
   std::unordered_map<std::string, std::string> routing;
@@ -1220,6 +1210,64 @@ TEST(FilterInternalNodeAppsTest, DropsTheHelpersOfANamespacedGateway) {
     remaining.insert(app.id);
   }
   EXPECT_EQ(remaining, (std::set<std::string>{"ros2_medkit_gateway", "other_gateway"}));
+}
+
+namespace {
+
+Function function_hosting(const std::string & id, std::vector<std::string> hosts, const std::string & source) {
+  Function func;
+  func.id = id;
+  func.name = id;
+  func.hosts = std::move(hosts);
+  func.source = source;
+  return func;
+}
+
+}  // namespace
+
+TEST(KeepServedFunctionHostsTest, KeepsOnlyHostsThatNameAServedAppOrComponent) {
+  // "plc_bridge" is an App declared on one of this gateway's own helper nodes,
+  // which the internal-node filter removed. "no_such_app" names nothing.
+  App sensor;
+  sensor.id = "line_a_sensor";
+  Component ecu;
+  ecu.id = "line_a_ecu";
+  std::vector<Function> functions{
+      function_hosting("line_a", {"line_a_sensor", "line_a_ecu", "plc_bridge", "no_such_app"}, "manifest")};
+
+  keep_served_function_hosts(functions, {sensor}, {ecu}, {});
+
+  ASSERT_EQ(functions.size(), 1u);
+  EXPECT_EQ(functions[0].hosts, (std::vector<std::string>{"line_a_sensor", "line_a_ecu"}));
+}
+
+TEST(KeepServedFunctionHostsTest, DropsAFunctionOnlyIntrospectionCreatedOnceNoHostIsLeft) {
+  // Runtime introspection creates a Function per namespace that holds apps,
+  // so one with no served App left is not served.
+  std::vector<Function> functions{function_hosting("hidden_ns", {"_probe"}, discovery::kRuntimeFunctionSource)};
+
+  keep_served_function_hosts(functions, {}, {}, {"hidden_ns"});
+
+  EXPECT_TRUE(functions.empty());
+}
+
+TEST(KeepServedFunctionHostsTest, KeepsAFunctionAnythingElseContributedToWithoutHosts) {
+  // cell_b carries the runtime source but a peer merged into it, so its id is
+  // not in the introspection-only set. The source string does not decide.
+  std::vector<Function> functions{
+      function_hosting("line_a", {"plc_bridge"}, "manifest"),
+      function_hosting("plc", {"plc_bridge"}, "plugin"),
+      function_hosting("cell_b", {"_cell_b_local"}, discovery::kRuntimeFunctionSource),
+  };
+
+  keep_served_function_hosts(functions, {}, {}, {});
+
+  std::set<std::string> kept;
+  for (const auto & func : functions) {
+    kept.insert(func.id);
+    EXPECT_TRUE(func.hosts.empty()) << func.id;
+  }
+  EXPECT_EQ(kept, (std::set<std::string>{"line_a", "plc", "cell_b"}));
 }
 
 // =============================================================================

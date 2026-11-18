@@ -121,8 +121,12 @@ class ParameterErrorPrecedenceTest : public ::testing::Test {
     spin_thread_ = std::thread([this]() {
       executor_->spin();
     });
+    // A cancel() that lands before spin() starts is lost, and join() would block.
+    while (!executor_->is_spinning()) {
+      std::this_thread::yield();
+    }
 
-    ctx_ = std::make_unique<HandlerContext>(gateway_node_.get(), cors_, auth_, tls_, nullptr);
+    ctx_ = std::make_unique<HandlerContext>(*gateway_node_, cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<ConfigHandlers>(*ctx_);
 
     wait_for_unspun_node_discovery();

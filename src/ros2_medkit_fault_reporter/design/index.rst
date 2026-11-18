@@ -47,7 +47,7 @@ The following diagram shows the relationships between the main components.
            - node_: rclcpp::Node::SharedPtr
            - source_id_: string
            - client_: ServiceClient<ReportFault>
-           - filter_: LocalFilter
+           - core_: ReporterCore
            - logger_: rclcpp::Logger
            --
            + FaultReporter(node, source_id, service_name)
@@ -55,8 +55,18 @@ The following diagram shows the relationships between the main components.
            + is_service_ready(): bool
            + filter(): const LocalFilter&
            --
-           - load_parameters(): void
-           - send_report(fault_code, severity, description): void
+           - load_parameters(node_params, logger): FilterConfig {static}
+           - send_report(report: FaultReport): void
+       }
+
+       class ReporterCore {
+           - source_id_: string
+           - filter_: LocalFilter
+           - sink_: ReportSink
+           --
+           + report(fault_code, severity, description): bool
+           + report_passed(fault_code): bool
+           + filter(): const LocalFilter&
        }
 
        class LocalFilter {
@@ -94,7 +104,8 @@ The following diagram shows the relationships between the main components.
 
    ' Relationships
    FaultReporter --> "rclcpp::Node" : uses
-   FaultReporter *-down-> LocalFilter : owns
+   FaultReporter *-down-> ReporterCore : owns
+   ReporterCore *-down-> LocalFilter : owns
    LocalFilter --> FilterConfig : configured by
    LocalFilter o--> FaultTracker : per fault_code
    FaultReporter ..> "srv::ReportFault" : calls
@@ -111,8 +122,8 @@ Main Components
    - Creates a service client to ``/fault_manager/report_fault``
    - Loads filter configuration from ROS parameters
    - Provides simple ``report(fault_code, severity, description)`` method
-   - Integrates ``LocalFilter`` to reduce noise from repeated faults
-   - Fire-and-forget service calls (non-blocking)
+   - Integrates ``LocalFilter`` to reduce noise from repeated faults, through ``ReporterCore``
+   - Non-blocking service calls that are confirmed by the response and sent again when it does not come
 
 2. **LocalFilter** - Per-fault-code filtering with threshold and time window
 
@@ -129,7 +140,17 @@ Main Components
    - ``default_window_sec``: Time window in seconds (default: 10.0)
    - ``bypass_severity``: Severity level that bypasses filtering (default: ERROR=2)
 
-4. **FaultTracker** - Internal state for per-fault-code tracking
+4. **ReporterCore** - ROS-free filtering and report building (``core/reporter_core.hpp``)
+
+   - Owns the ``LocalFilter`` and a sink function that receives each ``FaultReport`` that passed
+   - ``validate_filter_params()`` checks int64 parameter values before narrowing and replaces invalid ones
+   - Built as the static library ``fault_reporter_core`` from ``cmake/fault_reporter_core.cmake``
+     (plain CMake, no ament); the neutral types come from ``ros2_medkit_fault_detection/fault_types.hpp``
+
+   - Everything in the core links only the header-only ``ros2_medkit_fault_detection``; the ROS adapter
+     (``FaultReporter``: parameters, ``ReportFault`` client) stays in ``fault_reporter_lib``
+
+5. **FaultTracker** - Internal state for per-fault-code tracking
 
    - Maintains vector of timestamps for recent reports
    - Expired timestamps are cleaned up on each ``should_forward()`` call
@@ -179,6 +200,21 @@ Parameters are loaded from the node's parameter server:
            default_threshold: 3
            default_window_sec: 10.0
            bypass_severity: 2
+         delivery:
+           ack_timeout_sec: 0.5
+           max_attempts: 10
+           max_pending: 1024
+
+Plain-CMake Build
+~~~~~~~~~~~~~~~~~
+
+``cmake/fault_reporter_core.cmake`` builds the core with plain CMake (CMake 3.16, C++17, no ament) as the
+target ``fault_reporter_core``. The ament build includes it, and so does
+``scripts/check_cores_without_ros``. The file finds ``fault_types.hpp`` at
+``../ros2_medkit_fault_detection/include``, so the package directories must stay side by side. The
+target is not installed or exported, and the core needs no library besides the standard library. The
+ROS adapter passes a ``ReportSink`` that sends each report to the fault manager. The check passes a
+counting sink.
 
 Design Decisions
 ----------------
@@ -196,13 +232,38 @@ The default threshold of 3 reports within 10 seconds balances:
 - **Responsiveness**: Persistent issues are reported within seconds
 - **Safety**: High-severity faults (ERROR, CRITICAL) bypass filtering entirely
 
-Fire-and-Forget Service Calls
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Confirmed Delivery
+~~~~~~~~~~~~~~~~~~
 
-The ``report()`` method uses asynchronous service calls without waiting for
-responses. This ensures fault reporting never blocks the calling node, which
-is important for real-time systems. If the FaultManager service is unavailable,
-reports are silently dropped (logged at DEBUG level).
+``report()`` never blocks the calling node. It queues the request and returns. A client can see the
+service as ready before the server has matched it, and a request sent in that gap is lost, so the
+reporter keeps each request until its response arrives. With no response within
+``ack_timeout_sec`` it sends the request again, up to ``max_attempts`` requests. It then logs a
+warning that names the fault code and drops the report.
+
+Per fault code the requests form a queue and only the front is in flight, so the manager receives the
+events of one code in the order they were reported. At most ``max_pending`` reports wait for a
+response, all codes together. A report past that is dropped with a warning. A report made while the
+service is not ready is dropped at once (DEBUG log, WARN for a high-severity FAILED).
+
+The client holds 100 requests and 100 responses, where the default service QoS holds 10: one
+reporter has a request in flight for each of its fault codes, and the answers wait in the client
+until the node is spun. The responses include answers to every other client of the service, which
+the client drops when it reads them. If more than 100 requests wait for the manager, or more than
+100 answers arrive while the node is not spun, the oldest are dropped. Their reports are sent again
+after ``ack_timeout_sec``.
+
+Responses and retries are processed when the node is spun. Every constructor puts the retry timer on
+the node; without a timers interface it goes to the node's default callback group. A retry is sent
+whether or not the service is ready and counts toward ``max_attempts``, so a manager that restarts
+within the attempt budget receives the pending reports. If the manager answers too late (the timer
+resends between 1 and 1.5 times ``ack_timeout_sec`` after a send), or a response is lost, the report
+is sent again and the manager processes every copy it receives. A repeated FAILED counts toward the
+manager's debounce.
+
+A destroyed reporter leaves its pending reports to its delivery, which the ROS context holds until
+the last one is confirmed or dropped. When the context shuts down, each report still waiting is
+dropped with a warning that names its fault code.
 
 Thread Safety
 ~~~~~~~~~~~~~
@@ -216,6 +277,6 @@ Integration with FaultManager
 
 The FaultReporter is designed as a thin client to the FaultManager node:
 
-- **Decoupled**: FaultReporter only depends on ``ros2_medkit_msgs``, not the manager
+- **Decoupled**: FaultReporter only depends on ``ros2_medkit_msgs`` and ``ros2_medkit_fault_detection``, not the manager
 - **Lightweight**: Nodes get simple API without pulling in server-side code
 - **Flexible**: Service name is configurable for custom deployments

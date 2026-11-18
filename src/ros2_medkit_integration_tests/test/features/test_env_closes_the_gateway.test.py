@@ -15,24 +15,10 @@
 
 """MEDKIT_JWT_SECRET closes a gateway started through gateway.launch.py.
 
-The rule itself lives in the gateway node and is specified in
-test_env_auth_contract. What this file covers is the launch path: the variables
-have to REACH a node that `gateway.launch.py` starts, carrying whatever
-arguments the launch file passes.
-
-That is not idle. The container image is where it matters - `docker run <img>
-ros2 launch ros2_medkit_gateway bringup.launch.py` execs a command, and the
-node is started behind it, so the entrypoint's own `-p` arguments never reach
-the gateway and the environment is the only channel the variable has - and the launch file
-writes `auth.*` parameter overrides of its own. A file that asserted
-`auth.enabled` from its config and dropped the environment on the floor would
-produce exactly the failure worth a test: the operator is told the container is
-closed, and it serves the entity tree, the fault history and every operation to
-anyone who reaches the port.
-
-Driven through `gateway.launch.py` with no launch arguments naming auth, and
-against the open profile it defaults to, so anything that closes this gateway
-came from the environment.
+The rule lives in the gateway node (see test_env_auth_contract). This file
+checks that the variables reach a node started by `gateway.launch.py`, with
+no launch argument naming auth and against the open default profile, so
+anything that closes the gateway came from the environment.
 
 @verifies REQ_INTEROP_086, REQ_INTEROP_087
 """
@@ -66,20 +52,10 @@ CLIENT_SECRET = 'env_closed_client_secret'
 
 @pytest.mark.launch_test
 def generate_test_description():
-    """Include gateway.launch.py with the closing variables in its environment.
-
-    No launch argument names auth or TLS. The config file it defaults to is the
-    open profile, so anything that closes this gateway came from the
-    environment - which is what the case is about.
-    """
+    """Include gateway.launch.py with the closing variables in its environment."""
     launch_file = os.path.join(
         get_package_share_directory('ros2_medkit_gateway'), 'launch', 'gateway.launch.py')
 
-    # SetEnvironmentVariable, because gateway.launch.py reads os.environ when
-    # the launch description is evaluated and that happens in this process.
-    # Confining it to this file is what launch_testing already does: each test
-    # file runs in a process of its own, so the variable reaches this gateway
-    # and no other.
     return launch.LaunchDescription([
         launch.actions.SetEnvironmentVariable('MEDKIT_JWT_SECRET', JWT_SECRET),
         launch.actions.SetEnvironmentVariable(
@@ -101,13 +77,7 @@ class TestEnvClosesTheGateway(GatewayTestCase):
     BASE_URL = BASE_URL
 
     def test_01_an_anonymous_read_is_refused(self):
-        """The claim the image documentation makes, checked on the launch path.
-
-        ``/areas`` and not ``/health``: a read is what "closed" has to mean
-        here. Under ``require_auth_for: "write"`` - the open profile's value,
-        and what the gateway keeps if only ``auth.enabled`` is asserted - this
-        request answers 200 with authentication switched on.
-        """
+        """A read, not /health: at require_auth_for "write" a read answers 200."""
         resp = requests.get(f'{BASE_URL}/areas', timeout=15)
         self.assertIn(
             resp.status_code, (401, 403),
@@ -124,11 +94,7 @@ class TestEnvClosesTheGateway(GatewayTestCase):
         )
 
     def test_03_the_environment_credential_issues_a_working_token(self):
-        """The mirror: a gateway that refused everyone would pass the two above.
-
-        It also pins MEDKIT_CLIENTS reaching the gateway - without it the
-        container is closed to its operator as well as to everyone else.
-        """
+        """The mirror: a gateway that refused everyone would pass the two above."""
         token = requests.post(
             f'{BASE_URL}/auth/authorize',
             json={
@@ -150,11 +116,7 @@ class TestEnvClosesTheGateway(GatewayTestCase):
 
 @launch_testing.post_shutdown_test()
 class TestEnvClosesTheGatewayShutdown(unittest.TestCase):
-    """Every process exits cleanly.
-
-    Swept without naming one: the gateway is created inside the included launch
-    file, so this file holds no handle to it.
-    """
+    """Every process exits cleanly."""
 
     def test_exit_codes(self, proc_info):
         launch_testing.asserts.assertExitCodes(

@@ -15,6 +15,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -108,6 +109,15 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   void rescan_actions();
   void status_callback(const std::string & action_name, const action_msgs::msg::GoalStatusArray::ConstSharedPtr & msg);
 
+  /// Store the net state of `msg` as the desired state of the action. Returns
+  /// that state, or kUnknown when the message has no terminal verdict.
+  ActionState record_desired(const std::string & action_name, const action_msgs::msg::GoalStatusArray & msg);
+
+  /// True while the action has no reporter yet and its server's node name is not
+  /// resolved, for at most kSourceResolveGrace after the first check. The first
+  /// report waits so its source is the server FQN, not the action-name fallback.
+  bool source_pending(const std::string & action_name);
+
   /// Deliver the pending raise/heal for one action when the desired state
   /// differs from what the FaultManager was last told AND the report is
   /// deliverable (a null reporter is the test seam, treated as deliverable; a
@@ -170,6 +180,9 @@ class ActionStatusBridgeNode : public rclcpp::Node {
   // fixed at creation (server FQN if resolved, else the action-name fallback) and
   // never changed. Guarded by reporters_mutex_.
   std::map<std::string, std::unique_ptr<ros2_medkit_fault_reporter::FaultReporter>> reporters_;
+  // First time source_pending() found the action's server unresolved. Guarded by
+  // reporters_mutex_.
+  std::map<std::string, std::chrono::steady_clock::time_point> source_wait_since_;
   std::mutex reporters_mutex_;
 
   // Desired (latest observed) action-level state derived from status messages:

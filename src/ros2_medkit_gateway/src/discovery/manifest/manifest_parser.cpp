@@ -635,34 +635,6 @@ std::vector<std::string> ManifestParser::get_string_vector(const YAML::Node & no
   return result;
 }
 
-// ManifestConfig helper implementations
-ManifestConfig::UnmanifestedNodePolicy ManifestConfig::parse_policy(const std::string & str) {
-  if (str == "ignore") {
-    return UnmanifestedNodePolicy::IGNORE;
-  }
-  if (str == "error") {
-    return UnmanifestedNodePolicy::ERROR;
-  }
-  if (str == "include_as_orphan") {
-    return UnmanifestedNodePolicy::INCLUDE_AS_ORPHAN;
-  }
-  return UnmanifestedNodePolicy::WARN;  // Default
-}
-
-std::string ManifestConfig::policy_to_string(UnmanifestedNodePolicy policy) {
-  switch (policy) {
-    case UnmanifestedNodePolicy::IGNORE:
-      return "ignore";
-    case UnmanifestedNodePolicy::ERROR:
-      return "error";
-    case UnmanifestedNodePolicy::INCLUDE_AS_ORPHAN:
-      return "include_as_orphan";
-    case UnmanifestedNodePolicy::WARN:
-    default:
-      return "warn";
-  }
-}
-
 ros2_medkit_gateway::ScriptEntryConfig ManifestParser::parse_script_entry(const YAML::Node & node) const {
   ros2_medkit_gateway::ScriptEntryConfig entry;
   entry.id = get_string(node, "id");

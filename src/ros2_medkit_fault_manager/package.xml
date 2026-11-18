@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>ros2_medkit_fault_manager</name>
-  <version>0.7.0</version>
+  <version>0.7.1</version>
   <description>Central fault manager node for ros2_medkit fault management system</description>
 
   <maintainer email="bartoszburda93@gmail.com">bburda</maintainer>
@@ -12,6 +12,7 @@
   <buildtool_depend>ros2_medkit_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
+  <depend>ros2_medkit_fault_detection</depend>
   <depend>ros2_medkit_msgs</depend>
   <depend>ros2_medkit_serialization</depend>
   <depend>libsqlite3-dev</depend>

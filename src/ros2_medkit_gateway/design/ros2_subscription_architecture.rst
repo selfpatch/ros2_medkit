@@ -68,11 +68,18 @@ Ros2SubscriptionExecutor
 Owns:
 
 - One dedicated ``std::thread`` (the worker).
-- One ``rclcpp::Node`` (the subscription node, suffixed ``_sub``) exclusively
-  owned by this executor's internal ``SingleThreadedExecutor``. The gateway's
+- One ``rclcpp::Node`` (the subscription node, ``_<gateway name>_sub``)
+  exclusively owned by this executor's internal ``SingleThreadedExecutor``.
+  It is created by ``make_helper_node`` (``ros2_common/helper_node.hpp``):
+  hidden by the leading underscore, in the gateway's namespace, with the
+  gateway's ``use_sim_time`` and a node-local name remap, so a launch_ros
+  ``Node(name=...)`` does not rename it to the gateway's own name. The gateway's
   main ``MultiThreadedExecutor`` never sees this node; creation, destruction
   and callback dispatch of every subscription on it run on the single worker
   thread, preserving the single-writer invariant against rcl's hash-map.
+  The node has no ``/rosout`` publisher: context shutdown finalises every
+  ``/rosout`` publisher on the thread that shuts down, which would be a second
+  writer to the node's type cache.
 - A bounded task queue guarded by ``queue_mtx_`` + ``queue_cv_``.
 - One ``aux`` thread driving the watchdog and graph-event polling ticks on
   their own cadence. The aux thread only touches atomics and the

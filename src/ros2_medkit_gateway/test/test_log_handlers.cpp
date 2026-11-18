@@ -16,6 +16,7 @@
 
 #include <httplib.h>
 
+#include "null_gateway_services.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/log_handlers.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
@@ -28,17 +29,17 @@ using ros2_medkit_gateway::handlers::LogHandlers;
 namespace dto = ros2_medkit_gateway::dto;
 namespace http = ros2_medkit_gateway::http;
 
-// LogHandlers uses a null GatewayNode and null AuthManager.
+// LogHandlers uses services with no managers and a null AuthManager.
 // PR-403 commit 23: all three handler methods now return `Result<TResponse>`
 // and read the entity-id capture via `req.path_param("1")`. A default-
 // constructed TypedRequest has no captures, so the helpers short-circuit with
-// a 400 ERR_INVALID_REQUEST ErrorInfo before ever touching ctx_.node().
+// a 400 ERR_INVALID_REQUEST ErrorInfo before ever touching a manager.
 class LogHandlersTest : public ::testing::Test {
  protected:
   CorsConfig cors_{};
   AuthConfig auth_{};
   TlsConfig tls_{};
-  HandlerContext ctx_{nullptr, cors_, auth_, tls_, nullptr};
+  HandlerContext ctx_{ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr};
   LogHandlers handlers_{ctx_};
 
   // Build a TypedRequest with no path captures. The typed `path_param("1")`

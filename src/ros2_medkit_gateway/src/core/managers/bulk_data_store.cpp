@@ -14,13 +14,16 @@
 
 #include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cinttypes>
 #include <fstream>
 #include <iomanip>
 #include <random>
 #include <sstream>
 
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -33,6 +36,30 @@ BulkDataStore::BulkDataStore(const std::string & storage_dir, size_t max_upload_
   // Ensure storage directory exists
   std::error_code ec;
   std::filesystem::create_directories(storage_dir_, ec);
+}
+
+std::unique_ptr<BulkDataStore> make_bulk_data_store(const BulkDataConfig & config) {
+  // A negative value would wrap to a huge size_t and be handed to set_payload_max_length as an
+  // effectively unlimited cap. 0 already means unlimited by design, so a negative is refused rather
+  // than folded into it.
+  size_t max_upload = 0;
+  if (config.max_upload_size < 0) {
+    const BulkDataConfig defaults;
+    MEDKIT_LOG_WARN(log::Logger("bulk_data"),
+                    "bulk_data.max_upload_size %" PRId64
+                    " is negative. Must be >= 0 (0 = unlimited). Using default %" PRId64 ".",
+                    config.max_upload_size, defaults.max_upload_size);
+    max_upload = static_cast<size_t>(defaults.max_upload_size);
+  } else {
+    max_upload = static_cast<size_t>(config.max_upload_size);
+  }
+  auto categories = config.categories;
+  categories.erase(std::remove_if(categories.begin(), categories.end(),
+                                  [](const std::string & item) {
+                                    return item.empty();
+                                  }),
+                   categories.end());
+  return std::make_unique<BulkDataStore>(config.storage_dir, max_upload, std::move(categories));
 }
 
 // --- Validation ---

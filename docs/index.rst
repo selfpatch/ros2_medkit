@@ -17,6 +17,7 @@ Quick Links
 -----------
 
 .. grid:: 2
+   :gutter: 4
 
    .. grid-item-card:: 🚀 Getting Started
       :link: getting_started
@@ -98,7 +99,6 @@ Community
    :caption: Architecture
 
    design/index
-   roadmap
 
 .. toctree::
    :maxdepth: 2

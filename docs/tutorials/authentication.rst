@@ -11,26 +11,72 @@ Role-Based Access Control (RBAC) in ros2_medkit_gateway.
 Overview
 --------
 
-By default, the gateway runs without authentication for easy development:
-``config/gateway_params.yaml`` leaves ``auth.enabled`` false and
-``require_auth_for`` at ``"write"``. ``config/gateway_params.secure.yaml`` is
-the profile that turns it on, together with TLS and ``require_auth_for``
-``"all"``:
-
-.. code-block:: bash
-
-   ros2 launch ros2_medkit_gateway gateway.launch.py \
-     config_file:=$(ros2 pkg prefix --share ros2_medkit_gateway)/config/gateway_params.secure.yaml \
-     jwt_secret:=<at least 32 characters> \
-     auth_clients:=<id>:<secret>:admin \
-     cert_file:=<cert.pem> key_file:=<key.pem>
-
-Turn authentication on for any deployment reachable beyond the machine it runs
-on, to:
+By default, the gateway runs without authentication for easy development.
+For production deployments, you should enable authentication to:
 
 - Control who can access the API
 - Limit write operations to authorized users
 - Audit API access
+
+Environment Variables
+---------------------
+
+The gateway node reads three environment variables when it loads its
+parameters, so the rule is the same however it is started (``ros2 run``, any
+launch file, a container). The environment wins over the params file and over
+``-p`` arguments.
+A wrongly typed ``auth.*`` value in a params file still stops the gateway at
+start, even when an environment variable would replace it.
+
+.. list-table::
+   :widths: 28 72
+   :header-rows: 1
+
+   * - Variable
+     - Effect
+   * - ``MEDKIT_JWT_SECRET``
+     - A non-empty value turns authentication on, sets ``require_auth_for`` to
+       ``all`` and is the signing secret. Set but empty, the gateway refuses to
+       start (exit code 1): a blank value is usually a failed interpolation, and
+       starting open under it is the outcome the variable exists to prevent.
+       With ``auth.jwt_algorithm`` ``RS256`` it is refused at startup, because
+       the variable carries a shared secret and RS256 wants a key file path.
+   * - ``MEDKIT_CLIENTS``
+     - Replaces ``auth.clients``. Comma-separated ``id:secret:role`` entries;
+       surrounding spaces and tabs are trimmed. The id ends at the first colon
+       and the role starts after the last, so a secret may contain colons. A
+       repeated id keeps the first entry and logs a warning. A malformed entry
+       is dropped and reported by its position, never by its text. An empty
+       value means no clients and logs a warning; a value of which every entry
+       was refused stops the gateway. Ignored with a warning unless
+       ``MEDKIT_JWT_SECRET`` is set and non-empty.
+   * - ``MEDKIT_AUTH_DISABLED``
+     - Exactly ``1`` turns authentication off, over the params file and over
+       ``MEDKIT_JWT_SECRET``. Any other value has no effect.
+
+``ros2 param get`` reports what the gateway enforces: ``auth.enabled`` and
+``auth.require_auth_for`` hold the effective values (``none`` while
+authentication is off). No secret is readable: ``auth.jwt_secret`` reads
+``<from MEDKIT_JWT_SECRET>``, ``<set at start>`` or empty, each
+``auth.clients`` entry reads ``<id>:<sentinel>:<role>``, and
+``aggregation.peer_auth_header`` reads ``<set at start>`` or empty. The auth
+configuration is built once at start, so ``ros2 param set``, ``ros2 param load``
+and atomic batches touching ``auth.*`` or ``aggregation.peer_auth_header`` are
+refused; restart the gateway with the new configuration.
+
+Plugin config (``plugins.<name>.<key>``) is read at start and is not served as
+parameters, so a plugin password never reaches ``ros2 param get`` or
+``/parameter_events``.
+
+Where a secret is safe:
+
+- The environment variable (``MEDKIT_JWT_SECRET``, ``MEDKIT_CLIENTS``) keeps the
+  secret out of params files and out of the process list. The same user and
+  root can still read it from ``/proc/<pid>/environ``, and child processes
+  inherit it.
+- A params file that holds a secret must be readable only by the gateway's user.
+- A value given with ``-p`` on the command line is visible to every local user
+  in the process list.
 
 Authentication Modes
 --------------------
@@ -218,55 +264,6 @@ Response:
    curl -X POST http://localhost:8080/api/v1/auth/revoke \
      -H "Content-Type: application/json" \
      -d '{"token": "dGhpcyBpcyBhIHJlZnJlc2g..."}'
-
-What Survives a Restart
------------------------
-
-**Access tokens survive.** They are judged on three things: the signature
-verifies under the configured secret, the expiry is in the future, and the
-client named in ``sub`` exists and is enabled here. None of that depends on the
-process that issued the token, so a client keeps working across a gateway
-restart until its token expires on its own.
-
-**Refresh tokens do not.** Exchanging one requires the record the issuing
-gateway wrote when it minted the pair, and those records live in that process's
-memory. After a restart, ``POST /auth/token`` with a refresh token answers
-``invalid_grant`` and the client re-authenticates with its client id and secret.
-
-The refresh records are a **denylist**: a record held and marked revoked refuses
-the access tokens minted from it, and a record the gateway does not hold says
-nothing either way. Two consequences follow, and both are worth knowing:
-
-**A revoked token comes back after a restart**, for at most
-``auth.token_expiry_seconds`` - the longest a live access token can outlast the
-record that withdrew it. While the process runs, a revocation holds for the
-whole life of every token the gateway ITSELF issued.
-
-For a token another gateway issued, the record is held until that token's
-refresh expiry - which the token carries - plus this gateway's own
-``auth.token_expiry_seconds``, the only access lifetime it knows. So gateways
-that share a signing configuration must also share
-``auth.token_expiry_seconds`` and ``auth.refresh_token_expiry_seconds``: where
-a peer's access expiry is shorter than the issuer's, the peer drops the record
-at a point the issuer's tokens can outlive, and the revocation lapses there
-while the token still verifies; and a peer keeps such a record for at most its
-own refresh lifetime, so an issuer's longer refresh expiry lets it go on
-refreshing a token the peer has forgotten. Where a revocation has to survive a
-restart, disable the client instead: ``auth.clients`` is read from
-configuration and the check runs on every request.
-
-**Under** ``aggregation.forward_auth`` **revocation is per gateway.** Peers
-share a JWT configuration, so a token the aggregator minted is accepted by the
-peer, and ``POST /auth/revoke`` on the peer refuses it *there* - the peer writes
-a revoked record for a token it never issued precisely so that works. It does
-not reach the aggregator, which shares no record store with it. A token revoked
-on one gateway stays valid on every other until it expires or the client is
-disabled there too.
-
-The role a token grants is also per gateway: each one reads ``sub`` against its
-own ``auth.clients`` and grants the role listed there, so the ``role`` claim in
-the token does not travel. A client that is ``admin`` on the aggregator and
-``viewer`` on a peer may only read on the peer.
 
 Production Recommendations
 --------------------------

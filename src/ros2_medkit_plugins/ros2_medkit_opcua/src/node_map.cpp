@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <initializer_list>
@@ -672,6 +673,34 @@ bool NodeMap::load(const std::string & yaml_path) {
                       "fault_enum on node_id=%s declared but produced no usable rules - "
                       "no faults will be detected for this point",
                       entry.node_id_str.c_str());
+        }
+      }
+
+      // Raise qualifier: how long the condition must hold before the point
+      // raises a fault, so one noisy sample does not become a real fault.
+      // Applies to whichever detection mode the point uses. Out-of-range values
+      // are clamped with a warning rather than dropping the point.
+      if (n["raise_after_samples"] || n["raise_after_ms"]) {
+        if (!entry.detection.has_value()) {
+          RCLCPP_WARN(logger,
+                      "raise_after_samples/raise_after_ms on node_id=%s has no alarm, status_bits or fault_enum "
+                      "to apply to - ignoring",
+                      entry.node_id_str.c_str());
+        } else {
+          constexpr std::int64_t kMaxSamples = 10000;
+          constexpr std::int64_t kMaxMs = 3600000;  // one hour
+          const auto s = parse_int64(n["raise_after_samples"], 1, "raise_after_samples", entry.node_id_str);
+          const auto ms = parse_int64(n["raise_after_ms"], 0, "raise_after_ms", entry.node_id_str);
+          if (s < 1 || s > kMaxSamples) {
+            RCLCPP_WARN(logger, "raise_after_samples=%lld on node_id=%s out of range (1..%lld) - clamping",
+                        static_cast<long long>(s), entry.node_id_str.c_str(), static_cast<long long>(kMaxSamples));
+          }
+          if (ms < 0 || ms > kMaxMs) {
+            RCLCPP_WARN(logger, "raise_after_ms=%lld on node_id=%s out of range (0..%lld) - clamping",
+                        static_cast<long long>(ms), entry.node_id_str.c_str(), static_cast<long long>(kMaxMs));
+          }
+          entry.raise_qualifier.min_samples = static_cast<std::uint32_t>(std::clamp<std::int64_t>(s, 1, kMaxSamples));
+          entry.raise_qualifier.min_duration = std::chrono::milliseconds(std::clamp<std::int64_t>(ms, 0, kMaxMs));
         }
       }
 

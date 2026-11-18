@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/core/status/lifecycle_state_reader.hpp"  // find_lifecycle_get_state_path
+#include "ros2_medkit_gateway/ros2_common/helper_node.hpp"
 
 namespace ros2_medkit_graph_watchdog {
 
@@ -69,7 +70,8 @@ std::string derive_transition_event_topic(const std::string & get_state_path) {
 LifecycleWatcher::LifecycleWatcher(rclcpp::Node * gateway_node, std::mutex * node_mutex, int departed_retention_ticks)
   : node_(gateway_node)
   , node_mutex_(node_mutex)
-  , reader_(std::make_shared<ros2_medkit_gateway::Ros2LifecycleStateReader>(gateway_node))
+  , reader_(std::make_shared<ros2_medkit_gateway::Ros2LifecycleStateReader>(
+        gateway_node, ros2_medkit_gateway::Ros2LifecycleStateReader::kDefaultTimeout, "_lifecycle_watcher"))
   , state_(std::make_shared<SharedState>())
   , retention_ticks_(departed_retention_ticks) {
   // One group for every lifecycle subscription, created once here rather than per node:
@@ -84,7 +86,8 @@ LifecycleWatcher::LifecycleWatcher(rclcpp::Node * gateway_node, std::mutex * nod
   std::lock_guard<std::mutex> node_lock(*node_mutex_);
   lifecycle_group_ = node_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive,
                                                   /*automatically_add_to_executor_with_node=*/false);
-  lifecycle_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+  lifecycle_executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>(
+      ros2_medkit_gateway::ros2_common::executor_options_for(*node_));
   lifecycle_executor_->add_callback_group(lifecycle_group_, node_->get_node_base_interface());
 }
 

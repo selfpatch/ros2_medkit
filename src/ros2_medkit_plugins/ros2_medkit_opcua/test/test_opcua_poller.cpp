@@ -21,8 +21,14 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace ros2_medkit_gateway {
@@ -192,6 +198,79 @@ TEST(AlarmRoutingTest, TheEventPathsCopyDoesNotFollowARenameItNeverAskedFor) {
   EXPECT_EQ(poller.alarm_routing()->auto_alarms.entity_id, "siemens_ag_cpu_1505sp_f_alarms");
   EXPECT_EQ(subscribed_with->auto_alarms.entity_id, placeholder_entity)
       << "a refresh rewrote the snapshot a callback was already holding";
+}
+
+TEST(DetectionOrderTest, ACallbackAndARecheckHandOverEdgesInOrder) {
+  // Under a subscription with native alarms on, a data-change callback runs on
+  // the event pump thread while the poll thread rechecks waiting faults. Here
+  // the callback starts a 1 ms wait and later clears it, and the recheck ends
+  // the wait with a raise, so both threads work out edges for one fault. The
+  // tracker hands them out strictly alternating; if a thread could hand its
+  // edge over after the other thread worked out a later one, the sink would
+  // see two raises or two clears in a row.
+  const auto path = std::filesystem::temp_directory_path() / "test_opcua_poller_detection_order.yaml";
+  std::ofstream(path) << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=Temp"
+    entity_id: tank
+    data_name: temp
+    data_type: float
+    raise_after_ms: 1
+    alarm:
+      fault_code: HIGH_TEMP
+      threshold: 80.0
+)";
+  NodeMap node_map;
+  const bool loaded = node_map.load(path.string());
+  std::remove(path.string().c_str());
+  ASSERT_TRUE(loaded);
+
+  OpcuaClient client;  // never connected: values are delivered by hand
+  OpcuaPoller poller(client, node_map);
+  std::vector<bool> sent;  // appended under the poller's alarm lock
+  poller.set_alarm_callback([&sent](const std::string &, const ros2_medkit::fault_detection::FaultSignal & s) {
+    sent.push_back(s.active);
+  });
+  // Hold the window between working out the edges and handing them over open
+  // for 400 us on every pass. The recheck raises 1 ms after the bad value and
+  // the clear comes 1.1 ms after it, inside that window, so without the lock
+  // the clear is often handed over before the raise.
+  poller.set_handover_delay_for_test(std::chrono::microseconds(400));
+  poller.evaluate_alarms_for_test(DetectionPipeline::Pass::kRecheck);  // subscription mode from here
+
+  constexpr int kRounds = 300;
+  std::atomic<bool> done{false};
+  std::thread pump([&] {
+    for (int i = 0; i < kRounds; ++i) {
+      poller.on_data_change_for_test("ns=1;s=Temp", OpcuaValue{90.0});
+      std::this_thread::sleep_for(std::chrono::microseconds(1100));
+      poller.on_data_change_for_test("ns=1;s=Temp", OpcuaValue{70.0});
+    }
+    done = true;
+  });
+  std::thread poll([&] {
+    while (!done.load()) {
+      poller.evaluate_alarms_for_test(DetectionPipeline::Pass::kRecheck);
+      // The real poll thread waits between rechecks. Without a gap it takes the lock back at once,
+      // std::mutex is not fair, and on a two-core runner the pump thread starves past the timeout.
+      std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+  });
+  pump.join();
+  poll.join();
+
+  ASSERT_GT(sent.size(), 100u) << "the recheck should have raised the fault many times";
+  EXPECT_TRUE(sent.front()) << "the first edge must be a raise";
+  int out_of_order = 0;
+  for (size_t i = 1; i < sent.size(); ++i) {
+    if (sent[i] == sent[i - 1]) {
+      ++out_of_order;
+    }
+  }
+  EXPECT_EQ(out_of_order, 0) << "of " << sent.size() << " edges handed over";
+  EXPECT_FALSE(sent.back()) << "the last value was healthy, so the last edge must be a clear";
 }
 
 TEST(AlarmRoutingTest, ARepinMovesConditionsAlreadyPinnedToTheNewEntity) {

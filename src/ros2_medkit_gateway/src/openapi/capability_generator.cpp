@@ -29,11 +29,12 @@
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/http/member_qualified_id.hpp"
 #include "ros2_medkit_gateway/core/http/operation_item_id.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 #include "ros2_medkit_gateway/core/models/entity_types.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/openapi/document_checks.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 #include "ros2_medkit_gateway/core/version.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 
 namespace ros2_medkit_gateway {
@@ -107,14 +108,17 @@ void for_each_operation(nlohmann::json & document, Visitor && visit) {
 
 }  // namespace
 
-CapabilityGenerator::CapabilityGenerator(handlers::HandlerContext & ctx, GatewayNode & node, PluginManager * plugin_mgr,
-                                         const RouteRegistry * route_registry, DocsCacheBounds bounds)
+CapabilityGenerator::CapabilityGenerator(handlers::HandlerContext & ctx, PluginManager * plugin_mgr,
+                                         const RouteRegistry * route_registry, std::string server_host,
+                                         int64_t server_port, DocsCacheBounds bounds, ServerIdentity identity)
   : ctx_(ctx)
-  , node_(node)
   , plugin_mgr_(plugin_mgr)
   , route_registry_(route_registry)
-  , schema_builder_()
-  , bounds_(bounds) {
+  , schema_builder_(*ctx.services().type_schemas())
+  , server_host_(std::move(server_host))
+  , server_port_(server_port)
+  , bounds_(bounds)
+  , identity_(std::move(identity)) {
 }
 
 // TODO(#272): Fix TOCTOU race - use compare-and-swap when storing cached specs
@@ -327,7 +331,7 @@ nlohmann::json CapabilityGenerator::generate_root() const {
   }
 
   OpenApiSpecBuilder builder;
-  builder.info("ROS 2 Medkit Gateway", kGatewayVersion)
+  builder.info(identity_.server_name, identity_.server_version)
       .description(
           "SOVD-compatible REST API for ROS 2 diagnostics and control. "
           "See https://selfpatch.github.io/ros2_medkit/ for documentation.")
@@ -344,10 +348,10 @@ nlohmann::json CapabilityGenerator::generate_root() const {
   // silently replacing the gateway's description of that path would hide it.
   for (const auto & [path, item] : extension_paths.items()) {
     if (registry_paths.contains(path)) {
-      RCLCPP_WARN(handlers::HandlerContext::logger(),
-                  "Plugin describes path '%s', which the gateway already documents; keeping the gateway's "
-                  "description. The plugin's route is still mounted - check it is not shadowing a gateway route.",
-                  path.c_str());
+      MEDKIT_LOG_WARN(handlers::HandlerContext::logger(),
+                      "Plugin describes path '%s', which the gateway already documents; keeping the gateway's "
+                      "description. The plugin's route is still mounted - check it is not shadowing a gateway route.",
+                      path.c_str());
       continue;
     }
     builder.add_paths(nlohmann::json{{path, item}});
@@ -391,10 +395,10 @@ nlohmann::json CapabilityGenerator::generate_root() const {
     for (const auto & name : orphans) {
       names += (names.empty() ? "" : ", ") + name;
     }
-    RCLCPP_WARN(handlers::HandlerContext::logger(),
-                "OpenAPI document ships %zu schema(s) no operation can reach: %s. Bind each to the route "
-                "that returns it, or drop it from dto::AllDtos.",
-                orphans.size(), names.c_str());
+    MEDKIT_LOG_WARN(handlers::HandlerContext::logger(),
+                    "OpenAPI document ships %zu schema(s) no operation can reach: %s. Bind each to the route "
+                    "that returns it, or drop it from dto::AllDtos.",
+                    orphans.size(), names.c_str());
   }
 
   return document;
@@ -456,7 +460,7 @@ nlohmann::json CapabilityGenerator::project(const nlohmann::json & served, const
 nlohmann::json CapabilityGenerator::build_subtree_document(const std::string & title,
                                                            const nlohmann::json & paths) const {
   OpenApiSpecBuilder builder;
-  builder.info("ROS 2 Medkit Gateway - " + title, kGatewayVersion)
+  builder.info(identity_.server_name + " - " + title, identity_.server_version)
       .sovd_version(kSovdVersion)
       .server(build_server_url(), "Gateway server")
       // The projected operations carry whatever `security` their registration
@@ -722,7 +726,7 @@ bool CapabilityGenerator::adopt_projected_framework(nlohmann::json & item, const
 void CapabilityGenerator::add_cache_derived_items(nlohmann::json & paths, const ResolvedPath & resolved,
                                                   const std::string & entity_path) const {
   const std::string collection_path = entity_path + "/" + resolved.resource_collection;
-  const auto & cache = node_.get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
   const PathBuilder path_builder(schema_builder_);
   const bool one_item = !resolved.resource_id.empty();
 
@@ -950,7 +954,7 @@ nlohmann::json CapabilityGenerator::generate_plugin_docs(const std::string & pat
   }
 
   OpenApiSpecBuilder builder;
-  builder.info("ROS 2 Medkit Gateway - Plugin", kGatewayVersion)
+  builder.info(identity_.server_name + " - Plugin", identity_.server_version)
       .sovd_version(kSovdVersion)
       .server(build_server_url(), "Gateway server")
       // Without the definition, the per-operation `security` a plugin
@@ -965,7 +969,7 @@ nlohmann::json CapabilityGenerator::generate_plugin_docs(const std::string & pat
 // -----------------------------------------------------------------------------
 
 bool CapabilityGenerator::validate_entity_hierarchy(const ResolvedPath & resolved) const {
-  const auto & cache = node_.get_thread_safe_cache();
+  const auto & cache = ctx_.services().entity_cache();
 
   // Validate the main entity exists
   if (!resolved.entity_id.empty()) {
@@ -1103,17 +1107,8 @@ bool CapabilityGenerator::validate_entity_hierarchy(const ResolvedPath & resolve
 // -----------------------------------------------------------------------------
 
 std::string CapabilityGenerator::build_server_url() const {
-  // Read host/port independently so a missing host doesn't clobber a valid port
-  std::string host = "localhost";
-  int port = 8080;
-  try {
-    host = node_.get_parameter("server.host").as_string();
-  } catch (...) {
-  }
-  try {
-    port = static_cast<int>(node_.get_parameter("server.port").as_int());
-  } catch (...) {
-  }
+  std::string host = server_host_;
+  const int port = static_cast<int>(server_port_);
 
   // Use localhost for display if bound to all interfaces
   if (host == "0.0.0.0") {
@@ -1165,7 +1160,7 @@ size_t CapabilityGenerator::cache_byte_size() const {
 }
 
 std::string CapabilityGenerator::get_cache_key(const std::string & path) const {
-  auto & cache = node_.get_thread_safe_cache();
+  auto & cache = ctx_.services().entity_cache();
   auto generation = cache.generation();
   {
     std::unique_lock lock(cache_mutex_);

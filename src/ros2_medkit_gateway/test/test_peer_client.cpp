@@ -26,12 +26,17 @@
 #include "ros2_medkit_gateway/core/aggregation/peer_client.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
+#include "ros2_medkit_gateway/test_support/refused_port.hpp"
 
 using namespace ros2_medkit_gateway;
 
-// Use a port that nothing listens on for connection-refused tests
-constexpr int DEAD_PORT = 59999;
-static const std::string DEAD_URL = "http://127.0.0.1:" + std::to_string(DEAD_PORT);
+// URL of a port that refuses every connection. The port stays bound and never listens for the
+// life of this test binary.
+static const std::string & dead_url() {
+  static const test_support::RefusedPort port;
+  static const std::string url = port.http_url();
+  return url;
+}
 
 // =============================================================================
 // Construction and basic accessor tests
@@ -45,7 +50,7 @@ TEST(PeerClient, constructs_with_url_and_name) {
 }
 
 TEST(PeerClient, initially_not_healthy) {
-  PeerClient client(DEAD_URL, "dead_peer", 500);
+  PeerClient client(dead_url(), "dead_peer", 500);
 
   EXPECT_FALSE(client.is_healthy());
 }
@@ -55,7 +60,7 @@ TEST(PeerClient, initially_not_healthy) {
 // =============================================================================
 
 TEST(PeerClient, health_check_marks_unhealthy_on_connection_refused) {
-  PeerClient client(DEAD_URL, "dead_peer", 200);
+  PeerClient client(dead_url(), "dead_peer", 200);
 
   // Should not throw, just mark unhealthy
   client.check_health();
@@ -68,7 +73,7 @@ TEST(PeerClient, health_check_marks_unhealthy_on_connection_refused) {
 
 // @verifies REQ_INTEROP_003
 TEST(PeerClient, forward_sets_502_on_connection_error) {
-  PeerClient client(DEAD_URL, "dead_peer", 200);
+  PeerClient client(dead_url(), "dead_peer", 200);
 
   httplib::Request req;
   req.method = "GET";
@@ -173,7 +178,7 @@ TEST(PeerFailureReason, every_kind_has_a_distinct_wire_token) {
 // =============================================================================
 
 TEST(PeerClient, forward_and_get_json_returns_error_on_connection_refused) {
-  PeerClient client(DEAD_URL, "dead_peer", 200);
+  PeerClient client(dead_url(), "dead_peer", 200);
 
   auto result = client.forward_and_get_json("GET", "/api/v1/health");
 
@@ -191,7 +196,7 @@ TEST(PeerClient, forward_and_get_json_returns_error_on_connection_refused) {
 
 // @verifies REQ_INTEROP_003
 TEST(PeerClient, fetch_entities_returns_error_on_connection_refused) {
-  PeerClient client(DEAD_URL, "dead_peer", 200);
+  PeerClient client(dead_url(), "dead_peer", 200);
 
   auto result = client.fetch_entities();
 

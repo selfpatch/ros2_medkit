@@ -39,6 +39,8 @@ struct MergeResult {
   std::vector<Component> components;
   std::vector<App> apps;
   std::vector<Function> functions;
+  /// Ids of the Functions only the runtime layer contributed.
+  std::unordered_set<std::string> introspection_only_function_ids;
   MergeReport report;
   LinkingResult linking_result;
 };

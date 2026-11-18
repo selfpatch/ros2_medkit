@@ -13,23 +13,32 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/handlers/health_handlers.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <chrono>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
-#include "ros2_medkit_gateway/core/auth/auth_middleware.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_models.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/discovery_enums.hpp"
+#include "ros2_medkit_gateway/core/discovery/entity_discovery.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/fan_out_helpers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/http/warning_codes.hpp"
+#include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/lock_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/script_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/trigger_manager.hpp"
+#include "ros2_medkit_gateway/core/managers/update_manager.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
+#include "ros2_medkit_gateway/core/resource_sampler.hpp"
+#include "ros2_medkit_gateway/core/subscription_transport.hpp"
 #include "ros2_medkit_gateway/core/version.hpp"
-#include "ros2_medkit_gateway/discovery/discovery_manager.hpp"
 #include "ros2_medkit_gateway/dto/health.hpp"
-#include "ros2_medkit_gateway/gateway_node.hpp"
 
 #include "../../openapi/route_registry.hpp"
 
@@ -41,7 +50,7 @@ namespace handlers {
 namespace {
 
 ErrorInfo make_internal_error(const char * where, const std::exception & e) {
-  RCLCPP_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
+  MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in %s: %s", where, e.what());
   ErrorInfo err;
   err.code = ERR_INTERNAL_ERROR;
   err.message = "Internal server error";
@@ -51,68 +60,12 @@ ErrorInfo make_internal_error(const char * where, const std::exception & e) {
 
 }  // namespace
 
-namespace {
-
-/// True when this answer must be cut down to liveness only.
-///
-/// Two conditions, and both are needed. The route has to be one an operator
-/// named in `auth.public_routes` - the documented case, where something that
-/// cannot hold a credential was given a door of its own - and the caller has to
-/// have presented no token this gateway accepts. On such a route the full body
-/// is more than the probe asked for: the linking warnings name entities and ROS
-/// node FQNs, and the entity cache reports how many apps, areas and components
-/// this gateway sees.
-///
-/// The operator's list is the test, and `auth.enabled` on its own is not:
-/// under `require_auth_for: "write"` every GET is open by the requirement
-/// level, with nobody deciding anything route by route, and the full body
-/// belongs to an anonymous caller there. docs/config/server.rst promises the
-/// cut on a named route and nowhere else.
-///
-/// One case is wider than the list: with authentication on and no manager to
-/// ask, this cuts the body. That path means the gateway cannot answer the
-/// question at all, and liveness is the safe thing to say when the check
-/// itself is unavailable.
-bool serves_reduced_body(const HandlerContext & ctx, const http::TypedRequest & req) {
-  if (!ctx.auth_config().enabled) {
-    return false;  // Nothing is anonymous when nothing is authenticated.
-  }
-  auto * manager = ctx.auth_manager();
-  if (manager == nullptr) {
-    return true;  // Fail closed: cannot verify, so do not disclose.
-  }
-  if (!manager->is_public_route(req.method(), req.path())) {
-    return false;
-  }
-  auto header = req.header("Authorization");
-  if (!header) {
-    return true;
-  }
-  auto token = AuthMiddleware::extract_bearer_token(*header);
-  if (!token) {
-    return true;
-  }
-  return !manager->validate_token(*token).valid;
-}
-
-}  // namespace
-
 http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & req) {
+  (void)req;  // Unused parameter
   try {
     dto::Health response;
     response.status = "healthy";
     response.timestamp = std::chrono::system_clock::now().time_since_epoch().count();
-
-    // Liveness and nothing else for an anonymous caller on a route somebody
-    // opened by name. Returned before any of the sections below are built, so
-    // a section added later is private by default, and stays private until
-    // someone decides otherwise. The flag is what keeps the empty
-    // `warnings` below from reading as "nothing is wrong here" to a monitor
-    // that never presented a credential.
-    if (serves_reduced_body(ctx_, req)) {
-      response.x_medkit_reduced = true;
-      return response;
-    }
 
     // Operator-actionable warnings the gateway flags without taking itself
     // offline. Collected across every subsystem that can produce one, so the
@@ -121,7 +74,7 @@ http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & 
     std::vector<dto::HealthWarning> warnings;
 
     // Add discovery info
-    auto * dm = ctx_.node() ? ctx_.node()->get_discovery_manager() : nullptr;
+    auto * dm = ctx_.services().discovery();
     if (dm) {
       dto::HealthDiscovery discovery;
       discovery.mode = discovery_mode_to_string(dm->get_mode());
@@ -186,26 +139,24 @@ http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & 
     // vendor extensions. Atomic reads only; safe to serve from /health even
     // under load. External monitors (k8s liveness, systemd watchdog, Docker
     // HEALTHCHECK) can trigger on `x-medkit-subscription-executor.degraded`.
-    if (ctx_.node()) {
-      if (auto * tdp = ctx_.node()->get_topic_data_provider()) {
-        auto x = tdp->x_medkit_stats();
-        if (x.contains("x-medkit-data-provider")) {
-          response.x_medkit_data_provider = x["x-medkit-data-provider"];
-        }
-        if (x.contains("x-medkit-subscription-executor")) {
-          response.x_medkit_subscription_executor = x["x-medkit-subscription-executor"];
-        }
+    if (auto * tdp = ctx_.services().topic_data_provider()) {
+      auto x = tdp->x_medkit_stats();
+      if (x.contains("x-medkit-data-provider")) {
+        response.x_medkit_data_provider = x["x-medkit-data-provider"];
       }
-
-      // Surface entity cache live counts and capacity via x-medkit-entity-cache.
-      // Enables external monitors and operators to verify the cache is sized
-      // correctly (grew == true signals that entity_cache.capacity should be raised).
-      const auto stats = ctx_.node()->get_thread_safe_cache().get_stats();
-      response.x_medkit_entity_cache =
-          json{{"capacity", stats.capacity}, {"areas", stats.area_count},         {"components", stats.component_count},
-               {"apps", stats.app_count},    {"functions", stats.function_count}, {"generation", stats.generation},
-               {"grew", stats.grew}};
+      if (x.contains("x-medkit-subscription-executor")) {
+        response.x_medkit_subscription_executor = x["x-medkit-subscription-executor"];
+      }
     }
+
+    // Surface entity cache live counts and capacity via x-medkit-entity-cache.
+    // Enables external monitors and operators to verify the cache is sized
+    // correctly (grew == true signals that entity_cache.capacity should be raised).
+    const auto stats = ctx_.services().entity_cache().get_stats();
+    response.x_medkit_entity_cache =
+        json{{"capacity", stats.capacity}, {"areas", stats.area_count},         {"components", stats.component_count},
+             {"apps", stats.app_count},    {"functions", stats.function_count}, {"generation", stats.generation},
+             {"grew", stats.grew}};
 
     // How much of the SSE client cap is in use. The cap is small - two by
     // default - and on an aggregating deployment a peer's slots are consumed
@@ -219,6 +170,7 @@ http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & 
     // Add peer status when aggregation is active
     if (auto * agg = ctx_.aggregation_manager()) {
       response.peers = agg->get_peer_status();
+      response.x_medkit_instance_id = agg->instance_id();
 
       // Aggregation warnings are only collectable when there is an aggregation
       // manager; the array itself is not conditional on one.
@@ -247,10 +199,10 @@ http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & 
         if (auto valid = validate_entity_id(w.entity_id); valid) {
           warning.entity_ids = {w.entity_id};
         } else {
-          RCLCPP_WARN(HandlerContext::logger(),
-                      "Peer(s) [%s] announced Component id '%s', which is not a valid entity id (%s); omitting it "
-                      "from the '%s' warning's entity_ids",
-                      peers_list.c_str(), w.entity_id.c_str(), valid.error().c_str(), WARN_LEAF_ID_COLLISION);
+          MEDKIT_LOG_WARN(HandlerContext::logger(),
+                          "Peer(s) [%s] announced Component id '%s', which is not a valid entity id (%s); omitting it "
+                          "from the '%s' warning's entity_ids",
+                          peers_list.c_str(), w.entity_id.c_str(), valid.error().c_str(), WARN_LEAF_ID_COLLISION);
         }
         warning.peer_names = w.peer_names;
         warnings.push_back(std::move(warning));
@@ -295,9 +247,9 @@ http::Result<dto::RootOverview> HealthHandlers::get_root(const http::TypedReques
     // the document says what is *documented*. A `hidden()` route is mounted and
     // answers 405; a plugin route is mounted and is documented. Pinned by
     // `test_openapi_contract.test.py::test_the_root_list_and_the_document_agree`.
-    if (ctx_.node() && ctx_.node()->get_plugin_manager()) {
+    if (ctx_.services().plugin_manager()) {
       const std::string api_base_path{API_BASE_PATH};
-      for (const auto & desc : ctx_.node()->get_plugin_manager()->collect_route_descriptions()) {
+      for (const auto & desc : ctx_.services().plugin_manager()->collect_route_descriptions()) {
         for (const auto & [method, path] : desc.endpoints()) {
           // Built in place rather than by `+` chaining, matching
           // `RouteRegistry::to_endpoint_list` above: the chain allocates a
@@ -321,15 +273,7 @@ http::Result<dto::RootOverview> HealthHandlers::get_root(const http::TypedReques
     // and it is the only endpoint `docs.enabled` now hides from this list. The
     // `/docs` routes stay listed when the capability is off, because they stay
     // mounted and answer 501: this list says what is mounted, not what is on.
-    bool docs_enabled = true;
-    if (ctx_.node()) {
-      try {
-        docs_enabled = ctx_.node()->get_parameter("docs.enabled").as_bool();
-      } catch (...) {
-        // Parameter may not be declared - default to true
-      }
-    }
-    if (docs_enabled) {
+    if (docs_enabled_) {
       endpoints.push_back("GET " + std::string(API_BASE_PATH) + "/swagger-ui");
     }
 #endif
@@ -345,22 +289,28 @@ http::Result<dto::RootOverview> HealthHandlers::get_root(const http::TypedReques
     capabilities.configurations = true;
     capabilities.faults = true;
     capabilities.logs = true;
-    capabilities.bulk_data = true;
-    capabilities.cyclic_subscriptions = true;
-    capabilities.locking = ctx_.node() && ctx_.node()->get_lock_manager() != nullptr;
-    capabilities.triggers = ctx_.node() && ctx_.node()->get_trigger_manager() != nullptr;
-    capabilities.updates = ctx_.node() && ctx_.node()->get_update_manager() != nullptr;
+    const auto * fault_mgr = ctx_.services().fault_manager();
+    const auto * transports = ctx_.services().transport_registry();
+    const auto * samplers = ctx_.services().sampler_registry();
+    capabilities.bulk_data =
+        ctx_.services().bulk_data_store() != nullptr || (fault_mgr != nullptr && fault_mgr->serves_rosbags());
+    capabilities.cyclic_subscriptions = ctx_.services().subscription_manager() != nullptr && transports != nullptr &&
+                                        !transports->empty() && samplers != nullptr &&
+                                        !samplers->collection_names().empty();
+    capabilities.locking = ctx_.services().lock_manager() != nullptr;
+    capabilities.triggers = ctx_.services().trigger_manager() != nullptr;
+    capabilities.updates = ctx_.services().update_manager() != nullptr;
     capabilities.authentication = auth_config.enabled;
     capabilities.tls = tls_config.enabled;
     capabilities.scripts =
-        ctx_.node() && ctx_.node()->get_script_manager() != nullptr && ctx_.node()->get_script_manager()->has_backend();
+        ctx_.services().script_manager() != nullptr && ctx_.services().script_manager()->has_backend();
     capabilities.aggregation = ctx_.aggregation_manager() != nullptr;
     capabilities.vendor_extensions =
-        ctx_.node() && ctx_.node()->get_plugin_manager() && ctx_.node()->get_plugin_manager()->has_plugins();
+        ctx_.services().plugin_manager() && ctx_.services().plugin_manager()->has_plugins();
 
     dto::RootOverview response;
-    response.name = "ROS 2 Medkit Gateway";
-    response.version = kGatewayVersion;
+    response.name = identity_.server_name;
+    response.version = identity_.server_version;
     response.api_base = API_BASE_PATH;
     response.endpoints = std::move(endpoints);
     response.capabilities = capabilities;
@@ -395,8 +345,8 @@ http::Result<dto::VersionInfo> HealthHandlers::get_version_info(const http::Type
   try {
     // SOVD 7.4.1 compliant response format
     dto::VersionInfoVendor vendor;
-    vendor.version = kGatewayVersion;
-    vendor.name = "ros2_medkit";
+    vendor.version = identity_.server_version;
+    vendor.name = identity_.vendor_name;
 
     dto::VersionInfoEntry entry;
     entry.version = kSovdVersion;    // SOVD standard version

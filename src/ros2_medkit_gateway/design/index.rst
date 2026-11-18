@@ -12,23 +12,115 @@ Build Layers
 The package compiles into two layered static libraries with a strict
 dependency direction:
 
-* ``gateway_core`` - middleware-neutral business logic. Sources live under
-  ``src/core/`` and headers under ``include/ros2_medkit_gateway/core/``.
-  Links only header-only and C-level externals (cpp-httplib,
-  nlohmann/json, yaml-cpp, tl::expected, jwt-cpp, OpenSSL, SQLite, dl).
-  Carries no rclcpp / rcl_interfaces / message-package dependency.
-  Hosts the neutral HTTP request handlers, JWT authentication,
-  fault model (debounce, storage, cache, correlation), peer aggregation,
-  manifest parsing, the entity cache, the neutral managers (lock,
-  bulk-data, subscription, script, update, plugin), and every provider
-  interface contract.
-* ``gateway_ros2`` - ROS adapter layer. Compiles the remaining sources
+* ``gateway_core`` - the ROS-free layer, defined in
+  ``cmake/gateway_core.cmake``. Sources: ``src/core/``, the HTTP server and
+  REST server, ``src/http/handlers/``, ``src/openapi/``, the plugin manager
+  and loader, aggregation, and the script manager. Links only header-only
+  and C-level externals (cpp-httplib, nlohmann/json, yaml-cpp,
+  tl::expected, jwt-cpp, OpenSSL, SQLite, dl). Carries no rclcpp /
+  rcl_interfaces / message-package dependency.
+* ``gateway_ros2`` - the ROS adapters. Compiles the remaining sources
   under ``src/`` and links ``gateway_core`` publicly via
   ``medkit_target_dependencies``. Hosts ``GatewayNode`` (the
-  ``rclcpp::Node`` entry point), the ROS-coupled managers (data access,
-  operation, configuration, fault facade, log, trigger), runtime
-  discovery, the native topic sampler, and the ROS-specific provider
-  default implementations.
+  ``rclcpp::Node`` entry point), the ROS transports and providers,
+  runtime discovery, the native topic sampler, and the plugin context.
+
+``cmake/gateway_core.cmake`` is plain CMake. The ament build includes it by
+path, and so does ``scripts/check_cores_without_ros``, which links
+``gateway_core``. The file takes a target the including build already
+defines, else ``find_package``, else the copy vendored in ``src/vendored/``.
+The check implements ``GatewayServices`` with minimal stand-ins and starts
+``RESTServer``. A program that hosts the core names its server through
+``RestConfig::server_name``, ``vendor_name`` and ``server_version``; the
+defaults are the ROS 2 node's values. ``scripts/check_cores_without_ros/`` builds and runs it on
+Ubuntu 20.04 with gcc 9, the oldest compiler the cores are checked with.
+
+A program that hosts the core also gets the cyclic-subscription samplers and the bulk-data
+store from it:
+
+* ``register_builtin_samplers(services)`` (``core/builtin_samplers.hpp``)
+  registers ``data``, ``faults``, ``configurations`` and ``logs`` on
+  ``services.sampler_registry()``, plus ``updates`` when
+  ``services.update_manager()`` is set. Each sampler reads through the
+  managers and helpers of its GET route. ``data`` on a plugin-owned entity
+  goes through the plugin's ``DataProvider`` (``core/data/data_item_reader.hpp``,
+  shared with ``GET /{entity}/data/{item}``); on any other entity it goes
+  through ``DataAccessManager`` and its ``TopicDataProvider``. The host passes
+  ``GatewayServices``, which must outlive the samplers, and registers a
+  subscription transport itself.
+* ``BulkDataConfig`` (``core/config.hpp``) and ``make_bulk_data_store()``
+  (``core/managers/bulk_data_store.hpp``) build the store. The host returns it
+  from ``GatewayServices::bulk_data_store()`` before it starts ``RESTServer``.
+  The ``rosbags`` category is listed only when
+  ``FaultServiceTransport::serves_rosbags()`` is true (the default).
+* ``make_freeze_frame_capture()`` (``core/faults/freeze_frame_capture.hpp``)
+  builds a ``FreezeFrameCapture``. On ``fault_confirmed`` it reads the data
+  of each reporting source through ``plugin_data_readers()``
+  (``core/data/data_item_reader.hpp``, the path of ``GET /{entity}/data``: the
+  plugin's ``DataProvider``, else its ``x-plc-data`` route) on a thread of its
+  own, keeps the frames up to ``FreezeFrameCaptureConfig::max_faults`` (oldest
+  fault evicted first), and serves them as ``FreezeFrameSource``. The host
+  passes the config, a ``FaultEventSource`` and the ``PluginManager``. A
+  source serves several subscribers, each ``FaultEventSubscription`` ending
+  only its own delivery, so the capture and the fault SSE stream can share
+  the source the host returns from ``GatewayServices::fault_events()``. The
+  host also returns the capture from
+  ``GatewayServices::freeze_frames()``. The ROS 2 node feeds the same class
+  through ``EntityFreezeFrameCapture``, which owns its event source and the
+  capture (built in that order, destroyed in reverse), subscribes on the
+  shared subscription executor and holds the startup catch-up until the
+  events subscription has matched a publisher.
+* ``GET /`` reports ``bulk_data`` true only when a store exists or rosbags are
+  served, and ``cyclic_subscriptions`` true only when a transport and at least
+  one sampler are registered.
+* ``LockReaper`` (``core/managers/lock_reaper.hpp``) removes expired locks every
+  ``LockConfig::cleanup_interval`` seconds on a thread it owns, and with them
+  the cyclic subscriptions of the locked entity when the lock scope is empty or
+  names ``cyclic-subscriptions``. A host that does not start one keeps expired
+  locks. The ROS 2 node starts the same class.
+* ``make_script_host`` (``core/managers/script_manager.hpp``) builds the
+  ``ScriptManager`` from a ``ScriptsConfig`` and an optional plugin backend. A
+  non-empty ``scripts_dir`` gives the ``DefaultScriptProvider``. The host
+  returns the manager from ``GatewayServices::script_manager()``.
+* ``AggregationHost`` (``core/aggregation/aggregation_host.hpp``) builds the
+  ``AggregationManager`` and the mDNS discovery from an ``AggregationConfig``.
+  The host passes the manager to ``RESTServer::set_aggregation_manager()`` and
+  calls ``merge_peers()`` on every entity refresh. The ROS 2 node reads the
+  ``aggregation.*`` parameters into the config and uses the same class.
+* ``make_trigger_host`` (``core/trigger_host.hpp``) builds the trigger store and
+  the ``TriggerManager`` from a ``TriggerHostConfig`` (the ``triggers.*``
+  names and defaults, plus ``data_poll_interval_ms``), wires the entity lookups
+  to the entity cache and restores persistent triggers. Fault triggers are fed
+  by a ``TriggerFaultFeed`` that holds one ``FaultEventSubscription`` on a
+  ``FaultEventSource``, so it can share the source with the fault SSE stream
+  and the freeze-frame capture. A data trigger with a known topic reads
+  from the ``TopicSubscriptionTransport``. Any other data trigger reads from a
+  ``DataItemSource``; ``PollingDataItemSource`` reads the item through
+  ``read_plugin_data_item`` once per ``data_poll_interval_ms`` and delivers the
+  ``data`` field of the item body, as a topic trigger sees the message, so a host whose
+  data a plugin serves needs no topics. The ROS 2 node passes the topic
+  transport and feeds fault triggers through ``TriggerFaultSubscriber``, a ROS
+  2 event source under the same feed.
+* ``make_core_plugin_context`` (``core/plugins/core_plugin_context.hpp``) builds
+  the plugin context from ``GatewayServices`` and a ``CorePluginContextWiring``
+  (notifier, condition registry, aggregation, entity-change callback, notices).
+  It is a ``RosPluginContext`` whose ``node()`` is null, so
+  ``as_ros_plugin_context()`` is valid for every plugin and a plugin that needs
+  ROS checks the pointer. The host gives it to ``PluginManager::set_context()``.
+  The ROS 2 node derives its context from the same class and overrides only
+  ``node()``.
+* ``make_fault_trigger_host`` (``core/fault_trigger_host.hpp``) builds the
+  threshold-rule ``FaultTriggerEngine`` and the thread that evaluates it from a
+  ``FaultTriggerHostConfig`` (the ``fault_triggers.*`` names and defaults). The
+  rules read plugin data through the ``PluginManager`` and report and clear
+  faults through the ``FaultManager``. It returns null when disabled or when no
+  plugin is loaded. The host returns the engine from
+  ``GatewayServices::fault_trigger_engine()``. The ROS 2 node uses the same
+  builder.
+* ``RESTServer`` takes a null ``LifecycleStateReader`` for a host without
+  lifecycle nodes. ``GET /{entity}/status`` then derives readiness from
+  presence and ``PUT /{entity}/status/{action}`` answers 501 without a
+  ``LifecycleProvider``.
 
 The ``gateway_node`` executable and existing test targets link
 ``gateway_ros2``, so they transitively get both layers from a single
@@ -69,8 +161,8 @@ The following diagram shows the relationships between the main components of the
 
    note as N_layer_split
    This package compiles into two layered static libraries:
-   * gateway_core - middleware-neutral business logic (handlers,
-     auth, fault model, aggregation, all SOVD managers including
+   * gateway_core - the ROS-free layer (HTTP server, REST server,
+     handlers, OpenAPI, plugin manager, auth, fault model, aggregation, all SOVD managers including
      DataAccessManager, OperationManager, ConfigurationManager,
      FaultManager, LogManager, TriggerManager, providers, entity
      model). Does not link rclcpp. Managers consume neutral
@@ -459,8 +551,6 @@ pattern used by the ``test_*_manager_routing.cpp`` tests:
      count_publishers_subscribers(const std::string &) const override {
        return {1, 0};
      }
-     ros2_medkit_serialization::TypeIntrospection *
-     get_type_introspection() const override { return nullptr; }
 
      nlohmann::json next_sample_ = nlohmann::json::object();
    };
@@ -475,6 +565,9 @@ pattern used by the ``test_*_manager_routing.cpp`` tests:
    }
 
 The mock is purely C++; no ROS context, executor, or domain ID is needed.
+Message, service and action schemas are not part of ``TopicTransport``. They
+come from ``TypeSchemaProvider`` (``core/types/type_schema_provider.hpp``),
+which the HTTP layer reaches through ``GatewayServices::type_schemas()``.
 
 Main Components
 ---------------
@@ -547,7 +640,7 @@ Each entry below is tagged with the static library it compiles into:
    - Automatically cleans up completed goals older than 5 minutes
    - JSON ↔ ROS 2 message conversion is performed inside the ROS-side transport adapter via ``ros2_medkit_serialization``
 
-4. **RESTServer** ``[gateway_ros2]`` - Provides the HTTP/REST API (route table couples to gateway lifecycle; the individual handlers it dispatches to live in ``gateway_core``)
+4. **RESTServer** ``[gateway_core]`` - Provides the HTTP/REST API (route table couples to gateway lifecycle; the individual handlers it dispatches to live in ``gateway_core``)
    - Discovery endpoints: ``/health``, ``/areas``, ``/components``
    - Data endpoints: ``/components/{id}/data``, ``/components/{id}/data/{topic}``
    - Operations endpoints: ``/apps/{id}/operations``, ``/apps/{id}/operations/{op}/executions``
@@ -608,7 +701,7 @@ Each entry below is tagged with the static library it compiles into:
     - ``ActionInfo`` - Action metadata (path, name, type)
     - ``EntityCache`` - Thread-safe cache of discovered entities (areas, components, apps)
 
-11. **ScriptManager** ``[gateway_ros2]`` - Manages diagnostic script upload, storage, and execution (SOVD 7.15)
+11. **ScriptManager** ``[gateway_core]`` - Manages diagnostic script upload, storage, and execution (SOVD 7.15)
     - Delegates to a pluggable ``ScriptProvider`` backend (set via ``set_backend()``)
     - Lists, uploads, and deletes scripts per entity
     - Starts script executions as POSIX subprocesses with timeout support
@@ -640,6 +733,9 @@ It consists of five main components:
    - Observers (TriggerManager) register callbacks with filters
    - ``notify()`` is non-blocking - pushes to an internal queue processed by a dedicated worker thread
    - Filters support collection, entity_id, and resource_path matching
+   - ``unsubscribe(id)`` from another thread returns once that callback is not running, and the callback is never
+     called again, so an observer can be destroyed right after it unsubscribes. From inside a notifier callback it
+     returns at once, the current invocation continues, and the callback is not called again after it returns.
    - **Teardown contract:** producers hold a non-owning ``ResourceChangeNotifier *``, so every producer must be
      quiesced before the notifier is destroyed. ``notify()``'s internal drain guard only protects calls that are
      already in progress - it cannot help a call that starts after the object is freed. Most producers notify from

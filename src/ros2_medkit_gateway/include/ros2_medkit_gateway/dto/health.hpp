@@ -172,21 +172,14 @@ struct Health {
   /// why a peer refused their stream with 503.
   std::optional<nlohmann::json> x_medkit_sse;
   std::optional<nlohmann::json> peers;  // free-form array of peer status objects
-  /// Present and true only when this answer was cut down for an anonymous
-  /// caller. Wire key: "x-medkit-reduced".
-  ///
-  /// `warnings` below promises that an empty array means "nothing flagged".
-  /// That promise cannot hold on a route an operator put in
-  /// `auth.public_routes`, where the sections are skipped before they are
-  /// built, so a monitor would read a withheld body as a clean bill of health.
-  /// This field is what tells it apart: when it is present, `warnings` says
-  /// nothing about the gateway and the caller needs a credential to learn more.
-  std::optional<bool> x_medkit_reduced;  // wire key: "x-medkit-reduced"
+  /// Random id of this gateway process, present when aggregation is on. Wire
+  /// key: "x-medkit-instance-id". An aggregating peer reads it in its health
+  /// check, so a global fault-list fan-out can skip a gateway it already passed.
+  std::optional<std::string> x_medkit_instance_id;
   // NOT optional: these two are emitted in every mode, aggregation or not, so
   // the generated schema must list them in `required` and let a typed client
   // read them without a presence check. An empty `warnings` array is the
-  // "nothing flagged" answer - absence is not a value this endpoint has,
-  // except as qualified by `x_medkit_reduced` above.
+  // "nothing flagged" answer - absence is not a value this endpoint has.
   int64_t warning_schema_version{kWarningSchemaVersion};
   std::vector<HealthWarning> warnings;
 };
@@ -202,10 +195,10 @@ inline constexpr auto dto_fields<Health> = std::make_tuple(
     field("x-medkit-subscription-executor", &Health::x_medkit_subscription_executor),
     field("x-medkit-entity-cache", &Health::x_medkit_entity_cache), field("x-medkit-sse", &Health::x_medkit_sse),
     field("peers", &Health::peers),
-    field("x-medkit-reduced", &Health::x_medkit_reduced,
-          "Present and true only when the caller presented no credential and the operator opened this route in "
-          "auth.public_routes. The answer then carries liveness only, and `warnings` says nothing about the "
-          "gateway - authenticate to read the full document."),
+    field("x-medkit-instance-id", &Health::x_medkit_instance_id,
+          "Random id of this gateway process, present when aggregation is enabled. Generated at startup and "
+          "carried on X-Medkit-Fan-Out-Visited by the global fault list, so a gateway already asked is not asked "
+          "again."),
     field("warning_schema_version", &Health::warning_schema_version), field("warnings", &Health::warnings));
 
 template <>
@@ -216,7 +209,7 @@ inline constexpr std::string_view dto_name<Health> = "HealthStatus";
 //
 // Wire shape (from health_handlers.cpp handle_version_info):
 //   version - gateway version string (required)
-//   name    - gateway name string, always "ros2_medkit" (required)
+//   name    - vendor name the host configured, "ros2_medkit" by default (required)
 // =============================================================================
 struct VersionInfoVendor {
   std::string version;
@@ -397,7 +390,7 @@ inline constexpr std::string_view dto_name<RootTls> = "RootTls";
 // RootOverview - response for GET / (API root).
 //
 // Wire shape (from health_handlers.cpp handle_root):
-//   name         - "ROS 2 Medkit Gateway" (required)
+//   name         - server name the host configured, "ROS 2 Medkit Gateway" by default (required)
 //   version      - gateway version string (required)
 //   api_base     - API base path string (required)
 //   endpoints    - array of endpoint description strings (required)

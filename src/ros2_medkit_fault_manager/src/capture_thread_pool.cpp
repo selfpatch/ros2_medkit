@@ -17,15 +17,15 @@
 #include <system_error>
 #include <utility>
 
-#include "rclcpp/logging.hpp"
-
 namespace ros2_medkit_fault_manager {
 
 CaptureThreadPool::CaptureThreadPool(std::size_t pool_size, std::size_t queue_depth, QueueFullPolicy full_policy,
-                                     rclcpp::Logger logger, std::function<void(const std::string &)> capture_fn)
+                                     core::LogSink & log, std::function<void(const std::string &)> capture_fn,
+                                     std::string logger_name)
   : queue_depth_(queue_depth == 0 ? 1 : queue_depth)
   , full_policy_(full_policy)
-  , logger_(std::move(logger))
+  , log_(log)
+  , logger_name_(std::move(logger_name))
   , capture_fn_(std::move(capture_fn)) {
   // Defensive clamp: this is a public class. Callers (the node) validate to >= 1,
   // but a stray 0 must not UB. With 0 workers nothing drains the queue; with
@@ -88,7 +88,7 @@ void CaptureThreadPool::shutdown() noexcept {
       try {
         worker.join();
       } catch (const std::system_error & e) {
-        RCLCPP_ERROR(logger_, "CaptureThreadPool worker join failed: %s", e.what());
+        core::logf(log_, core::LogLevel::kError, logger_name_, "CaptureThreadPool worker join failed: %s", e.what());
       }
     }
   }
@@ -120,9 +120,10 @@ void CaptureThreadPool::worker_loop() {
         capture_fn_(job);
       }
     } catch (const std::exception & e) {
-      RCLCPP_ERROR(logger_, "Capture job for '%s' threw: %s", job.c_str(), e.what());
+      core::logf(log_, core::LogLevel::kError, logger_name_, "Capture job for '%s' threw: %s", job.c_str(), e.what());
     } catch (...) {
-      RCLCPP_ERROR(logger_, "Capture job for '%s' threw unknown exception", job.c_str());
+      core::logf(log_, core::LogLevel::kError, logger_name_, "Capture job for '%s' threw unknown exception",
+                 job.c_str());
     }
   }
 }

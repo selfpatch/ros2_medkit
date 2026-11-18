@@ -95,13 +95,8 @@ class GatewayTestCase(unittest.TestCase):
     def _wait_for_gateway_health(cls):
         """Poll GET /health until the gateway answers at all.
 
-        A refusal counts as up. What this waits for is a process that is
-        listening and speaking HTTP, and a 401 proves both: the request was
-        received, routed and decided on. Requiring 200 would instead make this
-        wait for a specific auth configuration - against a gateway running
-        ``require_auth_for: all`` with an empty ``auth.public_routes`` that 200
-        never arrives, so a test class using this helper would time out against
-        a perfectly healthy gateway.
+        A 401 or 403 counts as up: the process is listening and has decided on
+        the request. A gateway with ``require_auth_for: all`` never answers 200.
 
         Uses ``time.monotonic()`` for a reliable, monotonic clock.
 
@@ -400,11 +395,11 @@ class GatewayTestCase(unittest.TestCase):
         response = requests.get(
             f'{self.BASE_URL}{endpoint}', timeout=timeout, **kwargs
         )
-        self.assertEqual(
-            response.status_code,
-            expected_status,
-            f'GET {endpoint} returned {response.status_code}: {response.text}',
-        )
+        # Only the head of the body, as UTF-8: response.text guesses the charset
+        # of a large binary download for minutes.
+        if response.status_code != expected_status:
+            head = response.content[:1024].decode('utf-8', errors='replace')
+            self.fail(f'GET {endpoint} returned {response.status_code}: {head}')
         return response
 
     def put_raw(self, endpoint, data, *, timeout=10, expected_status=200, **kwargs):

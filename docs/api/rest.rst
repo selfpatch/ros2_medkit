@@ -45,20 +45,33 @@ operations that read them.
 ``X-Medkit-No-Fan-Out``
    Answer from this gateway alone: do not query aggregated peers and do not
    merge their items. Read by the **per-entity** resource-collection list
-   endpoints (data, operations, configurations, faults, logs) and by ``GET
-   /api/v1/version-info`` - exactly the operations that declare it in the
-   OpenAPI document.
+   endpoints (data, operations, configurations, faults, logs), by the global
+   ``GET /api/v1/faults`` and by ``GET /api/v1/version-info`` - exactly the
+   operations that declare it in the OpenAPI document.
 
    The gateway sets it on its own outbound peer requests, which stops
    bidirectional aggregation from recursing **on the routes that check it**.
-   The global ``GET /api/v1/faults`` does not check it, so it neither declares
-   the header nor honours it (see :ref:`the fan-out design note
-   <aggregation-fan-out>`).
 
    **Presence-only.** The value is never read, so ``X-Medkit-No-Fan-Out:
    false`` suppresses fan-out exactly like any other value. The OpenAPI schema
    is a string rather than a boolean for that reason. Omit the header to get
    the aggregated answer.
+
+``X-Medkit-Fan-Out-Visited``
+   Read by the global ``GET /api/v1/faults`` only, and set by the gateway on
+   its own fan-out of that route: the instance ids of the gateways the request
+   has already passed through, comma-separated. Each aggregating gateway
+   publishes its id as ``x-medkit-instance-id`` on ``GET /api/v1/health``,
+   where its peers read it. A gateway does not ask a peer whose id is on the
+   path. A gateway asked anyway answers an empty list, because its faults are
+   already in the answer. Any other gateway answers with its own faults and
+   those of its peers, adding its id. This is what lets the global list reach
+   the end of a chain (A -> B -> C) while two gateways that aggregate each
+   other do not ask each other twice. It takes precedence over
+   ``X-Medkit-No-Fan-Out``, which the same request also carries. A path of 16
+   ids is not extended: the gateway answers for itself and reports its peers
+   as ``too-deep``. Clients do not send it (see :ref:`the fan-out design note
+   <aggregation-fan-out>`).
 
 Server Capabilities
 -------------------
@@ -72,7 +85,7 @@ Server Capabilities
 
       {
         "name": "ROS 2 Medkit Gateway",
-        "version": "0.7.0",
+        "version": "0.7.1",
         "api_base": "/api/v1",
         "endpoints": [
           "GET /api/v1/health",
@@ -126,7 +139,7 @@ Server Capabilities
             "version": "1.0.0",
             "base_uri": "/api/v1",
             "vendor_info": {
-              "version": "0.7.0",
+              "version": "0.7.1",
               "name": "ros2_medkit"
             }
           }
@@ -209,7 +222,7 @@ Server Capabilities
       authenticating reverse proxy or restrict the peer-name field to
       admin-gated callers at the ingress.
 
-   **Example Response.** A hybrid gateway with one declared app, six
+   **Example Response.** A hybrid gateway with one declared app, three
    undeclared ROS nodes and ``unmanifested_nodes: error``, captured from a
    running gateway. The three ``x-medkit-*`` statistics objects are omitted
    here for length; ``peers`` appears only when aggregation is enabled.
@@ -223,15 +236,12 @@ Server Capabilities
         "warnings": [
           {
             "code": "unmanifested_nodes",
-            "message": "6 running ROS node(s) are not declared in the manifest while unmanifested_nodes is set to 'error' (listed in ros_node_fqns). The gateway keeps serving. Declare them in the manifest, or relax the policy to 'warn' or 'ignore'.",
+            "message": "3 running ROS node(s) are not declared in the manifest while unmanifested_nodes is set to 'error' (listed in ros_node_fqns). The gateway keeps serving. Declare them in the manifest, or relax the policy to 'warn' or 'ignore'.",
             "entity_ids": [],
             "ros_node_fqns": [
               "/powertrain/engine/rpm_sensor",
               "/ros2_medkit_gateway",
-              "/_param_client_node",
-              "/ros2_medkit_gateway_fault_clients",
-              "/ros2_medkit_gateway_lifecycle_state_reader",
-              "/ros2_medkit_gateway_sub"
+              "/_param_client_node"
             ],
             "peer_names": []
           }
@@ -250,7 +260,7 @@ Server Capabilities
           },
           "linking": {
             "linked_count": 1,
-            "orphan_count": 6,
+            "orphan_count": 3,
             "binding_conflicts": 0,
             "unmanifested_policy": "error"
           }
@@ -1780,7 +1790,8 @@ List all bulk-data items in a category for the entity.
            "fault_codes": ["MOTOR_OVERHEAT", "MOTOR_STALL"],
            "duration_sec": 6.0,
            "format": "mcap",
-           "recording_id": "fault_MOTOR_OVERHEAT_1738664999000"
+           "recording_id": "fault_MOTOR_OVERHEAT_1738664999000",
+           "storage_files": 1
          }
        }
      ]
@@ -1793,6 +1804,75 @@ recording, and ``x-medkit.fault_codes`` lists every fault attached to it. A
 recording therefore reports its size once. One fault code can appear on several
 descriptors, one per occurrence it kept, told apart by ``creation_date``, which
 is the time that recording was made.
+
+``x-medkit.storage_files`` is how many storage files the recording is held in,
+read from the recording's own metadata. A ``1`` is the normal case and says the
+download below hands over the whole recording. A larger number is a split
+recording, and then the download hands over the first of those files. The field
+is omitted when the gateway cannot read the recording's metadata or the metadata
+names no file. An absent field means the count is not known here.
+
+For a recording that meets the rule below, ``size`` is the number of bytes the
+download route puts on the wire, so a client can size a buffer or a progress bar
+from the listing. For a rosbag held in a single storage file, which is the normal case,
+that is the file (``.mcap`` or ``.db3``) and it is the only file the
+download serves. The bag directory also holds ``metadata.yaml``, and those bytes
+are not part of the transfer.
+
+.. _rest-recording-size-rule:
+
+**One recording, one size.** The descriptor ``size`` here, the
+``environment_data.snapshots[].size_bytes`` a fault reports for the same
+recording, and the ``Content-Length`` of its download are the same number when
+the bag's ``metadata.yaml`` names exactly one storage file, that name is a direct
+child of the bag directory ending in ``.db3`` or ``.mcap``, and the file is
+present as a regular file, not a symbolic link - the normal case - and that
+number is the storage file. A recording also has a footprint on disk, its stored
+total, which is larger because the directory holds ``metadata.yaml`` and
+``manifest.json`` as well. That figure is what the recording spends against its
+storage quota and is not reported for such a recording.
+
+**A split recording.** Past the configured maximum bag size, ``metadata.yaml``
+names several storage files. The descriptor ``size`` and the nested
+``size_bytes`` are then the sum of those files, which is the ``total_bytes`` of
+the recording's manifest and what a client receives when it fetches every file
+through :ref:`the manifest and file routes <rest-rosbag-recording-files>`. The
+download route below hands over the first of those files, so ``size`` exceeds
+its ``Content-Length``.
+
+Three shapes fall outside these rules, and there the numbers part deliberately:
+
+- a bag with no ``metadata.yaml``, one that is a symbolic link, one that cannot
+  be parsed, or one that names no storage file;
+- a bag where a named storage file is absent from the directory;
+- a name that points outside the bag directory, at anything other than a
+  regular file (a symbolic link, a directory), or at a file that is neither
+  ``.db3`` nor ``.mcap``. The gateway and the fault manager both decline such a
+  name, because a name decides which file on the host is served and measured.
+  The download never serves a storage file that is a symbolic link either.
+
+In each of them the descriptor ``size`` and the nested ``size_bytes`` carry the
+recording's stored total. Which file the download hands over depends on whether
+the metadata names any files:
+
+- **The metadata names files.** The download serves the first file named in
+  ``relative_file_paths`` and no other. For a split recording that is the first
+  segment, where the recording starts, so ``size`` exceeds ``Content-Length``,
+  and ``x-medkit.storage_files`` says how many segments the recording has. When
+  that first file is absent, or is a name the gateway declines, the download
+  answers ``500``. It does not fall back to a later segment or to another
+  storage file in the bag directory, because neither is the start of the
+  recording the descriptor describes. Which file is served does not depend on
+  directory order.
+- **The metadata names no file, or cannot be read.** The download serves the
+  first regular ``.db3`` or ``.mcap`` the bag directory yields, ``size`` can
+  exceed ``Content-Length``, and ``x-medkit.storage_files`` is omitted. When the
+  directory holds no regular storage file, the download answers ``500``.
+
+The download never serves a storage file that is a symbolic link. A split
+recording with a manifest is fetched file by file through
+:ref:`the manifest and file routes <rest-rosbag-recording-files>`. Without a
+manifest, its storage files after the first are not addressable over the API.
 
 Download Bulk Data
 ~~~~~~~~~~~~~~~~~~
@@ -1809,6 +1889,11 @@ Download a specific bulk-data file.
   a pre-#620 fault-code URL is not the segment the client sent, and the format
   is the one persisted at capture time (``mcap`` or ``sqlite3``). For every
   other category it is the stored item's own name, e.g. ``report.zip``.
+- ``Content-Length``: the served file's length. For a rosbag that is the
+  recording's single storage file, or, when the recording is split, the first
+  of its storage files. For how it relates to the descriptor ``size`` and
+  ``x-medkit.storage_files`` of the same recording, see
+  :ref:`One recording, one size <rest-recording-size-rule>`
 - ``Accept-Ranges``: ``bytes`` - the download is served by a range-aware
   provider, so a client may fetch part of the file
 - ``Access-Control-Expose-Headers``: ``Content-Disposition``
@@ -1829,10 +1914,22 @@ and OpenAPI 3.1 has no way to say "bytes" - ``format: binary`` was an OpenAPI
 schema-free media type entry is the accurate description.
 
 **Range requests.** A request carrying a ``Range`` header is answered with
-**206 Partial Content** and a ``Content-Range: bytes <start>-<end>/<total>``
+**206 Partial Content** and a ``Content-Range: bytes <first>-<last>/<total>``
 header instead of ``200``; the body is the requested slice. Several ranges in
 one request are answered as a single ``multipart/byteranges`` body, which is
 declared on the 206 only - the 200 can never carry it.
+
+Ranges follow RFC 9110 section 14.1.2. ``Content-Range`` always carries
+absolute first and last bytes: ``bytes=1000-`` on a file of 8076737 bytes is
+answered with ``bytes 1000-8076736/8076737``, and ``bytes=-500`` with
+``bytes 8076237-8076736/8076737``. A last byte at or past the end means "to
+the end", so a client asking for fixed chunks gets the shorter last chunk as a
+``206``. A range whose first byte is at or past the end is left out of the
+answer. Only when no range is left is the request answered with ``416``, with
+``Content-Range: bytes */<total>`` and ``parameters.size`` set to the file size.
+
+An error answer is never cut by the ``Range``: a ``401`` or a ``404`` to a
+ranged request carries the whole error document.
 
 **Example:**
 
@@ -1849,8 +1946,10 @@ declared on the 206 only - the 200 can never carry it.
 - **200 OK**: File content
 - **206 Partial Content**: The byte range requested via ``Range``, with ``Content-Range``
 - **404 Not Found**: Entity, category, or bulk-data ID not found
-- **416 Range Not Satisfiable**: The ``Range`` header could not be parsed. Not
-  specific to this endpoint - see :ref:`rest-range-rejection`.
+- **416 Range Not Satisfiable**: No range of the ``Range`` header starts inside
+  the file, with ``Content-Range: bytes */<total>``. Also sent when the header
+  could not be parsed, which is not specific to this endpoint - see
+  :ref:`rest-range-rejection`.
 
 Upload Bulk Data
 ~~~~~~~~~~~~~~~~
@@ -1940,6 +2039,110 @@ fault manager and cannot be deleted via this endpoint.
 - **400 Bad Request**: ``rosbags`` category (managed by fault manager)
 - **404 Not Found**: Entity, category, or bulk-data ID not found
 - **405 Method Not Allowed**: Delete attempted on areas or functions
+
+.. _rest-rosbag-recording-files:
+
+Rosbag Recording Manifest and Files
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A recording past ``snapshots.rosbag.max_bag_size_mb`` is several storage files,
+and the download route above serves the first of them. These two routes let a
+client fetch a whole recording and check what it received.
+
+``GET /api/v1/{entity-path}/bulk-data/rosbags/{recording_id}/manifest``
+
+``GET /api/v1/{entity-path}/bulk-data/rosbags/{recording_id}/files/{index}``
+
+``{recording_id}`` is a recording id, the descriptor ``id`` of the listing. A
+fault code is not accepted here. Authorization is the same as for the download
+route.
+
+**The manifest.** The fault manager writes ``manifest.json`` into the recording
+directory when it closes the recording. The manifest route returns that file
+byte for byte as ``application/json``. A ``Range`` header is ignored on this
+route: the answer is always the whole file.
+
+.. code-block:: json
+
+   {
+     "manifest_version": 1,
+     "recording_id": "fault_LIDAR_DEGRADED_1794246561043",
+     "format": "mcap",
+     "created_at_ns": 1794246561043000000,
+     "total_bytes": 106611114,
+     "files": [
+       {
+         "name": "fault_LIDAR_DEGRADED_1794246561043_0.mcap",
+         "size": 53006926,
+         "sha256": "5214ac92d2edc3f9e5fee273b5cfb0c82dae555680973a416502b1f67adb1952"
+       },
+       {
+         "name": "fault_LIDAR_DEGRADED_1794246561043_1.mcap",
+         "size": 53604188,
+         "sha256": "42c8ef7be611792db3347d7722017a1081e5ea53c93d4c72a73fe15057ba9046"
+       }
+     ]
+   }
+
+- ``files`` is in recording order, the order ``metadata.yaml`` names the files
+  in. Do not sort by name: ``_10`` sorts before ``_2``.
+- ``total_bytes`` is the sum of the file sizes. ``metadata.yaml`` is not listed
+  and not counted.
+- ``format`` is ``mcap`` or ``sqlite3`` and holds for every file.
+- Every file has a ``sha256``, computed once when the recording is closed.
+- The manifest is never rewritten. If a later read of the same id returns
+  different bytes, the id names a different recording now.
+- There are no message counts and no time ranges. Read those from the files.
+- A symbolic link is never part of a recording. A recording whose storage file
+  is a link gets no manifest, and the routes do not follow a link.
+
+A recording written before this feature has no manifest, and so does one whose
+manifest could not be written. The listing tells them apart: a descriptor
+carries ``"manifest": true`` in ``x-medkit`` when the recording has a manifest,
+and has no ``manifest`` key otherwise.
+
+**One file.** The file route returns ``files[index]`` as
+``application/octet-stream`` with ``Accept-Ranges: bytes``. ``{index}`` is a
+decimal position in the manifest's ``files``. A file name is not accepted.
+
+.. code-block:: bash
+
+   BASE=http://localhost:8080/api/v1/apps/lidar/bulk-data/rosbags/fault_LIDAR_DEGRADED_1794246561043
+
+   curl -s $BASE/manifest -o manifest.json
+   curl -s $BASE/files/0 -o part_0.mcap
+
+   # Resume file 0 from byte 1000
+   curl -s -H 'Range: bytes=1000-' $BASE/files/0
+
+**Range requests** work as on the download route. A ``200`` carries
+``Content-Length`` of the whole file. A ``206`` carries ``Content-Length`` of
+the returned range and an absolute ``Content-Range`` such as
+``bytes 1000-8076736/8076737``. A last byte past the end is read as the end of
+the file. A request is answered with ``416`` only when no range starts inside
+the file, and that answer carries ``Content-Range: bytes */<size>``.
+
+**Response Codes:**
+
+- **200 OK**: The manifest, or the whole file
+- **206 Partial Content**: The requested byte range of the file
+- **404 Not Found** with ``vendor_code`` ``x-medkit-recording-not-found``: the
+  fault manager answered and holds no recording with this id. This is the only
+  answer that says the recording does not exist.
+- **404 Not Found** without that vendor code: unknown entity, a recording that
+  belongs to another entity, a recording without a manifest, an index past the
+  list or not a number, or a file that is missing on disk or is a symbolic
+  link. It says nothing about
+  whether the recording exists.
+- **416 Range Not Satisfiable**: no range starts inside the file.
+  ``Content-Range: bytes */<size>`` and ``parameters.size`` carry the file size.
+- **503 Service Unavailable**: the fault manager did not answer. Try again
+  later.
+
+**The listing is complete or refused.** ``GET
+/api/v1/{entity-path}/bulk-data/rosbags`` answers ``503`` when the fault manager
+cannot be read for any of the sources the entity covers. A ``200`` is a
+complete list, so an empty ``items`` means there are no recordings.
 
 Software Updates
 ----------------
@@ -2148,7 +2351,11 @@ collection.
    - ``resource`` (string, required): Full SOVD resource URI to observe
      (e.g. ``/api/v1/apps/{id}/data/{topic}``, ``/api/v1/apps/{id}/faults``,
      ``/api/v1/functions/{id}/x-medkit-graph``). The URI ends at the collection
-     unless that collection's sampler narrows its payload to a named resource
+     unless that collection's sampler narrows its payload to a named resource.
+     The item path is percent-decoded as a GET path is, so an encoded topic or
+     plugin item name addresses the item GET of the same URI reads. A
+     member-qualified id (``member:/topic``) is not resolved by a subscription;
+     use the bare item id.
    - ``protocol`` (string, optional): Transport protocol. Only ``"sse"`` supported. Default: ``"sse"``
    - ``interval`` (string, required): One of ``fast``, ``normal``, ``slow``
    - ``duration`` (integer, required): Subscription lifetime in seconds.
@@ -2482,7 +2689,18 @@ Create Trigger
         - Yes
         - Full SOVD resource URI to observe (e.g. ``/api/v1/apps/{id}/data/{topic}``,
           ``/api/v1/apps/{id}/faults``, ``/api/v1/areas/{id}/faults``).
-          Must reference the same entity as the route.
+          Must reference the same entity as the route. The path after the
+          collection is percent-decoded as a GET path is, and
+          ``observed_resource`` echoes the URI as sent. A data trigger binds
+          to the first topic of the entity whose name equals the decoded path
+          or ends with it, so ``.../data/temperature`` binds to
+          ``/powertrain/engine/temperature``. As in GET, the item may carry
+          its own leading slash (``.../data/%2Fpowertrain%2Fengine%2Ftemperature``).
+          When the data list of a plugin-owned entity can be read and is not
+          empty, a name missing from it is refused with 400. A plugin item with no topic
+          delivers events only on a host that polls plugin items (see the
+          gateway README); the ROS 2 gateway node does not poll, so there
+          such a trigger is accepted and delivers no event.
       * - ``trigger_condition``
         - Yes
         - Object with ``condition_type`` and condition-specific parameters.
@@ -2875,37 +3093,16 @@ Endpoint limits can also be overridden with patterns:
 Response Headers
 ~~~~~~~~~~~~~~~~
 
-When rate limiting is enabled, the gateway includes the following HTTP response
-headers on answers to callers the limiter may speak to - a caller whose
-credential it accepted, or any caller on a route that needs none:
+When rate limiting is enabled, the gateway includes the following HTTP response headers on every check:
 
 - ``X-RateLimit-Limit``: The effective RPM limit applied.
 - ``X-RateLimit-Remaining``: Number of requests remaining in the current minute window.
 - ``X-RateLimit-Reset``: Unix epoch time (in seconds) when the limit bucket resets.
 
-They are withheld from a refusal the gateway makes before it has accepted
-anybody. The allowance, the reset time and the retry delay are limiter state,
-and a ``401`` for a missing credential or the ``429`` described below carries
-none of it.
-
 Rejection (429 Too Many Requests)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If a request exceeds the available tokens, it is rejected with an HTTP 429 status code. On a route that needs no credential the answer also carries a ``Retry-After`` header with the number of seconds to wait before retrying; on a protected route it does not, whatever credential the caller holds.
-
-One refusal is narrower. On a protected route, a caller whose allowance is gone
-and who presented an ``Authorization`` header is answered ``429`` **before** the
-token is verified, so an over-limit caller costs the gateway no signature check.
-Nothing about that caller has been verified at that point, so the answer carries
-no ``Retry-After``, no ``X-RateLimit-*``, and an empty ``parameters`` object. A
-caller presenting no header at all keeps the ordinary ``401``.
-
-The credential makes no difference here: the limiter refuses before it is
-examined, so a client holding a perfectly good token gets the same bare
-``429``. **On a protected route there is no retry hint**, which is what a
-closed-profile client has to be built around. Pace from the
-``X-RateLimit-Reset`` on the last answer that carried one - any ``2xx`` does.
-On a protected route no ``Retry-After`` arrives.
+If a request exceeds the available tokens, it is rejected with an HTTP 429 status code and a ``Retry-After`` header indicating the number of seconds to wait before retrying.
 
 **Example Response:**
 
@@ -3463,6 +3660,10 @@ Vendor-specific ``x-medkit-*`` codes are enveloped: the response carries
    * - ``x-medkit-update-not-found``
      - 404
      - No update package with that id
+   * - ``x-medkit-recording-not-found``
+     - 404
+     - The fault manager answered and holds no recording with that id. Sent by
+       the recording manifest and file routes only, and only in that case
    * - ``x-medkit-update-already-exists``
      - 400
      - An update package with that id is already registered
@@ -3617,8 +3818,9 @@ declares it as such rather than as a body-less response: the HTTP layer itself
 writes 416 with an empty body, and the gateway's global error handler then
 fills any body-less error response with a ``GenericError``.
 
-Only the six bulk-data download routes declare a ``Range`` *request* parameter,
-because they are the only routes where sending one is useful. 416 is
+Only the bulk-data download routes and the recording file routes declare a
+``Range`` *request* parameter, because they are the only routes where sending
+one is useful. 416 is
 nevertheless reachable everywhere.
 
 416 is not the only status answered this way, and the ``error_code`` in the
@@ -3916,6 +4118,13 @@ why, one entry per name, with ``reason`` one of:
    * - ``invalid-response``
      - The peer answered with something that is not the JSON the route
        promises.
+   * - ``too-deep``
+     - Global ``GET /faults`` only. The request had already passed through 16
+       gateways, so this gateway did not ask the peer.
+
+On the global ``GET /faults`` a peer that could not reach one of its own
+peers is reported partial in turn. The entry names both hops,
+``<peer>/<its peer>``, with the reason the peer gave.
 
 Without ``peer_failures`` a client cannot tell a busy subsystem from a dead
 one, which is the whole of what a partial answer is asked.

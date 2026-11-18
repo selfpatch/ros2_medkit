@@ -23,9 +23,11 @@ permissions:
   pages: write
   id-token: write
 
+# One group per PR, so docs builds of different PRs never cancel each other.
+# A new push to a PR cancels that PR's older build only.
 concurrency:
-  group: "pages"
-  cancel-in-progress: false
+  group: docs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-docs:
@@ -77,6 +79,10 @@ jobs:
     runs-on: ubuntu-24.04
     needs: build-docs
     if: github.ref == 'refs/heads/main'
+    # One Pages deployment at a time.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     steps:
       - name: Deploy to GitHub Pages
         id: deployment

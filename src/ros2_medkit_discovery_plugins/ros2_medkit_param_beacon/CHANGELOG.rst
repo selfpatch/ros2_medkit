@@ -2,6 +2,12 @@
 Changelog for package ros2_medkit_param_beacon
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* Each parameter list and get call gives up after ``param_timeout_sec``, and the plugin backs off a node that does not answer. In 0.7.0 one node whose parameter services never answered stalled the polling. Duration settings and ``max_hints`` are bounded (`#660 <https://github.com/selfpatch/ros2_medkit/pull/660>`_)
+* The plugin node runs on the gateway node's context (`#723 <https://github.com/selfpatch/ros2_medkit/pull/723>`_, `#725 <https://github.com/selfpatch/ros2_medkit/pull/725>`_)
+* Contributors: @bburda
+
 0.7.0 (2026-08-27)
 ------------------
 * Build and test only: every integration launch test runs on its own DDS domain, taken when the test starts and released when it ends, so a crash frees the domain the same way an ordinary exit does (`#551 <https://github.com/selfpatch/ros2_medkit/pull/551>`_, `#597 <https://github.com/selfpatch/ros2_medkit/pull/597>`_). The usable band excludes the domains whose RTPS port slice falls inside the kernel ephemeral port range, where any process on the machine can steal a port and kill a node with a bind failure

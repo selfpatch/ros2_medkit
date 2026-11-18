@@ -40,9 +40,12 @@
 #include <iterator>
 #include <map>
 #include <mutex>
+#include <netinet/in.h>
 #include <signal.h>
 #include <sstream>
 #include <string>
+#include <sys/select.h>
+#include <sys/socket.h>
 #include <thread>
 #include <utility>
 
@@ -670,6 +673,24 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
       }
       return;
     }
+    // ``notconnected <NodeName>``: reads of the variable then return
+    // BadNotConnected, as a PLC does for a value whose source is offline,
+    // over a session that stays up.
+    if (cmd == "notconnected") {
+      UA_DataValue dv;
+      UA_DataValue_init(&dv);
+      dv.hasStatus = true;
+      dv.status = UA_STATUSCODE_BADNOTCONNECTED;
+      UA_NodeId target = UA_NODEID_STRING_ALLOC(ns, name.c_str());
+      UA_StatusCode rc = UA_Server_writeDataValue(server, target, dv);
+      UA_NodeId_clear(&target);
+      if (rc == UA_STATUSCODE_GOOD) {
+        std::cout << "OK notconnected " << name << '\n';
+      } else {
+        std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << '\n';
+      }
+      return;
+    }
     // ``sysevent`` fires a non-condition BaseEventType on the Server object
     // (i=2253); it has no <name> and is not in g_conditions, so handle it
     // before the condition lookup (like ``quit`` / ``set``).
@@ -766,6 +787,25 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
       std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << '\n';
     }
   }
+}
+
+// True when this process holds a TCP socket listening on IPv4 ``port``.
+bool listens_on_ipv4(UA_UInt16 port) {
+  // open62541 1.3 polls its sockets with select(), so they are below FD_SETSIZE.
+  for (int fd = 0; fd < FD_SETSIZE; ++fd) {
+    int listening = 0;
+    socklen_t len = sizeof(listening);
+    if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, &listening, &len) != 0 || listening == 0) {
+      continue;
+    }
+    sockaddr_in addr{};
+    socklen_t addr_len = sizeof(addr);
+    if (getsockname(fd, reinterpret_cast<sockaddr *>(&addr), &addr_len) == 0 && addr.sin_family == AF_INET &&
+        ntohs(addr.sin_port) == port) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -883,6 +923,20 @@ int main(int argc, char ** argv) {
     config->maxReferencesPerNode = max_refs_per_node;
   }
 
+  // UA_Server_run_startup binds the listen sockets, so READY comes after it.
+  UA_StatusCode rc = UA_Server_run_startup(server);
+  if (rc != UA_STATUSCODE_GOOD) {
+    std::cout << "EXIT UA_Server_run_startup rc=" << UA_StatusCode_name(rc) << '\n';
+    UA_Server_delete(server);
+    return 1;
+  }
+  // Startup succeeds when any one address binds. Clients connect over IPv4.
+  if (!listens_on_ipv4(port)) {
+    std::cout << "EXIT no IPv4 listener on port " << port << '\n';
+    UA_Server_run_shutdown(server);
+    UA_Server_delete(server);
+    return 1;
+  }
   std::cout << "READY port=" << port << " namespace=" << ns << " secure=" << (secure ? "true" : "false") << '\n';
   std::thread reader(stdin_reader_loop);
 
@@ -893,11 +947,7 @@ int main(int argc, char ** argv) {
   // inside the server would hold a command back until the next scheduled
   // callback, and a command is how a test makes the alarm it is waiting for
   // happen.
-  UA_StatusCode rc = UA_Server_run_startup(server);
-  if (rc != UA_STATUSCODE_GOOD) {
-    std::cout << "EXIT UA_Server_run_startup rc=" << UA_StatusCode_name(rc) << '\n';
-  }
-  while (rc == UA_STATUSCODE_GOOD && g_running) {
+  while (g_running) {
     // The return is how long the server may idle until its next scheduled
     // callback, not a status: open62541 reports no mid-run failure through it,
     // and UA_Server_run did not either - its own return is run_shutdown's. It
@@ -918,11 +968,9 @@ int main(int argc, char ** argv) {
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(std::clamp<UA_UInt16>(idle_ms, 1, 2)));
   }
-  if (rc == UA_STATUSCODE_GOOD) {
-    rc = UA_Server_run_shutdown(server);
-    if (rc != UA_STATUSCODE_GOOD) {
-      std::cout << "EXIT UA_Server_run_shutdown rc=" << UA_StatusCode_name(rc) << '\n';
-    }
+  rc = UA_Server_run_shutdown(server);
+  if (rc != UA_STATUSCODE_GOOD) {
+    std::cout << "EXIT UA_Server_run_shutdown rc=" << UA_StatusCode_name(rc) << '\n';
   }
   g_running = false;
   if (reader.joinable()) {

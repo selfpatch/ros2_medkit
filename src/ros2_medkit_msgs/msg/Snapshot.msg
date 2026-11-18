@@ -42,7 +42,10 @@ string message_type
 # recordings and each needs its own address.
 string bulk_data_id
 
-# File size in bytes
+# Sum of the storage files the bag's metadata.yaml names: the one file the
+# download serves, or every file of a split recording. Otherwise the bag
+# directory total: missing or unreadable metadata, or a named file that is
+# absent or not a regular file inside the bag.
 uint64 size_bytes
 
 # Recording duration in seconds

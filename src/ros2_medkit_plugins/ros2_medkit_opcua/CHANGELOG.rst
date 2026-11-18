@@ -2,6 +2,19 @@
 Changelog for package ros2_medkit_opcua
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* **Breaking:** read-only is a property of the build, not a setting. The default build and the published images carry no controller write path: a write the build does not carry is refused with ``501``, ``POST /apps/{id}/x-plc-operations/{op}`` is not registered and answers ``404``, and ``acknowledge_fault`` and ``confirm_fault`` are refused. ``x-plc-status`` has a new field ``write_capable``. A warning is logged only for a write setting someone wrote. A write-capable plugin is built with ``-DMEDKIT_OPCUA_READ_ONLY=OFF`` (`#657 <https://github.com/selfpatch/ros2_medkit/pull/657>`_)
+* Node-map points take ``raise_after_samples`` and ``raise_after_ms``, so a fault is raised only after the condition has held (`#767 <https://github.com/selfpatch/ros2_medkit/pull/767>`_)
+* The plugin rescans while it is disconnected and heals ``PLC_COMMS_LOST`` on connect. ``discovery.interval_s`` sets the rescan period: unset means 30 s, and ``0`` turns the rescan off. The 0.7.0 README example set ``interval_s: 0``, so a configuration copied from it never rescans (`#660 <https://github.com/selfpatch/ros2_medkit/pull/660>`_)
+* The plugin binds to the ApplicationUri of the first server it reaches and drops a session with any other server, also at the same address. Without ``endpoint_url`` the binding is stored in ``discovery.binding_file`` (default ``/var/lib/ros2_medkit/opcua/binding``, environment ``OPCUA_DISCOVERY_BINDING_FILE``). To replace a PLC, delete that file and restart the gateway. With ``endpoint_url`` a restart is enough (`#660 <https://github.com/selfpatch/ros2_medkit/pull/660>`_)
+* In config-less mode the component gets a new id from the device nameplate once a session comes up (`#660 <https://github.com/selfpatch/ros2_medkit/pull/660>`_)
+* The plugin's clears keep correlated symptoms: ``DELETE /{entity}/faults/{code}`` on an OPC UA entity and the ``PLC_COMMS_LOST`` clear set ``skip_correlation_auto_clear``. 0.7.0 cleared the symptoms too (`#660 <https://github.com/selfpatch/ros2_medkit/pull/660>`_)
+* New key ``fault_service_timeout_ms``, default 5000 (`#660 <https://github.com/selfpatch/ros2_medkit/pull/660>`_)
+* The session is ended on a closed connection even when the channel still reads open, and it is closed before its event contexts are released (`#774 <https://github.com/selfpatch/ros2_medkit/pull/774>`_). Subscription mode is serviced without event alarms configured (`#766 <https://github.com/selfpatch/ros2_medkit/pull/766>`_)
+* The report and the clear of one fault are handed over in the order they were worked out, and the fault-service clients are created, used and destroyed on the plugin's own threads
+* Contributors: @bburda, @mfaferek93, @ahmedsleem109
+
 0.7.0 (2026-08-27)
 ------------------
 * Config-less discovery. A read-only network scan finds the OPC UA server instead of requiring its endpoint up front (`#509 <https://github.com/selfpatch/ros2_medkit/pull/509>`_), ``auto_browse`` walks the address space recursively and builds the SOVD tree from it (`#510 <https://github.com/selfpatch/ros2_medkit/pull/510>`_), and identity, writability and fault triggers are read from the device itself rather than declared in a node map (`#544 <https://github.com/selfpatch/ros2_medkit/pull/544>`_)

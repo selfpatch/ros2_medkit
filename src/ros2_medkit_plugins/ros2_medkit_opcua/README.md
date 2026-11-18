@@ -314,6 +314,19 @@ nodes:
       threshold: 100.0
       above_threshold: false      # Alarm when value < threshold
 
+  # Raise qualifier: the condition must hold before the point raises a fault,
+  # so one noisy reading does not become a real fault. Works with `alarm:`,
+  # `status_bits:` and `fault_enum:`. See the note below.
+  - node_id: "ns=2;s=Tank.Pressure"
+    entity_id: tank_process
+    data_name: tank_pressure
+    data_type: float
+    raise_after_samples: 3         # optional: 3 polls in a row (1..10000, default 1)
+    raise_after_ms: 2000           # optional: held for 2 s without a break (0..3600000, default 0)
+    alarm:
+      fault_code: PLC_TANK_OVERPRESSURE_HIGH
+      threshold: 6.0
+
   # Status-word bit decode: one integer register, one fault per named bit.
   # Mutually exclusive per node with `alarm:` / `fault_enum:`.
   - node_id: "ns=2;s=Pump.StatusWord"
@@ -374,6 +387,29 @@ nodes:
 # must be < 64 (and < `status_word_width` when set); higher positions are dead
 # config, so the loader logs a warning and skips that bit rule while still loading
 # the rest of the config.
+#
+# Raise qualifier (`raise_after_samples`, `raise_after_ms`):
+#   - polling: a sample is one successful read, so `raise_after_samples: N`
+#     raises on the Nth read in a row, (N-1) x `poll_interval_ms` after the
+#     first. When both are set, both must be met. A failed read is not a sample
+#     and does not complete `raise_after_ms`; the wait continues on the next
+#     successful read.
+#   - subscriptions: the server sends a value when it changes, not each poll,
+#     so there are no samples to count. `raise_after_samples: N` becomes a wait
+#     of (N-1) x `poll_interval_ms` from the data change that starts it, or
+#     `raise_after_ms` when that is longer. Changes of other points do not
+#     start a wait, and a point that has not reported since a reconnect is not
+#     looked at until it does. Keep the wait longer than
+#     `subscription_interval_ms`, since a change arrives once per publish.
+# The check runs once per `poll_interval_ms`, so a raise can come up to one poll
+# interval after the wait ends. With subscriptions and a
+# `subscription_interval_ms` shorter than the poll, a waiting fault is also
+# checked every `subscription_interval_ms`, so it ends on time. A single healthy reading restarts the
+# wait. A lost connection also restarts it, since nothing was seen while the link
+# was down. Only the raise waits: the clear is immediate. Each bit of a status
+# word and each code of an enum waits on its own. A fault that is still waiting
+# is not listed in `active_alarms` on `x-plc-status`. Out-of-range values are
+# clamped with a warning.
 #
 # Fault codes must be globally unique across ALL fault sources - every `alarm` /
 # `status_bits` / `fault_enum` entry AND every `event_alarms` entry (including
@@ -653,7 +689,7 @@ ros2_medkit_gateway:
 | `auto_alarms` | `false` | Boolean or object; subscribe a server EventNotifier and auto-derive a fault per AlarmCondition with no per-alarm `event_alarms` mapping - the zero-config native A&C surface (see above) |
 | `poll_interval_ms` | `1000` | Polling interval in ms (clamped to [100, 60000]) |
 | `prefer_subscriptions` | `false` | Use OPC-UA subscriptions instead of polling |
-| `subscription_interval_ms` | `500` | Publishing interval for OPC-UA subscriptions when `prefer_subscriptions: true` |
+| `subscription_interval_ms` | `500` | Publishing interval for OPC-UA subscriptions when `prefer_subscriptions: true`. Between two polls the client is also iterated at this interval (at least 20 ms apart, at most once per poll), so changes arrive at this cadence and not once per `poll_interval_ms` |
 | `condition_replay_strategy` | `auto` | Active-condition replay on reconnect: `method`, `read`, `auto`, `off` (see below) |
 | `require_confirm_for_clear` | `true` | Require both Acknowledge AND Confirm before a native alarm auto-clears. Set `false` for Confirm-less servers (e.g. Siemens S7-1500) so alarms clear on Acknowledge alone (see below) |
 | `comms_lost_fault_enabled` | `true` | Raise a component-scoped `PLC_COMMS_LOST` fault when the connection stays down, and clear it on every successful connect (issue #496) |
@@ -811,15 +847,17 @@ replacement and restarting is the whole gesture.
   session is dropped, no link-state clear is sent, and the reconnect loop keeps
   trying. The check runs on every session the reconnect arm opens. A session
   open62541 re-opens on its own after a channel drop is caught wherever
-  `run_iterate` runs, which is every shape with native alarms on (the event
-  pump and the poll cycle both iterate): after each iterate the client reads
-  its session state, and a session that fell below ACTIVATED after having been
-  active is disconnected explicitly, so the next session is the arm's, checked
-  against the binding, with the native alarm subscription re-created on it.
+  `run_iterate` runs, which is every shape with native alarms on, or
+  data-change subscription mode active (the event pump, the poll cycle and,
+  in subscription mode, the steps between two polls all iterate): after each
+  iterate the client reads its session state, and a session that fell below
+  ACTIVATED after having been active is disconnected explicitly, so the next
+  session is the arm's, checked against the binding, with the native alarm
+  and data-change subscriptions re-created on it.
   That is what makes a swap visible where nothing reads a value: the
   config-less deployment with native alarms and no node map, at any poll
   cadence. open62541 re-opens a session only from `run_iterate`, so with native
-  alarms off nothing is re-opened underneath: a node map's scalar read fails
+  alarms off in poll mode nothing is re-opened underneath: a node map's scalar read fails
   with a connection-closed code, the client is marked down, and the arm's next
   session is checked the same way. The re-created subscription carries device
   alarms; that is proven for a swap followed by the bound server's return and
@@ -897,9 +935,10 @@ Safety / OT posture:
   the start-up scan only, or `enabled: false` to switch it off entirely.
 - A sweep is cancellable, so a stop does not have to wait out a subnet the size
   of a /16. The start-up sweep runs while the gateway node is still being
-  constructed, so what ends it is `SIGINT` / `SIGTERM`, which the plugin sees
-  through `rclcpp::ok()`. A re-scan sweep runs on the poll thread and is ended
-  by either that or the plugin's own `shutdown()`.
+  constructed, so what ends it is `SIGINT` / `SIGTERM`. `gateway_node` holds
+  both signals back until startup ends, and the plugin sees one that is pending.
+  The gateway then exits. A re-scan sweep runs on the poll thread and is ended by
+  a signal through `rclcpp::ok()` or by the plugin's own `shutdown()`.
 - An explicitly configured `endpoint_url` (or `OPCUA_ENDPOINT_URL`) always wins;
   discovery then does nothing, so it never opens a second session on a PLC the
   plugin already polls.

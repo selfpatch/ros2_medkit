@@ -40,8 +40,12 @@ namespace ros2_medkit_gateway {
 /// kept short.
 class Ros2LifecycleStateReader : public LifecycleStateReader {
  public:
-  explicit Ros2LifecycleStateReader(rclcpp::Node * host,
-                                    std::chrono::duration<double> timeout = std::chrono::milliseconds(500));
+  static constexpr std::chrono::milliseconds kDefaultTimeout{500};
+
+  /// @param helper_suffix Name suffix of the reader's helper node (see make_helper_node). Each reader
+  ///        on one host needs its own, and is_own_gateway_helper_node must list it.
+  explicit Ros2LifecycleStateReader(rclcpp::Node * host, std::chrono::duration<double> timeout = kDefaultTimeout,
+                                    const std::string & helper_suffix = "_lifecycle_state_reader");
   ~Ros2LifecycleStateReader() override;
   Ros2LifecycleStateReader(const Ros2LifecycleStateReader &) = delete;
   Ros2LifecycleStateReader & operator=(const Ros2LifecycleStateReader &) = delete;
@@ -56,6 +60,8 @@ class Ros2LifecycleStateReader : public LifecycleStateReader {
   std::shared_ptr<rclcpp::Node> client_node_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   std::chrono::duration<double> timeout_;
+  /// The host's logger. The helper node has no /rosout publisher.
+  rclcpp::Logger logger_;
   std::mutex mutex_;
 };
 

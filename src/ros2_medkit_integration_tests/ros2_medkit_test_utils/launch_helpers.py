@@ -102,7 +102,8 @@ LIDAR_FAULTY_PARAMS = {
 
 def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
                         extra_params=None, parameter_files=(), coverage=True, extra_env=None,
-                        respawn=False, respawn_delay=1.0, params_file=None):
+                        respawn=False, respawn_delay=1.0, namespace=None,
+                        remappings=None, ros_arguments=None):
     """Create a ``gateway_node`` launch action with standard config.
 
     Parameters
@@ -136,11 +137,14 @@ def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
         and the DDS participant are released before the replacement binds
         them, which also gives a test a window in which the port is provably
         down - the only way to tell "restarted" from "never died".
-    params_file : str or None
-        Path to a YAML params file loaded BEFORE the inline parameters, so a
-        test can launch a shipped profile - ``config/gateway_params.yaml`` or
-        ``config/gateway_params.secure.yaml`` - and still override the port and
-        the credentials a committed file cannot carry.
+    namespace : str or None
+        ROS namespace for the gateway. ``None`` leaves it unset, which also
+        keeps launch_ros writing the parameters under ``/**``.
+    remappings : list of (str, str) or None
+        Remap rules. launch_ros passes them to the whole process.
+    ros_arguments : list of str or None
+        Extra ``--ros-args`` arguments, for rules ``remappings`` cannot spell
+        (a node-specific ``<node>:__ns:=<ns>``).
 
     Returns
     -------
@@ -151,21 +155,29 @@ def create_gateway_node(*, port=DEFAULT_PORT, name='ros2_medkit_gateway',
     params = {'refresh_interval_ms': 1000, 'server.port': port}
     if extra_params:
         params.update(extra_params)
-    file_then_inline = ([params_file] if params_file else []) + [params]
 
     env = dict(get_coverage_env() if coverage else {})
     if extra_env:
         env.update(extra_env)
+
+    optional = {}
+    if namespace is not None:
+        optional['namespace'] = namespace
+    if remappings is not None:
+        optional['remappings'] = remappings
+    if ros_arguments is not None:
+        optional['arguments'] = ['--ros-args', *ros_arguments]
 
     return launch_ros.actions.Node(
         package='ros2_medkit_gateway',
         executable='gateway_node',
         name=name,
         output='screen',
-        parameters=[*file_then_inline, *parameter_files],
+        parameters=[params, *parameter_files],
         additional_env=env,
         respawn=respawn,
         respawn_delay=respawn_delay,
+        **optional,
         # Default SIGINT->SIGTERM escalation is 5s and SIGTERM->SIGKILL is 5s.
         # Under TSan/ASan/coverage the gateway shutdown sequence (mdns stop,
         # REST server stop, transport teardown, plugin shutdown, plus flushing
@@ -192,6 +204,7 @@ def create_fault_manager_node(
     extra_params=None,
     coverage=True,
     extra_env=None,
+    namespace=None,
 ):
     """Create a ``fault_manager_node`` with test-friendly defaults.
 
@@ -220,6 +233,8 @@ def create_fault_manager_node(
     extra_env : dict or None
         Additional environment variables merged into ``additional_env`` on
         top of the coverage env (e.g. ``ROS_DOMAIN_ID`` for a peer).
+    namespace : str or None
+        ROS namespace for the fault manager. ``None`` leaves it unset.
 
     Returns
     -------
@@ -250,6 +265,10 @@ def create_fault_manager_node(
     if extra_env:
         env.update(extra_env)
 
+    optional = {}
+    if namespace is not None:
+        optional['namespace'] = namespace
+
     return launch_ros.actions.Node(
         package='ros2_medkit_fault_manager',
         executable='fault_manager_node',
@@ -257,6 +276,7 @@ def create_fault_manager_node(
         output='screen',
         additional_env=env,
         parameters=[params],
+        **optional,
         # Same rationale as create_gateway_node: under coverage the node must
         # flush gcov data at shutdown, which can exceed the 5s launch default
         # and get the process SIGKILLed to -9. Widen both windows.
@@ -349,7 +369,7 @@ def create_greenwave_node(
 # ---------------------------------------------------------------------------
 
 def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True,
-                      extra_env=None):
+                      extra_env=None, namespace=None):
     """Create demo node launch actions.
 
     Parameters
@@ -366,6 +386,9 @@ def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True,
         Additional environment variables merged into each node's
         ``additional_env``. Useful for setting ``ROS_DOMAIN_ID`` to
         isolate nodes into a specific DDS domain.
+    namespace : str or None
+        Namespace for every node in ``nodes``, in place of the one in
+        ``DEMO_NODE_REGISTRY``. ``None`` keeps the registry's.
 
     Returns
     -------
@@ -389,13 +412,13 @@ def create_demo_nodes(nodes=None, *, lidar_faulty=True, coverage=True,
     actions = []
 
     for key in nodes:
-        executable, ros_name, namespace = DEMO_NODE_REGISTRY[key]
+        executable, ros_name, registry_namespace = DEMO_NODE_REGISTRY[key]
 
         node_kwargs = {
             'package': 'ros2_medkit_integration_tests',
             'executable': executable,
             'name': ros_name,
-            'namespace': namespace,
+            'namespace': namespace if namespace is not None else registry_namespace,
             'output': 'screen',
             'additional_env': env,
             # Give the node room to flush coverage data at shutdown before
@@ -521,7 +544,8 @@ def create_test_launch(
     tuple[LaunchDescription, dict]
         ``(launch_description, context_dict)`` tuple expected by
         ``launch_testing``. ``context_dict`` maps ``'gateway_node'`` to the
-        gateway ``Node`` action.
+        gateway ``Node`` action and, when one is launched,
+        ``'fault_manager_node'`` to the fault manager's.
 
     """
     gateway_node = create_gateway_node(
@@ -534,10 +558,11 @@ def create_test_launch(
         lidar_faulty=lidar_faulty,
     )
 
+    context = {'gateway_node': gateway_node}
     if fault_manager:
-        delayed_actions.append(
-            create_fault_manager_node(extra_params=fault_manager_params)
-        )
+        fault_manager_node = create_fault_manager_node(extra_params=fault_manager_params)
+        delayed_actions.append(fault_manager_node)
+        context['fault_manager_node'] = fault_manager_node
 
     delayed = TimerAction(
         period=demo_delay,
@@ -552,5 +577,5 @@ def create_test_launch(
 
     return (
         launch_description,
-        {'gateway_node': gateway_node},
+        context,
     )

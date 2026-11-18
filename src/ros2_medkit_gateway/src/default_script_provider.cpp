@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/default_script_provider.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 #include <fcntl.h>
 #include <signal.h>
@@ -31,8 +32,6 @@
 #include <sstream>
 #include <thread>
 #include <vector>
-
-#include <rclcpp/logging.hpp>
 
 namespace ros2_medkit_gateway {
 
@@ -60,9 +59,9 @@ DefaultScriptProvider::DefaultScriptProvider(const ScriptsConfig & config) : con
     if (!entry.path.empty()) {
       std::error_code ec;
       if (!std::filesystem::exists(entry.path, ec) || !std::filesystem::is_regular_file(entry.path, ec)) {
-        RCLCPP_WARN(rclcpp::get_logger("default_script_provider"),
-                    "Manifest script '%s' path does not exist or is not a regular file: %s", id.c_str(),
-                    entry.path.c_str());
+        MEDKIT_LOG_WARN(log::Logger("default_script_provider"),
+                        "Manifest script '%s' path does not exist or is not a regular file: %s", id.c_str(),
+                        entry.path.c_str());
       }
     }
   }
@@ -474,9 +473,29 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
   // Collect env vars to set in child process
   auto env_vars = resolved->env;
 
+  // Without a stdin payload the child reads /dev/null, never the gateway's stdin.
+  int devnull_fd = -1;
+  if (!pass_stdin_json) {
+    devnull_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    if (devnull_fd < 0) {
+      close(stdout_pipe[0]);
+      close(stdout_pipe[1]);
+      close(stderr_pipe[0]);
+      close(stderr_pipe[1]);
+      {
+        std::lock_guard<std::mutex> lock(exec_mutex_);
+        active_execution_count_--;  // Release reserved slot
+      }
+      return tl::make_unexpected(ScriptBackendErrorInfo{ScriptBackendError::Internal, "Failed to open /dev/null"});
+    }
+  }
+
   // Fork
   pid_t child_pid = fork();
   if (child_pid < 0) {
+    if (devnull_fd >= 0) {
+      close(devnull_fd);
+    }
     close(stdout_pipe[0]);
     close(stdout_pipe[1]);
     close(stderr_pipe[0]);
@@ -498,20 +517,31 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
     // Create a new process group so we can kill all child processes on timeout
     setpgid(0, 0);
 
-    // Redirect stdin if passing JSON
+    // The forking thread can block SIGINT and SIGTERM (main() does that during startup, and
+    // threads started then keep it). exec keeps the mask, and stop sends SIGTERM.
+    sigset_t no_signals;
+    sigemptyset(&no_signals);
+    sigprocmask(SIG_SETMASK, &no_signals, nullptr);
+
+    // Close the read ends first. With fd 0 closed in the gateway, a pipe end can be fd 0, and
+    // redirecting stdin before this would close the redirect again.
+    close(stdout_pipe[0]);
+    close(stderr_pipe[0]);
+
+    // Redirect stdin
     if (pass_stdin_json) {
       close(stdin_pipe[1]);  // Close write end
       dup2(stdin_pipe[0], STDIN_FILENO);
       close(stdin_pipe[0]);
+    } else {
+      dup2(devnull_fd, STDIN_FILENO);
     }
 
     // Redirect stdout
-    close(stdout_pipe[0]);  // Close read end
     dup2(stdout_pipe[1], STDOUT_FILENO);
     close(stdout_pipe[1]);
 
     // Redirect stderr
-    close(stderr_pipe[0]);  // Close read end
     dup2(stderr_pipe[1], STDERR_FILENO);
     close(stderr_pipe[1]);
 
@@ -535,6 +565,9 @@ DefaultScriptProvider::start_execution(const std::string & entity_id, const std:
   // --- Parent process ---
 
   setpgid(child_pid, child_pid);  // Also set in parent (race-free with child's setpgid(0,0))
+  if (devnull_fd >= 0) {
+    close(devnull_fd);
+  }
 
   // Close pipe ends we don't use
   close(stdout_pipe[1]);

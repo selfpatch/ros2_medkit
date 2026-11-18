@@ -26,6 +26,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/pending_topic_watcher.hpp"
 
 namespace ros2_medkit_fault_manager {
 
@@ -220,6 +221,11 @@ class SnapshotCapture {
   /// Initialize background subscriptions for all configured topics
   void init_background_subscriptions();
 
+  /// Create the background subscription for @p topic, whose type is known.
+  /// A failure is logged and not retried: asking again meets the same missing
+  /// type support.
+  void subscribe_background(const std::string & topic, const std::string & msg_type);
+
   /// Collect all unique topics from configuration
   std::vector<std::string> collect_all_configured_topics() const;
 
@@ -257,8 +263,15 @@ class SnapshotCapture {
   /// not thread-safe for concurrent entity creation.
   std::mutex node_ops_mutex_;
 
-  /// Background subscriptions (kept alive for continuous caching)
+  /// Background subscriptions (kept alive for continuous caching). Appended by
+  /// the constructor and, for a topic that appears later, by the watcher on the
+  /// executor thread; never touched by the capture pool.
   std::vector<rclcpp::GenericSubscription::SharedPtr> background_subscriptions_;
+
+  /// Waits for the configured topics the graph had no type for at startup.
+  /// Null when there were none. Declared last so it goes before everything its
+  /// hand-over uses.
+  std::unique_ptr<PendingTopicWatcher> background_topic_watcher_;
 };
 
 }  // namespace ros2_medkit_fault_manager

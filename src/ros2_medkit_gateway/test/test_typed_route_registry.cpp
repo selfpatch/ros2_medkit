@@ -571,6 +571,169 @@ TEST(TypedRouteRegistry, BinaryDownloadAnswers206WithContentRangeForARangeReques
   EXPECT_EQ(r->get_header_value("Accept-Ranges"), "bytes");
 }
 
+TEST(TypedRouteRegistry, BinaryDownloadResolvesEveryRangeAgainstTheFile) {
+  // cpp-httplib serves req.ranges as parsed. An open end stayed open in
+  // Content-Range, and a last byte past the end underflowed Content-Length. RFC 9110
+  // section 14.1.2: a last byte at or past the end means "to the end", and
+  // Content-Range carries absolute first-last.
+  RouteRegistry reg;
+  seed_download(reg, "/test/blob").tag("Test").summary("Download");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  struct Case {
+    const char * range;
+    const char * content_range;
+    std::string_view body;
+  };
+  for (const Case & c :
+       {Case{"bytes=10-", "bytes 10-15/16", kDownloadPayload.substr(10)},
+        Case{"bytes=-4", "bytes 12-15/16", kDownloadPayload.substr(12)},
+        Case{"bytes=-100", "bytes 0-15/16", kDownloadPayload}, Case{"bytes=0-16", "bytes 0-15/16", kDownloadPayload},
+        Case{"bytes=12-1048575", "bytes 12-15/16", kDownloadPayload.substr(12)},
+        Case{"bytes=15-15", "bytes 15-15/16", kDownloadPayload.substr(15)}}) {
+    auto r = cli.Get("/api/v1/test/blob", {{"Range", c.range}});
+    ASSERT_TRUE(r) << c.range;
+    EXPECT_EQ(r->status, 206) << c.range;
+    EXPECT_EQ(r->get_header_value("Content-Range"), c.content_range) << c.range;
+    EXPECT_EQ(r->get_header_value("Content-Length"), std::to_string(c.body.size())) << c.range;
+    EXPECT_EQ(r->body, c.body) << c.range;
+  }
+}
+
+TEST(TypedRouteRegistry, BinaryDownloadDropsTheRangesPastTheEndAndKeepsTheRest) {
+  // A range is unsatisfiable only when no part of it starts inside the file. One
+  // that does not is dropped, and the others are served.
+  RouteRegistry reg;
+  seed_download(reg, "/test/blob").tag("Test").summary("Download");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  auto r = cli.Get("/api/v1/test/blob", {{"Range", "bytes=4-7,100-200"}});
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->status, 206);
+  EXPECT_EQ(r->get_header_value("Content-Range"), "bytes 4-7/16");
+  EXPECT_EQ(r->body, "4567");
+
+  auto multi = cli.Get("/api/v1/test/blob", {{"Range", "bytes=0-1,100-,14-"}});
+  ASSERT_TRUE(multi);
+  EXPECT_EQ(multi->status, 206);
+  EXPECT_NE(multi->get_header_value("Content-Type").find("multipart/byteranges"), std::string::npos);
+  EXPECT_NE(multi->body.find("Content-Range: bytes 0-1/16"), std::string::npos) << multi->body;
+  EXPECT_NE(multi->body.find("Content-Range: bytes 14-15/16"), std::string::npos) << multi->body;
+  size_t parts = 0;
+  for (auto pos = multi->body.find("Content-Range:"); pos != std::string::npos;
+       pos = multi->body.find("Content-Range:", pos + 1)) {
+    ++parts;
+  }
+  EXPECT_EQ(parts, 2U) << multi->body;
+}
+
+TEST(TypedRouteRegistry, BinaryDownloadAnswers416OnlyWhenNoRangeIsLeft) {
+  // RFC 9110 section 15.5.17: the 416 carries `Content-Range: bytes */<size>`, which
+  // is where a resuming client reads the length from.
+  RouteRegistry reg;
+  seed_download(reg, "/test/blob").tag("Test").summary("Download");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  for (const char * range : {"bytes=16-", "bytes=100000-", "bytes=16-20", "bytes=-0", "bytes=20-,16-17"}) {
+    auto r = cli.Get("/api/v1/test/blob", {{"Range", range}});
+    ASSERT_TRUE(r) << range;
+    EXPECT_EQ(r->status, 416) << range;
+    EXPECT_EQ(r->get_header_value("Content-Range"), "bytes */16") << range;
+    const auto body = nlohmann::json::parse(r->body, nullptr, false);
+    ASSERT_TRUE(body.is_object()) << range << ": " << r->body;
+    EXPECT_EQ(body.value("error_code", ""), "invalid-parameter") << range;
+    EXPECT_EQ(body["parameters"].value("size", 0), 16) << range;
+  }
+}
+
+TEST(TypedRouteRegistry, BinaryDownloadWithoutRangeSupportIgnoresTheRange) {
+  // A provider that cannot seek streams the whole body. That is a 200, not a 206
+  // carrying the whole file under a range nobody served.
+  RouteRegistry reg;
+  std::function<Result<ros2_medkit_gateway::http::BinaryResponse>(TypedRequest)> h =
+      [](TypedRequest req) -> Result<ros2_medkit_gateway::http::BinaryResponse> {
+    auto resp = range_download_handler(std::move(req));
+    resp->supports_ranges = false;
+    return resp;
+  };
+  reg.binary_download("/test/stream", std::move(h), {"application/octet-stream"}).tag("Test").summary("Download");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  auto r = cli.Get("/api/v1/test/stream", {{"Range", "bytes=4-7"}});
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->status, 200);
+  EXPECT_FALSE(r->has_header("Content-Range"));
+  EXPECT_EQ(r->body, std::string(kDownloadPayload));
+}
+
+TEST(TypedRouteRegistry, BinaryDownloadRelaysAForwardedResponseWithoutRangingItAgain) {
+  // A peer already applied the Range, and this gateway only relays its answer.
+  // cpp-httplib would apply req.ranges to the relayed body a second time: offset 4
+  // of the 4-byte part is past its end, so the client got an empty 416.
+  RouteRegistry reg;
+  std::function<Result<ros2_medkit_gateway::http::BinaryResponse>(TypedRequest)> h =
+      [](TypedRequest /*req*/) -> Result<ros2_medkit_gateway::http::BinaryResponse> {
+    auto * res = ros2_medkit_gateway::http::detail::tl_forward_response;
+    res->status = 206;
+    res->set_header("Content-Range", "bytes 4-7/16");
+    res->set_content("4567", "application/octet-stream");
+    ros2_medkit_gateway::ErrorInfo forwarded;
+    forwarded.code = ros2_medkit_gateway::ERR_X_INTERNAL_FORWARDED;
+    return tl::unexpected(forwarded);
+  };
+  reg.binary_download("/test/relayed", std::move(h), {"application/octet-stream"}).tag("Test").summary("Download");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  auto r = cli.Get("/api/v1/test/relayed", {{"Range", "bytes=4-7"}});
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->status, 206);
+  EXPECT_EQ(r->get_header_value("Content-Range"), "bytes 4-7/16");
+  EXPECT_EQ(r->body, "4567");
+}
+
+TEST(TypedRouteRegistry, JsonDocumentIsNotCutByTheRangeOfTheRequest) {
+  // The bytes of a JSON document are what a client hashes. cpp-httplib applies a
+  // Range to any body, so the document came back as a slice of itself under a 200.
+  RouteRegistry reg;
+  const std::string document = R"({"manifest_version":1,"files":[{"name":"a_0.mcap","size":16}]})";
+  std::function<Result<std::string>(TypedRequest)> ok = [document](TypedRequest /*req*/) -> Result<std::string> {
+    return document;
+  };
+  std::function<Result<std::string>(TypedRequest)> missing = [](TypedRequest /*req*/) -> Result<std::string> {
+    ros2_medkit_gateway::ErrorInfo err;
+    err.code = "resource-not-found";
+    err.message = "No such document";
+    err.http_status = 404;
+    return tl::unexpected(err);
+  };
+  const nlohmann::json schema{{"type", "object"}, {"additionalProperties", true}};
+  reg.json_document("/test/document", std::move(ok), "A document", schema).tag("Test").summary("Document");
+  reg.json_document("/test/no-document", std::move(missing), "A document", schema).tag("Test").summary("Document");
+
+  auto s = start_server(reg);
+  httplib::Client cli("127.0.0.1", s.port);
+  for (const char * range : {"bytes=10-", "bytes=100000-", "bytes=0-3"}) {
+    auto r = cli.Get("/api/v1/test/document", {{"Range", range}});
+    ASSERT_TRUE(r) << range;
+    EXPECT_EQ(r->status, 200) << range;
+    EXPECT_FALSE(r->has_header("Content-Range")) << range;
+    EXPECT_EQ(r->body, document) << range;
+
+    auto e = cli.Get("/api/v1/test/no-document", {{"Range", range}});
+    ASSERT_TRUE(e) << range;
+    EXPECT_EQ(e->status, 404) << range;
+    EXPECT_FALSE(e->has_header("Content-Range")) << range;
+    const auto body = nlohmann::json::parse(e->body, nullptr, false);
+    ASSERT_TRUE(body.is_object()) << range << ": " << e->body;
+    EXPECT_EQ(body.value("error_code", ""), "resource-not-found") << range;
+  }
+}
+
 TEST(TypedRouteRegistry, BinaryDownloadDeclaresBothSuccessStatusesAndMarksItself) {
   // Two 2xx codes are only legitimate because the route says why - the document
   // contract test reads `x-medkit-partial-content` to tell this apart from a

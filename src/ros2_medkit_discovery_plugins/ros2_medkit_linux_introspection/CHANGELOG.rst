@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_linux_introspection
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.1 (2026-11-18)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.0 (2026-08-27)
 ------------------
 * Container CPU and memory limits are reported on every common cgroup layout, not just one. The reader parses the cgroup v1 line format alongside v2, and resolves the limit files under both ``cgroupns=host`` and ``cgroupns=private`` - the latter being the Docker default, where the container sees its own cgroup mounted directly at ``/sys/fs/cgroup`` and the previously built path did not exist. A limit that could not be read is now distinguished from a container that genuinely has no limit, instead of both being reported as unlimited (`#637 <https://github.com/selfpatch/ros2_medkit/pull/637>`_, `#604 <https://github.com/selfpatch/ros2_medkit/issues/604>`_)

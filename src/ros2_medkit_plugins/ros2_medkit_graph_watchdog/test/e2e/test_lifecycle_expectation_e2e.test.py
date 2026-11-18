@@ -255,6 +255,17 @@ HEALING_BLINK_SLEEP_SEC = (HEALING_TICK_INTERVAL_MS / 1000.0) + 1.0
 # through: a node the detector has already reported vanishing and returning twice must
 # never be healed by either one.
 HEALING_BLINK_COUNT = 2
+# kReseedAttempts and kUnmeasuredSeedInterval, lifecycle_watcher.hpp: a respawned node is asked
+# for GetState on two consecutive ticks, then once per five ticks. Mirrored like the grace above.
+HEALING_RESEED_TICKS = 2
+HEALING_UNMEASURED_SEED_INTERVAL_TICKS = 5
+# Longest a live stream can go without a GRAPH_NODE_INACTIVE frame after a blink: the detector
+# sends nothing while the replacement is unmeasured, and re-sends the fault once it is measured.
+# One tick for the watcher to see the respawn after GET /apps does, one first read, the reseeds,
+# then two interval retries. The wait ends on the first frame.
+HEALING_FRAME_WAIT_SEC = (
+    (1 + HEALING_RESEED_TICKS + 2 * HEALING_UNMEASURED_SEED_INTERVAL_TICKS + 1)
+    * HEALING_TICK_INTERVAL_MS / 1000.0)
 
 # The "unreadable" scenario needs to actually cross kUnmeasuredHoldTicks (60,
 # lifecycle_expectation_detector.cpp - fixed, not configurable) consecutive
@@ -1674,12 +1685,11 @@ class TestLifecycleExpectationHealingThreshold(unittest.TestCase):
                     f'the SSE reader thread died during blink {i} - a dead stream would '
                     'let every assertion below pass without having observed anything',
                 )
-                # And that it actually delivered something across the blink: GRAPH_NODE_INACTIVE
-                # is emitted every tick this fault stays raised (see the class docstring
-                # above), so a real blink at this scenario's 1 s tick cadence must produce
-                # at least one fresh frame - a settle window here (not merely at the very
-                # end) is what lets THIS blink's own frame(s) be observed before moving on.
-                time.sleep(2.0)
+                # And that it delivered something after the blink. GRAPH_NODE_INACTIVE is
+                # re-sent only on ticks where the replacement's label is measured.
+                frame_deadline = time.monotonic() + HEALING_FRAME_WAIT_SEC
+                while len(sse_frames) <= frames_before_blink and time.monotonic() < frame_deadline:
+                    time.sleep(0.2)
                 self.assertGreater(
                     len(sse_frames), frames_before_blink,
                     f'no SSE frame arrived during or after blink {i} - the stream may have '
