@@ -51,8 +51,10 @@ ros2_medkit is in the ROS index, so most packages install with ``apt``:
    sudo apt install ros-jazzy-ros2-medkit-gateway   # or ros-humble- / ros-lyrical-
    ros2 launch ros2_medkit_gateway bringup.launch.py
 
-``ros2_medkit_opcua`` is the one package not distributed this way; it is waiting
-on open62541pp being vendored and has to be built from source.
+``ros2_medkit_opcua`` and ``ros2_medkit_graph_watchdog`` are the two packages not
+distributed this way and have to be built from source. ``ros2_medkit_opcua`` is
+waiting on open62541pp being vendored. ``ros2_medkit_graph_watchdog`` compiles
+gateway sources from the workspace, so it builds only inside the full source tree.
 
 Installation from Source
 ------------------------

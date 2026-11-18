@@ -5,7 +5,8 @@ Changelog for package ros2_medkit_graph_watchdog
 0.7.1 (2026-11-18)
 ------------------
 * Presence ownership is kept only on a measured active state (`#732 <https://github.com/selfpatch/ros2_medkit/pull/732>`_)
-* Follows the gateway's handling of its own helper nodes: own ROS context and hidden names (`#723 <https://github.com/selfpatch/ros2_medkit/pull/723>`_, `#725 <https://github.com/selfpatch/ros2_medkit/pull/725>`_)
+* Follows the gateway's handling of its helper nodes: they run on the gateway node's context under hidden names (`#723 <https://github.com/selfpatch/ros2_medkit/pull/723>`_, `#725 <https://github.com/selfpatch/ros2_medkit/pull/725>`_)
+* Not part of the rosdistro release: the package compiles gateway sources from the workspace, so it builds only inside the full source tree (`#796 <https://github.com/selfpatch/ros2_medkit/issues/796>`_)
 * Contributors: @bburda
 
 0.7.0 (2026-08-27)

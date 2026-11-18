@@ -4,7 +4,8 @@ Changelog for package ros2_medkit_param_beacon
 
 0.7.1 (2026-11-18)
 ------------------
-* Follows the gateway's discovery changes: helper nodes on their own ROS context under hidden names (`#723 <https://github.com/selfpatch/ros2_medkit/pull/723>`_, `#725 <https://github.com/selfpatch/ros2_medkit/pull/725>`_)
+* Each parameter list and get call gives up after ``param_timeout_sec``, and the plugin backs off a node that does not answer. In 0.7.0 one node whose parameter services never answered stalled the polling. Duration settings and ``max_hints`` are bounded (`#660 <https://github.com/selfpatch/ros2_medkit/pull/660>`_)
+* The plugin node runs on the gateway node's context (`#723 <https://github.com/selfpatch/ros2_medkit/pull/723>`_, `#725 <https://github.com/selfpatch/ros2_medkit/pull/725>`_)
 * Contributors: @bburda
 
 0.7.0 (2026-08-27)
