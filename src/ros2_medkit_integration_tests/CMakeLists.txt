@@ -35,7 +35,6 @@ find_package(ros2_medkit_msgs REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(lifecycle_msgs REQUIRED)
-find_package(ros2_medkit_gateway REQUIRED)
 
 # === Demo node executables ===
 
@@ -150,16 +149,19 @@ install(DIRECTORY launch/ DESTINATION share/${PROJECT_NAME}/launch)
 
 # === Integration tests ===
 
-# Topic-backed test plugin for the issue #584 integration test: dlopen-loaded
-# by the gateway under test, so it mirrors the production plugin link model
-# (MODULE, unresolved symbols provided by the host process).
-add_library(topics_test_plugin MODULE test_plugins/topics_test_plugin.cpp)
-medkit_target_dependencies(topics_test_plugin ros2_medkit_gateway rclcpp std_msgs)
-target_link_options(topics_test_plugin PRIVATE -Wl,--unresolved-symbols=ignore-all)
-set_target_properties(topics_test_plugin PROPERTIES OUTPUT_NAME "topics_test_plugin")
-install(TARGETS topics_test_plugin LIBRARY DESTINATION lib/${PROJECT_NAME})
-
 if(BUILD_TESTING)
+  # Topic-backed test plugin for the issue #584 integration test: dlopen-loaded
+  # by the gateway under test, so it mirrors the production plugin link model
+  # (MODULE, unresolved symbols provided by the host process).
+  # Inside BUILD_TESTING: ros2_medkit_gateway is a test_depend, and a binary
+  # package build does not install test dependencies.
+  find_package(ros2_medkit_gateway REQUIRED)
+  add_library(topics_test_plugin MODULE test_plugins/topics_test_plugin.cpp)
+  medkit_target_dependencies(topics_test_plugin ros2_medkit_gateway rclcpp std_msgs)
+  target_link_options(topics_test_plugin PRIVATE -Wl,--unresolved-symbols=ignore-all)
+  set_target_properties(topics_test_plugin PROPERTIES OUTPUT_NAME "topics_test_plugin")
+  install(TARGETS topics_test_plugin LIBRARY DESTINATION lib/${PROJECT_NAME})
+
   find_package(launch_testing_ament_cmake REQUIRED)
 
   # Graph fixtures for the test_graph_leftover_nodes suites, installed for tests in any package.
