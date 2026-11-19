@@ -14,7 +14,7 @@
 # limitations under the License.
 
 """
-End-to-end tests for keeping several recordings per fault code (Issue #620).
+End-to-end tests for keeping several recordings per fault record (Issue #620).
 
 The other rosbag suites all run at the shipped default of one recording per
 fault, which is what every release before this one could store. This one raises
@@ -29,6 +29,7 @@ test_rosbag_storage_parity at unit level.
 """
 
 import os
+import sys
 import tempfile
 import time
 import unittest
@@ -42,9 +43,13 @@ import launch_testing.markers
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
-from ros2_medkit_msgs.msg import Fault, FaultEvent
+from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import ClearFault, GetRosbag, ListRosbags, ReportFault
 from sensor_msgs.msg import Temperature
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from rosbag_ring_buffer import RecordedTopicWatch  # noqa: E402, I100
+from service_round_trip import answer_once_each  # noqa: E402, I100
 
 
 def get_coverage_env():
@@ -74,7 +79,7 @@ PUBLISHER_SCRIPT_PATH = None
 
 
 def generate_test_description():
-    """Launch a fault_manager keeping several recordings per fault code."""
+    """Launch a fault_manager keeping several recordings per fault record."""
     publisher_script = """
 import rclpy
 from rclpy.node import Node
@@ -155,8 +160,8 @@ if __name__ == '__main__':
             'database_path': DATABASE_PATH,
             'confirmation_threshold': -1,
             'snapshots.rosbag.enabled': True,
-            'snapshots.rosbag.duration_sec': 2.0,
-            'snapshots.rosbag.duration_after_sec': 0.5,
+            'snapshots.rosbag.duration_sec': RING_BUFFER_SEC,
+            'snapshots.rosbag.duration_after_sec': POST_FAULT_SEC,
             'snapshots.rosbag.topics': '/test/temperature,/test/status',
             'snapshots.rosbag.format': 'mcap',
             'snapshots.rosbag.storage_path': ROSBAG_STORAGE_PATH,
@@ -209,10 +214,13 @@ if __name__ == '__main__':
 # Budget for the fault manager to come up, from the start of setUpClass. The
 # ctest TIMEOUT is 240 s, so the budget is well inside it.
 PRECONDITION_BUDGET_SEC = 70.0
+# The capture's ring buffer and post-fault window.
+RING_BUFFER_SEC = 2.0
+POST_FAULT_SEC = 0.5
 
 
 class TestRosbagHistory(unittest.TestCase):
-    """Several recordings per fault code, addressed by recording id."""
+    """Several recordings per fault record, addressed by recording id."""
 
     @classmethod
     def setUpClass(cls):
@@ -269,12 +277,16 @@ class TestRosbagHistory(unittest.TestCase):
                 break
             time.sleep(0.2)
         assert not missing, 'fault_manager not ready: ' + ', '.join(missing)
+        answer_once_each(cls.node, tuple(clients.values()), PRECONDITION_BUDGET_SEC)
 
-        deadline = time.time() + 15.0
-        while (not cls.node.get_publishers_info_by_topic('/test/temperature')
-               and time.time() < deadline):
-            time.sleep(0.2)
-        time.sleep(3.0)
+        # Matches the publisher's BEST_EFFORT sensor QoS, else no messages arrive.
+        cls.recorded = RecordedTopicWatch(
+            cls.node, '/test/temperature', Temperature,
+            QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
+                       history=HistoryPolicy.KEEP_LAST, depth=10),
+            RING_BUFFER_SEC, POST_FAULT_SEC)
+        assert cls.recorded.wait_for_history(0.5, 18.0), \
+            'the recorded topic never reached the ring buffer'
 
     @classmethod
     def tearDownClass(cls):
@@ -331,50 +343,9 @@ class TestRosbagHistory(unittest.TestCase):
         request.recording_id = recording_id
         return self._call_service(self.get_rosbag_client, request)
 
-    def _wait_for_buffered_data(self, count=5, timeout=8.0):
-        """
-        Wait until the ring buffer holds fresh data before a confirmation.
-
-        A previous fault's post-roll diverts incoming messages straight into the
-        open bag, so right after that window closes the buffer can be empty and
-        the next confirmation produces no bag at all. Reset the streak on every
-        CONFIRMED so the messages counted here provably arrived with no post-roll
-        newly opened partway through - see the same helper in
-        test_rosbag_integration.
-        """
-        received = 0
-
-        def _cb(_msg):
-            nonlocal received
-            received += 1
-
-        def _on_event(msg):
-            nonlocal received
-            if msg.event_type == FaultEvent.EVENT_CONFIRMED:
-                received = 0
-
-        qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-        )
-        events_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=100,
-        )
-        sub = self.node.create_subscription(Temperature, '/test/temperature', _cb, qos)
-        events_sub = self.node.create_subscription(
-            FaultEvent, '/fault_manager/events', _on_event, events_qos
-        )
-        try:
-            deadline = time.time() + timeout
-            while received < count and time.time() < deadline:
-                rclpy.spin_once(self.node, timeout_sec=0.1)
-        finally:
-            self.node.destroy_subscription(sub)
-            self.node.destroy_subscription(events_sub)
-        return received >= count
+    def _wait_for_buffered_data(self, history_sec=0.5, timeout=8.0):
+        """Wait until a fault confirmed now gets <history_sec> of pre-fault history."""
+        return self.recorded.wait_for_history(history_sec, timeout)
 
     def _record_occurrence(self, fault_code, known_ids):
         """Confirm the fault once and return its new recording."""

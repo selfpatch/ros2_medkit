@@ -33,6 +33,7 @@ using ros2_medkit_fault_manager::EntityDebounceOverride;
 using ros2_medkit_fault_manager::EntityThresholdResolver;
 using ros2_medkit_fault_manager::FaultCodeDebounceOverride;
 using ros2_medkit_fault_manager::FaultCodeThresholdResolver;
+using ros2_medkit_fault_manager::FaultId;
 using ros2_medkit_fault_manager::InMemoryFaultStorage;
 using ros2_medkit_msgs::msg::Fault;
 using ros2_medkit_msgs::srv::ReportFault;
@@ -350,6 +351,26 @@ TEST_F(FaultCodeYamlLoadTest, BadValueReturnsEmpty) {
   EXPECT_TRUE(entries.empty());
 }
 
+// A per_source that is not the YAML boolean true or false would decide how a code is identified by
+// accident, so it rejects the whole file like any other malformed value. yaml-cpp itself reads "yes" as true.
+// @verifies REQ_INTEROP_107
+TEST_F(FaultCodeYamlLoadTest, PerSourceNonBoolRejectsTheFile) {
+  for (const char * bad : {"\"yes\"", "3"}) {
+    auto path = tmpdir_ / "bad_per_source.yaml";
+    {
+      std::ofstream f(path);
+      f << "GOOD.CODE:\n"
+        << "  per_source: true\n"
+        << "BAD.CODE:\n"
+        << "  per_source: " << bad << "\n";
+    }
+
+    std::vector<FaultCodeDebounceOverride> entries;
+    ASSERT_NO_THROW(entries = FaultCodeThresholdResolver::load_from_yaml(path.string(), test_log_sink())) << bad;
+    EXPECT_TRUE(entries.empty()) << "per_source: " << bad;
+  }
+}
+
 // yaml-cpp accepts a key twice. The first entry wins, the same as the resolver.
 // @verifies REQ_INTEROP_107
 TEST_F(FaultCodeYamlLoadTest, RepeatedCodeKeepsTheFirstEntry) {
@@ -448,9 +469,11 @@ class FaultCodeStorageTest : public ::testing::Test {
     codes_ = FaultCodeThresholdResolver({overheat});
   }
 
-  void report(const std::string & fault_code, const std::string & source_id) {
-    storage_.report_fault_event(fault_code, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "", source_id,
-                                clock_.now().nanoseconds(),
+  /// Reports into the shared record of the code unless @p owner names another record.
+  void report(const std::string & fault_code, const std::string & source_id,
+              const std::string & owner = ros2_medkit_fault_manager::kSharedOwner) {
+    storage_.report_fault_event(FaultId{fault_code, owner}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "",
+                                source_id, clock_.now().nanoseconds(),
                                 resolve_layered(entities_, codes_, source_id, fault_code, global_));
   }
 };
@@ -460,23 +483,44 @@ TEST_F(FaultCodeStorageTest, LidarNoLongerConfirmsTheMotorsCodeEarly) {
   // Without the fault-code override, lidar's threshold of -1 would confirm this
   // on the second event (the counter is shared). With it, both sources debounce
   // at -3.
+  const FaultId shared{"OVERHEAT", ros2_medkit_fault_manager::kSharedOwner};
   report("OVERHEAT", "/powertrain/motor/left");
-  EXPECT_EQ(storage_.get_fault("OVERHEAT")->status, Fault::STATUS_PREFAILED);
+  EXPECT_EQ(storage_.get_fault(shared)->status, Fault::STATUS_PREFAILED);
 
   report("OVERHEAT", "/sensors/lidar/front");
-  EXPECT_EQ(storage_.get_fault("OVERHEAT")->status, Fault::STATUS_PREFAILED);
+  EXPECT_EQ(storage_.get_fault(shared)->status, Fault::STATUS_PREFAILED);
 
   report("OVERHEAT", "/sensors/lidar/front");
-  EXPECT_EQ(storage_.get_fault("OVERHEAT")->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(storage_.get_fault(shared)->status, Fault::STATUS_CONFIRMED);
+}
+
+// @verifies REQ_INTEROP_107
+TEST_F(FaultCodeStorageTest, TheCodeOverrideGovernsEachOwnersRecordWhenPerSource) {
+  // Without the fault-code override, lidar's threshold of -1 would confirm its record on
+  // its first event. With it, the record of each owner debounces at -3, on its own counter.
+  const FaultId motor{"OVERHEAT", "/powertrain/motor/left"};
+  const FaultId lidar{"OVERHEAT", "/sensors/lidar/front"};
+
+  report(motor.fault_code, motor.owner, motor.owner);
+  EXPECT_EQ(storage_.get_fault(motor)->status, Fault::STATUS_PREFAILED);
+
+  report(lidar.fault_code, lidar.owner, lidar.owner);
+  EXPECT_EQ(storage_.get_fault(lidar)->status, Fault::STATUS_PREFAILED);
+  report(lidar.fault_code, lidar.owner, lidar.owner);
+  EXPECT_EQ(storage_.get_fault(lidar)->status, Fault::STATUS_PREFAILED);
+  report(lidar.fault_code, lidar.owner, lidar.owner);
+  EXPECT_EQ(storage_.get_fault(lidar)->status, Fault::STATUS_CONFIRMED);
+
+  EXPECT_EQ(storage_.get_fault(motor)->status, Fault::STATUS_PREFAILED) << "the motor's own counter is at 1 of 3";
 }
 
 // @verifies REQ_INTEROP_107
 TEST_F(FaultCodeStorageTest, ACodeWithoutAnOverrideKeepsEntityBehaviour) {
   report("MOTOR_STALL", "/powertrain/motor/left");
-  EXPECT_EQ(storage_.get_fault("MOTOR_STALL")->status, Fault::STATUS_PREFAILED);
+  EXPECT_EQ(storage_.get_fault({"MOTOR_STALL", "*"})->status, Fault::STATUS_PREFAILED);
 
   report("LIDAR_BLOCKED", "/sensors/lidar/front");
-  EXPECT_EQ(storage_.get_fault("LIDAR_BLOCKED")->status, Fault::STATUS_CONFIRMED);
+  EXPECT_EQ(storage_.get_fault({"LIDAR_BLOCKED", "*"})->status, Fault::STATUS_CONFIRMED);
 }
 
 // The startup pass flips HEALED to CLEARED only for codes whose healing is off.
@@ -486,12 +530,13 @@ TEST_F(FaultCodeStorageTest, ReclassifyKeepsCodesThatStillHeal) {
   healing.healing_enabled = true;
   healing.healing_threshold = 1;
   for (const std::string code : {"KEEPS.HEALING", "STOPPED.HEALING"}) {
-    storage_.report_fault_event(code, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "", "/src",
+    storage_.report_fault_event(FaultId{code, "/src"}, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "", "/src",
                                 clock_.now().nanoseconds(), healing);
-    for (int i = 0; i < 3 && storage_.get_fault(code)->status != Fault::STATUS_HEALED; ++i) {
-      storage_.report_fault_event(code, fd::ReportKind::kPassed, 0, "", "/src", clock_.now().nanoseconds(), healing);
+    for (int i = 0; i < 3 && storage_.get_fault({code, "/src"})->status != Fault::STATUS_HEALED; ++i) {
+      storage_.report_fault_event(FaultId{code, "/src"}, fd::ReportKind::kPassed, 0, "", "/src",
+                                  clock_.now().nanoseconds(), healing);
     }
-    ASSERT_EQ(storage_.get_fault(code)->status, Fault::STATUS_HEALED);
+    ASSERT_EQ(storage_.get_fault({code, "/src"})->status, Fault::STATUS_HEALED);
   }
 
   auto reclassified = storage_.reclassify_healed_as_cleared([](const std::string & code) {
@@ -499,7 +544,7 @@ TEST_F(FaultCodeStorageTest, ReclassifyKeepsCodesThatStillHeal) {
   });
 
   ASSERT_EQ(reclassified.size(), 1u);
-  EXPECT_EQ(reclassified[0], "STOPPED.HEALING");
-  EXPECT_EQ(storage_.get_fault("KEEPS.HEALING")->status, Fault::STATUS_HEALED);
-  EXPECT_EQ(storage_.get_fault("STOPPED.HEALING")->status, Fault::STATUS_CLEARED);
+  EXPECT_EQ(reclassified[0], (FaultId{"STOPPED.HEALING", "/src"}));
+  EXPECT_EQ(storage_.get_fault({"KEEPS.HEALING", "/src"})->status, Fault::STATUS_HEALED);
+  EXPECT_EQ(storage_.get_fault({"STOPPED.HEALING", "/src"})->status, Fault::STATUS_CLEARED);
 }

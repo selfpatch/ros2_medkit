@@ -561,10 +561,13 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   }
 
   // Build the ClearFault request for one fault code.
+  // ``source_id`` is the entity id the fault is reported under: it picks the
+  // record when more than one source reported the code.
   // ``skip_correlation_auto_clear`` goes on the wire verbatim (see ClearOrigin
-  // for who sets it and why). Static so the wire field is assertable without a
+  // for who sets it and why). Static so the wire fields are assertable without a
   // fault manager.
   static ros2_medkit_msgs::srv::ClearFault::Request make_clear_fault_request(const std::string & fault_code,
+                                                                             const std::string & source_id,
                                                                              bool skip_correlation_auto_clear);
 
   // One entry in the bounded buffer of fault dispatches held while the
@@ -644,9 +647,11 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // Report/clear fault via ROS 2 service (private helpers, not the FaultProvider overrides)
   void send_report_fault(const std::string & entity_id, const std::string & fault_code,
                          const std::string & severity_str, const std::string & message);
+  // ``source_id`` is the entity id the fault is reported under.
   // ``origin`` says why the clear is being sent, which decides both the wire
   // flag and how the pending buffer ranks it. See ClearOrigin.
-  void send_clear_fault(const std::string & fault_code, ClearOrigin origin = ClearOrigin::DeviceAlarm);
+  void send_clear_fault(const std::string & fault_code, const std::string & source_id,
+                        ClearOrigin origin = ClearOrigin::DeviceAlarm);
 
   // Record that a link-state decision about PLC_COMMS_LOST is due.
   //
@@ -670,7 +675,9 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
 
   // Apply the gate to an answer the store gave and send the clear it permits.
   // Poll thread only.
-  void apply_comms_lost_answer(bool found, const std::vector<std::string> & reporting_sources);
+  // ``clear_source`` is the id the probe that found the record was sent under.
+  void apply_comms_lost_answer(bool found, const std::vector<std::string> & reporting_sources,
+                               const std::string & clear_source);
 
   // The ids a fault reported by THIS process can carry: the component id being
   // served, every placeholder this process assigned, and the NodeMap default.
@@ -988,6 +995,21 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
   // on the wire, so one further decision follows any that had a raise behind
   // it. Set on the poll thread, taken on the poll thread.
   std::atomic<bool> comms_lost_raise_since_decision_{false};
+  // Ids this process reports under that the current decision has not probed yet, and the id the
+  // outstanding probe was sent under. A per-source record belongs to the id it was raised under, which
+  // after a restart is not the one the plugin remembers. Poll thread only.
+  std::vector<std::string> comms_lost_untried_ids_;
+  std::string comms_lost_probe_id_;
+
+  // The entity id this process last reported PLC_COMMS_LOST under, empty once that fault was cleared.
+  // The component can be renamed while the fault stands, and a per-source record belongs to the id it
+  // was reported under, so the probe and the clear use this id and not the current one.
+  mutable std::mutex comms_lost_entity_mutex_;
+  std::string comms_lost_entity_id_;
+
+  // The id the probe and the clear of PLC_COMMS_LOST name: the one it was reported under, else the
+  // current component id.
+  std::string comms_lost_entity_id() const;
   // How long a probe may stay outstanding (kDefaultFaultServiceTimeout unless
   // ``fault_service_timeout_ms`` says otherwise).
   std::chrono::milliseconds fault_service_timeout_{kDefaultFaultServiceTimeout};

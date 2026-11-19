@@ -120,6 +120,34 @@ How It Works
    fm --> src: [SENSOR_003]\nclusters: [{id: "sensor_storm_1",\n  fault_codes: [001,002,003,004],\n  representative: "SENSOR_003"}]
    @enduml
 
+**Rules match by fault code across reporting nodes.** A root cause reported by one
+node mutes, and with ``auto_clear_with_root`` auto-clears, the matching symptoms
+reported by any other node inside the window. An auto-cluster collects the matching
+faults of every node. The relations hold fault records, not codes: for a code
+configured with ``per_source: true`` each reporting node has its own record. For any
+other code there is one shared record, and that record is what is muted or cleared.
+
+A root cause lists the symptom records reported within ``window_ms`` of its latest
+report. A new report of a root cause that is still active renews that window and keeps
+its list. A record that is cleared or ends leaves the list of every root cause, so the
+list holds only records of the current occurrence.
+
+- With ``mute_symptoms: true`` the listed records are muted: hidden from the default
+  listing and shown under ``include_muted``. They stay muted until the root cause ends.
+  The cascade of ``auto_clear_with_root`` clears exactly the records the root cause muted.
+- With ``mute_symptoms: false`` the listed records are not muted. The cascade of
+  ``auto_clear_with_root`` still clears the records the root cause lists.
+
+Clearing the root cause ends its relations: with ``skip_correlation_auto_clear`` its
+symptoms are not cleared, they keep their status. Every other end of a record does the
+same: a root cause that heals, or that a cascade clears, releases the symptoms it
+muted. Only a ``ClearFault`` without the flag cascades, and it goes one level.
+
+A record stays muted while any root cause that lists it under a muting rule, or its
+active ``show_as_single`` cluster, still mutes it. When the relation that muted it ends,
+a record that no other relation mutes is unmuted and shows in the default listing again.
+The reason shown under ``include_muted`` names the relation that mutes it now.
+
 Quick Start
 -----------
 
@@ -301,7 +329,15 @@ Auto-cluster mode groups similar faults into clusters.
 1. First ``SENSOR_*`` fault starts a potential cluster
 2. Additional ``SENSOR_*`` faults within 2000ms join the cluster
 3. When 3+ faults accumulate, cluster becomes active
-4. Only the representative fault is shown; others are muted
+4. Only the representative fault is shown; the other members are muted. They are hidden
+   from the default listing and show under ``include_muted``. Muting is display only:
+   the record of a muted member, as ``GetFault`` returns it, is the record it has unmuted.
+5. When the representative changes, the current representative is shown and the previous
+   one is muted. A member that escalates under ``highest_severity``, or a newer member
+   under ``most_recent``, becomes the shown one. When the shown member is cleared, the
+   next representative the policy selects is shown.
+6. A cluster ends when its last member is cleared. A member that stops being muted keeps
+   its status: nothing is cleared for the operator.
 
 Querying Correlation Data
 -------------------------

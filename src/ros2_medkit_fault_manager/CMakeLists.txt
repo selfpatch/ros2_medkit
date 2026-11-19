@@ -213,12 +213,25 @@ if(POSTGRES_SUPPORT)
   medkit_add_gtest(test_postgres_storage test/test_postgres_storage.cpp)
   target_link_libraries(test_postgres_storage fault_manager_lib)
   medkit_target_dependencies(test_postgres_storage rclcpp ros2_medkit_msgs)
+
+  # SQL runner for the launch test that migrates a PostgreSQL database through the node.
+  add_executable(pg_exec test/pg_exec.cpp)
+  target_link_libraries(pg_exec fault_manager_lib)
+  install(TARGETS pg_exec DESTINATION lib/${PROJECT_NAME})
+
+  medkit_add_launch_test(test_fault_postgres_migration
+    test/integration/test_fault_postgres_migration.test.py TIMEOUT 180 LABELS "integration")
 endif()
 
   # Rosbag retention parity: every assertion runs against both storage backends.
   medkit_add_gtest(test_rosbag_storage_parity test/test_rosbag_storage_parity.cpp)
   target_link_libraries(test_rosbag_storage_parity fault_manager_lib)
   medkit_target_dependencies(test_rosbag_storage_parity rclcpp ros2_medkit_msgs)
+
+  # Severity contract of a fault record, run against both storage backends.
+  medkit_add_gtest(test_fault_severity test/test_fault_severity.cpp)
+  target_link_libraries(test_fault_severity fault_manager_lib)
+  medkit_target_dependencies(test_fault_severity rclcpp ros2_medkit_msgs)
 
   # Fault audit log tests (hash chain, verify, rotation, reopen)
   medkit_add_gtest(test_fault_audit_log test/test_fault_audit_log.cpp)
@@ -292,6 +305,39 @@ endif()
   medkit_add_launch_test(test_fault_code_healing_restart
     test/integration/test_fault_code_healing_restart.test.py TIMEOUT 120 LABELS "integration")
 
+  medkit_add_launch_test(test_fault_identity
+    test/integration/test_fault_identity.test.py TIMEOUT 120 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_correlation_owners
+    test/integration/test_fault_correlation_owners.test.py TIMEOUT 120 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_audit_rows
+    test/integration/test_fault_audit_rows.test.py TIMEOUT 180 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_snapshot_grouping
+    test/integration/test_fault_snapshot_grouping.test.py TIMEOUT 120 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_snapshot_queue
+    test/integration/test_fault_snapshot_queue.test.py TIMEOUT 180 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_shared_events
+    test/integration/test_fault_shared_events.test.py TIMEOUT 120 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_snapshot_cap
+    test/integration/test_fault_snapshot_cap.test.py TIMEOUT 120 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_correlation_clear
+    test/integration/test_fault_correlation_clear.test.py TIMEOUT 120 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_cluster_muting
+    test/integration/test_fault_cluster_muting.test.py TIMEOUT 120 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_muting_relations
+    test/integration/test_fault_muting_relations.test.py TIMEOUT 120 LABELS "integration")
+
+  medkit_add_launch_test(test_fault_identity_restart
+    test/integration/test_fault_identity_restart.test.py TIMEOUT 180 LABELS "integration")
+
   # Drives healing with the event counts a one-event-per-transition reporter
   # actually sends: one FAILED per raise, one PASSED per clear. Parametrized over
   # healing_threshold, so the node launches twice, and one case holds a settled
@@ -303,6 +349,10 @@ endif()
   # the SSE feed and the trigger subscribers key off the published event, and
   # black-box capture is enqueued alongside it.
   medkit_add_launch_test(test_auto_confirm_visibility test/integration/test_auto_confirm_visibility.test.py
+    TIMEOUT 120 LABELS "integration")
+
+  # Restarts the node twice on one SQLite database.
+  medkit_add_launch_test(test_severity_consistency test/integration/test_severity_consistency.test.py
     TIMEOUT 120 LABELS "integration")
 
   medkit_add_launch_test(test_rosbag_entity_scope test/integration/test_rosbag_entity_scope.test.py TIMEOUT 120

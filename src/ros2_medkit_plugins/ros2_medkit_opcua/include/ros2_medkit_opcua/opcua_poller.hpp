@@ -104,6 +104,7 @@ struct PollerConfig {
   bool prefer_subscriptions{false};  // poll mode by default (subscriptions need event loop)
   double subscription_interval_ms{500.0};
   std::chrono::milliseconds poll_interval{1000};
+  /// First wait after a failed connect. Config: plugins.opcua.reconnect_interval_ms.
   std::chrono::milliseconds reconnect_interval{5000};
   /// Ceiling for the exponential reconnect backoff (it doubles from
   /// ``reconnect_interval`` up to this). A plugin whose reconnect arm also
