@@ -13,9 +13,12 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/http_server.hpp"
-#include "ros2_medkit_gateway/core/logging.hpp"
 
+#include <cerrno>
+#include <cstring>
 #include <stdexcept>
+
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -93,18 +96,27 @@ httplib::Server * HttpServerManager::get_server() {
   return server_.get();
 }
 
-void HttpServerManager::listen(const std::string & host, int port) {
+bool HttpServerManager::bind(const std::string & host, int port, std::string & error) {
   std::string protocol = tls_config_.enabled ? "HTTPS" : "HTTP";
   MEDKIT_LOG_INFO(log::Logger("http_server"), "Starting %s server on %s:%d...", protocol.c_str(), host.c_str(), port);
 
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-  if (tls_config_.enabled && ssl_server_) {
-    ssl_server_->listen(host, port);
-    return;
+  httplib::Server * srv = get_server();
+  if (srv == nullptr) {
+    error = "no server instance";
+    return false;
   }
-#endif
-  if (server_) {
-    server_->listen(host, port);
+  errno = 0;
+  if (srv->bind_to_port(host, port)) {
+    return true;
+  }
+  // cpp-httplib reports no reason; errno is the last failing call's, 0 when the name did not resolve.
+  error = errno != 0 ? std::strerror(errno) : "address does not resolve or is not usable";
+  return false;
+}
+
+void HttpServerManager::listen_bound() {
+  if (httplib::Server * srv = get_server()) {
+    srv->listen_after_bind();
   }
 }
 

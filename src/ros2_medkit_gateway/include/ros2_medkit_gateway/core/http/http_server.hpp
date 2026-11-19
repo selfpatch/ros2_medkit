@@ -77,11 +77,18 @@ class HttpServerManager {
   }
 
   /**
-   * @brief Start listening on the specified host and port
+   * @brief Bind the listening socket to host and port, in the calling thread
    * @param host Host address to bind to
    * @param port Port number to bind to
+   * @param error Receives the reason when the bind fails
+   * @return true when the socket is bound; listen_bound() then serves it
    */
-  void listen(const std::string & host, int port);
+  bool bind(const std::string & host, int port, std::string & error);
+
+  /**
+   * @brief Serve the socket bound by bind(); blocks until stop()
+   */
+  void listen_bound();
 
   /**
    * @brief Stop the server if running

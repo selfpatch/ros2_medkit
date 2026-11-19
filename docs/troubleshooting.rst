@@ -81,9 +81,17 @@ authentication on or opt out:
    ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0 \
      allow_unauthenticated_remote:=true
 
+**Gateway exits with "Refusing to start: cannot bind the REST API to <host>:<port>"**
+
+Nothing could listen on that address: the port is in use by another process, the
+machine does not own the address, or the name does not resolve. The message ends
+with the reason. Free the port, change ``server.port`` or fix ``server.host``. A
+bracketed IPv6 address such as ``[::1]`` is not a bind form; write ``::1``.
+
 **Gateway exits with "Refusing to start: authentication is off"**
 
-``server.host`` is not a loopback address and authentication is off. Do one of:
+``server.host`` is not a loopback address and authentication is off (or on with
+``auth.require_auth_for`` ``none``, which the message then says). Do one of:
 set ``MEDKIT_JWT_SECRET`` (and ``MEDKIT_CLIENTS``); bind ``127.0.0.1``; or opt out
 with ``allow_unauthenticated_remote:=true`` (launch), ``server.allow_unauthenticated_remote: true``
 (parameter) or ``MEDKIT_AUTH_DISABLED=1``. A container started with no environment

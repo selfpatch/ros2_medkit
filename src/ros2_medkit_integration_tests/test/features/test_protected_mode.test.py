@@ -13,13 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Protected mode: a gateway without authentication binds only a loopback address.
+"""Protected mode: a gateway that serves anonymous requests binds only a loopback address.
 
 Every case starts the real gateway_node (or a launch file) as a subprocess and
-reads the outcome from its own output and exit code. Each refusal has a start
-on the same host in the same class, so "nothing started" cannot pass for
-"refused". A non-loopback start is read from the ready line, because this box
-may not own the address; a loopback start is also asked over HTTP.
+reads the outcome from its own output and exit code. A start counts only when
+the process the case started answers HTTP on a port no other process held, and
+owns the listener on it. Each refusal has a start on the same host in the same
+class, so "nothing started" cannot pass for "refused". A gateway that cannot
+bind exits instead of announcing itself.
 
 @verifies REQ_INTEROP_086
 """
@@ -43,12 +44,15 @@ import requests
 from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH, get_test_port
 from ros2_medkit_test_utils.launch_helpers import create_gateway_node
 
-# The cases start their gateways one at a time on PORT; RESIDENT_PORT belongs to
-# the gateway that keeps the launch alive and answers on loopback.
+# The test owns a band of ten ports. RESIDENT_PORT belongs to the gateway that
+# keeps the launch alive; every started gateway takes the next port nobody holds.
 PORT = get_test_port(0)
 RESIDENT_PORT = get_test_port(1)
+BAND = [get_test_port(offset) for offset in range(2, 10)]
 READY_LINE = 'Medkit Gateway ready on'
-REFUSAL = 'Refusing to start: authentication is off'
+REFUSAL_OFF = 'Refusing to start: authentication is off'
+REFUSAL_NONE = ('Refusing to start: authentication is on but auth.require_auth_for is none')
+BIND_REFUSAL = 'Refusing to start: cannot bind the REST API to'
 JWT_SECRET = 'a_secret_for_protected_mode_of_at_least_32_chars'
 CLIENT = 'pm:pm_client_secret:admin'
 
@@ -58,18 +62,39 @@ LOOPBACK_HOSTS = (
     '127.0.0.1', '127.255.255.254', '127.0.0.0', '127.1', '::1', 'localhost',
     'LOCALHOST', '::ffff:127.0.0.1',
 )
+# Refused before any bind, so the machine need not own them.
 REMOTE_HOSTS = (
     '0.0.0.0', '::', '192.168.1.10', '10.0.0.5', '2001:db8::5', 'gateway.example.test',
     '126.255.255.255', '128.0.0.1',
 )
+# The address no interface owns, and a name that does not resolve: the bind fails.
+UNBINDABLE_HOSTS = ('192.0.2.10', '2001:db8::5', 'gateway.example.test')
 
 
-def _write_params(name, auth_enabled, allow_remote=None):
+def _own_ipv4():
+    """Return this machine's non-loopback IPv4 address, or None when it has none."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(('192.0.2.1', 9))
+            address = sock.getsockname()[0]
+    except OSError:
+        return None
+    return None if address.startswith('127.') or address == '0.0.0.0' else address
+
+
+OWN_IPV4 = _own_ipv4()
+# Non-loopback addresses a start case can use here.
+BINDABLE_REMOTE_HOSTS = ('0.0.0.0', '::') + ((OWN_IPV4,) if OWN_IPV4 else ())
+
+
+def _write_params(name, auth_enabled, allow_remote=None, require_auth_for=None):
     """Write a params file for every node; auth.jwt_secret and clients go with `enabled`."""
     lines = ['/**:', '  ros__parameters:', '    auth:',
              f'      enabled: {"true" if auth_enabled else "false"}']
     if auth_enabled:
         lines += [f'      jwt_secret: "{JWT_SECRET}"', '      clients:', f'        - "{CLIENT}"']
+    if require_auth_for:
+        lines += [f'      require_auth_for: "{require_auth_for}"']
     if allow_remote is not None:
         lines += ['    server:',
                   f'      allow_unauthenticated_remote: {"true" if allow_remote else "false"}']
@@ -80,9 +105,18 @@ def _write_params(name, auth_enabled, allow_remote=None):
 
 
 FILE_AUTH_OFF = _write_params('off.yaml', False)
-FILE_AUTH_ON = _write_params('on.yaml', True)
+FILE_AUTH_ON = _write_params('on.yaml', True, require_auth_for='write')
+FILE_AUTH_ALL = _write_params('all.yaml', True, require_auth_for='all')
+FILE_AUTH_NONE = _write_params('none.yaml', True, require_auth_for='none')
+FILE_AUTH_NONE_OPT_OUT = _write_params('none-opt-out.yaml', True, allow_remote=True,
+                                       require_auth_for='none')
 FILE_OPT_OUT = _write_params('opt-out.yaml', False, allow_remote=True)
 FILE_OPT_OUT_FALSE = _write_params('opt-out-false.yaml', False, allow_remote=False)
+# A gateway.launch.py config_file names the node, unlike the `/**` files above.
+LAUNCH_CONFIG_OPT_OUT = os.path.join(_PARAMS_DIR, 'launch-config.yaml')
+with open(LAUNCH_CONFIG_OPT_OUT, 'w', encoding='utf-8') as _handle:
+    _handle.write('ros2_medkit_gateway:\n  ros__parameters:\n    server:\n'
+                  '      allow_unauthenticated_remote: true\n')
 
 
 @pytest.mark.launch_test
@@ -97,17 +131,129 @@ def generate_test_description():
     ]), {'resident': resident}
 
 
-def _listening():
-    """Return True when something accepts connections on the test port."""
+# ---------------------------------------------------------------------------
+# Ports and processes
+# ---------------------------------------------------------------------------
+
+def _port_is_free(port):
+    """Return True when nothing listens on `port` and a wildcard bind succeeds."""
+    for family, wildcard in ((socket.AF_INET, '0.0.0.0'), (socket.AF_INET6, '::')):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as sock:
+                sock.bind((wildcard, port))
+        except OSError as error:
+            if family == socket.AF_INET:
+                return False
+            if error.errno not in (97, 99):  # no IPv6 here: fine
+                return False
+    return True
+
+
+_NEXT = [0]
+
+
+def _free_port():
+    """Return the next port of the band that no process holds."""
+    for _ in range(len(BAND)):
+        port = BAND[_NEXT[0] % len(BAND)]
+        _NEXT[0] += 1
+        if _port_is_free(port):
+            return port
+    raise AssertionError('no free port in the test band')
+
+
+def _listening(port):
+    """Return True when something accepts connections on `port`."""
     for family, address in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
         try:
             with socket.socket(family, socket.SOCK_STREAM) as sock:
                 sock.settimeout(2)
-                if sock.connect_ex((address, PORT)) == 0:
+                if sock.connect_ex((address, port)) == 0:
                     return True
         except OSError:
             continue
     return False
+
+
+def _listener_inodes(port):
+    """Return the socket inodes listening on `port` (IPv4 and IPv6)."""
+    inodes = set()
+    for table in ('/proc/net/tcp', '/proc/net/tcp6'):
+        try:
+            with open(table, encoding='utf-8') as handle:
+                rows = handle.read().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            fields = row.split()
+            if fields[3] == '0A' and int(fields[1].split(':')[1], 16) == port:
+                inodes.add(fields[9])
+    return inodes
+
+
+def _listener_pids(port):
+    """Return the pids that hold a listening socket on `port`."""
+    inodes = {f'socket:[{inode}]' for inode in _listener_inodes(port)}
+    pids = set()
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        try:
+            for fd in os.listdir(f'/proc/{entry}/fd'):
+                if os.readlink(f'/proc/{entry}/fd/{fd}') in inodes:
+                    pids.add(int(entry))
+                    break
+        except OSError:
+            continue
+    return pids
+
+
+def _parent_of(pid):
+    """Return the parent pid of `pid`, or None when it is gone."""
+    try:
+        with open(f'/proc/{pid}/stat', encoding='utf-8') as handle:
+            return int(handle.read().rsplit(')', 1)[1].split()[1])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _tree(root):
+    """Return `root` and every live descendant of it."""
+    parents = {}
+    for entry in os.listdir('/proc'):
+        if entry.isdigit():
+            parent = _parent_of(int(entry))
+            if parent is not None:
+                parents[int(entry)] = parent
+    found = {root}
+    grew = True
+    while grew:
+        grew = False
+        for pid, parent in parents.items():
+            if parent in found and pid not in found:
+                found.add(pid)
+                grew = True
+    return found
+
+
+def _alive(pid):
+    """Return True when `pid` runs (a zombie is not running)."""
+    try:
+        with open(f'/proc/{pid}/stat', encoding='utf-8') as handle:
+            return handle.read().rsplit(')', 1)[1].split()[0] != 'Z'
+    except OSError:
+        return False
+
+
+def _probe_url(host, port):
+    """Return where to ask a gateway bound to `host`, or None when it cannot be asked here."""
+    if host == '0.0.0.0':
+        return f'http://127.0.0.1:{port}'
+    if host == '::':
+        return f'http://[::1]:{port}'
+    if host in LOOPBACK_HOSTS or host == OWN_IPV4:
+        return f'http://[{host}]:{port}' if ':' in host else f'http://{host}:{port}'
+    return None
 
 
 class _Process:
@@ -117,16 +263,21 @@ class _Process:
     None. Leaving the block kills the process group.
     """
 
-    def __init__(self, testcase, command, env_extra=None, timeout=60):
+    def __init__(self, testcase, command, env_extra=None, timeout=60, port=None):
         self.testcase = testcase
         self.command = command
         self.env = {k: v for k, v in os.environ.items() if not k.startswith('MEDKIT_')}
         self.env.update(env_extra or {})
         self.timeout = timeout
+        self.port = port if port is not None else PORT
         self.rc = None
         self.ready = False
         self._chunks = []
         self._process = None
+
+    @property
+    def pid(self):
+        return self._process.pid
 
     @property
     def output(self):
@@ -158,7 +309,7 @@ class _Process:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if self.rc is None:
+        if self.rc is None and self._process.poll() is None:
             os.killpg(os.getpgid(self._process.pid), signal.SIGTERM)
             try:
                 self._process.wait(timeout=20)
@@ -169,52 +320,66 @@ class _Process:
             self._chunks.append(rest)
         return False
 
-    def assert_refused(self, host):
+    def assert_refused(self, host, reason=REFUSAL_OFF):
         t = self.testcase
         t.assertIsNotNone(self.rc, f'the gateway did not exit on {host}: {self.output[-600:]}')
         t.assertNotEqual(self.rc, 0, self.output[-600:])
-        t.assertIn(REFUSAL, self.output)
+        t.assertIn(reason, self.output)
         t.assertIn(f'server.host is {host},', self.output)
         for fix in ('MEDKIT_JWT_SECRET', 'server.host: 127.0.0.1',
                     'server.allow_unauthenticated_remote: true'):
             t.assertIn(fix, self.output)
         t.assertNotIn(READY_LINE, self.output)
-        t.assertFalse(_listening(), 'something listens after the refusal')
+        t.assertFalse(_listening(self.port), 'something listens after the refusal')
 
-    def assert_started(self, host, probe='default', expect_open_warning=False):
+    def assert_bind_failed(self, host):
+        t = self.testcase
+        t.assertIsNotNone(self.rc, f'the gateway did not exit on {host}: {self.output[-600:]}')
+        t.assertNotEqual(self.rc, 0, self.output[-600:])
+        t.assertIn(f'{BIND_REFUSAL} {host}:{self.port}:', self.output)
+        t.assertNotIn(READY_LINE, self.output)
+
+    def assert_started(self, host, expect_open_warning=False, probe='default'):
+        """Assert the started process answers HTTP on a port it alone listens on."""
         t = self.testcase
         t.assertIsNone(self.rc, self.output[-600:])
         t.assertTrue(self.ready, f'no ready line on {host}: {self.output[-600:]}')
-        t.assertIn(f'://{host}:{PORT}', self.output)
-        t.assertNotIn(REFUSAL, self.output)
+        t.assertIn(f'://{host}:{self.port}', self.output)
+        t.assertNotIn('Refusing to start', self.output)
         warned = 'reachable without authentication' in self.output
         t.assertEqual(warned, expect_open_warning, self.output[-800:])
-        probe = _probe_url(host) if probe == 'default' else probe
-        if probe:
-            resp = requests.get(f'{probe}{API_BASE_PATH}/health', timeout=15)
-            t.assertIn(resp.status_code, (200, 401, 403))
+        owners = _listener_pids(self.port)
+        t.assertTrue(owners, f'nobody listens on port {self.port}: {self.output[-600:]}')
+        t.assertTrue(owners <= _tree(self.pid),
+                     f'port {self.port} is held by {owners}, not by the started process tree')
+        probe = _probe_url(host, self.port) if probe == 'default' else probe
+        t.assertIsNotNone(probe, f'no way to ask a gateway bound to {host}')
+        return requests.get(f'{probe}{API_BASE_PATH}/health', timeout=15), probe
+
+    def assert_answers(self, host, **kwargs):
+        response, _ = self.assert_started(host, **kwargs)
+        self.testcase.assertIn(response.status_code, (200, 401, 403))
+
+
+def _gateway(host, port, params_file=None, extra_args=()):
+    # Quoted: `127.1` is a float and `::` is not a scalar to the YAML parser.
+    return ['ros2', 'run', 'ros2_medkit_gateway', 'gateway_node', '--ros-args',
+            '-p', f'server.port:={port}', '-p', f'server.host:="{host}"',
+            *(['--params-file', params_file] if params_file else []), *extra_args]
 
 
 OPT_OUT_ARGS = ['-p', 'server.allow_unauthenticated_remote:=true']
 
 
-def _gateway(host, params_file=None, extra_args=()):
-    # Quoted: `127.1` is a float and `::` is not a scalar to the YAML parser.
-    return ['ros2', 'run', 'ros2_medkit_gateway', 'gateway_node', '--ros-args',
-            '-p', f'server.port:={PORT}', '-p', f'server.host:="{host}"',
-            *(['--params-file', params_file] if params_file else []), *extra_args]
+def _run(testcase, host, params_file=None, env=None, extra_args=(), port=None):
+    """Return a started-or-refused process for `host` on a port nobody holds."""
+    port = port if port is not None else _free_port()
+    return _Process(testcase, _gateway(host, port, params_file, extra_args), env, port=port)
 
 
-def _probe_url(host):
-    """Where to ask a gateway bound to `host`, or None when this box may not own the address."""
-    if host == '0.0.0.0':
-        return f'http://127.0.0.1:{PORT}'
-    if host == '::':
-        return f'http://[::1]:{PORT}'
-    if host in LOOPBACK_HOSTS:
-        return f'http://[{host}]:{PORT}' if ':' in host else f'http://{host}:{PORT}'
-    return None
-
+# ---------------------------------------------------------------------------
+# Cases
+# ---------------------------------------------------------------------------
 
 class TestAuthOffBindsLoopbackOnly(unittest.TestCase):
     """P1, P2: with authentication off only a loopback host starts."""
@@ -222,138 +387,241 @@ class TestAuthOffBindsLoopbackOnly(unittest.TestCase):
     def test_loopback_hosts_start(self):
         for host in LOOPBACK_HOSTS:
             with self.subTest(host=host):
-                with _Process(self, _gateway(host, FILE_AUTH_OFF)) as gateway:
-                    gateway.assert_started(host, probe=_probe_url(host))
+                with _run(self, host, FILE_AUTH_OFF) as gateway:
+                    gateway.assert_answers(host)
 
     def test_every_other_host_refuses_and_names_the_fixes(self):
         for host in REMOTE_HOSTS:
             with self.subTest(host=host):
-                with _Process(self, _gateway(host, FILE_AUTH_OFF)) as gateway:
+                with _run(self, host, FILE_AUTH_OFF) as gateway:
                     gateway.assert_refused(host)
 
     def test_the_default_params_and_no_file_refuse_the_same_way(self):
-        with _Process(self, _gateway('0.0.0.0')) as gateway:
+        with _run(self, '0.0.0.0') as gateway:
             gateway.assert_refused('0.0.0.0')
+
+    def test_the_machine_has_an_address_or_says_so(self):
+        self.assertTrue(OWN_IPV4 is None or OWN_IPV4.count('.') == 3, OWN_IPV4)
 
 
 class TestAuthOnBindsAnywhere(unittest.TestCase):
     """P4, P5: with authentication in force every host starts."""
 
     def test_auth_from_the_params(self):
-        for host in REMOTE_HOSTS:
+        for host in BINDABLE_REMOTE_HOSTS:
             with self.subTest(host=host):
-                with _Process(self, _gateway(host, FILE_AUTH_ON)) as gateway:
-                    gateway.assert_started(host, probe=_probe_url(host))
+                with _run(self, host, FILE_AUTH_ON) as gateway:
+                    gateway.assert_answers(host)
 
     def test_auth_from_the_environment_over_a_file_that_says_off(self):
         env = {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': CLIENT}
-        for host in REMOTE_HOSTS:
+        for host in BINDABLE_REMOTE_HOSTS:
             with self.subTest(host=host):
-                with _Process(self, _gateway(host, FILE_AUTH_OFF), env) as gateway:
-                    gateway.assert_started(host, probe=_probe_url(host))
+                with _run(self, host, FILE_AUTH_OFF, env) as gateway:
+                    gateway.assert_answers(host)
 
     def test_the_closed_gateway_answers_401_on_a_bind_all_address(self):
-        env = {'MEDKIT_JWT_SECRET': JWT_SECRET}
-        with _Process(self, _gateway('0.0.0.0'), env) as gateway:
-            gateway.assert_started('0.0.0.0', probe=None)
-            resp = requests.get(f'http://127.0.0.1:{PORT}{API_BASE_PATH}/areas', timeout=15)
-            self.assertEqual(resp.status_code, 401)
+        with _run(self, '0.0.0.0', env={'MEDKIT_JWT_SECRET': JWT_SECRET}) as gateway:
+            _, probe = gateway.assert_started('0.0.0.0')
+            self.assertEqual(requests.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
+                             401)
+
+
+class TestRequireAuthForNone(unittest.TestCase):
+    """D1: authentication on with require_auth_for none leaves every route open."""
+
+    def test_none_on_a_bind_all_address_refuses(self):
+        for host in REMOTE_HOSTS:
+            with self.subTest(host=host):
+                with _run(self, host, FILE_AUTH_NONE) as gateway:
+                    gateway.assert_refused(host, reason=REFUSAL_NONE)
+                    self.assertIn('MEDKIT_AUTH_DISABLED=1', gateway.output)
+
+    def test_none_with_the_opt_out_starts_and_warns(self):
+        for host in BINDABLE_REMOTE_HOSTS:
+            with self.subTest(host=host):
+                with _run(self, host, FILE_AUTH_NONE_OPT_OUT) as gateway:
+                    gateway.assert_answers(host, expect_open_warning=True)
+                    self.assertIn('require_auth_for none', gateway.output)
+
+    def test_none_on_loopback_starts(self):
+        with _run(self, '127.0.0.1', FILE_AUTH_NONE) as gateway:
+            gateway.assert_answers('127.0.0.1')
+
+    def test_write_on_a_bind_all_address_starts_and_the_write_is_closed(self):
+        with _run(self, '0.0.0.0', FILE_AUTH_ON) as gateway:
+            _, probe = gateway.assert_started('0.0.0.0')
+            self.assertEqual(requests.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
+                             200)
+            self.assertEqual(
+                requests.delete(f'{probe}{API_BASE_PATH}/faults', timeout=15).status_code, 401)
+
+    def test_all_on_a_bind_all_address_starts_and_the_read_is_closed(self):
+        with _run(self, '0.0.0.0', FILE_AUTH_ALL) as gateway:
+            _, probe = gateway.assert_started('0.0.0.0')
+            self.assertEqual(requests.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
+                             401)
 
 
 class TestOptOut(unittest.TestCase):
     """P3, P5: the parameter and MEDKIT_AUTH_DISABLED=1 let an open gateway bind anywhere."""
 
-    def test_the_parameter_opens_every_remote_host_and_warns(self):
-        for host in REMOTE_HOSTS:
+    def test_the_parameter_opens_every_bindable_remote_host_and_warns(self):
+        for host in BINDABLE_REMOTE_HOSTS:
             with self.subTest(host=host):
-                command = _gateway(host, FILE_AUTH_OFF, OPT_OUT_ARGS)
-                with _Process(self, command) as gateway:
-                    gateway.assert_started(host, probe=_probe_url(host),
-                                           expect_open_warning=True)
+                with _run(self, host, FILE_AUTH_OFF, extra_args=OPT_OUT_ARGS) as gateway:
+                    gateway.assert_answers(host, expect_open_warning=True)
 
     def test_the_parameter_from_a_file(self):
-        with _Process(self, _gateway('0.0.0.0', FILE_OPT_OUT)) as gateway:
-            gateway.assert_started('0.0.0.0', expect_open_warning=True)
-            resp = requests.get(f'http://127.0.0.1:{PORT}{API_BASE_PATH}/areas', timeout=15)
-            self.assertEqual(resp.status_code, 200)
+        with _run(self, '0.0.0.0', FILE_OPT_OUT) as gateway:
+            _, probe = gateway.assert_started('0.0.0.0', expect_open_warning=True)
+            self.assertEqual(requests.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
+                             200)
 
     def test_an_explicit_false_still_refuses(self):
-        with _Process(self, _gateway('0.0.0.0', FILE_OPT_OUT_FALSE)) as gateway:
+        with _run(self, '0.0.0.0', FILE_OPT_OUT_FALSE) as gateway:
             gateway.assert_refused('0.0.0.0')
 
     def test_the_environment_variable_implies_the_opt_out(self):
-        for host in REMOTE_HOSTS:
+        for host in BINDABLE_REMOTE_HOSTS:
             with self.subTest(host=host):
-                with _Process(self, _gateway(host, FILE_AUTH_OFF),
-                              {'MEDKIT_AUTH_DISABLED': '1'}) as gateway:
-                    gateway.assert_started(host, probe=_probe_url(host),
-                                           expect_open_warning=True)
+                with _run(self, host, FILE_AUTH_OFF, {'MEDKIT_AUTH_DISABLED': '1'}) as gateway:
+                    gateway.assert_answers(host, expect_open_warning=True)
 
     def test_the_environment_variable_over_a_file_that_asks_for_auth(self):
-        env = {'MEDKIT_AUTH_DISABLED': '1'}
-        with _Process(self, _gateway('0.0.0.0', FILE_AUTH_ON), env) as gateway:
-            gateway.assert_started('0.0.0.0', expect_open_warning=True)
-            resp = requests.get(f'http://127.0.0.1:{PORT}{API_BASE_PATH}/areas', timeout=15)
-            self.assertEqual(resp.status_code, 200)
+        with _run(self, '0.0.0.0', FILE_AUTH_ON, {'MEDKIT_AUTH_DISABLED': '1'}) as gateway:
+            _, probe = gateway.assert_started('0.0.0.0', expect_open_warning=True)
+            self.assertEqual(requests.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
+                             200)
 
     def test_a_value_other_than_one_is_no_opt_out(self):
         for value in ('0', 'true', ''):
             with self.subTest(value=value):
-                with _Process(self, _gateway('0.0.0.0', FILE_AUTH_OFF),
-                              {'MEDKIT_AUTH_DISABLED': value}) as gateway:
+                env = {'MEDKIT_AUTH_DISABLED': value}
+                with _run(self, '0.0.0.0', FILE_AUTH_OFF, env) as gateway:
                     gateway.assert_refused('0.0.0.0')
 
 
+class TestBindFailure(unittest.TestCase):
+    """D2: a gateway that cannot bind exits and never announces itself."""
+
+    def test_a_port_held_by_another_process_ends_the_gateway(self):
+        holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.addCleanup(holder.close)
+        holder.bind(('127.0.0.1', 0))
+        holder.listen()
+        # The holder's port is outside the band, so the pair below needs no care for it.
+        held = holder.getsockname()[1]
+        with _run(self, '127.0.0.1', FILE_AUTH_OFF, port=held) as gateway:
+            gateway.assert_bind_failed('127.0.0.1')
+            self.assertIn('Address already in use', gateway.output)
+        self.assertEqual(_listener_pids(held), {os.getpid()}, 'the holder lost its port')
+        with _run(self, '127.0.0.1', FILE_AUTH_OFF) as gateway:
+            gateway.assert_answers('127.0.0.1')
+
+    def test_an_address_the_machine_does_not_own_ends_the_gateway(self):
+        for host in UNBINDABLE_HOSTS:
+            with self.subTest(host=host):
+                with _run(self, host, FILE_AUTH_OFF, {'MEDKIT_AUTH_DISABLED': '1'}) as gateway:
+                    gateway.assert_bind_failed(host)
+                    self.assertFalse(_listening(gateway.port))
+
+    def test_a_bracketed_address_is_not_a_bind_form(self):
+        with _run(self, '[::1]', FILE_AUTH_OFF) as gateway:
+            gateway.assert_bind_failed('[::1]')
+
+    def test_a_free_port_on_the_same_address_starts(self):
+        host = OWN_IPV4 or '0.0.0.0'
+        with _run(self, host, FILE_AUTH_OFF, {'MEDKIT_AUTH_DISABLED': '1'}) as gateway:
+            gateway.assert_answers(host, expect_open_warning=True)
+
+
 class TestLaunchArgument(unittest.TestCase):
-    """P6: bringup.launch.py and gateway.launch.py take allow_unauthenticated_remote."""
+    """P6, L1: the launch files take allow_unauthenticated_remote and end with the gateway."""
 
     @staticmethod
-    def _launch(file, *args):
-        return ['ros2', 'launch', 'ros2_medkit_gateway', file, f'server_port:={PORT}',
+    def _launch(file, port, *args):
+        return ['ros2', 'launch', 'ros2_medkit_gateway', file, f'server_port:={port}',
                 'server_host:=0.0.0.0', *args]
 
+    @staticmethod
+    def _bringup_off():
+        return ['enable_log_bridge:=false', 'enable_action_status_bridge:=false',
+                'enable_fault_manager:=false']
+
+    def _process(self, file, *args, env=None):
+        port = _free_port()
+        return _Process(self, self._launch(file, port, *args), env, timeout=90, port=port)
+
     def test_bringup_without_the_argument_refuses(self):
-        with _Process(self, self._launch('bringup.launch.py', 'enable_log_bridge:=false',
-                                         'enable_action_status_bridge:=false',
-                                         'enable_fault_manager:=false'),
-                      timeout=90) as launched:
+        with self._process('bringup.launch.py', *self._bringup_off()) as launched:
             # The launch ends, and fails, with the gateway.
             launched.assert_refused('0.0.0.0')
 
     def test_bringup_with_the_argument_starts(self):
-        with _Process(self, self._launch('bringup.launch.py', 'allow_unauthenticated_remote:=true',
-                                         'enable_log_bridge:=false',
-                                         'enable_action_status_bridge:=false',
-                                         'enable_fault_manager:=false'),
-                      timeout=90) as launched:
-            launched.assert_started('0.0.0.0', expect_open_warning=True)
+        with self._process('bringup.launch.py', 'allow_unauthenticated_remote:=true',
+                           *self._bringup_off()) as launched:
+            launched.assert_answers('0.0.0.0', expect_open_warning=True)
 
     def test_gateway_launch_pair(self):
-        command = self._launch('gateway.launch.py')
-        with _Process(self, command, timeout=90) as launched:
+        with self._process('gateway.launch.py') as launched:
             launched.assert_refused('0.0.0.0')
-        command = self._launch('gateway.launch.py', 'allow_unauthenticated_remote:=true')
-        with _Process(self, command, timeout=90) as launched:
-            launched.assert_started('0.0.0.0', expect_open_warning=True)
+        with self._process('gateway.launch.py', 'allow_unauthenticated_remote:=true') as launched:
+            launched.assert_answers('0.0.0.0', expect_open_warning=True)
+
+    def test_a_config_file_opt_out_survives_the_false_default(self):
+        config = f'config_file:={LAUNCH_CONFIG_OPT_OUT}'
+        with self._process('gateway.launch.py', config) as launched:
+            launched.assert_answers('0.0.0.0', expect_open_warning=True)
 
     def test_bringup_loopback_needs_nothing(self):
-        with _Process(self, ['ros2', 'launch', 'ros2_medkit_gateway', 'bringup.launch.py',
-                             f'server_port:={PORT}', 'enable_log_bridge:=false',
-                             'enable_action_status_bridge:=false', 'enable_fault_manager:=false'],
-                      timeout=90) as launched:
-            launched.assert_started('127.0.0.1')
+        port = _free_port()
+        command = ['ros2', 'launch', 'ros2_medkit_gateway', 'bringup.launch.py',
+                   f'server_port:={port}', *self._bringup_off()]
+        with _Process(self, command, timeout=90, port=port) as launched:
+            launched.assert_answers('127.0.0.1')
+
+    def test_sigint_to_the_launch_ends_it_cleanly_and_leaves_no_gateway(self):
+        with self._process('gateway.launch.py', 'allow_unauthenticated_remote:=true') as launched:
+            launched.assert_answers('0.0.0.0', expect_open_warning=True)
+            tree = _tree(launched.pid)
+            self.assertGreater(len(tree), 1, 'the launch has no child process')
+            os.kill(launched.pid, signal.SIGINT)
+            self.assertEqual(launched._process.wait(timeout=60), 0, launched.output[-600:])
+            leftovers = [pid for pid in tree if _alive(pid)]
+            self.assertEqual(leftovers, [], 'processes of the launch are still alive')
+
+    def test_sigint_to_the_gateway_alone_ends_the_launch_with_zero(self):
+        with self._process('gateway.launch.py', 'allow_unauthenticated_remote:=true') as launched:
+            launched.assert_answers('0.0.0.0', expect_open_warning=True)
+            tree = _tree(launched.pid) - {launched.pid}
+            gateways = [pid for pid in tree if _is_gateway_node(pid)]
+            self.assertEqual(len(gateways), 1, f'gateway_node processes in the tree: {gateways}')
+            os.kill(gateways[0], signal.SIGINT)
+            self.assertEqual(launched._process.wait(timeout=60), 0, launched.output[-600:])
+            self.assertFalse(_alive(gateways[0]))
+
+
+def _is_gateway_node(pid):
+    """Return True when `pid` runs the gateway_node executable (checked within a launch tree)."""
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as handle:
+            argv0 = handle.read().split(b'\0')[0]
+    except OSError:
+        return False
+    return os.path.basename(argv0) == b'gateway_node'
 
 
 @launch_testing.post_shutdown_test()
 class TestProtectedModeShutdown(unittest.TestCase):
 
-    def test_exit_codes(self, proc_info, resident):
-        launch_testing.asserts.assertExitCodes(
-            proc_info, allowable_exit_codes=ALLOWED_EXIT_CODES, process=resident)
-
     @classmethod
     def tearDownClass(cls):
         shutil.rmtree(_PARAMS_DIR, ignore_errors=True)
 
+    def test_exit_codes(self, proc_info, resident):
+        launch_testing.asserts.assertExitCodes(
+            proc_info, allowable_exit_codes=ALLOWED_EXIT_CODES, process=resident)
+
     def test_nothing_left_listening(self):
-        self.assertFalse(_listening())
+        self.assertFalse(any(_listening(port) for port in [PORT, *BAND]))

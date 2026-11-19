@@ -660,26 +660,31 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
 
   apply_effective_auth_parameters(auth_enabled, effective_require_auth_for);
 
-  // Protected mode: an unauthenticated gateway serves the local machine only,
-  // unless the operator opts out. Decided on the posture in force, after the
-  // environment is applied.
-  if (!auth_enabled && !is_loopback_bind_host(server_host_)) {
+  // Protected mode: a gateway that serves anonymous requests binds only a loopback
+  // address, unless the operator opts out. Decided on the posture in force, after
+  // the environment is applied. `write` and `all` count as authentication;
+  // `none` leaves every route open.
+  const bool authenticated = auth_enabled && effective_require_auth_for != "none";
+  if (!authenticated && !is_loopback_bind_host(server_host_)) {
     const bool opted_out = auth_env.auth_disabled || get_parameter("server.allow_unauthenticated_remote").as_bool();
     if (opted_out) {
       RCLCPP_WARN(get_logger(),
-                  "Authentication is off and the REST API binds %s: it is reachable without authentication from "
+                  "Authentication is %s and the REST API binds %s: it is reachable without authentication from "
                   "the network (opted out of protected mode).",
-                  server_host_.c_str());
+                  auth_enabled ? "on with auth.require_auth_for none" : "off", server_host_.c_str());
     } else {
+      const std::string state = auth_enabled ? "authentication is on but auth.require_auth_for is none, so every "
+                                               "route is open"
+                                             : "authentication is off";
       RCLCPP_FATAL(get_logger(),
-                   "Refusing to start: authentication is off and server.host is %s, which is not a loopback "
-                   "address. Without authentication anyone who can reach this address controls the robot. Do one "
-                   "of: turn authentication on (set MEDKIT_JWT_SECRET, or the auth.* parameters); bind a loopback "
-                   "address (server.host: 127.0.0.1); or accept the risk with server.allow_unauthenticated_remote: "
-                   "true (launch argument allow_unauthenticated_remote:=true, or MEDKIT_AUTH_DISABLED=1).",
-                   server_host_.c_str());
-      throw std::runtime_error("Authentication is off and server.host '" + server_host_ +
-                               "' is not a loopback address");
+                   "Refusing to start: %s and server.host is %s, which is not a loopback address. Anyone who can "
+                   "reach this address controls the robot. Do one of: turn authentication on (set "
+                   "MEDKIT_JWT_SECRET, or the auth.* parameters with auth.require_auth_for write or all); bind a "
+                   "loopback address (server.host: 127.0.0.1); or accept the risk with "
+                   "server.allow_unauthenticated_remote: true (launch argument allow_unauthenticated_remote:=true, "
+                   "or MEDKIT_AUTH_DISABLED=1).",
+                   state.c_str(), server_host_.c_str());
+      throw std::runtime_error("Anonymous access and server.host '" + server_host_ + "' is not a loopback address");
     }
   }
 
@@ -2238,6 +2243,14 @@ void GatewayNode::refresh_cache() {
 }
 
 void GatewayNode::start_rest_server() {
+  // Bound here so a failure ends the gateway before it announces itself.
+  std::string bind_error;
+  if (!rest_server_->bind(bind_error)) {
+    RCLCPP_FATAL(get_logger(), "Refusing to start: cannot bind the REST API to %s:%d: %s.", server_host_.c_str(),
+                 server_port_, bind_error.c_str());
+    throw std::runtime_error("Cannot bind the REST API to " + server_host_ + ":" + std::to_string(server_port_) + ": " +
+                             bind_error);
+  }
   server_thread_ = std::make_unique<std::thread>([this]() {
     try {
       rest_server_->start();

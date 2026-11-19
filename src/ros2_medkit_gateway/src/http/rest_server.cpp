@@ -2669,8 +2669,12 @@ void RESTServer::report_route_metadata_issues() const {
   }
 }
 
+bool RESTServer::bind(std::string & error) {
+  return http_server_->bind(host_, port_, error);
+}
+
 void RESTServer::start() {
-  http_server_->listen(host_, port_);
+  http_server_->listen_bound();
 }
 
 void RESTServer::stop() {

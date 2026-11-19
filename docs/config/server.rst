@@ -110,19 +110,29 @@ Network Settings
 Protected mode
 ^^^^^^^^^^^^^^
 
-With authentication off, the gateway serves only the local machine. A loopback
-``server.host`` (``127.0.0.0/8``, ``::1``, ``localhost``) starts as before. Any other value
-(``0.0.0.0``, ``::``, a concrete address, a host name) makes the gateway exit with status 1
-and a message that names the address. The check uses the authentication the gateway enforces
-after the environment is applied, so ``MEDKIT_JWT_SECRET`` counts as authentication on
-whatever ``auth.enabled`` says. Three ways out:
+A gateway that serves anonymous requests binds only the local machine. A loopback
+``server.host`` (``127.0.0.0/8``, ``::1``, ``localhost``) starts as before; ``localhost`` counts
+as loopback by its name, as RFC 6761 reserves it, and the gateway binds what the resolver
+returns for it. Any other value (``0.0.0.0``, ``::``, a concrete address, a host name) makes the
+gateway exit with status 1 and a message that names the address, unless authentication is in
+force. The check uses the authentication the gateway enforces after the environment is
+applied, so ``MEDKIT_JWT_SECRET`` counts as authentication on whatever ``auth.enabled`` says.
+``auth.require_auth_for`` ``write`` and ``all`` count; ``write`` leaves reads anonymous on the
+network. ``none`` does not count: authentication on with ``none`` is refused like authentication
+off. Three ways out:
 
 - Turn authentication on: ``MEDKIT_JWT_SECRET`` (with ``MEDKIT_CLIENTS``) or the ``auth``
-  parameters; see :doc:`/tutorials/authentication`.
+  parameters with ``auth.require_auth_for`` ``write`` or ``all``; see
+  :doc:`/tutorials/authentication`.
 - Bind a loopback address.
 - Opt out: ``server.allow_unauthenticated_remote: true``, the launch argument
   ``allow_unauthenticated_remote:=true``, or ``MEDKIT_AUTH_DISABLED=1``. Anyone who can reach
   the address then controls the robot; use it for demos and for networks you trust.
+
+A gateway that cannot bind ``server.host`` and ``server.port`` (port in use, an address the
+machine does not own, a name that does not resolve, a bracketed form such as ``[::1]``) also
+exits with status 1. The message names the host, the port and the reason, and the gateway
+never logs its ready line.
 
 Example:
 
@@ -986,7 +996,7 @@ default for local development.
    * - ``auth.enabled``
      - bool
      - ``false``
-     - Enable/disable JWT authentication. ``MEDKIT_JWT_SECRET`` turns it on and ``MEDKIT_AUTH_DISABLED=1`` turns it off, whatever this says. Reads back the value in force. With it off the gateway binds only a loopback host unless ``server.allow_unauthenticated_remote`` is set (:ref:`protected-mode`).
+     - Enable/disable JWT authentication. ``MEDKIT_JWT_SECRET`` turns it on and ``MEDKIT_AUTH_DISABLED=1`` turns it off, whatever this says. Reads back the value in force. With it off, or on with ``auth.require_auth_for`` ``none``, the gateway binds only a loopback host unless ``server.allow_unauthenticated_remote`` is set (:ref:`protected-mode`).
    * - ``auth.jwt_secret``
      - string
      - ``""``

@@ -72,6 +72,9 @@ class RESTServer {
   RESTServer(RESTServer &&) = delete;
   RESTServer & operator=(RESTServer &&) = delete;
 
+  /// Bind the listening socket in the calling thread. False, with the reason in `error`, when it cannot.
+  bool bind(std::string & error);
+  /// Serve the bound socket; blocks until stop(). Call after a successful bind().
   void start();
   void stop();
 

@@ -219,6 +219,28 @@ expect_refusal() {
   esac
 }
 
+# Waits for the container to exit and checks it could not bind: a non-zero exit
+# code, a message naming host, port and reason, and no ready line.
+expect_bind_failure() {
+  local label=$1 name=$2 host=$3 port=$4 rc="" end=$((SECONDS + DEADLINE_S)) logs
+  while [ "$SECONDS" -lt "$end" ]; do
+    [ "$(docker inspect -f '{{.State.Running}}' "$name")" = "false" ] && break
+    sleep 1
+  done
+  if [ "$(docker inspect -f '{{.State.Running}}' "$name")" = "true" ]; then
+    fail "$label: still running, expected an exit"
+    return
+  fi
+  rc=$(docker inspect -f '{{.State.ExitCode}}' "$name")
+  if [ "$rc" != "0" ]; then ok "$label: exit code $rc (non-zero)"; else fail "$label: exit code 0, expected non-zero"; fi
+  logs=$(docker logs "$name" 2>&1)
+  expect_contains "$label: message names host and port" "cannot bind the REST API to ${host}:${port}:" "$logs"
+  case "$logs" in
+    *"ready on"*) fail "$label: the log has a ready line" ;;
+    *) ok "$label: no ready line" ;;
+  esac
+}
+
 # A file that turns authentication off and names a secret of its own.
 cat > "$WORKDIR/auth-off.yaml" <<'YAML'
 ros2_medkit_gateway:
@@ -347,6 +369,14 @@ start_container "${PREFIX}-launchclosed" -e MEDKIT_JWT_SECRET="$SECRET" -e MEDKI
 expect "launch command with MEDKIT_JWT_SECRET: anonymous GET /areas" 401 "$(wait_code "${PREFIX}-launchclosed" 8080 /api/v1/areas)"
 expect_token_works "launch command with MEDKIT_CLIENTS" "${PREFIX}-launchclosed"
 expect_closed_routes "launch command with MEDKIT_JWT_SECRET" "${PREFIX}-launchclosed"
+
+# A port another container holds in the same network namespace, and an address
+# the container does not own: the gateway exits instead of announcing itself.
+start_container "${PREFIX}-portheld" --network "container:${PREFIX}-open" -e MEDKIT_AUTH_DISABLED=1 --
+expect_bind_failure "port held in the shared namespace" "${PREFIX}-portheld" 0.0.0.0 8080
+expect "port held: the first container still answers" 200 "$(wait_code "${PREFIX}-open" 8080 /api/v1/areas)"
+start_container "${PREFIX}-nobind" -e MEDKIT_AUTH_DISABLED=1 -- --ros-args -p server.host:=192.0.2.10
+expect_bind_failure "address the container does not own" "${PREFIX}-nobind" 192.0.2.10 8080
 
 # The gateway gets the container's SIGTERM itself and shuts down cleanly: exit
 # code 0, its own shutdown line in the log, and `docker stop` returns well before
