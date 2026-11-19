@@ -1384,23 +1384,79 @@ Query and manage faults.
 
 .. note::
 
-   **Per-entity fault scope (``/{entity-path}/faults`` routes).** The gateway keys
-   faults by ``fault_code`` only, and a fault's ``reporting_sources`` set is the
-   union of every app that has reported that code. Per-entity routes apply a
-   strict all-sources scope check: a fault is in scope for an entity iff **every**
-   entry in ``reporting_sources`` is an app owned by that entity (exact FQN
-   match, or strict path-child).
+   **Per-entity fault scope (``/{entity-path}/faults`` routes).** A fault record
+   is the pair (``fault_code``, owner). For a code the fault manager keeps
+   ``per_source`` (see ``fault_thresholds.yaml``), the owner is the ``source_id``
+   the reporter used and the single entry of the record's ``reporting_sources``,
+   so two apps reporting one such ``fault_code`` are two records, each with its
+   own status, occurrence count and timestamps, and each cleared on its own. Any
+   other code has one shared record that every source reports into. A record is
+   in scope for an entity when each of its reporting sources equals one of the
+   entity's owned sources or is a path child of one (``<owned>/...``). The owned
+   sources are:
 
-   This means a ``fault_code`` reported by apps in two different entities
-   (for example ``SENSOR_TIMEOUT`` reported by both the lidar and the
-   temperature sensor app) is **not** visible or clearable through either
-   entity's per-entity routes - per-fault routes return ``404``, collection
-   responses omit it, and per-entity ``DELETE`` skips it. To see, list, or
-   clear such shared faults use the global ``GET /api/v1/faults`` /
-   ``DELETE /api/v1/faults`` routes.
+   - an app: its node FQN, or its own id when the app is external
+   - a component: the owned sources of its hosted apps, plus its own id when the
+     component is external
+   - an area: the owned sources of every component in the area and in its
+     subareas
+   - a function: the owned sources of its host apps and host components
+
+   The same rule, applied to the record whatever its status, decides which
+   ``/{entity-path}/faults`` triggers see the record's events, which entity
+   ``x-medkit`` names in ``GET /api/v1/faults/stream``, which locks the global
+   ``DELETE /api/v1/faults`` honours, and which recordings an entity lists (with
+   one fallback, see List Bulk Data Items). The last path segment of an owner is
+   never read as an entity id.
+
+   An entity shows each ``fault_code`` once. The entry of a code covers every
+   record of it in the entity's scope: on an app, the record of its own source
+   and the records of its sub-sources (``<owned>/<suffix>``); on a component, an
+   area or a function, every record of the code under it. An entry of one record
+   is that record. An entry of several records is their merge:
+
+   - ``status``: the most advanced, ``CONFIRMED`` > ``PREFAILED`` > ``PREPASSED``
+     > ``HEALED`` > ``CLEARED``
+   - ``severity``: the highest
+   - ``occurrence_count``: the sum
+   - ``first_occurred``: the earliest; ``last_occurred`` and ``last_passed``: the
+     latest
+   - ``reporting_sources``: the union
+   - ``description`` and the detail's environment data: from the ``CONFIRMED``
+     record that occurred last, else from the record that occurred last
+
+   ``x-medkit.records`` on a list item and on a detail names each record the
+   entry covers: ``app_id`` and ``source_id`` (the owner) for a ``per_source``
+   record, ``reporting_sources`` for a shared one, and its ``status``. A fault
+   item carries vendor fields only inside ``x-medkit``, so it has no top-level
+   ``source_id``. The detail of one ``per_source`` record also names its owner as
+   ``x-medkit.owner``. A shared record names no owner anywhere: alone in an
+   entry, its item and its detail look as they did before records had owners.
+
+   A ``per_source`` ``SENSOR_TIMEOUT`` reported by both the lidar app and the
+   temperature sensor app therefore appears on each app's own ``/faults`` page as
+   that app's record, and on the component hosting both as one entry with two
+   ``x-medkit.records``.
+
+   ``GET /{entity-path}/faults/{fault_code}`` serves the entry of the code over
+   every record of it in scope, whatever its status and muted or not, and
+   ``DELETE /{entity-path}/faults/{fault_code}`` clears each of those records
+   with its own owner. ``DELETE /{entity-path}/faults`` clears each record the
+   entity's fault list shows, with its own owner. Like that list, it leaves muted
+   records alone; the per-code ``DELETE`` clears a muted record. When the fault
+   manager refuses to clear a record, the bulk route answers ``500`` with the
+   codes it could not clear in ``parameters.failed_codes``, and so does the
+   per-code route when the code covers several records. The records it could
+   clear stay cleared.
+
+   A fault LIST's ``x-medkit.source_id`` is something else: the addressed
+   entity's own namespace path, which is empty for an external app. Never read it
+   as an owner.
 
 ``GET /api/v1/faults``
-   List all faults across the system.
+   List all faults across the system, one item per record. A ``per_source`` code
+   reported by two sources is two items, each with an ``x-medkit.records`` entry
+   naming its app and source. A shared record is one item that names no owner.
 
 ``GET /api/v1/components/{id}/faults``
    List all faults for an entity.
@@ -1493,6 +1549,14 @@ Query and manage faults.
         "x-medkit": {
           "occurrence_count": 3,
           "reporting_sources": ["/powertrain/motor_controller"],
+          "owner": "/powertrain/motor_controller",
+          "records": [
+            {
+              "app_id": "motor_controller",
+              "source_id": "/powertrain/motor_controller",
+              "status": "CONFIRMED"
+            }
+          ],
           "severity_label": "ERROR"
         }
       }
@@ -1553,11 +1617,19 @@ Query and manage faults.
 ``DELETE /api/v1/components/{id}/faults/{fault_code}``
    Clear a fault.
 
+   - **200:** Fault cleared by the plugin that serves this entity's faults, with
+     the plugin's acknowledgement as the body
    - **204:** Fault cleared
    - **400:** ``fault_code`` empty or longer than 256 characters
    - **404:** Fault not found, reported by an app outside this entity's scope,
      or declined by the fault manager
-   - **503:** Fault manager unavailable
+   - **409:** The entity is locked by another client
+   - **500:** The code covers several records and the fault manager refused to
+     clear at least one; ``parameters.failed_codes`` names the code
+   - **503:** Fault manager unavailable. This holds for an entity whose faults a
+     plugin serves as well: the gateway reads the fault manager to learn which
+     record the code names before it asks the plugin, and when that read fails
+     it does not ask the plugin at all.
 
 .. note::
 
@@ -1577,10 +1649,14 @@ Query and manage faults.
    Clear all faults for an entity.
 
    Accepts the optional ``?status=`` query parameter (same values as ``GET /faults``).
-   Without it, clears pending and confirmed faults.
+   Without it, clears pending and confirmed faults. Muted records are not cleared,
+   because the entity's fault list does not show them. Clear one with its per-code
+   ``DELETE``.
 
    - **204:** Faults cleared (or none to clear)
    - **400:** Invalid status parameter
+   - **500:** The fault manager refused to clear at least one record;
+     ``parameters.failed_codes`` names their codes
    - **503:** Fault manager unavailable
 
 ``DELETE /api/v1/faults``
@@ -1800,10 +1876,19 @@ List all bulk-data items in a category for the entity.
 For ``rosbags``, the descriptor ``id`` is the recording id - the bag directory
 name - and it is what the download URL takes. There is **one descriptor per
 recording**, not one per fault: faults confirmed in one burst share a single
-recording, and ``x-medkit.fault_codes`` lists every fault attached to it. A
-recording therefore reports its size once. One fault code can appear on several
-descriptors, one per occurrence it kept, told apart by ``creation_date``, which
-is the time that recording was made.
+recording, and ``x-medkit.fault_codes`` lists the code of every record of the
+entity attached to it. A recording therefore reports its size once. One fault
+code can appear on several descriptors, one per occurrence it kept, told apart
+by ``creation_date``, which is the time that recording was made.
+
+An entity lists a recording when the owner of a record it was captured for is
+in the entity's fault scope (see Faults Endpoints), whatever the record's status
+and including a muted record. An entity whose scope resolves no reporting
+source at all, for example a manifest component that hosts no app, matches
+owners against its own node FQN, or its namespace when it has no FQN, instead.
+A function that hosts nothing lists no recording. The listing reads the fault
+list first, then the recordings of each owner in scope. When either read fails,
+it answers ``503`` rather than an empty or partial list.
 
 ``x-medkit.storage_files`` is how many storage files the recording is held in,
 read from the recording's own metadata. A ``1`` is the normal case and says the
@@ -1913,6 +1998,15 @@ and OpenAPI 3.1 has no way to say "bytes" - ``format: binary`` was an OpenAPI
 3.0 idiom that 3.1 dropped when it aligned with JSON Schema 2020-12. A
 schema-free media type entry is the accurate description.
 
+**Which recordings an entity serves.** A recording belongs to the fault records
+it is attached to, each a (``fault_code``, owner) pair, and a burst attaches
+several. An entity serves a recording when the owner of one of those records is
+in the entity's fault scope, the scope its fault list uses. A fault code the
+entity also owns a record of is not enough:
+two apps reporting one ``per_source`` code each download their own recording and get ``404`` on
+the other's, whether or not either record has been cleared, while the component
+hosting both serves both.
+
 **Range requests.** A request carrying a ``Range`` header is answered with
 **206 Partial Content** and a ``Content-Range: bytes <first>-<last>/<total>``
 header instead of ``200``; the body is the requested slice. Several ranges in
@@ -1945,11 +2039,27 @@ ranged request carries the whole error document.
 
 - **200 OK**: File content
 - **206 Partial Content**: The byte range requested via ``Range``, with ``Content-Range``
-- **404 Not Found**: Entity, category, or bulk-data ID not found
+- **404 Not Found**: Entity, category, or bulk-data ID not found, or a
+  recording none of this entity's records is attached to
+- **409 Conflict**: ``x-medkit-ambiguous-fault``. A ``rosbags`` URL whose last
+  segment is a fault code rather than a recording id resolves that code to one
+  record in the entity's scope. The candidates come in three tiers, and the
+  first tier holding any record of the code decides: the ``PREFAILED`` and
+  ``CONFIRMED`` records that are not muted, then the muted ones of those
+  statuses, then the ``CLEARED``, ``HEALED`` and ``PREPASSED`` ones. Several
+  candidates in that tier name none of them, and ``parameters.owners`` names
+  their owners. Address the recording by
+  its own id instead: the ``rosbags`` listing of this entity carries it as each
+  descriptor's ``id``, and a fault detail links it as
+  ``environment_data.snapshots[].bulk_data_uri``.
 - **416 Range Not Satisfiable**: No range of the ``Range`` header starts inside
   the file, with ``Content-Range: bytes */<total>``. Also sent when the header
   could not be parsed, which is not specific to this endpoint - see
   :ref:`rest-range-rejection`.
+- **503 Service Unavailable**: ``rosbags`` only. The fault manager did not
+  answer a call the download needs: the record list, the recording lookup, or
+  the rosbag list of an owner that could hold the recording while no other
+  owner in scope does. A ``404`` would say the recording does not exist.
 
 Upload Bulk Data
 ~~~~~~~~~~~~~~~~
@@ -2637,13 +2747,55 @@ against each change and only fire when the condition is met.
    hierarchy-scoped monitoring. Area-level triggers catch changes from all
    descendant entities within the area.
 
+A fault event reaches a trigger on ``/{entity-path}/faults`` when the record's
+owner is in the entity's fault scope (see Faults Endpoints) - the rule by which
+``GET /{entity-path}/faults?status=all`` lists the record. Status does not
+matter: confirm, update, clear and heal events are all scoped this way, and the
+payload's ``status`` tells a clear (``CLEARED``) from a heal (``HEALED``). The
+trigger's condition then decides whether the event fires.
+
+Changes of every collection reach the triggers through one gateway-wide queue
+of up to 10000 changes. Past that bound the oldest change is dropped and
+logged, and no trigger sees it.
+
 **Observable resource collections:**
 
 - ``data`` - Topic data changes (driven by ``TriggerTopicSubscriber``)
 - ``faults`` - Fault state transitions (created, updated, cleared)
 - ``operations`` - Operation execution completions
 - ``updates`` - Software update status changes
-- ``logs`` - Log entries matching configured severity (x-medkit extension)
+- ``logs`` - Log entries (x-medkit extension). A trigger checks each entry by
+  the rule ``GET /{entity}/logs`` lists by: the logger name is one of the
+  entity's log sources, in slash or dot form, and the entry's numeric level is
+  at or above the entity's ``severity_filter``. The check runs when the gateway
+  dispatches the change, against the entity's scope and ``severity_filter`` at
+  that moment, not when the entry arrived. Limits:
+
+  - An entry the log buffer's distinct-logger cap drops fires nothing.
+  - A change the gateway-wide queue drops fires nothing. After such an
+    overflow, a waiting entry logged at a level between the named ones can be
+    compared by its severity name instead of its level: the gateway keeps
+    those exact levels for the last 20000 such entries, dropped ones included.
+  - A trigger keeps at most 100 events that no client has read and drops the
+    oldest.
+  - With a ``LogProvider`` plugin, ``GET /{entity}/logs`` returns what the
+    plugin returns. The trigger still checks only the entries the gateway takes
+    from ``/rosout`` (in observer mode also those the plugin keeps out of the
+    log buffer). In full-ingestion mode the gateway takes no entries from
+    ``/rosout``.
+  - A persistent trigger restored before its entity is discovered checks,
+    once the entity is discovered, the entries ``GET /{entity}/logs`` lists at
+    that moment (at most the entity's ``max_entries``) other than markers, then
+    the entries that follow. If that listing fails, for example in a
+    ``LogProvider`` plugin, the next sweep or entry tries again.
+
+  The entry a trigger's ``log_settings`` writes when it fires (the marker)
+  fires no ``logs`` trigger: not its own trigger, not another trigger on the
+  same entity or on an entity above or below it. The gateway knows the marker
+  by how it was written, so a ``/rosout`` entry with the same text still fires.
+  The marker is logged under the trigger's entity id as logger name, and
+  ``GET /{entity}/logs`` lists it where that name is one of the entity's log
+  sources, for example on an app bound to a root-namespace node of that name.
 
 Create Trigger
 ~~~~~~~~~~~~~~
@@ -2727,11 +2879,14 @@ Create Trigger
           duration. Must be a positive integer. Omit for no expiry.
       * - ``log_settings``
         - No
-        - Temporary log entry injected when the trigger fires.
-          Accepts ``severity`` (log level: ``debug``, ``info``, ``warning``,
-          ``error``, ``fatal``; default: ``info``) and ``marker`` (descriptive
-          message text; default: ``"Trigger fired"``). The log entry includes
-          trigger metadata (trigger ID, condition type, resource URI).
+        - Log entry (the marker) written to the gateway's log buffer each time
+          the trigger fires. Accepts ``severity`` (log level: ``debug``,
+          ``info``, ``warning``, ``error``, ``fatal``; default: ``info``) and
+          ``marker`` (descriptive message text; default: ``"Trigger fired"``).
+          The log entry includes trigger metadata (trigger ID, condition type,
+          resource URI). ``GET /{entity}/logs`` lists the marker where its
+          logger name, the trigger's entity id, is one of the entity's log
+          sources; it fires no ``logs`` trigger.
 
    **Response 201 Created:**
 
@@ -3031,6 +3186,14 @@ plugin is loaded. Without it the routes stay mounted and answer ``501``
 use, so a client can tell "this build has no threshold engine" apart from "no
 such app or rule".
 
+A rule reads its value from whichever source the owning plugin serves the app's
+``/data`` through: the plugin's data provider first, its own vendor data route
+only when it exposes no provider. Rule evaluation and the create-time data-point
+check use the same resolution in the same order, so a point that validates on
+create is one the engine can read. A rule the engine cannot read holds its state
+rather than firing on a stale value, which is also what it does while the app's
+link reports itself down.
+
 ``GET /api/v1/apps/{app_id}/fault-triggers``
    List the app's rules. The owning app is the one in the path; it is not
    repeated in the item, and neither is the engine's internal cross latch.
@@ -3062,8 +3225,9 @@ such app or rule".
    ``data_name`` the app does not expose (when enumerable); ``404``
    (``entity-not-found``) when the app itself was never discovered; ``409``
    (``precondition-not-fulfilled``) when the ``fault_code`` is already used by
-   another rule - fault codes are global to the fault store, so two rules
-   sharing one would fight over the same fault.
+   another rule on ANY app - the engine keeps one rule per code across every
+   app, so a code another app's rule already claims is refused. The error names
+   the rule and the app that holds it.
 
 ``DELETE /api/v1/apps/{app_id}/fault-triggers/{trigger_id}``
    Remove a rule (``204``). A fault currently asserted by the rule is cleared;
@@ -3618,6 +3782,12 @@ Vendor-specific ``x-medkit-*`` codes are enveloped: the response carries
    * - ``vendor-error``
      - varies
      - A vendor-specific failure; read ``vendor_code`` for the real code
+   * - ``x-medkit-ambiguous-fault``
+     - 409
+     - The fault code in a ``rosbags`` URL addresses several fault records
+       inside the addressed entity, because several of its reporting sources
+       report that code and each is its own record. ``parameters.owners`` names
+       them. Address the recording by its own id.
    * - ``x-medkit-plugin-error``
      - 400-599
      - Plugin provider returned an error. Status varies by plugin. Message truncated to 512 chars.
@@ -4058,11 +4228,17 @@ Other extensions beyond SOVD:
 - ``DELETE /faults`` - Clear all faults globally
 - ``GET /faults/stream`` - SSE real-time fault notifications. Each event payload carries an
   optional ``x-medkit`` SOVD payload-extension object with ``entity_type`` and ``entity_id``
-  fields when the gateway can resolve the fault's first reporting source back to an entity,
-  so consumers can hit ``/{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}`` directly
-  without enumerating entities - that address serves the fault's newest recording. To reach an
-  older one, list ``/bulk-data/rosbags`` and use the descriptor ``id``. Resolution is snapshotted at event arrival; the entire
-  ``x-medkit`` object is omitted when no entity can be resolved.
+  fields naming the entity whose fault scope holds the record's owner: the app, or else the
+  external component. With nested node paths the app owning the longest source is named, and a
+  tie goes to the smallest id. Consumers can hit
+  ``/{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}`` directly without enumerating
+  entities - that address serves the fault's newest recording. To reach an older one, list
+  ``/bulk-data/rosbags`` and use the descriptor ``id``. The named entity can hold several records
+  of the code, for example records owned by two paths below one app's node. That address then
+  answers ``409`` ``x-medkit-ambiguous-fault``, and the recording is reached by its ``id`` from
+  the entity's ``/bulk-data/rosbags`` listing. Resolution is snapshotted at event
+  arrival, so an event replayed from the buffer after discovery removed that entity still names
+  it. The entire ``x-medkit`` object is omitted when no entity owns the record.
 - ``/health`` - Health check with discovery pipeline diagnostics
 - ``/version-info`` - Gateway version information
 - ``/docs`` - OpenAPI capability description

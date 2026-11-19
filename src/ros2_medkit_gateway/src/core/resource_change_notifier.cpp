@@ -55,6 +55,12 @@ void ResourceChangeNotifier::unsubscribe(NotifierSubscriptionId id) {
 void ResourceChangeNotifier::notify(const std::string & collection, const std::string & entity_id,
                                     const std::string & resource_path, const nlohmann::json & value,
                                     ChangeType change_type) {
+  notify_except(0, collection, entity_id, resource_path, value, change_type);
+}
+
+void ResourceChangeNotifier::notify_except(NotifierSubscriptionId skipped, const std::string & collection,
+                                           const std::string & entity_id, const std::string & resource_path,
+                                           const nlohmann::json & value, ChangeType change_type) {
   // Prevent destruction while we're inside this function. The counter is
   // incremented BEFORE checking the shutdown flag (both seq_cst) so that
   // shutdown() is guaranteed to see the increment and wait for us to finish.
@@ -89,7 +95,7 @@ void ResourceChangeNotifier::notify(const std::string & collection, const std::s
 
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
-    queue_.push_back(std::move(change));
+    queue_.push_back(QueuedChange{std::move(change), skipped});
 
     // Enforce bounded queue: drop oldest entries when limit is exceeded.
     // Log only once per overflow batch to avoid log flooding.
@@ -157,7 +163,7 @@ void ResourceChangeNotifier::worker_loop() {
   worker_id_.store(std::this_thread::get_id());
   std::vector<NotifierSubscriptionId> targets;
   while (true) {
-    std::vector<ResourceChange> batch;
+    std::vector<QueuedChange> batch;
 
     {
       std::unique_lock<std::mutex> lock(queue_mutex_);
@@ -174,12 +180,13 @@ void ResourceChangeNotifier::worker_loop() {
       queue_.clear();
     }
 
-    for (const auto & change : batch) {
+    for (const auto & queued : batch) {
+      const auto & change = queued.change;
       targets.clear();
       {
         std::lock_guard<std::mutex> lock(sub_mutex_);
         for (const auto & [id, entry] : subscriptions_) {
-          if (matches_filter(entry->filter, change)) {
+          if (id != queued.skipped && matches_filter(entry->filter, change)) {
             targets.push_back(id);
           }
         }
@@ -225,6 +232,11 @@ void ResourceChangeNotifier::deliver(NotifierSubscriptionId id, const ResourceCh
 void ResourceChangeNotifier::set_max_queue_size(size_t max_size) {
   std::lock_guard<std::mutex> lock(queue_mutex_);
   max_queue_size_ = max_size;
+}
+
+size_t ResourceChangeNotifier::max_in_flight() const {
+  std::lock_guard<std::mutex> lock(queue_mutex_);
+  return 2 * max_queue_size_;
 }
 
 }  // namespace ros2_medkit_gateway

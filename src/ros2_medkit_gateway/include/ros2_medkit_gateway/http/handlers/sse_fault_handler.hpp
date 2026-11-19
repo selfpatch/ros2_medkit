@@ -31,6 +31,7 @@
 #include "ros2_medkit_fault_detection/fault_types.hpp"
 #include "ros2_medkit_gateway/core/aggregation/peer_fault_relay.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_event_source.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/response_types.hpp"
@@ -68,10 +69,11 @@ namespace handlers {
  * - Replay buffer of up to 100 events. Eviction order under overflow:
  *   1. entries every live client has already been sent (free),
  *   2. fault_updated entries superseded by a newer event for the same fault
- *      code (coalesced - a lagging client still converges on the correct
- *      current state, and no status transition is erased),
+ *      record, the same code and owner (coalesced - a lagging client still
+ *      converges on the correct current state, and no status transition is
+ *      erased),
  *   3. transition entries (confirmed / cleared) superseded by a newer event
- *      for the same code - the current state survives but the transition
+ *      for the same record - the current state survives but the transition
  *      history is lost, so this IS counted and logged as a drop,
  *   4. the oldest entry, owed and not superseded - counted and logged too.
  */
@@ -156,9 +158,9 @@ class SSEFaultHandler {
 
   /**
    * @brief Events genuinely lost: evicted while still owed to a live client,
-   * except fault_updated entries a newer same-code event supersedes. Includes
-   * superseded transitions - their history is gone even though the current
-   * state survives.
+   * except fault_updated entries a newer event of the same record supersedes.
+   * Includes superseded transitions - their history is gone even though the
+   * current state survives.
    *
    * Rotation of the replay buffer with no client attached is NOT a drop.
    */
@@ -259,7 +261,8 @@ class SSEFaultHandler {
   /// live client is attached. Caller holds queue_mutex_.
   std::optional<uint64_t> delivered_watermark_locked() const;
 
-  /// Oldest buffered entry whose state a later same-code entry supersedes.
+  /// Oldest buffered entry whose state a later entry of the same record (fault
+  /// code and owner, from the same peer) supersedes.
   /// With `updates_only` set, only fault_updated entries qualify (erasing them
   /// cannot erase a status transition). Entries carrying auto_cleared_codes
   /// are never chosen: that correlation payload exists nowhere else. Caller
@@ -284,17 +287,17 @@ class SSEFaultHandler {
   /// Format a fault event as SSE message
   static std::string format_sse_event(const QueuedEvent & queued);
 
-  /// Resolve the owning entity for a fault, snapshotting the cache. Manifest
-  /// / hybrid mode uses the cache's node-to-app index; runtime mode falls
-  /// back to the FQN's last segment, and for collision-disambiguated runtime
-  /// apps also to ``<ns_prefix>_<name>`` per
-  /// ros2_runtime_introspection.cpp's renaming rule. Only emits a value when
-  /// an App with the resolved id actually exists in the cache - returns
-  /// ``std::nullopt`` otherwise so the consumer falls back to discovery.
+  /// Resolve the record's owning entity when the event arrives: the app whose
+  /// scope holds the owner (``faults::AppSourceIndex``), else the external
+  /// component that does. A buffered event keeps this answer on replay, even
+  /// after discovery drops the entity. ``std::nullopt`` when no entity owns it.
   std::optional<EntityContext> resolve_entity_context(const ros2_medkit::fault_detection::FaultRecord & fault) const;
 
   HandlerContext & ctx_;
   std::shared_ptr<SSEClientTracker> client_tracker_;
+
+  /// Owned source of each cached app, for resolve_entity_context.
+  mutable faults::AppSourceIndex app_sources_;
 
   /// Relays the peers' fault streams into this one on an aggregating gateway.
   /// Always constructed; it opens nothing when this gateway has no peers.

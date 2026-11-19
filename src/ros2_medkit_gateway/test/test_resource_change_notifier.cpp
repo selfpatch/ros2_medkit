@@ -19,6 +19,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -424,6 +425,36 @@ TEST(ResourceChangeNotifier, UnsubscribeInvalidIdIsSafe) {
   EXPECT_NO_THROW(notifier.unsubscribe(999));
 }
 
+namespace {
+
+/// Releases a blocked worker on every exit path. A failed assert otherwise
+/// leaves the worker waiting, and ~ResourceChangeNotifier joins it forever.
+class BlockerRelease {
+ public:
+  explicit BlockerRelease(std::promise<void> & unblock) : unblock_(&unblock) {
+  }
+  ~BlockerRelease() {
+    release();
+  }
+  BlockerRelease(const BlockerRelease &) = delete;
+  BlockerRelease & operator=(const BlockerRelease &) = delete;
+  BlockerRelease(BlockerRelease &&) = delete;
+  BlockerRelease & operator=(BlockerRelease &&) = delete;
+
+  void release() {
+    if (!released_) {
+      released_ = true;
+      unblock_->set_value();
+    }
+  }
+
+ private:
+  std::promise<void> * unblock_;
+  bool released_{false};
+};
+
+}  // namespace
+
 // --- Bounded queue: overflow drops oldest notifications ---
 
 TEST(ResourceChangeNotifier, QueueOverflow_DropsOldest) {
@@ -440,6 +471,8 @@ TEST(ResourceChangeNotifier, QueueOverflow_DropsOldest) {
 
   ResourceChangeNotifier notifier;
   notifier.set_max_queue_size(5);
+  // Declared after the notifier, so it releases the worker before the notifier joins it.
+  BlockerRelease release_blocker(unblock);
 
   // Subscribe with a blocking callback to hold the worker while we fill the queue.
   notifier.subscribe({"data", "blocker", ""}, [&](const ResourceChange & /*change*/) {
@@ -471,7 +504,7 @@ TEST(ResourceChangeNotifier, QueueOverflow_DropsOldest) {
   });
 
   // Unblock the worker thread so it processes the queued notifications.
-  unblock.set_value();
+  release_blocker.release();
 
   auto status = done_future.wait_for(std::chrono::seconds(5));
   ASSERT_EQ(status, std::future_status::ready);
@@ -617,4 +650,149 @@ TEST(ResourceChangeNotifier, UnsubscribeOfIdZeroIsNoOp) {
 
   EXPECT_TRUE(unsubscribe_zero_returns(false)) << "unsubscribe(0) on a fresh notifier did not return";
   EXPECT_TRUE(unsubscribe_zero_returns(true)) << "unsubscribe(0) after shutdown() did not return";
+}
+
+TEST(ResourceChangeNotifier, QueueOverflow_DefaultCapacityKeepsNewest10000) {
+  // The documented bound: 10000 pending changes, the oldest dropped past it.
+  constexpr int kDocumentedBound = 10000;
+  constexpr int kSent = kDocumentedBound + 500;
+  constexpr int kSentinel = -1;
+
+  // Shared state is declared before the notifier so it outlives the worker thread.
+  std::promise<void> unblock;
+  auto unblock_future = unblock.get_future();
+  std::promise<void> worker_blocked;
+  auto worker_blocked_future = worker_blocked.get_future();
+  std::mutex recv_mutex;
+  std::vector<int> received;
+  std::promise<void> bound_delivered;
+  auto bound_future = bound_delivered.get_future();
+  std::promise<void> sentinel_delivered;
+  auto sentinel_future = sentinel_delivered.get_future();
+  std::atomic<size_t> logged_drops{0};
+
+  ResourceChangeNotifier notifier([&logged_drops](const std::string & message) {
+    if (message.find("queue overflow") != std::string::npos) {
+      logged_drops.fetch_add(1);
+    }
+  });
+  // Declared after the notifier, so it releases the worker before the notifier joins it.
+  BlockerRelease release_blocker(unblock);
+
+  notifier.subscribe({"data", "blocker", ""}, [&](const ResourceChange & /*change*/) {
+    worker_blocked.set_value();
+    unblock_future.wait();
+  });
+  notifier.notify("data", "blocker", "block", {}, ChangeType::UPDATED);
+  ASSERT_EQ(worker_blocked_future.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+
+  for (int i = 0; i < kSent; ++i) {
+    notifier.notify("data", "sensor", "temp", {{"index", i}}, ChangeType::UPDATED);
+  }
+
+  notifier.subscribe({"data", "sensor", ""}, [&](const ResourceChange & change) {
+    const int index = change.value.at("index").get<int>();
+    std::lock_guard<std::mutex> lk(recv_mutex);
+    if (index == kSentinel) {
+      sentinel_delivered.set_value();
+      return;
+    }
+    received.push_back(index);
+    if (received.size() == static_cast<size_t>(kDocumentedBound)) {
+      bound_delivered.set_value();
+    }
+  });
+  release_blocker.release();
+
+  ASSERT_EQ(bound_future.wait_for(std::chrono::seconds(30)), std::future_status::ready);
+  // Queued after the drain, so everything still pending arrives before it.
+  notifier.notify("data", "sensor", "temp", {{"index", kSentinel}}, ChangeType::UPDATED);
+  ASSERT_EQ(sentinel_future.wait_for(std::chrono::seconds(5)), std::future_status::ready);
+
+  std::lock_guard<std::mutex> lk(recv_mutex);
+  ASSERT_EQ(received.size(), static_cast<size_t>(kDocumentedBound));
+  EXPECT_EQ(received.front(), kSent - kDocumentedBound);
+  EXPECT_EQ(received.back(), kSent - 1);
+  EXPECT_TRUE(std::is_sorted(received.begin(), received.end()));
+  EXPECT_EQ(std::adjacent_find(received.begin(), received.end()), received.end());
+  EXPECT_EQ(logged_drops.load(), static_cast<size_t>(kSent - kDocumentedBound));
+}
+
+// --- notify_except ---
+
+TEST(ResourceChangeNotifier, NotifyExceptSkipsOnlyTheNamedSubscription) {
+  std::mutex mutex;
+  std::vector<std::string> skipped_got;
+  std::vector<std::string> other_got;
+
+  ResourceChangeNotifier notifier;
+
+  const auto skipped = notifier.subscribe({"logs", "", ""}, [&](const ResourceChange & change) {
+    std::lock_guard<std::mutex> lock(mutex);
+    skipped_got.push_back(change.resource_path);
+  });
+  notifier.subscribe({"logs", "", ""}, [&](const ResourceChange & change) {
+    std::lock_guard<std::mutex> lock(mutex);
+    other_got.push_back(change.resource_path);
+  });
+
+  notifier.notify_except(skipped, "logs", "", "marker", nlohmann::json::object(), ChangeType::CREATED);
+  notifier.notify_except(0, "logs", "", "all", nlohmann::json::object(), ChangeType::CREATED);
+  notifier.notify("logs", "", "plain", nlohmann::json::object(), ChangeType::CREATED);
+  // Dispatches what is queued, then joins the worker.
+  notifier.shutdown();
+
+  std::lock_guard<std::mutex> lock(mutex);
+  EXPECT_EQ(skipped_got, (std::vector<std::string>{"all", "plain"}));
+  EXPECT_EQ(other_got, (std::vector<std::string>{"marker", "all", "plain"}));
+}
+
+// Past the queue bound, each surviving change keeps the subscription it skips.
+TEST(ResourceChangeNotifier, NotifyExceptKeepsItsSkipThroughQueueOverflow) {
+  std::promise<void> unblock;
+  auto unblock_future = unblock.get_future();
+  std::promise<void> worker_blocked;
+  auto worker_blocked_future = worker_blocked.get_future();
+  std::mutex mutex;
+  std::map<char, std::vector<int>> got;
+
+  ResourceChangeNotifier notifier;
+  notifier.set_max_queue_size(5);
+  // Declared after the notifier, so it releases the worker before the notifier joins it.
+  BlockerRelease release_blocker(unblock);
+
+  notifier.subscribe({"gate", "", ""}, [&](const ResourceChange & /*change*/) {
+    worker_blocked.set_value();
+    unblock_future.wait();
+  });
+  auto record = [&](char name) {
+    return [&, name](const ResourceChange & change) {
+      std::lock_guard<std::mutex> lock(mutex);
+      got[name].push_back(change.value.at("index").get<int>());
+    };
+  };
+  const auto a = notifier.subscribe({"logs", "", ""}, record('a'));
+  const auto c = notifier.subscribe({"logs", "", ""}, record('c'));
+  notifier.subscribe({"logs", "", ""}, record('b'));
+
+  notifier.notify("gate", "", "", {}, ChangeType::UPDATED);
+  ASSERT_EQ(worker_blocked_future.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+
+  // Twelve changes into a queue of five: 0..6 are dropped, 7..11 survive.
+  const std::vector<NotifierSubscriptionId> skips{a, c, 0, a, 0, c, 0, 0, a, c, a, 0};
+  for (int i = 0; i < static_cast<int>(skips.size()); ++i) {
+    if (skips[static_cast<size_t>(i)] == 0) {
+      notifier.notify("logs", "", "", {{"index", i}}, ChangeType::CREATED);
+    } else {
+      notifier.notify_except(skips[static_cast<size_t>(i)], "logs", "", "", {{"index", i}}, ChangeType::CREATED);
+    }
+  }
+  release_blocker.release();
+  // Dispatches what is queued, then joins the worker.
+  notifier.shutdown();
+
+  std::lock_guard<std::mutex> lock(mutex);
+  EXPECT_EQ(got['b'], (std::vector<int>{7, 8, 9, 10, 11})) << "the overflow did not drop 0..6";
+  EXPECT_EQ(got['a'], (std::vector<int>{7, 9, 11}));
+  EXPECT_EQ(got['c'], (std::vector<int>{7, 8, 10, 11}));
 }

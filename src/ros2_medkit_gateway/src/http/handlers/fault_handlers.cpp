@@ -207,6 +207,27 @@ dto::FaultListResult wrap_list_result(json payload) {
   return out;
 }
 
+/// One item per fault code of `faults`, the records already scoped to the entity.
+json entity_entries(const json & faults, const faults::AppOfSource & app_of) {
+  json items = json::array();
+  for (const auto & records : faults::group_by_code(faults)) {
+    items.push_back(faults::entry_item(records, app_of));
+  }
+  return items;
+}
+
+/// The 404 of a per-code route when no record of the code is in the entity's scope.
+ErrorInfo fault_not_in_scope(const std::string & id_field, const std::string & entity_id,
+                             const std::string & fault_code) {
+  return make_error(404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
+                    json{{"details",
+                          "Fault is not in scope for this entity: every reporting source must be one of the entity's "
+                          "owned apps, and a mixed-source fault that includes any out-of-entity reporter is rejected "
+                          "to prevent cross-entity disclosure"},
+                         {id_field, entity_id},
+                         {"fault_code", fault_code}});
+}
+
 /// Wrap a built JSON detail payload in a typed FaultDetailResult envelope.
 dto::FaultDetailResult wrap_detail_result(json payload) {
   dto::FaultDetailResult out;
@@ -230,6 +251,89 @@ ErrorInfo FaultHandlers::classify_fault_failure(FaultFailure failure, const std:
       break;
   }
   return make_error(503, ERR_SERVICE_UNAVAILABLE, unavailable_summary, params);
+}
+
+std::unordered_map<std::string, std::set<std::string>>
+FaultHandlers::build_source_entity_map(const ThreadSafeEntityCache & cache) {
+  std::unordered_map<std::string, std::set<std::string>> source_to_entities;
+  for (const auto & app : cache.get_apps()) {
+    // The same resolution the fault scope uses: an external app's bare id, any
+    // other app's effective FQN, and nothing for an unbound non-external app.
+    auto source = faults::resolve_app_source_fqn(cache, app.id);
+    if (!source.empty()) {
+      source_to_entities[source].insert(app.id);
+    }
+  }
+  for (const auto & component : cache.get_components()) {
+    // Only an external component claims its bare id as a reporting source.
+    if (component.external.value_or(false) && !component.id.empty()) {
+      source_to_entities[component.id].insert(component.id);
+    }
+  }
+  return source_to_entities;
+}
+
+tl::expected<std::vector<json>, ErrorInfo> FaultHandlers::records_of_code(const EntityInfo & entity_info,
+                                                                          const std::string & fault_code,
+                                                                          const std::string & failure_summary) {
+  auto * fault_mgr = ctx_.services().fault_manager();
+  if (fault_mgr == nullptr) {
+    return tl::make_unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, failure_summary,
+                                          json{{entity_info.id_field, entity_info.id}, {"fault_code", fault_code}}));
+  }
+  auto result = fault_mgr->list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
+                                       /*include_cleared=*/true, /*include_healed=*/true, /*include_muted=*/true,
+                                       /*include_clusters=*/false);
+  if (!result.success) {
+    return tl::make_unexpected(classify_fault_failure(result.failure, result.error_message, failure_summary,
+                                                      entity_info.id_field, entity_info.id, fault_code));
+  }
+  const auto & cache = ctx_.services().entity_cache();
+  const auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+  std::vector<json> records;
+  for (const auto & fault : result.data.value("faults", json::array())) {
+    if (fault.is_object() && fault.value("fault_code", std::string{}) == fault_code &&
+        faults::fault_in_source_scope(fault, source_fqns)) {
+      records.push_back(fault);
+    }
+  }
+  std::stable_sort(records.begin(), records.end(), [](const json & a, const json & b) {
+    return faults::stored_owner(a) < faults::stored_owner(b);
+  });
+  return records;
+}
+
+faults::AppOfSource FaultHandlers::app_of_source() {
+  return [this](const std::string & source) {
+    return app_index_.find_owner(ctx_.services().entity_cache(), source);
+  };
+}
+
+tl::expected<dto::FaultDetailResult, FaultResult> FaultHandlers::fault_detail(const std::vector<json> & records,
+                                                                              const std::string & fault_code,
+                                                                              const std::string & entity_path) {
+  auto * fault_mgr = ctx_.services().fault_manager();
+  if (fault_mgr == nullptr) {
+    return tl::make_unexpected(FaultResult{false, json{}, "Fault manager unavailable", FaultFailure::Unavailable});
+  }
+  const auto & representative = records.size() == 1 ? records.front() : faults::representative_record(records);
+  const auto owner = faults::stored_owner(representative);
+  auto result = fault_mgr->get_fault_with_env(fault_code, owner);
+  if (!result.success) {
+    return tl::make_unexpected(FaultResult{false, json{}, result.error_message, result.failure});
+  }
+  const auto app_of = app_of_source();
+  // One record is served as the fault manager reads it now, several as their merge.
+  const json item = records.size() == 1 ? faults::record_item(result.data.value("fault", json::object()), app_of)
+                                        : faults::entry_item(records, app_of);
+  json env_data_json = result.data.value("environment_data", json::object());
+  if (auto * capture = ctx_.services().freeze_frames()) {
+    // Entity frames are kept per reporting source, not per stored owner.
+    env_data_json = merge_entity_freeze_frames(std::move(env_data_json),
+                                               capture->frames_for(fault_code, faults::record_owner(representative)));
+  }
+  return wrap_detail_result(
+      dto::JsonWriter<dto::FaultDetail>::write(build_sovd_fault_response(item, env_data_json, entity_path)));
 }
 
 bool FaultHandlers::fault_in_source_scope(const json & fault, const std::set<std::string> & source_fqns) {
@@ -439,6 +543,22 @@ dto::FaultDetail FaultHandlers::build_sovd_fault_response(const json & fault_jso
   if (!reporting_sources.empty()) {
     xm.reporting_sources = std::move(reporting_sources);
   }
+  if (const auto it = fault_json.find("x-medkit"); it != fault_json.end() && it->is_object()) {
+    std::vector<dto::FaultRecordRef> records;
+    for (const auto & ref : it->value("records", json::array())) {
+      if (auto parsed = dto::JsonReader<dto::FaultRecordRef>::read(ref)) {
+        records.push_back(std::move(*parsed));
+      }
+    }
+    // A detail of one per_source record names its owner. Named `owner`, not
+    // `source_id`: a fault LIST's x-medkit uses `source_id` for the entity's namespace.
+    if (records.size() == 1 && records.front().source_id) {
+      xm.owner = records.front().source_id;
+    }
+    if (!records.empty()) {
+      xm.records = std::move(records);
+    }
+  }
   xm.severity_label = severity_to_label(severity);
   xm.status_raw = status;
   detail.x_medkit = std::move(xm);
@@ -482,8 +602,12 @@ http::Result<dto::FaultListResult> FaultHandlers::list_all_faults(const http::Ty
           make_error(503, ERR_SERVICE_UNAVAILABLE, "Failed to get faults", json{{"details", result.error_message}}));
     }
 
-    // Format: items array at top level
-    json response = {{"items", result.data["faults"]}};
+    // One item per record, each in the view the per-entity routes give a record.
+    json response = {{"items", json::array()}};
+    const auto app_of = app_of_source();
+    for (const auto & record : result.data.value("faults", json::array())) {
+      response["items"].push_back(faults::record_item(record, app_of));
+    }
 
     // x-medkit extension for ros2_medkit-specific fields (typed DTO)
     dto::FaultListXMedkit xm;
@@ -631,8 +755,8 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
       const auto & cache = ctx_.services().entity_cache();
       auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
 
-      json filtered_faults = faults::filter_faults_by_sources(result.data["faults"], source_fqns);
-      json response = {{"items", filtered_faults}};
+      json response = {{"items", entity_entries(faults::filter_faults_by_sources(result.data["faults"], source_fqns),
+                                                app_of_source())}};
 
       // x-medkit extension (typed DTO)
       dto::FaultListAggXMedkit xm;
@@ -678,8 +802,8 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
       const auto & cache = ctx_.services().entity_cache();
       auto app_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
 
-      json filtered_faults = faults::filter_faults_by_sources(result.data["faults"], app_fqns);
-      json response = {{"items", filtered_faults}};
+      json response = {{"items", entity_entries(faults::filter_faults_by_sources(result.data["faults"], app_fqns),
+                                                app_of_source())}};
 
       dto::FaultListAggXMedkit xm;
       xm.entity_id = entity_id;
@@ -717,8 +841,8 @@ http::Result<dto::FaultListResult> FaultHandlers::list_faults(const http::TypedR
                      json{{"details", result.error_message}, {entity_info.id_field, entity_id}}));
     }
 
-    json filtered_faults = faults::filter_faults_by_sources(result.data["faults"], app_fqns);
-    json response = {{"items", filtered_faults}};
+    json response = {
+        {"items", entity_entries(faults::filter_faults_by_sources(result.data["faults"], app_fqns), app_of_source())}};
 
     // x-medkit extension for ros2_medkit-specific fields (typed DTO)
     dto::FaultListXMedkit xm;
@@ -796,26 +920,14 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
       // native path): skip the plugin delegation entirely and serve the
       // fault_manager's enriched record through the shared path below.
       if (fault_prov != nullptr) {
-        // Prefer the fault_manager's environment-enriched record when this entity
-        // OWNS the fault (it was reported to the fault_manager under an app the
-        // entity owns, per the fault-scope resolution). This carries the
-        // freeze-frame/rosbag snapshots, consistent with the non-plugin detail
-        // path. Fall through to the plugin's own provider for faults the
-        // fault_manager does not hold (e.g. on-demand UDS DTCs).
-        if (auto * fault_mgr = ctx_.services().fault_manager(); fault_mgr != nullptr) {
-          auto mgr_result = fault_mgr->get_fault_with_env(fault_code, "");
-          if (mgr_result.success) {
-            const auto & owned_fault_json = mgr_result.data.value("fault", json::object());
-            const auto & cache = ctx_.services().entity_cache();
-            auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
-            if (FaultHandlers::fault_in_source_scope(owned_fault_json, source_fqns)) {
-              json env_data_json = mgr_result.data.value("environment_data", json::object());
-              if (auto * capture = ctx_.services().freeze_frames()) {
-                env_data_json = merge_entity_freeze_frames(std::move(env_data_json), capture->frames_for(fault_code));
-              }
-              auto detail = build_sovd_fault_response(owned_fault_json, env_data_json, entity_path_info->entity_path);
-              return wrap_detail_result(dto::JsonWriter<dto::FaultDetail>::write(detail));
-            }
+        // Records of the code the fault_manager holds in this entity's scope are
+        // served from it, environment data included, as on the native path. A
+        // code it does not hold there (e.g. an on-demand UDS DTC) goes to the
+        // plugin's own provider.
+        if (auto records = records_of_code(entity_info, fault_code, "Failed to get fault");
+            records && !records->empty()) {
+          if (auto detail = fault_detail(*records, fault_code, entity_path_info->entity_path)) {
+            return std::move(*detail);
           }
         }
 
@@ -839,37 +951,20 @@ http::Result<dto::FaultDetailResult> FaultHandlers::get_fault(const http::TypedR
       }
     }
 
-    auto fault_mgr = ctx_.services().fault_manager();
-
-    auto result = fault_mgr->get_fault_with_env(fault_code, "");
-    if (!result.success) {
-      return tl::make_unexpected(classify_fault_failure(result.failure, result.error_message, "Failed to get fault",
-                                                        entity_info.id_field, entity_id, fault_code));
+    auto records = records_of_code(entity_info, fault_code, "Failed to get fault");
+    if (!records) {
+      return tl::make_unexpected(records.error());
     }
-
-    // Build SOVD-compliant response from the transport-supplied JSON shape.
-    const auto & fault_json = result.data.value("fault", json::object());
-
-    const auto & cache = ctx_.services().entity_cache();
-    auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
-    if (!FaultHandlers::fault_in_source_scope(fault_json, source_fqns)) {
-      return tl::make_unexpected(
-          make_error(404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
-                     json{{"details",
-                           "Fault is not in scope for this entity: every reporting source must be one of the entity's "
-                           "owned apps, and a mixed-source fault that includes any out-of-entity reporter is rejected "
-                           "to prevent cross-entity disclosure"},
-                          {entity_info.id_field, entity_id},
-                          {"fault_code", fault_code}}));
+    if (records->empty()) {
+      return tl::make_unexpected(fault_not_in_scope(entity_info.id_field, entity_id, fault_code));
     }
-
-    json env_data_json = result.data.value("environment_data", json::object());
-    if (auto * capture = ctx_.services().freeze_frames()) {
-      env_data_json = merge_entity_freeze_frames(std::move(env_data_json), capture->frames_for(fault_code));
+    auto detail = fault_detail(*records, fault_code, entity_path_info->entity_path);
+    if (!detail) {
+      return tl::make_unexpected(classify_fault_failure(detail.error().failure, detail.error().error_message,
+                                                        "Failed to get fault", entity_info.id_field, entity_id,
+                                                        fault_code));
     }
-    auto detail = build_sovd_fault_response(fault_json, env_data_json, entity_path_info->entity_path);
-
-    return wrap_detail_result(dto::JsonWriter<dto::FaultDetail>::write(detail));
+    return std::move(*detail);
   } catch (const std::exception & e) {
     MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in get_fault for entity '%s', fault '%s': %s", entity_id.c_str(),
                      fault_code.c_str(), e.what());
@@ -929,83 +1024,116 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
       // native path): fall through to the scope-checked fault_manager clear
       // below like any other entity.
       if (fault_prov != nullptr) {
-        // Cross-entity clear guard: the plugin clear_fault forwards the code to
-        // the fault_manager with no scope check, so without this a
-        // DELETE /{A}/faults/{code} could clear a fault owned by entity B. When
-        // the fault_manager holds this fault, require it to be in this entity's
-        // source scope before delegating; reject out-of-scope. Faults the
-        // fault_manager does not hold (plugin-internal, e.g. on-demand UDS DTCs)
-        // fall through to the plugin provider unchanged. Mirrors the ownership
-        // check in the plugin get_fault branch and the non-plugin clear path.
-        if (auto * fault_mgr = ctx_.services().fault_manager(); fault_mgr != nullptr) {
-          auto mgr_result = fault_mgr->get_fault_with_env(fault_code, "");
-          if (mgr_result.success) {
-            const auto & owned_fault_json = mgr_result.data.value("fault", json::object());
-            const auto & cache = ctx_.services().entity_cache();
-            auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
-            if (!FaultHandlers::fault_in_source_scope(owned_fault_json, source_fqns)) {
-              return tl::make_unexpected(
-                  make_error(404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
-                             json{{"details",
-                                   "Fault is not in scope for this entity: every reporting source must be one of the "
-                                   "entity's owned apps, and a mixed-source fault that includes any out-of-entity "
-                                   "reporter is rejected to prevent cross-entity clear"},
-                                  {entity_info.id_field, entity_id},
-                                  {"fault_code", fault_code}}));
+        // Cross-entity clear guard: the plugin clear names its own entity, but the
+        // record it reaches is addressed by code. When the fault_manager holds the
+        // code at all, only the records in this entity's scope are cleared, each
+        // with its owner. A fault manager that cannot be read answers 503: the
+        // route cannot tell a record it holds from one it does not.
+        auto * fault_mgr = ctx_.services().fault_manager();
+        if (fault_mgr == nullptr) {
+          return tl::make_unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "Failed to clear fault",
+                                                json{{entity_info.id_field, entity_id}, {"fault_code", fault_code}}));
+        }
+        auto held = fault_mgr->list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
+                                           /*include_cleared=*/true, /*include_healed=*/true,
+                                           /*include_muted=*/true, /*include_clusters=*/false);
+        if (!held.success) {
+          return tl::make_unexpected(classify_fault_failure(held.failure, held.error_message, "Failed to clear fault",
+                                                            entity_info.id_field, entity_id, fault_code));
+        }
+        // Each record of the code in this entity's scope, with its own owner. A
+        // code the fault manager does not hold at all is the plugin's own, and
+        // goes with an empty owner for the provider to resolve.
+        std::vector<std::string> owners;
+        const auto & all = held.data.value("faults", json::array());
+        const bool store_holds_code = std::any_of(all.begin(), all.end(), [&](const json & fault) {
+          return fault.is_object() && fault.value("fault_code", std::string{}) == fault_code;
+        });
+        if (store_holds_code) {
+          const auto & cache = ctx_.services().entity_cache();
+          const auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+          for (const auto & fault : all) {
+            if (fault.is_object() && fault.value("fault_code", std::string{}) == fault_code &&
+                faults::fault_in_source_scope(fault, source_fqns)) {
+              owners.push_back(faults::stored_owner(fault));
             }
           }
+          if (owners.empty()) {
+            return tl::make_unexpected(fault_not_in_scope(entity_info.id_field, entity_id, fault_code));
+          }
+          std::sort(owners.begin(), owners.end());
+        } else {
+          owners.emplace_back();
         }
 
-        try {
-          auto result = fault_prov->clear_fault(entity_id, fault_code);
-          if (!result) {
+        std::optional<dto::FaultClearResult> cleared;
+        size_t failed = 0;
+        for (const auto & owner : owners) {
+          try {
+            auto result = fault_prov->clear_fault_record(entity_id, fault_code, owner);
+            if (!result) {
+              if (owners.size() == 1) {
+                return tl::make_unexpected(make_plugin_error(result.error().http_status, result.error().message,
+                                                             json{{"entity_id", entity_id}}));
+              }
+              ++failed;
+            } else if (!cleared) {
+              cleared = std::move(*result);
+            }
+          } catch (const std::exception & e) {
+            MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s",
+                             entity_id.c_str(), e.what());
             return tl::make_unexpected(
-                make_plugin_error(result.error().http_status, result.error().message, json{{"entity_id", entity_id}}));
+                make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
+          } catch (...) {
+            MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
+                             entity_id.c_str());
+            return tl::make_unexpected(
+                make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
           }
-          return Outcome{std::move(*result)};
-        } catch (const std::exception & e) {
-          MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw for entity '%s': %s",
-                           entity_id.c_str(), e.what());
-          return tl::make_unexpected(make_plugin_error(500, "Plugin threw exception", json{{"entity_id", entity_id}}));
-        } catch (...) {
-          MEDKIT_LOG_ERROR(HandlerContext::logger(), "Plugin FaultProvider threw unknown exception for entity '%s'",
-                           entity_id.c_str());
-          return tl::make_unexpected(
-              make_plugin_error(500, "Plugin threw unknown exception", json{{"entity_id", entity_id}}));
         }
+        if (failed > 0) {
+          return tl::make_unexpected(make_plugin_error(
+              500, "Failed to clear " + std::to_string(failed) + " of " + std::to_string(owners.size()) + " records",
+              json{{"entity_id", entity_id}, {"failed_codes", json::array({fault_code})}}));
+        }
+        return Outcome{std::move(*cleared)};
       }
     }
 
-    auto fault_mgr = ctx_.services().fault_manager();
-
-    // Verify the fault is in this entity's scope BEFORE clearing.
-    auto get_result = fault_mgr->get_fault_with_env(fault_code, "");
-    if (!get_result.success) {
-      return tl::make_unexpected(classify_fault_failure(get_result.failure, get_result.error_message,
+    auto * fault_mgr = ctx_.services().fault_manager();
+    auto records = records_of_code(entity_info, fault_code, "Failed to clear fault");
+    if (!records) {
+      return tl::make_unexpected(records.error());
+    }
+    if (records->empty()) {
+      return tl::make_unexpected(fault_not_in_scope(entity_info.id_field, entity_id, fault_code));
+    }
+    // Every record of the code under this entity, each with its own owner. The
+    // correlation cascade stays off so this clear cannot reach other entities.
+    std::vector<FaultResult> failures;
+    for (const auto & record : *records) {
+      auto result = fault_mgr->clear_fault(fault_code, faults::stored_owner(record),
+                                           /*skip_correlation_auto_clear=*/true);
+      if (!result.success) {
+        failures.push_back(std::move(result));
+      }
+    }
+    if (failures.empty()) {
+      return Outcome{http::NoContent{}};
+    }
+    if (records->size() == 1) {
+      return tl::make_unexpected(classify_fault_failure(failures.front().failure, failures.front().error_message,
                                                         "Failed to clear fault", entity_info.id_field, entity_id,
                                                         fault_code));
     }
-
-    const auto & cache = ctx_.services().entity_cache();
-    auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
-    const auto & fault_json = get_result.data.value("fault", json::object());
-    if (!FaultHandlers::fault_in_source_scope(fault_json, source_fqns)) {
-      return tl::make_unexpected(
-          make_error(404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
-                     json{{"details",
-                           "Fault is not in scope for this entity: every reporting source must be one of the entity's "
-                           "owned apps, and a mixed-source fault that includes any out-of-entity reporter is rejected "
-                           "to prevent cross-entity disclosure"},
-                          {entity_info.id_field, entity_id},
-                          {"fault_code", fault_code}}));
-    }
-
-    auto result = fault_mgr->clear_fault(fault_code, /*skip_correlation_auto_clear=*/true);
-    if (!result.success) {
-      return tl::make_unexpected(classify_fault_failure(result.failure, result.error_message, "Failed to clear fault",
-                                                        entity_info.id_field, entity_id, fault_code));
-    }
-    return Outcome{http::NoContent{}};
+    return tl::make_unexpected(make_error(500, ERR_INTERNAL_ERROR,
+                                          "Failed to clear " + std::to_string(failures.size()) + " of " +
+                                              std::to_string(records->size()) + " records",
+                                          json{{"details", failures.front().error_message},
+                                               {entity_info.id_field, entity_id},
+                                               {"fault_code", fault_code},
+                                               {"failed_codes", json::array({fault_code})}}));
   } catch (const std::exception & e) {
     MEDKIT_LOG_ERROR(HandlerContext::logger(), "Error in clear_fault for entity '%s', fault '%s': %s",
                      entity_id.c_str(), fault_code.c_str(), e.what());
@@ -1058,7 +1186,14 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
               if (code.empty()) {
                 continue;
               }
-              auto clear_result = fault_prov->clear_fault(entity_id, code);
+              // Each listed item names its own record. Sending the entity id
+              // for all of them addresses at most one owner's record and
+              // silently leaves the others standing.
+              auto owner = fault.value("source_id", std::string{});
+              if (owner.empty()) {
+                owner = faults::record_owner(fault);
+              }
+              auto clear_result = fault_prov->clear_fault_record(entity_id, code, owner);
               if (!clear_result) {
                 failed_codes.push_back(code);
               }
@@ -1089,6 +1224,9 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
     // resolves through `HandlerContext::resolve_entity_source_fqns` so the
     // area BFS, function-hosting-component expansion, and wildcard-app
     // empty-set behavior stay consistent across all four fault routes.
+    // The defaults leave muted records out, as the entity's fault list does.
+    // That is deliberate: this route clears what the list shows, and a muted
+    // record is cleared by its own per-code DELETE, which resolves it.
     auto result = fault_mgr->list_faults("");
     if (!result.success) {
       return tl::make_unexpected(
@@ -1099,21 +1237,27 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
     auto entity_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
     json faults_to_clear = faults::filter_faults_by_sources(result.data["faults"], entity_fqns);
 
-    // Clear each matching fault. Use `skip_correlation_auto_clear=true` for
-    // the same reason as the single-fault DELETE: keep this entity's clear
-    // from cascading into correlated symptoms reported by other entities.
-    if (faults_to_clear.is_array()) {
-      for (const auto & fault : faults_to_clear) {
-        if (!fault.contains("fault_code")) {
-          continue;
-        }
-        std::string code = fault["fault_code"].get<std::string>();
-        auto clear_result = fault_mgr->clear_fault(code, /*skip_correlation_auto_clear=*/true);
-        if (!clear_result.success) {
-          MEDKIT_LOG_WARN(HandlerContext::logger(), "Failed to clear fault '%s' for entity '%s': %s", code.c_str(),
-                          entity_id.c_str(), clear_result.error_message.c_str());
-        }
+    // Each in-scope record with its own owner. The correlation cascade stays off,
+    // as on the per-code DELETE, so this clear cannot reach other entities.
+    std::set<std::string> failed_codes;
+    for (const auto & fault : faults_to_clear) {
+      if (!fault.contains("fault_code")) {
+        continue;
       }
+      const std::string code = fault["fault_code"].get<std::string>();
+      const std::string owner = faults::stored_owner(fault);
+      auto clear_result = fault_mgr->clear_fault(code, owner, /*skip_correlation_auto_clear=*/true);
+      if (!clear_result.success) {
+        MEDKIT_LOG_WARN(HandlerContext::logger(), "Failed to clear fault '%s' of source '%s' for entity '%s': %s",
+                        code.c_str(), owner.c_str(), entity_id.c_str(), clear_result.error_message.c_str());
+        failed_codes.insert(code);
+      }
+    }
+    if (!failed_codes.empty()) {
+      return tl::make_unexpected(
+          make_error(500, ERR_INTERNAL_ERROR, "Failed to clear " + std::to_string(failed_codes.size()) + " fault(s)",
+                     json{{entity_info.id_field, entity_id},
+                          {"failed_codes", std::vector<std::string>(failed_codes.begin(), failed_codes.end())}}));
     }
     return http::NoContent{};
   } catch (const std::exception & e) {
@@ -1149,42 +1293,39 @@ FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
                                             json{{"details", faults_result.error_message}}));
     }
 
-    // Build FQN-to-entity-ID map for lock checking
+    // Owned source -> owning entities, for lock checking: every app's source
+    // and every external component's bare id. A record belongs to an entity
+    // when its owner is that source or a path child of it, the rule the
+    // per-entity routes scope records by.
     auto * lock_mgr = ctx_.services().lock_manager();
-    std::unordered_map<std::string, std::string> fqn_to_entity;
+    std::unordered_map<std::string, std::set<std::string>> source_to_entities;
     if (lock_mgr) {
-      const auto & cache = ctx_.services().entity_cache();
-      for (const auto & app : cache.get_apps()) {
-        auto fqn = app.effective_fqn();
-        if (!fqn.empty()) {
-          fqn_to_entity[fqn] = app.id;
-        }
-      }
+      source_to_entities = build_source_entity_map(ctx_.services().entity_cache());
     }
 
     auto client_id = req.header("X-Client-Id").value_or(std::string{});
 
-    // Clear each fault, skipping those on locked entities
+    // Clear each RECORD, each with its owner, skipping records whose owning
+    // entity is locked by another client.
     if (faults_result.data.contains("faults") && faults_result.data["faults"].is_array()) {
       for (const auto & fault : faults_result.data["faults"]) {
         if (!fault.contains("fault_code")) {
           continue;
         }
 
-        // Check if any reporting source is on a locked entity
+        const std::string owner = faults::stored_owner(fault);
+        const std::string source = faults::record_owner(fault);
+        // Skipped when any entity whose scope holds the record's first source is
+        // locked by another client. check_access adds that entity's parent chain.
         bool blocked = false;
-        if (lock_mgr && fault.contains("reporting_sources")) {
-          for (const auto & src : fault["reporting_sources"]) {
-            auto src_str = src.get<std::string>();
-            auto it = fqn_to_entity.find(src_str);
-            if (it != fqn_to_entity.end()) {
-              auto access = lock_mgr->check_access(it->second, client_id, "faults");
-              if (!access.allowed) {
-                blocked = true;
-                break;
-              }
-            }
-          }
+        if (lock_mgr) {
+          const auto denied = [&](const std::string & entity_id) {
+            return !lock_mgr->check_access(entity_id, client_id, "faults").allowed;
+          };
+          blocked = std::any_of(source_to_entities.begin(), source_to_entities.end(), [&](const auto & entry) {
+            return faults::source_in_scope(source, entry.first) &&
+                   std::any_of(entry.second.begin(), entry.second.end(), denied);
+          });
         }
 
         if (blocked) {
@@ -1192,10 +1333,10 @@ FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
         }
 
         std::string code = fault["fault_code"].get<std::string>();
-        auto clear_result = fault_mgr->clear_fault(code);
+        auto clear_result = fault_mgr->clear_fault(code, owner);
         if (!clear_result.success) {
-          MEDKIT_LOG_WARN(HandlerContext::logger(), "Failed to clear fault '%s': %s", code.c_str(),
-                          clear_result.error_message.c_str());
+          MEDKIT_LOG_WARN(HandlerContext::logger(), "Failed to clear fault '%s' of source '%s': %s", code.c_str(),
+                          owner.c_str(), clear_result.error_message.c_str());
         }
       }
     }

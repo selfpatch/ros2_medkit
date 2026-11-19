@@ -49,6 +49,11 @@ nlohmann::json fault_record_to_json(const fd::FaultRecord & fault) {
   j["occurrence_count"] = fault.occurrence_count;
   j["status"] = fault.status;
   j["reporting_sources"] = fault.reporting_sources;
+  // The first reporting source. The per-record routes take it back as source_id,
+  // so a client addresses the record without reaching into the array.
+  if (!fault.reporting_sources.empty()) {
+    j["source_id"] = fault.reporting_sources.front();
+  }
 
   switch (fault.severity) {
     case fd::severity::kInfo:

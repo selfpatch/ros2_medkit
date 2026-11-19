@@ -65,29 +65,29 @@ void SovdServiceInterface::set_context(PluginContext & context) {
 
   list_entities_srv_ = node->create_service<ros2_medkit_msgs::srv::ListEntities>(
       service_prefix_ + "/list_entities",
-      [this](const std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Request> req,
-             std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Response> res) {
+      [this](const std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Request> & req,
+             const std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Response> & res) {
         handle_list_entities(req, res);
       });
 
   list_faults_srv_ = node->create_service<ros2_medkit_msgs::srv::ListFaultsForEntity>(
       service_prefix_ + "/list_entity_faults",
-      [this](const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> req,
-             std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> res) {
+      [this](const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & req,
+             const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> & res) {
         handle_list_entity_faults(req, res);
       });
 
   get_data_srv_ = node->create_service<ros2_medkit_msgs::srv::GetEntityData>(
       service_prefix_ + "/get_entity_data",
-      [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Request> req,
-             std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Response> res) {
+      [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Request> & req,
+             const std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Response> & res) {
         handle_get_entity_data(req, res);
       });
 
   get_capabilities_srv_ = node->create_service<ros2_medkit_msgs::srv::GetCapabilities>(
       service_prefix_ + "/get_capabilities",
-      [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Request> req,
-             std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Response> res) {
+      [this](const std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Request> & req,
+             const std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Response> & res) {
         handle_get_capabilities(req, res);
       });
 
@@ -110,8 +110,8 @@ void SovdServiceInterface::shutdown() {
 }
 
 void SovdServiceInterface::handle_list_entities(
-    const std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Request> request,
-    std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Response> response) {
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListEntities::Response> & response) {
   if (shutdown_requested_.load()) {
     response->success = false;
     response->error_message = "Plugin shutting down";
@@ -167,8 +167,8 @@ void SovdServiceInterface::handle_list_entities(
 }
 
 void SovdServiceInterface::handle_list_entity_faults(
-    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> request,
-    std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> response) {
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::ListFaultsForEntity::Response> & response) {
   if (shutdown_requested_.load()) {
     response->success = false;
     response->error_message = "Plugin shutting down";
@@ -218,6 +218,17 @@ void SovdServiceInterface::handle_list_entity_faults(
             }
           }
         }
+        // The fault manager's owner of the record. A peer gateway's HTTP item of
+        // one per_source record names it in x-medkit.records instead.
+        if (fault_json.contains("owner") && fault_json["owner"].is_string()) {
+          fault.owner = fault_json["owner"].get<std::string>();
+        } else if (const auto xm = fault_json.find("x-medkit"); xm != fault_json.end() && xm->is_object()) {
+          const auto records = xm->value("records", nlohmann::json::array());
+          if (records.is_array() && records.size() == 1 && records[0].is_object() && records[0].contains("source_id") &&
+              records[0]["source_id"].is_string()) {
+            fault.owner = records[0]["source_id"].get<std::string>();
+          }
+        }
         response->faults.push_back(std::move(fault));
       }
     }
@@ -231,8 +242,8 @@ void SovdServiceInterface::handle_list_entity_faults(
 }
 
 void SovdServiceInterface::handle_get_entity_data(
-    const std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Request> request,
-    std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Response> response) {
+    const std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::GetEntityData::Response> & response) {
   if (shutdown_requested_.load()) {
     response->success = false;
     response->error_message = "Plugin shutting down";
@@ -259,8 +270,8 @@ void SovdServiceInterface::handle_get_entity_data(
 }
 
 void SovdServiceInterface::handle_get_capabilities(
-    const std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Request> request,
-    std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Response> response) {
+    const std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Request> & request,
+    const std::shared_ptr<ros2_medkit_msgs::srv::GetCapabilities::Response> & response) {
   if (shutdown_requested_.load()) {
     response->success = false;
     response->error_message = "Plugin shutting down";

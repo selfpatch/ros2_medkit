@@ -104,7 +104,7 @@ class FreezeFrameCapture : public FreezeFrameSource {
   FreezeFrameCapture(FreezeFrameCapture &&) = delete;
   FreezeFrameCapture & operator=(FreezeFrameCapture &&) = delete;
 
-  std::vector<Frame> frames_for(const std::string & fault_code) const override;
+  std::vector<Frame> frames_for(const std::string & fault_code, const std::string & owner) const override;
 
   /// Parses a ListFaults reply body into standing faults. Nullopt when the body has no
   /// "faults" array. Items that lack a string "fault_code" or an array "reporting_sources"
@@ -129,8 +129,8 @@ class FreezeFrameCapture : public FreezeFrameSource {
 
   /// Guards frames_, insertion_order_ and fallback_logged_.
   mutable std::mutex mutex_;
-  /// Keyed by fault code only: cross-entity isolation rests on the fault manager keeping
-  /// reporting_sources append-only for a code and on `get_fault` gating by source scope.
+  /// Keyed by the record the frames belong to, `(fault_code, owner)`, rendered as
+  /// `fault_code + '\0' + owner`, which no id can contain.
   std::unordered_map<std::string, std::vector<Frame>> frames_;
   std::deque<std::string> insertion_order_;          ///< eviction order (FIFO)
   std::unordered_set<std::string> fallback_logged_;  ///< fault codes already warned about (bounded)

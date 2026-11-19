@@ -21,12 +21,18 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstddef>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -35,6 +41,7 @@
 #include "ros2_medkit_gateway/core/managers/log_manager.hpp"
 #include "ros2_medkit_gateway/core/providers/log_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/log_provider_registry.hpp"
+#include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 #include "ros2_medkit_gateway/core/transports/log_source.hpp"
 
 namespace ros2_medkit_gateway {
@@ -487,6 +494,158 @@ TEST(LogManagerRouting, NullLogSinkIsSafe) {
   EXPECT_NE(err.find("LogProvider plugin error"), std::string::npos);
 
   ASSERT_TRUE(source->emit(make_entry("my_node", /*level=*/20, "hi")));
+}
+
+// ============================================================
+// Trigger notifications
+// ============================================================
+
+/// Records (entity_id, logger name) of every "logs" change, in delivery order.
+class LogChangeRecorder {
+ public:
+  using Change = std::pair<std::string, std::string>;
+
+  explicit LogChangeRecorder(ResourceChangeNotifier & notifier) {
+    notifier.subscribe(NotifierFilter{"logs", "", ""}, [this](const ResourceChange & change) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      changes_.emplace_back(change.entity_id, change.value["context"].value("node", ""));
+      cv_.notify_all();
+    });
+  }
+
+  /// Wait until `logger` was recorded `count` times; return everything
+  /// recorded so far.
+  std::vector<Change> wait_for(const std::string & logger, std::ptrdiff_t count = 1) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait_for(lock, std::chrono::seconds(5), [&] {
+      return std::count_if(changes_.begin(), changes_.end(), [&](const Change & c) {
+               return c.second == logger;
+             }) >= count;
+    });
+    return changes_;
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::vector<Change> changes_;
+};
+
+TEST(LogManagerRouting, ChangeCarriesTheOwnerAndTheLoggerName) {
+  ResourceChangeNotifier notifier;
+  LogChangeRecorder recorder(notifier);
+  auto source = std::make_shared<MockLogSource>();
+  LogManager manager(source, /*plugin_mgr=*/nullptr, /*max_buffer_size=*/10);
+  manager.set_logger_owner_fn([](const std::string & logger) {
+    return logger == "powertrain.engine.temp_sensor" ? std::string("engine-temp") : std::string();
+  });
+  manager.set_notifier(&notifier);
+
+  ASSERT_TRUE(source->emit(make_entry("powertrain.engine.temp_sensor", /*level=*/20, "owned")));
+  ASSERT_TRUE(source->emit(make_entry("powertrain/engine", /*level=*/20, "unowned")));
+  manager.add_log_entry("powertrain.engine.temp_sensor", "warning", "programmatic", json::object());
+
+  auto seen = recorder.wait_for("powertrain.engine.temp_sensor", 2);
+  EXPECT_EQ(seen, (std::vector<LogChangeRecorder::Change>{{"engine-temp", "powertrain.engine.temp_sensor"},
+                                                          {"", "powertrain/engine"},
+                                                          {"engine-temp", "powertrain.engine.temp_sensor"}}));
+  notifier.shutdown();
+}
+
+TEST(LogManagerRouting, ChangeNamesNoEntityWithoutAnOwnerFunction) {
+  ResourceChangeNotifier notifier;
+  LogChangeRecorder recorder(notifier);
+  auto source = std::make_shared<MockLogSource>();
+  LogManager manager(source, /*plugin_mgr=*/nullptr, /*max_buffer_size=*/10);
+  manager.set_notifier(&notifier);
+
+  ASSERT_TRUE(source->emit(make_entry("temp_sensor", /*level=*/20, "root")));
+
+  auto seen = recorder.wait_for("temp_sensor");
+  EXPECT_EQ(seen, (std::vector<LogChangeRecorder::Change>{{"", "temp_sensor"}}));
+  notifier.shutdown();
+}
+
+TEST(LogManagerRouting, EntryLevelIsExactForLevelsWithoutASeverityName) {
+  ResourceChangeNotifier notifier;
+  std::mutex mutex;
+  std::vector<json> values;
+  notifier.subscribe(NotifierFilter{"logs", "", ""}, [&](const ResourceChange & change) {
+    std::lock_guard<std::mutex> lock(mutex);
+    values.push_back(change.value);
+  });
+  auto source = std::make_shared<MockLogSource>();
+  LogManager manager(source, /*plugin_mgr=*/nullptr, /*max_buffer_size=*/10);
+  manager.set_notifier(&notifier);
+
+  const std::vector<uint8_t> levels = {25, 0, 99, 9, 20, 50, 255};
+  for (auto level : levels) {
+    ASSERT_TRUE(source->emit(make_entry("node", level, "level " + std::to_string(level))));
+  }
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (std::chrono::steady_clock::now() < deadline) {
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (values.size() == levels.size()) {
+        break;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  notifier.shutdown();
+  ASSERT_EQ(values.size(), levels.size());
+  for (std::size_t i = 0; i < levels.size(); ++i) {
+    EXPECT_EQ(manager.entry_level(values[i]), levels[i]) << values[i].dump();
+  }
+}
+
+TEST(LogManagerRouting, EntryLevelFallsBackToTheSeverityNamePastWhatTheNotifierHolds) {
+  ResourceChangeNotifier notifier;
+  notifier.set_max_queue_size(5);
+  ASSERT_EQ(notifier.max_in_flight(), 10u);
+  auto source = std::make_shared<MockLogSource>();
+  LogManager manager(source, /*plugin_mgr=*/nullptr, /*max_buffer_size=*/10);
+  manager.set_notifier(&notifier);
+
+  for (std::size_t i = 0; i <= notifier.max_in_flight(); ++i) {
+    ASSERT_TRUE(source->emit(make_entry("node", /*level=*/25, "unnamed")));
+  }
+  notifier.shutdown();
+  // Ids start at 1: the first entry is past what the notifier holds, the second is not.
+  EXPECT_EQ(manager.entry_level(json{{"id", "log_1"}, {"severity", "debug"}}), 10);
+  EXPECT_EQ(manager.entry_level(json{{"id", "log_2"}, {"severity", "debug"}}), 25);
+  // Not an entry id: the severity name decides.
+  EXPECT_EQ(manager.entry_level(json{{"id", "log_2x"}, {"severity", "error"}}), 40);
+  EXPECT_EQ(manager.entry_level(json{{"severity", "fatal"}}), 50);
+  EXPECT_EQ(manager.entry_level(json(7)), 0);
+}
+
+TEST(LogManagerRouting, EntryDroppedByTheCapEmitsNoChange) {
+  ResourceChangeNotifier notifier;
+  LogChangeRecorder recorder(notifier);
+  auto source = std::make_shared<MockLogSource>();
+  // Cap = 1 x 10 distinct logger names.
+  LogManager manager(source, /*plugin_mgr=*/nullptr, /*max_buffer_size=*/1);
+  manager.set_notifier(&notifier);
+
+  for (int i = 0; i < 10; ++i) {
+    ASSERT_TRUE(source->emit(make_entry("node_" + std::to_string(i), /*level=*/20, "in-cap")));
+  }
+  ASSERT_TRUE(source->emit(make_entry("over_cap_node", /*level=*/20, "dropped")));
+  ASSERT_TRUE(source->emit(make_entry("node_0", /*level=*/20, "kept")));
+  ASSERT_EQ(manager.dropped_entries_count(), 1u);
+
+  // The worker delivers in order, so node_0's second change comes after
+  // anything the dropped entry could have emitted.
+  auto seen = recorder.wait_for("node_0", 2);
+  auto count = [&](const std::string & logger) {
+    return std::count_if(seen.begin(), seen.end(), [&](const LogChangeRecorder::Change & c) {
+      return c.second == logger;
+    });
+  };
+  EXPECT_EQ(count("node_0"), 2);
+  EXPECT_EQ(count("over_cap_node"), 0);
+  notifier.shutdown();
 }
 
 }  // namespace ros2_medkit_gateway

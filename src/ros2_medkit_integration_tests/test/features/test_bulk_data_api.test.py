@@ -26,27 +26,49 @@ are in scenario tests, not here.
 import atexit
 import os
 import shutil
+import signal
 import tempfile
+import time
 import unittest
 
 import launch_testing
 import launch_testing.actions
+import rclpy
+from rclpy.node import Node
 import requests
+from ros2_medkit_msgs.msg import Fault
+from ros2_medkit_msgs.srv import ReportFault
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, get_time_scale, ROSBAG_TIMEOUT
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
 
 # The fault manager writes bag directories here, so a test can reach the files of a recording.
 ROSBAG_DIR = tempfile.mkdtemp(prefix='medkit_bulk_data_rosbags_')
 atexit.register(shutil.rmtree, ROSBAG_DIR, True)
+CONFIG_DIR = tempfile.mkdtemp(prefix='medkit_bulk_data_config_')
+atexit.register(shutil.rmtree, CONFIG_DIR, True)
+THRESHOLDS_PATH = os.path.join(CONFIG_DIR, 'fault_thresholds.yaml')
+
+LIDAR_FQN = '/perception/lidar/lidar_sensor'
+REPORTER_NODE = 'bulk_data_reporter'
+# Reported from two sources and read back as two records, so one record per source.
+PER_SOURCE_CODES = ('BULK_TWICE',)
 
 
 def generate_test_description():
+    with open(THRESHOLDS_PATH, 'w') as f:
+        for code in PER_SOURCE_CODES:
+            f.write(f'{code}:\n  per_source: true\n')
     return create_test_launch(
         demo_nodes=['lidar_sensor'],
         fault_manager=True,
-        fault_manager_params={'snapshots.rosbag.storage_path': ROSBAG_DIR},
+        # The stalled fault manager case waits this long on every call it makes.
+        gateway_params={'fault_manager.service_timeout_sec': 1.0 * get_time_scale()},
+        fault_manager_params={
+            'snapshots.rosbag.storage_path': ROSBAG_DIR,
+            'fault_thresholds.config_file': THRESHOLDS_PATH,
+        },
         lidar_faulty=True,
     )
 
@@ -56,6 +78,59 @@ class TestBulkDataApi(GatewayTestCase):
 
     MIN_EXPECTED_APPS = 1
     REQUIRED_APPS = {'lidar_sensor'}
+
+    @classmethod
+    def setUpClass(cls):
+        rclpy.init()
+        # Runtime discovery makes this node an app, so it owns records that the
+        # host component lists and lidar_sensor does not.
+        cls._reporter = Node(REPORTER_NODE)
+        cls._report_client = cls._reporter.create_client(
+            ReportFault, '/fault_manager/report_fault')
+        super().setUpClass()
+        assert cls._report_client.wait_for_service(timeout_sec=15.0), \
+            'report_fault service not available'
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._reporter.destroy_node()
+        rclpy.shutdown()
+
+    def _report(self, fault_code, source):
+        """Report one FAILED event; resend while the reply is lost.
+
+        A reply can be lost while the fault manager is still matching this
+        client, even though the request arrived; resending is harmless.
+        """
+        req = ReportFault.Request()
+        req.fault_code = fault_code
+        req.event_type = ReportFault.Request.EVENT_FAILED
+        req.severity = Fault.SEVERITY_ERROR
+        req.description = 'bulk-data scope test fault'
+        req.source_id = source
+        for _ in range(6):
+            future = self._report_client.call_async(req)
+            deadline = time.monotonic() + 5.0
+            while not future.done() and time.monotonic() < deadline:
+                rclpy.spin_once(self._reporter, timeout_sec=0.1)
+            if future.done():
+                self.assertTrue(future.result().accepted)
+                return
+        self.fail(f'report_fault {fault_code} never answered')
+
+    def _bag_fault_codes(self, endpoint, wanted):
+        """Fault codes on the rosbag descriptors of ``endpoint`` once ``wanted`` are all listed."""
+        deadline = time.monotonic() + ROSBAG_TIMEOUT
+        codes = set()
+        while time.monotonic() < deadline:
+            data = self.get_json(endpoint)
+            codes = {code for item in data.get('items', [])
+                     for code in item.get('x-medkit', {}).get('fault_codes', [])}
+            if wanted <= codes:
+                return codes
+            time.sleep(0.5)
+        self.fail(f'{endpoint} never listed bags of {sorted(wanted - codes)}; '
+                  f'listed {sorted(codes)}')
 
     def test_bulk_data_list_categories_success(self):
         """GET /apps/{app}/bulk-data returns categories.
@@ -393,6 +468,135 @@ class TestBulkDataApi(GatewayTestCase):
         data = response.json()
         self.assertIn('items', data)
         self.assertIsInstance(data['items'], list)
+
+    def test_bulk_data_rosbag_list_follows_fault_scope(self):
+        """An entity lists the bag of a record when the record's owner is in its scope.
+
+        ``BULK_SUBPATH`` and ``BULK_SUBPATH2`` are owned by path children of the
+        lidar node FQN, one and two levels down, which the lidar app owns.
+        ``BULK_FOREIGN`` is owned by another app, so it belongs to the host
+        component and not to the lidar app. Each listing must agree with the
+        download of the same entity, which applies that rule.
+
+        @verifies REQ_INTEROP_072
+        """
+        self.poll_endpoint(f'/apps/{REPORTER_NODE}', timeout=30.0)
+        comp_id = next(
+            (c['id'] for c in self.get_json('/components').get('items', [])
+             if any(h.get('id') == 'lidar_sensor'
+                    for h in self.get_json(f"/components/{c['id']}/hosts").get('items', []))),
+            None)
+        self.assertIsNotNone(comp_id, 'No component hosts lidar_sensor')
+
+        self._report('BULK_SUBPATH', f'{LIDAR_FQN}/diag')
+        self._report('BULK_SUBPATH2', f'{LIDAR_FQN}/diag/deep')
+        self._report('BULK_FOREIGN', f'/{REPORTER_NODE}')
+
+        owned = {'BULK_SUBPATH', 'BULK_SUBPATH2'}
+        component_bags = f'/components/{comp_id}/bulk-data/rosbags'
+        self._bag_fault_codes(component_bags, owned | {'BULK_FOREIGN'})
+        app_codes = self._bag_fault_codes('/apps/lidar_sensor/bulk-data/rosbags', owned)
+        self.assertNotIn(
+            'BULK_FOREIGN', app_codes,
+            'lidar_sensor lists the bag of a record it does not own')
+
+        # The listings agree with the downloads (fault code resolves to the
+        # record's newest recording).
+        downloads = {
+            '/apps/lidar_sensor/bulk-data/rosbags/BULK_SUBPATH': 200,
+            '/apps/lidar_sensor/bulk-data/rosbags/BULK_SUBPATH2': 200,
+            '/apps/lidar_sensor/bulk-data/rosbags/BULK_FOREIGN': 404,
+            f'{component_bags}/BULK_SUBPATH': 200,
+            f'{component_bags}/BULK_SUBPATH2': 200,
+            f'{component_bags}/BULK_FOREIGN': 200,
+        }
+        for endpoint, status in downloads.items():
+            with self.subTest(endpoint=endpoint):
+                response = requests.get(f'{self.BASE_URL}{endpoint}', timeout=10)
+                self.assertEqual(response.status_code, status, response.text[:200])
+
+    def test_bulk_data_code_url_names_no_record_when_two_owners_sit_below_one_app(self):
+        """Two path children of one node own records of one code: the code URL answers 409.
+
+        The recording-id form from the listing still reaches the recording.
+
+        @verifies REQ_INTEROP_073
+        """
+        owners = [f'{LIDAR_FQN}/diag', f'{LIDAR_FQN}/diag/deep']
+        for owner in owners:
+            self._report('BULK_TWICE', owner)
+        endpoint = '/apps/lidar_sensor/bulk-data/rosbags'
+        self._bag_fault_codes(endpoint, {'BULK_TWICE'})
+
+        response = requests.get(f'{self.BASE_URL}{endpoint}/BULK_TWICE', timeout=10)
+        self.assertEqual(response.status_code, 409, response.text[:300])
+        body = response.json()
+        self.assertEqual(body.get('vendor_code', body.get('error_code')),
+                         'x-medkit-ambiguous-fault', body)
+        self.assertEqual(sorted(body.get('parameters', body).get('owners', [])), owners, body)
+
+        ids = [item['id'] for item in self.get_json(endpoint).get('items', [])
+               if 'BULK_TWICE' in item.get('x-medkit', {}).get('fault_codes', [])]
+        self.assertTrue(ids, 'no descriptor carries BULK_TWICE')
+        for recording_id in ids:
+            with self.subTest(recording_id=recording_id):
+                download = requests.get(f'{self.BASE_URL}{endpoint}/{recording_id}', timeout=30)
+                self.assertEqual(download.status_code, 200, download.text[:200])
+
+    def test_rosbag_routes_declare_their_503(self):
+        """The listing and download routes answer 503 when the fault manager is silent, and say so.
+
+        @verifies REQ_INTEROP_072
+        """
+        spec = self.poll_endpoint_until('/docs', lambda d: d if 'openapi' in d else None)
+
+        routes = {
+            path: item['get'] for path, item in spec['paths'].items()
+            if path.endswith(('/bulk-data/{category_id}', '/bulk-data/{category_id}/{file_id}'))
+            and 'get' in item
+        }
+        # A list and a download per entity type that serves bulk data, so the
+        # loop below cannot pass by matching nothing.
+        self.assertEqual(len(routes), 12, sorted(routes))
+        for path, operation in sorted(routes.items()):
+            self.assertIn('503', operation['responses'],
+                          f'GET {path} answers 503 when the fault manager fails')
+
+    def test_zz_rosbag_routes_answer_503_while_the_fault_manager_is_stalled(
+            self, proc_info, fault_manager_node):
+        """The rosbag listing and download report an unanswering fault manager.
+
+        SIGSTOP keeps the fault manager's services on the graph while they
+        never answer. A 200 with no items would tell the client there are no
+        recordings, and a 404 that the recording does not exist. Named to run
+        last; the process resumes on every exit path.
+
+        @verifies REQ_INTEROP_072
+        @verifies REQ_INTEROP_073
+        """
+        self._report('BULK_STALL', f'{LIDAR_FQN}/diag')
+        listing = '/apps/lidar_sensor/bulk-data/rosbags'
+        self._bag_fault_codes(listing, {'BULK_STALL'})
+        recording_id = next(
+            item['id'] for item in self.get_json(listing).get('items', [])
+            if 'BULK_STALL' in item.get('x-medkit', {}).get('fault_codes', []))
+        download = f'{self.BASE_URL}{listing}/{recording_id}'
+        self.assertEqual(requests.get(download, timeout=30).status_code, 200)
+
+        pid = proc_info[fault_manager_node].pid
+        self.addCleanup(os.kill, pid, signal.SIGCONT)
+        os.kill(pid, signal.SIGSTOP)
+        try:
+            listed = requests.get(f'{self.BASE_URL}{listing}', timeout=60)
+            downloaded = requests.get(download, timeout=60)
+        finally:
+            os.kill(pid, signal.SIGCONT)
+
+        self.assertEqual(listed.status_code, 503, listed.text[:300])
+        self.assertEqual(downloaded.status_code, 503, downloaded.text[:300])
+        # Both routes recover once the fault manager answers again.
+        self.poll_endpoint(listing, timeout=30.0)
+        self.assertEqual(requests.get(download, timeout=30).status_code, 200)
 
 
 @launch_testing.post_shutdown_test()

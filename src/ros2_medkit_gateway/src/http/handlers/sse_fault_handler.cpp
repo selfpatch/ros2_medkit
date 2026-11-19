@@ -146,12 +146,16 @@ std::optional<uint64_t> SSEFaultHandler::delivered_watermark_locked() const {
 }
 
 std::deque<SSEFaultHandler::QueuedEvent>::iterator SSEFaultHandler::find_superseded_locked(bool updates_only) {
-  // Keyed on the peer as well as the code: a fault code is unique on the
-  // gateway that raised it and nowhere else, so two peers reporting the same
-  // code are reporting two faults, and treating one as the newer state of the
-  // other would delete a live fault from a client's view.
+  // Keyed on the record, not the code: a record is (fault_code, owner), so two
+  // sources reporting one per_source code are two faults, and one owner's newer event says
+  // nothing about the other owner's record. Keyed on the peer as well: a fault
+  // is unique on the gateway that raised it and nowhere else, so two peers
+  // reporting the same record are reporting two faults. Treating either as the
+  // newer state of the other would delete a live fault from a client's view.
   auto supersede_key = [](const QueuedEvent & queued) {
-    return queued.peer + '\0' + queued.event.fault.fault_code;
+    const auto & sources = queued.event.fault.reporting_sources;
+    const std::string owner = sources.empty() ? std::string{} : sources.front();
+    return queued.peer + '\0' + queued.event.fault.fault_code + '\0' + owner;
   };
   std::unordered_map<std::string, std::size_t> newest_index;
   for (std::size_t i = 0; i < event_queue_.size(); ++i) {
@@ -212,8 +216,8 @@ SSEFaultHandler::EvictionStats SSEFaultHandler::evict_to_capacity_locked() {
       ++stats.coalesced;
       continue;
     }
-    // Something a live client is owed has to go. Prefer an entry a newer
-    // same-code event supersedes: the current state still reaches the client
+    // Something a live client is owed has to go. Prefer an entry a newer event
+    // of the same record supersedes: the current state still reaches the client
     // even though the transition history does not. Either way it is a real,
     // counted loss.
     auto victim = find_superseded_locked(/*updates_only=*/false);
@@ -695,66 +699,34 @@ std::string SSEFaultHandler::format_sse_event(const QueuedEvent & queued) {
 
 std::optional<SSEFaultHandler::EntityContext>
 SSEFaultHandler::resolve_entity_context(const fd::FaultRecord & fault) const {
-  if (fault.reporting_sources.empty()) {
+  // The first reporting source stands for the record: its owner, or for a
+  // record that several sources share, one of them.
+  if (fault.reporting_sources.empty() || fault.reporting_sources.front().empty()) {
     return std::nullopt;
   }
-  // reporting_sources is a set; debounced faults can carry several co-reporters
-  // (e.g. node_a and node_b raising the same fault_code). .front() picks the
-  // lexicographically-first FQN, not a defined owner - any co-reporter's
-  // rosbag is fetchable, so this remains a valid hint, just not authoritative.
-  const auto & raw_fqn = fault.reporting_sources.front();
-  if (raw_fqn.empty()) {
-    return std::nullopt;
-  }
-
+  const auto & owner = fault.reporting_sources.front();
   const auto & cache = ctx_.services().entity_cache();
 
-  // Manifest / hybrid mode: the linking step populated node_to_app with the
-  // ROS FQN -> manifest app id mapping. Try both FQN forms (with and without
-  // the leading '/'), mirroring gateway_node's node_resolver lambda.
-  std::string entity_id = cache.resolve_node_to_app(raw_fqn);
-  if (entity_id.empty() && raw_fqn.front() == '/') {
-    entity_id = cache.resolve_node_to_app(raw_fqn.substr(1));
+  // The documented use of x-medkit is the rosbag address under the named
+  // entity, whose download is authorized by the fault scope rule. So the named
+  // app is the one whose scope holds the owner, never a namesake of a segment.
+  auto entity_id = app_sources_.find_owner(cache, owner);
+  if (!entity_id.empty()) {
+    return EntityContext{"apps", std::move(entity_id)};
   }
 
-  // Runtime fallback: synthetic apps are created with id = ROS node name
-  // (the FQN's last segment) when there is no namespace collision, or
-  // ``<ns_prefix>_<name>`` (slashes in the namespace replaced with '_') when
-  // multiple nodes share the same name. See ros2_runtime_introspection.cpp.
-  // Only accept a candidate that actually exists as an App in the cache so
-  // we never point consumers at a 404.
-  if (entity_id.empty()) {
-    auto last_slash = raw_fqn.rfind('/');
-    auto name = (last_slash != std::string::npos) ? raw_fqn.substr(last_slash + 1) : raw_fqn;
-    if (!name.empty() && cache.has_app(name)) {
-      entity_id = std::move(name);
-    } else if (last_slash != std::string::npos && last_slash > 0) {
-      // Try the collision-disambiguated form: ns prefix (sans leading '/'),
-      // slashes replaced with '_', then '_' + name.
-      auto ns_prefix = raw_fqn.substr(1, last_slash - 1);
-      std::replace(ns_prefix.begin(), ns_prefix.end(), '/', '_');
-      auto namespaced = ns_prefix + "_" + name;
-      if (cache.has_app(namespaced)) {
-        entity_id = std::move(namespaced);
-      }
-    }
+  // A protocol bridge raises its faults under an external component's bare id
+  // or a path below it. Entity ids hold no '/', so the first segment is the
+  // only candidate. A runtime host component claims no bare id.
+  const auto head = owner.substr(0, owner.find('/'));
+  if (auto component = cache.get_component(head); component && component->external.value_or(false)) {
+    return EntityContext{"components", head};
   }
 
-  if (entity_id.empty()) {
-    MEDKIT_LOG_DEBUG(HandlerContext::logger(),
-                     "SSE fault event: no entity match for reporting source '%s' (fault_code='%s'); "
-                     "omitting x-medkit extension",
-                     raw_fqn.c_str(), fault.fault_code.c_str());
-    return std::nullopt;
-  }
-
-  // entity_type is hardcoded "apps" because apps are the leaf reporters in
-  // SOVD - reporting_sources always carries ROS node FQNs which map to apps.
-  // Components own faults transitively via their hosted apps; consumers can
-  // walk up the hierarchy via /apps/<id> -> belongs_to if they need the
-  // owning component. Manifest-only components without a bound node have no
-  // FQN match here and fall back to plain discovery - by design.
-  return EntityContext{"apps", std::move(entity_id)};
+  MEDKIT_LOG_DEBUG(HandlerContext::logger(),
+                   "SSE fault event: no entity owns '%s' (fault_code='%s'); omitting x-medkit extension", owner.c_str(),
+                   fault.fault_code.c_str());
+  return std::nullopt;
 }
 
 }  // namespace handlers

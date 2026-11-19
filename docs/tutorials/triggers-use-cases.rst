@@ -77,8 +77,9 @@ Step 1: Create the update status trigger
 Step 2: Create the failure alert trigger with log_settings
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The ``log_settings`` field configures temporary log capture when the trigger
-fires, useful for recording context around a failure event.
+The ``log_settings`` field writes a marker entry to the log each time the
+trigger fires, useful for recording context around a failure event. The marker
+fires no ``logs`` trigger.
 
 .. code-block:: bash
 

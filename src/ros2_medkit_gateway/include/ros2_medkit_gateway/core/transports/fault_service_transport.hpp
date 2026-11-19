@@ -43,20 +43,30 @@ class FaultServiceTransport {
                                   bool include_cleared, bool include_healed, bool include_muted,
                                   bool include_clusters) = 0;
 
+  /// One fault record with its environment data. `source_id` names the source
+  /// that owns the record and is sent in the request, so the fault manager
+  /// resolves the record rather than the gateway filtering an arbitrary one.
   virtual FaultWithEnvJsonResult get_fault_with_env(const std::string & fault_code, const std::string & source_id) = 0;
 
   virtual FaultResult get_fault(const std::string & fault_code, const std::string & source_id) = 0;
 
-  /// Clear a fault by its fault_code.
+  /// Clear one fault record, addressed by `fault_code` and the `source_id` of
+  /// the source that owns it. An empty `source_id` is unscoped and the fault
+  /// manager refuses it when several records carry the code.
   /// `skip_correlation_auto_clear`, when true, asks the fault manager to NOT
   /// cascade-clear correlated symptom fault codes. Per-entity DELETE routes
   /// set this to true so the clear cannot reach faults reported by apps
   /// outside the addressed entity via the correlation graph.
-  virtual FaultResult clear_fault(const std::string & fault_code, bool skip_correlation_auto_clear = false) = 0;
+  virtual FaultResult clear_fault(const std::string & fault_code, const std::string & source_id,
+                                  bool skip_correlation_auto_clear = false) = 0;
 
-  virtual FaultResult get_snapshots(const std::string & fault_code, const std::string & topic) = 0;
+  virtual FaultResult get_snapshots(const std::string & fault_code, const std::string & source_id,
+                                    const std::string & topic) = 0;
 
-  virtual FaultResult get_rosbag(const std::string & fault_code) = 0;
+  /// Rosbag info for one recording, or for one fault record when `id` is a
+  /// fault code. `source_id` names the record's owner and scopes the fault-code
+  /// lookup only. The recording-id path ignores it.
+  virtual FaultResult get_rosbag(const std::string & id, const std::string & source_id) = 0;
 
   virtual FaultResult list_rosbags(const std::string & entity_fqn) = 0;
 

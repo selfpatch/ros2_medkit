@@ -21,7 +21,8 @@
 namespace ros2_medkit_gateway {
 
 /// Fault JSON object served by /faults and the fault stream. Times are seconds
-/// as doubles; ``last_passed`` is present only when set.
+/// as doubles; ``last_passed`` is present only when set. ``source_id`` is the first
+/// reporting source, the value the per-record routes take.
 nlohmann::json fault_record_to_json(const ros2_medkit::fault_detection::FaultRecord & fault);
 
 }  // namespace ros2_medkit_gateway

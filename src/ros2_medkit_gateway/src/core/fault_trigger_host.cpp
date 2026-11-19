@@ -82,10 +82,10 @@ FaultTriggerHost::FaultTriggerHost(const FaultTriggerHostConfig & config, int po
   FaultManager * faults = wiring.faults;
   const ThreadSafeEntityCache * cache = wiring.cache;
 
-  // Same in-process x-plc-data route the freeze-frame capture uses, so a rule sees exactly the value the /data
-  // endpoint would serve.
+  // The owning plugin's DataProvider first, its vendor route only as a fallback: the content the /data endpoint would
+  // serve. A route-first read never sees an app whose plugin serves /data through a provider alone.
   auto fetcher = [plugins](const std::string & app_id, const std::string & data_name) -> std::optional<double> {
-    const auto content = plugins->fetch_entity_data_via_route(app_id);
+    const auto content = plugins->fetch_entity_data_content(app_id);
     // A down link serves frozen last-known values. Returning nullopt holds the rule state instead of firing on a stale
     // number for the whole outage.
     if (!content || !FreezeFrameSource::content_has_live_data(*content) ||
@@ -106,17 +106,18 @@ FaultTriggerHost::FaultTriggerHost(const FaultTriggerHostConfig & config, int po
     }
   };
 
-  // A rule's auto-clear is local to the rule: skip the correlation cascade, so clearing one rule's fault never wipes
-  // correlated faults owned by anything else. fault_code is unique across rules, so the app scope is in the code.
-  auto clear = [faults](const std::string & /*app_id*/, const std::string & fault_code) {
+  // The clear names the owner the report used (app_id), so it never reaches another source's record of the code. A
+  // rule's auto-clear is local to the rule: skip the correlation cascade, so clearing one rule's fault never wipes
+  // correlated faults owned by anything else.
+  auto clear = [faults](const std::string & app_id, const std::string & fault_code) {
     if (faults) {
-      faults->clear_fault(fault_code, /*skip_correlation_auto_clear=*/true);
+      faults->clear_fault(fault_code, app_id, /*skip_correlation_auto_clear=*/true);
     }
   };
 
-  // Same route as the fetcher: "exists" means exactly "the fetcher could ever read it".
+  // Same source as the fetcher, in the same order: "exists" means exactly "the fetcher could ever read it".
   auto data_point_names = [plugins](const std::string & app_id) -> std::optional<std::vector<std::string>> {
-    const auto content = plugins->fetch_entity_data_via_route(app_id);
+    const auto content = plugins->fetch_entity_data_content(app_id);
     if (!content || !FreezeFrameSource::content_has_live_data(*content)) {
       return std::nullopt;
     }

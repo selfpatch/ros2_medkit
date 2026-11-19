@@ -42,6 +42,7 @@ fd::FaultRecord from_msg(const ros2_medkit_msgs::msg::Fault & msg) {
   record.occurrence_count = msg.occurrence_count;
   record.status = msg.status;
   record.reporting_sources = msg.reporting_sources;
+  record.owner = msg.owner;
   return record;
 }
 
@@ -55,7 +56,13 @@ fd::FaultEventRecord from_msg(const ros2_medkit_msgs::msg::FaultEvent & msg) {
 }
 
 nlohmann::json fault_to_json(const ros2_medkit_msgs::msg::Fault & fault) {
-  return fault_record_to_json(from_msg(fault));
+  auto j = fault_record_to_json(from_msg(fault));
+  // Internal to the gateway: the per-record calls address the record with it,
+  // and the HTTP items drop it (faults::record_item).
+  if (!fault.owner.empty()) {
+    j["owner"] = fault.owner;
+  }
+  return j;
 }
 
 nlohmann::json environment_data_to_json(const ros2_medkit_msgs::msg::EnvironmentData & env_data) {
