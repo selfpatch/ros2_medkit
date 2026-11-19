@@ -82,6 +82,12 @@ def generate_launch_description():
         'server_host', default_value='127.0.0.1',
         description='Host to bind REST server (127.0.0.1 or 0.0.0.0)')
 
+    declare_allow_remote_arg = DeclareLaunchArgument(
+        'allow_unauthenticated_remote', default_value='false',
+        description='Let the gateway bind a non-loopback host with authentication off. '
+                    'Without it such a gateway refuses to start. Sets '
+                    'server.allow_unauthenticated_remote.')
+
     declare_port_arg = DeclareLaunchArgument(
         'server_port', default_value='8080',
         description='Port for REST API')
@@ -117,6 +123,10 @@ def generate_launch_description():
         if graph_provider_path:
             param_overrides['plugins'] = ['graph_provider']
             param_overrides['plugins.graph_provider.path'] = graph_provider_path
+        # Only a `true` is passed on: a `false` default must not override a config_file.
+        allow_remote = LaunchConfiguration('allow_unauthenticated_remote').perform(context)
+        if allow_remote.strip().lower() == 'true':
+            param_overrides['server.allow_unauthenticated_remote'] = True
         param_overrides.update(cors_override(
             LaunchConfiguration('cors_allowed_origins').perform(context),
             LaunchConfiguration('config_file').perform(context), default_config))
@@ -131,6 +141,7 @@ def generate_launch_description():
     return LaunchDescription([
         declare_override_config_arg,
         declare_host_arg,
+        declare_allow_remote_arg,
         declare_port_arg,
         declare_refresh_arg,
         declare_cors_arg,

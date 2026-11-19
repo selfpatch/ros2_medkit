@@ -203,8 +203,8 @@ The gateway shares the host network, so it joins the robot's DDS graph and its
 default bind ``127.0.0.1:8080`` is the host's loopback. Open
 ``http://localhost:3000``: that origin is allowed by default, while
 ``http://127.0.0.1:3000`` is not. On a bridge network instead, run
-``bringup.launch.py server_host:=0.0.0.0`` and publish ``8080`` (see
-:doc:`/troubleshooting`).
+``bringup.launch.py server_host:=0.0.0.0 allow_unauthenticated_remote:=true``
+(or set ``MEDKIT_JWT_SECRET``) and publish ``8080`` (see :doc:`/troubleshooting`).
 
 Docker Image Tags
 -----------------

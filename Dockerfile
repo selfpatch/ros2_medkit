@@ -17,7 +17,9 @@
 # for downstream plugin integration (mount .so + config).
 #
 # Build:  docker build -t ros2_medkit .
-# Run:    docker run -p 8080:8080 ros2_medkit
+# Run:    docker run -p 8080:8080 -e MEDKIT_AUTH_DISABLED=1 ros2_medkit
+#         (the image binds 0.0.0.0; without authentication that needs the opt-out,
+#         or set MEDKIT_JWT_SECRET and MEDKIT_CLIENTS instead)
 # Config: docker run -v ./my_params.yaml:/etc/ros2_medkit/params.yaml ros2_medkit
 
 # ============================================================================

@@ -67,11 +67,27 @@ Possible causes:
 2. **Wrong port** - Default is 8080 (HTTP) or 8443 (HTTPS)
 3. **Localhost binding** - Gateway binds to 127.0.0.1 by default
 
-For network access, set host to 0.0.0.0:
+For network access, set host to 0.0.0.0. Without authentication the gateway
+refuses to start on a non-loopback host (see :ref:`protected-mode`), so turn
+authentication on or opt out:
 
 .. code-block:: bash
 
-   ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0
+   # authentication on
+   MEDKIT_JWT_SECRET=<32+ characters> MEDKIT_CLIENTS=<id>:<secret>:admin \
+     ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0
+
+   # no authentication, trusted network only
+   ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0 \
+     allow_unauthenticated_remote:=true
+
+**Gateway exits with "Refusing to start: authentication is off"**
+
+``server.host`` is not a loopback address and authentication is off. Do one of:
+set ``MEDKIT_JWT_SECRET`` (and ``MEDKIT_CLIENTS``); bind ``127.0.0.1``; or opt out
+with ``allow_unauthenticated_remote:=true`` (launch), ``server.allow_unauthenticated_remote: true``
+(parameter) or ``MEDKIT_AUTH_DISABLED=1``. A container started with no environment
+exits with this message, because the image binds ``0.0.0.0``.
 
 **"Connection reset by peer" or "Empty reply from server" from a container**
 
@@ -94,12 +110,15 @@ Bind all interfaces inside the container:
 
 .. code-block:: bash
 
-   ros2 launch ros2_medkit_gateway bringup.launch.py server_host:=0.0.0.0
+   ros2 launch ros2_medkit_gateway bringup.launch.py server_host:=0.0.0.0 \
+     allow_unauthenticated_remote:=true
 
-Publish the port as ``-p 127.0.0.1:8080:8080`` to keep the API off the LAN;
-authentication is off by default. With ``--network host`` the default bind is
-enough, because the container shares the host's loopback. The Docker image's
-default command already binds ``0.0.0.0``.
+Drop ``allow_unauthenticated_remote:=true`` and set ``MEDKIT_JWT_SECRET`` and
+``MEDKIT_CLIENTS`` to require a login instead. Publish the port as
+``-p 127.0.0.1:8080:8080`` to keep the API off the LAN. With ``--network host``
+the default bind is enough, because the container shares the host's loopback.
+The Docker image's default command already binds ``0.0.0.0``, so it needs
+``MEDKIT_JWT_SECRET`` or ``MEDKIT_AUTH_DISABLED=1``.
 
 **Topic data returns empty or timeout**
 
@@ -196,7 +215,10 @@ For development, try ``network_mode: host``.
 
    .. code-block:: bash
 
-      ros2 launch ros2_medkit_gateway bringup.launch.py server_host:=0.0.0.0
+      ros2 launch ros2_medkit_gateway bringup.launch.py server_host:=0.0.0.0 \
+        allow_unauthenticated_remote:=true
+
+   (or set ``MEDKIT_JWT_SECRET`` and ``MEDKIT_CLIENTS`` instead of the last argument).
 
 2. CORS must allow the UI origin exactly as the browser sends it (scheme, host
    and port): ``http://127.0.0.1:3000`` is not ``http://localhost:3000``. The

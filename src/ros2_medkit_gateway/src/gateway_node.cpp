@@ -37,6 +37,7 @@
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/core/discovery/refresh_debounce.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
+#include "ros2_medkit_gateway/core/net/bind_address.hpp"
 #include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
@@ -217,6 +218,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
 
   // Authentication parameters (REQ_INTEROP_086, REQ_INTEROP_087)
   declare_parameter("auth.enabled", false);
+  // Opt-out of protected mode: without authentication the gateway binds only a loopback address.
+  declare_parameter("server.allow_unauthenticated_remote", false);
   declare_parameter("auth.jwt_public_key", "");
   declare_parameter("auth.jwt_algorithm", "HS256");
   declare_parameter("auth.token_expiry_seconds", 3600);
@@ -656,6 +659,29 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
   }
 
   apply_effective_auth_parameters(auth_enabled, effective_require_auth_for);
+
+  // Protected mode: an unauthenticated gateway serves the local machine only,
+  // unless the operator opts out. Decided on the posture in force, after the
+  // environment is applied.
+  if (!auth_enabled && !is_loopback_bind_host(server_host_)) {
+    const bool opted_out = auth_env.auth_disabled || get_parameter("server.allow_unauthenticated_remote").as_bool();
+    if (opted_out) {
+      RCLCPP_WARN(get_logger(),
+                  "Authentication is off and the REST API binds %s: it is reachable without authentication from "
+                  "the network (opted out of protected mode).",
+                  server_host_.c_str());
+    } else {
+      RCLCPP_FATAL(get_logger(),
+                   "Refusing to start: authentication is off and server.host is %s, which is not a loopback "
+                   "address. Without authentication anyone who can reach this address controls the robot. Do one "
+                   "of: turn authentication on (set MEDKIT_JWT_SECRET, or the auth.* parameters); bind a loopback "
+                   "address (server.host: 127.0.0.1); or accept the risk with server.allow_unauthenticated_remote: "
+                   "true (launch argument allow_unauthenticated_remote:=true, or MEDKIT_AUTH_DISABLED=1).",
+                   server_host_.c_str());
+      throw std::runtime_error("Authentication is off and server.host '" + server_host_ +
+                               "' is not a loopback address");
+    }
+  }
 
   // Build Rate Limiting configuration
   bool rate_limit_enabled = get_parameter("rate_limiting.enabled").as_bool();

@@ -29,8 +29,13 @@ ros2_medkit_gateway:
       # Host to bind the REST server to
       # Options:
       #   - "127.0.0.1" (localhost only - SECURE, default)
-      #   - "0.0.0.0" (all interfaces - use for Docker/networking)
+      #   - "0.0.0.0" (all interfaces - use for Docker/networking; without
+      #     authentication also needs allow_unauthenticated_remote: true)
       host: "127.0.0.1"
+
+      # Let a gateway without authentication bind a non-loopback host.
+      # Without it such a gateway refuses to start. MEDKIT_AUTH_DISABLED=1 implies it.
+      allow_unauthenticated_remote: false
 
       # Port for REST API
       # Valid range: 1024-65535

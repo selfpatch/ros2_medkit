@@ -1,6 +1,7 @@
 # What a container needs on top of the packaged gateway_params.yaml.
 #
 # server.host: the published port is reached through a non-loopback address.
+#       Without authentication that bind needs MEDKIT_AUTH_DISABLED=1 (protected mode).
 # refresh_interval_ms: a container's graph changes as sibling containers come and go.
 # cors: origins of the web UI run next to the container.
 #       No wildcard. A file that sets cors.allowed_origins replaces this list.

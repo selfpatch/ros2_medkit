@@ -7,6 +7,14 @@ token-bucket rate limiting - but they are **disabled by default** so local
 development works out of the box. A gateway exposed on a plant network with the
 defaults is wide open: unauthenticated reads and writes over cleartext HTTP.
 
+Protected mode limits that exposure: a gateway without authentication binds only a
+loopback address. With authentication off and a ``server.host`` that is not a
+loopback address, the gateway exits with status 1 and a message that names the
+address. The check runs after the environment is applied, so ``MEDKIT_JWT_SECRET``
+counts as authentication on. The opt-out is ``server.allow_unauthenticated_remote:
+true`` (launch argument ``allow_unauthenticated_remote``), which ``MEDKIT_AUTH_DISABLED=1``
+implies; the gateway then warns at start that it is reachable without authentication.
+
 For any deployment reachable from an untrusted network, start from the secure
 field profile preset ``config/gateway_params.secure.yaml`` instead of
 ``config/gateway_params.yaml``:

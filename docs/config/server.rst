@@ -91,19 +91,47 @@ Network Settings
    * - ``server.host``
      - string
      - ``"127.0.0.1"``
-     - Host to bind the REST server. Use ``"0.0.0.0"`` for Docker or network access.
+     - Host to bind the REST server. Without authentication only a loopback host is
+       accepted (see :ref:`protected-mode`); use ``"0.0.0.0"`` for Docker or network access
+       together with authentication or ``server.allow_unauthenticated_remote``.
+   * - ``server.allow_unauthenticated_remote``
+     - bool
+     - ``false``
+     - Let a gateway without authentication bind a non-loopback host. ``MEDKIT_AUTH_DISABLED=1``
+       implies it. The gateway logs a warning at start. Launch argument:
+       ``allow_unauthenticated_remote``.
    * - ``server.port``
      - int
      - ``8080``
      - Port for REST API. Valid range: 1024-65535.
 
+.. _protected-mode:
+
+Protected mode
+^^^^^^^^^^^^^^
+
+With authentication off, the gateway serves only the local machine. A loopback
+``server.host`` (``127.0.0.0/8``, ``::1``, ``localhost``) starts as before. Any other value
+(``0.0.0.0``, ``::``, a concrete address, a host name) makes the gateway exit with status 1
+and a message that names the address. The check uses the authentication the gateway enforces
+after the environment is applied, so ``MEDKIT_JWT_SECRET`` counts as authentication on
+whatever ``auth.enabled`` says. Three ways out:
+
+- Turn authentication on: ``MEDKIT_JWT_SECRET`` (with ``MEDKIT_CLIENTS``) or the ``auth``
+  parameters; see :doc:`/tutorials/authentication`.
+- Bind a loopback address.
+- Opt out: ``server.allow_unauthenticated_remote: true``, the launch argument
+  ``allow_unauthenticated_remote:=true``, or ``MEDKIT_AUTH_DISABLED=1``. Anyone who can reach
+  the address then controls the robot; use it for demos and for networks you trust.
+
 Example:
 
 .. code-block:: bash
 
-   # Expose on all interfaces (Docker/network)
+   # Expose on all interfaces (Docker/network), without authentication
    ros2 run ros2_medkit_gateway gateway_node --ros-args \
        -p server.host:=0.0.0.0 \
+       -p server.allow_unauthenticated_remote:=true \
        -p server.port:=8080
 
 TLS/HTTPS Configuration
@@ -958,7 +986,7 @@ default for local development.
    * - ``auth.enabled``
      - bool
      - ``false``
-     - Enable/disable JWT authentication. ``MEDKIT_JWT_SECRET`` turns it on and ``MEDKIT_AUTH_DISABLED=1`` turns it off, whatever this says. Reads back the value in force.
+     - Enable/disable JWT authentication. ``MEDKIT_JWT_SECRET`` turns it on and ``MEDKIT_AUTH_DISABLED=1`` turns it off, whatever this says. Reads back the value in force. With it off the gateway binds only a loopback host unless ``server.allow_unauthenticated_remote`` is set (:ref:`protected-mode`).
    * - ``auth.jwt_secret``
      - string
      - ``""``
@@ -1126,6 +1154,7 @@ Complete Example
        server:
          host: "0.0.0.0"
          port: 8080
+         allow_unauthenticated_remote: true  # no auth.* below, so opt out of protected mode
          tls:
            enabled: false
 

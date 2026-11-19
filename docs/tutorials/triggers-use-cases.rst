@@ -18,7 +18,8 @@ Start the gateway with demo nodes and a fault manager:
 .. code-block:: bash
 
    # Terminal 1: Gateway with demo nodes
-   ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0 &
+   ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0 \
+     allow_unauthenticated_remote:=true &
    ros2 launch ros2_medkit_integration_tests demo_nodes.launch.py
 
 Verify the gateway is running:
@@ -360,6 +361,7 @@ Step 1: Start gateway in manifest mode
 
    ros2 launch ros2_medkit_gateway gateway.launch.py \
      server_host:=0.0.0.0 \
+     allow_unauthenticated_remote:=true \
      discovery_mode:=manifest_only \
      manifest_path:=$(ros2 pkg prefix ros2_medkit_gateway)/share/ros2_medkit_gateway/config/examples/demo_nodes_manifest.yaml
 

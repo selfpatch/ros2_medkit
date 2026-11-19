@@ -44,7 +44,13 @@ launch arguments:
        their own configs; tune those via their launch args.
    * - ``server_host``
      - ``127.0.0.1``
-     - Host to bind the gateway REST server (use ``0.0.0.0`` to expose it).
+     - Host to bind the gateway REST server (use ``0.0.0.0`` to expose it; see
+       ``allow_unauthenticated_remote``).
+   * - ``allow_unauthenticated_remote``
+     - ``false``
+     - Let the gateway bind a non-loopback ``server_host`` with authentication
+       off. Without it, and without ``MEDKIT_JWT_SECRET``, such a gateway
+       refuses to start.
    * - ``server_port``
      - ``8080``
      - Gateway REST API port.
@@ -71,8 +77,8 @@ launch arguments:
 
    In a container without ``--network host``, ``127.0.0.1`` is the container's
    own loopback: the published port answers with ``Connection reset by peer``
-   or an empty reply. Run ``bringup.launch.py server_host:=0.0.0.0`` and publish
-   the port as ``-p 127.0.0.1:8080:8080`` to keep the API (no authentication by
+   or an empty reply. Run ``bringup.launch.py server_host:=0.0.0.0 allow_unauthenticated_remote:=true``
+   and publish the port as ``-p 127.0.0.1:8080:8080`` to keep the API (no authentication by
    default) off the LAN.
 
 Verify
