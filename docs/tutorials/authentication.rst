@@ -83,8 +83,8 @@ Where a secret is safe:
 Protected Mode
 --------------
 
-A gateway that serves anonymous requests serves only the local machine. With
-authentication off, or on with ``auth.require_auth_for`` ``none``, and a
+A gateway that answers every request anonymously (authentication off, or on with
+``auth.require_auth_for`` ``none``) serves only the local machine. With such a
 ``server.host`` that is not a loopback address (``0.0.0.0``, ``::``, a
 concrete address or a host name other than ``localhost``), the gateway exits
 with status 1 and a message that names the address. ``localhost`` counts as
@@ -92,8 +92,9 @@ loopback by its name, as RFC 6761 reserves it; the gateway binds what the
 resolver returns for it. The decision uses the authentication in force after the
 environment is applied: ``MEDKIT_JWT_SECRET`` counts as on (and forces
 ``require_auth_for`` ``all``), whatever ``auth.enabled`` says. ``write`` and
-``all`` count as authentication; ``write`` leaves reads anonymous on the
-network, ``none`` leaves everything open and does not count. The ways out are
+``all`` count as authentication, in any letter case; ``write`` binds the
+network and leaves reads anonymous, ``none`` leaves everything open and does
+not count. The ways out are
 
 - turn authentication on (``MEDKIT_JWT_SECRET`` and ``MEDKIT_CLIENTS``, or the
   ``auth.*`` parameters with ``require_auth_for`` ``write`` or ``all``);
@@ -102,9 +103,11 @@ network, ``none`` leaves everything open and does not count. The ways out are
   argument ``allow_unauthenticated_remote:=true``, or ``MEDKIT_AUTH_DISABLED=1``.
   The gateway then logs a warning that it is reachable without authentication.
 
-A gateway that cannot bind its address (port in use, an address the machine
-does not own, a name that does not resolve) also exits with status 1, naming the
-host, the port and the reason.
+A gateway that cannot bind its address (the address:port is held by a live
+process, an address the machine does not own, a name that does not resolve) also
+exits with status 1, naming the host, the port and the reason. An address the
+machine does not own is refused unless the kernel allows non-local binds
+(``net.ipv4.ip_nonlocal_bind``, ``net.ipv6.ip_nonlocal_bind``).
 
 See :ref:`protected-mode` for the parameter.
 

@@ -51,8 +51,12 @@ RESIDENT_PORT = get_test_port(1)
 BAND = [get_test_port(offset) for offset in range(2, 10)]
 READY_LINE = 'Medkit Gateway ready on'
 REFUSAL_OFF = 'Refusing to start: authentication is off'
-REFUSAL_NONE = ('Refusing to start: authentication is on but auth.require_auth_for is none')
+REFUSAL_ON = 'Refusing to start: authentication is on but auth.require_auth_for is'
 BIND_REFUSAL = 'Refusing to start: cannot bind the REST API to'
+FALLBACK_LINE = 'held only by closing connections of an earlier process'
+# A session that ignores proxy settings of the environment: every request goes direct.
+_HTTP = requests.Session()
+_HTTP.trust_env = False
 JWT_SECRET = 'a_secret_for_protected_mode_of_at_least_32_chars'
 CLIENT = 'pm:pm_client_secret:admin'
 
@@ -67,8 +71,12 @@ REMOTE_HOSTS = (
     '0.0.0.0', '::', '192.168.1.10', '10.0.0.5', '2001:db8::5', 'gateway.example.test',
     '126.255.255.255', '128.0.0.1',
 )
-# The address no interface owns, and a name that does not resolve: the bind fails.
-UNBINDABLE_HOSTS = ('192.0.2.10', '2001:db8::5', 'gateway.example.test')
+# The address no interface owns, and a name that does not resolve: the bind fails, with this cause.
+UNBINDABLE_HOSTS = {
+    '192.0.2.10': 'Cannot assign requested address',
+    '2001:db8::5': 'Cannot assign requested address',
+    'gateway.example.test': 'cannot resolve the host:',
+}
 
 
 def _own_ipv4():
@@ -83,6 +91,8 @@ def _own_ipv4():
 
 
 OWN_IPV4 = _own_ipv4()
+NO_OWN_ADDRESS = ('this machine has no non-loopback IPv4 address: the start cases on it '
+                  'cannot run, and the test needs one')
 # Non-loopback addresses a start case can use here.
 BINDABLE_REMOTE_HOSTS = ('0.0.0.0', '::') + ((OWN_IPV4,) if OWN_IPV4 else ())
 
@@ -110,6 +120,10 @@ FILE_AUTH_ALL = _write_params('all.yaml', True, require_auth_for='all')
 FILE_AUTH_NONE = _write_params('none.yaml', True, require_auth_for='none')
 FILE_AUTH_NONE_OPT_OUT = _write_params('none-opt-out.yaml', True, allow_remote=True,
                                        require_auth_for='none')
+FILE_AUTH_NONE_UPPER = _write_params('none-upper.yaml', True, require_auth_for='NONE')
+FILE_AUTH_NONE_MIXED = _write_params('none-mixed.yaml', True, require_auth_for='None')
+FILE_AUTH_WRITE_UPPER = _write_params('write-upper.yaml', True, require_auth_for='WRITE')
+FILE_AUTH_ALL_MIXED = _write_params('all-mixed.yaml', True, require_auth_for='All')
 FILE_OPT_OUT = _write_params('opt-out.yaml', False, allow_remote=True)
 FILE_OPT_OUT_FALSE = _write_params('opt-out-false.yaml', False, allow_remote=False)
 # A gateway.launch.py config_file names the node, unlike the `/**` files above.
@@ -117,6 +131,25 @@ LAUNCH_CONFIG_OPT_OUT = os.path.join(_PARAMS_DIR, 'launch-config.yaml')
 with open(LAUNCH_CONFIG_OPT_OUT, 'w', encoding='utf-8') as _handle:
     _handle.write('ros2_medkit_gateway:\n  ros__parameters:\n    server:\n'
                   '      allow_unauthenticated_remote: true\n')
+
+
+def _tls_params():
+    """Write a self-signed certificate and a params file that turns TLS on with it."""
+    cert = os.path.join(_PARAMS_DIR, 'cert.pem')
+    key = os.path.join(_PARAMS_DIR, 'key.pem')
+    subprocess.run(
+        ['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-keyout', key,
+         '-out', cert, '-subj', '/CN=localhost'],
+        check=True, capture_output=True)
+    os.chmod(key, 0o600)
+    path = os.path.join(_PARAMS_DIR, 'tls.yaml')
+    with open(path, 'w', encoding='utf-8') as handle:
+        handle.write('/**:\n  ros__parameters:\n    server:\n      tls:\n        enabled: true\n'
+                     f'        cert_file: "{cert}"\n        key_file: "{key}"\n')
+    return path
+
+
+TLS_PARAMS = _tls_params()
 
 
 @pytest.mark.launch_test
@@ -140,6 +173,8 @@ def _port_is_free(port):
     for family, wildcard in ((socket.AF_INET, '0.0.0.0'), (socket.AF_INET6, '::')):
         try:
             with socket.socket(family, socket.SOCK_STREAM) as sock:
+                # As the gateway binds: TIME_WAIT does not make a port busy, a listener does.
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind((wildcard, port))
         except OSError as error:
             if family == socket.AF_INET:
@@ -160,6 +195,13 @@ def _free_port():
         if _port_is_free(port):
             return port
     raise AssertionError('no free port in the test band')
+
+
+def _clean_port():
+    """Return a port no socket of this machine has used lately: no listener, no TIME_WAIT."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(('127.0.0.1', 0))
+        return sock.getsockname()[1]
 
 
 def _listening(port):
@@ -256,6 +298,90 @@ def _probe_url(host, port):
     return None
 
 
+def _time_wait(port):
+    """Return True when a TIME_WAIT socket with local port `port` exists."""
+    for table in ('/proc/net/tcp', '/proc/net/tcp6'):
+        try:
+            with open(table, encoding='utf-8') as handle:
+                rows = handle.read().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            fields = row.split()
+            if fields[3] == '06' and int(fields[1].split(':')[1], 16) == port:
+                return True
+    return False
+
+
+def _nonlocal_bind_allowed():
+    """Return True when the kernel lets a process bind an address no interface owns."""
+    for name in ('ipv4', 'ipv6'):
+        try:
+            with open(f'/proc/sys/net/{name}/ip_nonlocal_bind', encoding='utf-8') as handle:
+                if handle.read().strip() == '1':
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+# What the stand-in for a released gateway runs: SO_REUSEPORT only, as cpp-httplib's default does.
+STAND_IN = r"""
+import socket, sys
+port, hold = int(sys.argv[1]), sys.argv[2] == 'hold'
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+srv.bind(('127.0.0.1', port))
+srv.listen()
+print('listening', flush=True)
+conn, _ = srv.accept()
+conn.close()
+print('closed', flush=True)
+if hold:
+    sys.stdin.read()
+"""
+
+
+class _StandIn:
+    """A process that holds a port with SO_REUSEPORT, serves one connection and closes it first.
+
+    With `hold` it then keeps listening until the block ends; without, it exits.
+    """
+
+    def __init__(self, testcase, port, hold):
+        self.testcase = testcase
+        self.port = port
+        self.hold = hold
+        self._process = None
+
+    @property
+    def pid(self):
+        return self._process.pid
+
+    def __enter__(self):
+        self._process = subprocess.Popen(
+            ['python3', '-c', STAND_IN, str(self.port), 'hold' if self.hold else 'exit'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.testcase.assertEqual(self._process.stdout.readline().strip(), 'listening')
+        client = socket.create_connection(('127.0.0.1', self.port), timeout=15)
+        self.testcase.assertEqual(self._process.stdout.readline().strip(), 'closed')
+        self.testcase.assertEqual(client.recv(1), b'')
+        client.close()
+        return self
+
+    def wait_exit(self):
+        self._process.wait(timeout=30)
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._process.poll() is None:
+            self._process.stdin.close()
+            try:
+                self._process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+        return False
+
+
 class _Process:
     """A subprocess whose output is read until the ready line, or until it exits.
 
@@ -332,14 +458,16 @@ class _Process:
         t.assertNotIn(READY_LINE, self.output)
         t.assertFalse(_listening(self.port), 'something listens after the refusal')
 
-    def assert_bind_failed(self, host):
+    def assert_bind_failed(self, host, cause):
         t = self.testcase
         t.assertIsNotNone(self.rc, f'the gateway did not exit on {host}: {self.output[-600:]}')
         t.assertNotEqual(self.rc, 0, self.output[-600:])
         t.assertIn(f'{BIND_REFUSAL} {host}:{self.port}:', self.output)
+        t.assertIn(cause, self.output)
         t.assertNotIn(READY_LINE, self.output)
 
-    def assert_started(self, host, expect_open_warning=False, probe='default'):
+    def assert_started(self, host, expect_open_warning=False, probe='default',
+                       expect_fallback=False):
         """Assert the started process answers HTTP on a port it alone listens on."""
         t = self.testcase
         t.assertIsNone(self.rc, self.output[-600:])
@@ -348,13 +476,14 @@ class _Process:
         t.assertNotIn('Refusing to start', self.output)
         warned = 'reachable without authentication' in self.output
         t.assertEqual(warned, expect_open_warning, self.output[-800:])
+        t.assertEqual(FALLBACK_LINE in self.output, expect_fallback, self.output[-800:])
         owners = _listener_pids(self.port)
         t.assertTrue(owners, f'nobody listens on port {self.port}: {self.output[-600:]}')
         t.assertTrue(owners <= _tree(self.pid),
                      f'port {self.port} is held by {owners}, not by the started process tree')
         probe = _probe_url(host, self.port) if probe == 'default' else probe
         t.assertIsNotNone(probe, f'no way to ask a gateway bound to {host}')
-        return requests.get(f'{probe}{API_BASE_PATH}/health', timeout=15), probe
+        return _HTTP.get(f'{probe}{API_BASE_PATH}/health', timeout=15, verify=False), probe
 
     def assert_answers(self, host, **kwargs):
         response, _ = self.assert_started(host, **kwargs)
@@ -400,8 +529,8 @@ class TestAuthOffBindsLoopbackOnly(unittest.TestCase):
         with _run(self, '0.0.0.0') as gateway:
             gateway.assert_refused('0.0.0.0')
 
-    def test_the_machine_has_an_address_or_says_so(self):
-        self.assertTrue(OWN_IPV4 is None or OWN_IPV4.count('.') == 3, OWN_IPV4)
+    def test_the_machine_has_a_non_loopback_ipv4_address(self):
+        self.assertIsNotNone(OWN_IPV4, NO_OWN_ADDRESS)
 
 
 class TestAuthOnBindsAnywhere(unittest.TestCase):
@@ -423,7 +552,7 @@ class TestAuthOnBindsAnywhere(unittest.TestCase):
     def test_the_closed_gateway_answers_401_on_a_bind_all_address(self):
         with _run(self, '0.0.0.0', env={'MEDKIT_JWT_SECRET': JWT_SECRET}) as gateway:
             _, probe = gateway.assert_started('0.0.0.0')
-            self.assertEqual(requests.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
+            self.assertEqual(_HTTP.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
                              401)
 
 
@@ -434,7 +563,7 @@ class TestRequireAuthForNone(unittest.TestCase):
         for host in REMOTE_HOSTS:
             with self.subTest(host=host):
                 with _run(self, host, FILE_AUTH_NONE) as gateway:
-                    gateway.assert_refused(host, reason=REFUSAL_NONE)
+                    gateway.assert_refused(host, reason=f'{REFUSAL_ON} none')
                     self.assertIn('MEDKIT_AUTH_DISABLED=1', gateway.output)
 
     def test_none_with_the_opt_out_starts_and_warns(self):
@@ -451,15 +580,39 @@ class TestRequireAuthForNone(unittest.TestCase):
     def test_write_on_a_bind_all_address_starts_and_the_write_is_closed(self):
         with _run(self, '0.0.0.0', FILE_AUTH_ON) as gateway:
             _, probe = gateway.assert_started('0.0.0.0')
-            self.assertEqual(requests.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
+            self.assertEqual(_HTTP.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
                              200)
             self.assertEqual(
-                requests.delete(f'{probe}{API_BASE_PATH}/faults', timeout=15).status_code, 401)
+                _HTTP.delete(f'{probe}{API_BASE_PATH}/faults', timeout=15).status_code, 401)
 
     def test_all_on_a_bind_all_address_starts_and_the_read_is_closed(self):
         with _run(self, '0.0.0.0', FILE_AUTH_ALL) as gateway:
             _, probe = gateway.assert_started('0.0.0.0')
-            self.assertEqual(requests.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
+            self.assertEqual(_HTTP.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
+                             401)
+
+
+class TestRequireAuthForCase(unittest.TestCase):
+    """E1: the case of require_auth_for does not change what protected mode decides."""
+
+    def test_none_in_any_case_refuses(self):
+        for name, params in (('NONE', FILE_AUTH_NONE_UPPER), ('None', FILE_AUTH_NONE_MIXED)):
+            with self.subTest(value=name):
+                with _run(self, '0.0.0.0', params) as gateway:
+                    gateway.assert_refused('0.0.0.0', reason=f'{REFUSAL_ON} {name}')
+
+    def test_write_in_any_case_starts_with_the_write_closed(self):
+        with _run(self, '0.0.0.0', FILE_AUTH_WRITE_UPPER) as gateway:
+            _, probe = gateway.assert_started('0.0.0.0')
+            self.assertEqual(_HTTP.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
+                             200)
+            deleted = _HTTP.delete(f'{probe}{API_BASE_PATH}/faults', timeout=15)
+            self.assertEqual(deleted.status_code, 401)
+
+    def test_all_in_any_case_starts_with_the_read_closed(self):
+        with _run(self, '0.0.0.0', FILE_AUTH_ALL_MIXED) as gateway:
+            _, probe = gateway.assert_started('0.0.0.0')
+            self.assertEqual(_HTTP.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
                              401)
 
 
@@ -475,7 +628,7 @@ class TestOptOut(unittest.TestCase):
     def test_the_parameter_from_a_file(self):
         with _run(self, '0.0.0.0', FILE_OPT_OUT) as gateway:
             _, probe = gateway.assert_started('0.0.0.0', expect_open_warning=True)
-            self.assertEqual(requests.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
+            self.assertEqual(_HTTP.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
                              200)
 
     def test_an_explicit_false_still_refuses(self):
@@ -491,7 +644,7 @@ class TestOptOut(unittest.TestCase):
     def test_the_environment_variable_over_a_file_that_asks_for_auth(self):
         with _run(self, '0.0.0.0', FILE_AUTH_ON, {'MEDKIT_AUTH_DISABLED': '1'}) as gateway:
             _, probe = gateway.assert_started('0.0.0.0', expect_open_warning=True)
-            self.assertEqual(requests.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
+            self.assertEqual(_HTTP.get(f'{probe}{API_BASE_PATH}/areas', timeout=15).status_code,
                              200)
 
     def test_a_value_other_than_one_is_no_opt_out(self):
@@ -503,7 +656,7 @@ class TestOptOut(unittest.TestCase):
 
 
 class TestBindFailure(unittest.TestCase):
-    """D2: a gateway that cannot bind exits and never announces itself."""
+    """D2: a gateway that cannot bind exits and never announces itself, naming the cause."""
 
     def test_a_port_held_by_another_process_ends_the_gateway(self):
         holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -513,8 +666,7 @@ class TestBindFailure(unittest.TestCase):
         # The holder's port is outside the band, so the pair below needs no care for it.
         held = holder.getsockname()[1]
         with _run(self, '127.0.0.1', FILE_AUTH_OFF, port=held) as gateway:
-            gateway.assert_bind_failed('127.0.0.1')
-            self.assertIn('Address already in use', gateway.output)
+            gateway.assert_bind_failed('127.0.0.1', 'Address already in use')
         self.assertEqual(_listener_pids(held), {os.getpid()}, 'the holder lost its port')
         with _run(self, '127.0.0.1', FILE_AUTH_OFF) as gateway:
             gateway.assert_answers('127.0.0.1')
@@ -523,27 +675,74 @@ class TestBindFailure(unittest.TestCase):
         with _run(self, '127.0.0.1', FILE_AUTH_OFF) as first:
             first.assert_answers('127.0.0.1')
             with _run(self, '127.0.0.1', FILE_AUTH_OFF, port=first.port) as second:
-                second.assert_bind_failed('127.0.0.1')
-            self.assertEqual(_listener_pids(first.port) <= _tree(first.pid), True)
-            self.assertEqual(
-                requests.get(f'http://127.0.0.1:{first.port}{API_BASE_PATH}/health',
-                             timeout=15).status_code in (200, 401, 403), True)
+                second.assert_bind_failed('127.0.0.1', 'Address already in use')
+            self.assertTrue(_listener_pids(first.port) <= _tree(first.pid))
+            self.assertIn(_HTTP.get(f'http://127.0.0.1:{first.port}{API_BASE_PATH}/health',
+                                    timeout=15).status_code, (200, 401, 403))
 
     def test_an_address_the_machine_does_not_own_ends_the_gateway(self):
-        for host in UNBINDABLE_HOSTS:
+        if _nonlocal_bind_allowed():
+            self.fail('ip_nonlocal_bind is set on this machine: the case cannot be observed')
+        for host, cause in UNBINDABLE_HOSTS.items():
             with self.subTest(host=host):
                 with _run(self, host, FILE_AUTH_OFF, {'MEDKIT_AUTH_DISABLED': '1'}) as gateway:
-                    gateway.assert_bind_failed(host)
+                    gateway.assert_bind_failed(host, cause)
                     self.assertFalse(_listening(gateway.port))
 
     def test_a_bracketed_address_is_not_a_bind_form(self):
         with _run(self, '[::1]', FILE_AUTH_OFF) as gateway:
-            gateway.assert_bind_failed('[::1]')
+            gateway.assert_bind_failed('[::1]', 'cannot resolve the host:')
 
     def test_a_free_port_on_the_same_address_starts(self):
-        host = OWN_IPV4 or '0.0.0.0'
-        with _run(self, host, FILE_AUTH_OFF, {'MEDKIT_AUTH_DISABLED': '1'}) as gateway:
-            gateway.assert_answers(host, expect_open_warning=True)
+        self.assertIsNotNone(OWN_IPV4, NO_OWN_ADDRESS)
+        with _run(self, OWN_IPV4, FILE_AUTH_OFF, {'MEDKIT_AUTH_DISABLED': '1'}) as gateway:
+            gateway.assert_answers(OWN_IPV4, expect_open_warning=True)
+
+    def test_a_held_port_with_tls_ends_the_gateway(self):
+        holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.addCleanup(holder.close)
+        holder.bind(('127.0.0.1', 0))
+        holder.listen()
+        held = holder.getsockname()[1]
+        with _run(self, '127.0.0.1', TLS_PARAMS, port=held) as gateway:
+            gateway.assert_bind_failed('127.0.0.1', 'Address already in use')
+        with _run(self, '127.0.0.1', TLS_PARAMS) as gateway:
+            gateway.assert_answers('127.0.0.1', probe=f'https://127.0.0.1:{gateway.port}')
+            self.assertIn('HTTPS://127.0.0.1', gateway.output)
+
+
+class TestRestartOverTimeWait(unittest.TestCase):
+    """E2: a closed connection left in TIME_WAIT does not stop a restart; a live listener does."""
+
+    def test_the_first_start_after_a_so_reuseport_gateway_succeeds_at_once(self):
+        port = _clean_port()
+        with _StandIn(self, port, hold=False) as old:
+            old.wait_exit()
+        self.assertTrue(_time_wait(port), 'no TIME_WAIT entry, so a clean port proves nothing')
+        with _Process(self, _gateway('127.0.0.1', port, FILE_AUTH_OFF), port=port) as gateway:
+            gateway.assert_answers('127.0.0.1', expect_fallback=True)
+
+    def test_a_live_so_reuseport_listener_is_never_shared(self):
+        port = _clean_port()
+        with _StandIn(self, port, hold=True) as old:
+            with _Process(self, _gateway('127.0.0.1', port, FILE_AUTH_OFF), port=port) as gateway:
+                gateway.assert_bind_failed('127.0.0.1', 'Address already in use')
+                self.assertNotIn(FALLBACK_LINE, gateway.output)
+            self.assertEqual(_listener_pids(port), {old.pid}, 'the old listener lost its port')
+
+    def test_a_restart_of_the_new_gateway_needs_no_fallback(self):
+        port = _clean_port()
+        with _Process(self, _gateway('127.0.0.1', port, FILE_AUTH_OFF), port=port) as first:
+            first.assert_answers('127.0.0.1')
+            # The server closes first on `Connection: close`, so its side lands in TIME_WAIT.
+            _HTTP.get(f'http://127.0.0.1:{port}{API_BASE_PATH}/health', timeout=15,
+                      headers={'Connection': 'close'})
+            self.assertTrue(_time_wait(port), 'no TIME_WAIT entry after the closed request')
+            os.killpg(os.getpgid(first.pid), signal.SIGINT)
+            first._process.wait(timeout=60)
+        self.assertTrue(_time_wait(port), 'the TIME_WAIT entry is gone: nothing was tested')
+        with _Process(self, _gateway('127.0.0.1', port, FILE_AUTH_OFF), port=port) as second:
+            second.assert_answers('127.0.0.1', expect_fallback=False)
 
 
 class TestLaunchArgument(unittest.TestCase):

@@ -114,7 +114,7 @@ wait_code() {
   local ip code="000" end=$((SECONDS + DEADLINE_S))
   ip=$(ip_of "$name")
   while [ "$SECONDS" -lt "$end" ]; do
-    code=$(curl -s -o /dev/null -w '%{http_code}' "http://$ip:$port$path") || true
+    code=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' "http://$ip:$port$path") || true
     [ -n "$code" ] && [ "$code" != "000" ] && break
     sleep 1
   done
@@ -142,7 +142,7 @@ startup_line() {
 acao_for() {
   local name=$1 origin=$2 ip headers
   ip=$(ip_of "$name")
-  headers=$(curl -s -D - -o /dev/null -H "Origin: $origin" "http://$ip:8080/api/v1/health") || true
+  headers=$(curl --noproxy '*' -s -D - -o /dev/null -H "Origin: $origin" "http://$ip:8080/api/v1/health") || true
   if [ -z "$headers" ]; then echo "<no answer>"; return; fi
   echo "$headers" | tr -d '\r' | sed -n 's/^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin:[[:space:]]*//p' | head -1 \
     | { read -r v || true; echo "${v:-<none>}"; }
@@ -151,7 +151,7 @@ acao_for() {
 token_for() {
   local ip
   ip=$(ip_of "$1")
-  curl -s -X POST "http://$ip:8080/api/v1/auth/authorize" \
+  curl --noproxy '*' -s -X POST "http://$ip:8080/api/v1/auth/authorize" \
     -H 'Content-Type: application/json' \
     -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"$CLIENT_ID\",\"client_secret\":\"$CLIENT_SECRET\"}" \
     | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
@@ -168,7 +168,7 @@ expect_token_works() {
     return
   fi
   ip=$(ip_of "$name")
-  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://$ip:8080/api/v1/areas") || true
+  code=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://$ip:8080/api/v1/areas") || true
   expect "$label: GET /areas with the token" 200 "$code"
 }
 
@@ -180,12 +180,12 @@ expect_token_works() {
 expect_closed_routes() {
   local label=$1 name=$2 ip token code
   ip=$(ip_of "$name")
-  code=$(curl -s -o /dev/null -w '%{http_code}' "http://$ip:8080/api/v1/health") || true
+  code=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' "http://$ip:8080/api/v1/health") || true
   expect "$label: anonymous GET /health" 401 "$code"
-  code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "http://$ip:8080/api/v1/faults") || true
+  code=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' -X DELETE "http://$ip:8080/api/v1/faults") || true
   expect "$label: anonymous DELETE /faults" 401 "$code"
   token=$(token_for "$name")
-  code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $token" \
+  code=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $token" \
     "http://$ip:8080/api/v1/faults") || true
   if [ -n "$token" ] && [ "$code" != "401" ] && [ "$code" != "000" ]; then
     ok "$label: DELETE /faults with the token -> $code (not 401)"

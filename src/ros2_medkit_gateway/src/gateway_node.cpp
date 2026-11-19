@@ -664,17 +664,20 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
   // address, unless the operator opts out. Decided on the posture in force, after
   // the environment is applied. `write` and `all` count as authentication;
   // `none` leaves every route open.
-  const bool authenticated = auth_enabled && effective_require_auth_for != "none";
+  // Parsed, as the middleware reads it: the case of the operator's string must not matter.
+  const bool authenticated =
+      auth_enabled && string_to_auth_requirement(effective_require_auth_for) != AuthRequirement::NONE;
   if (!authenticated && !is_loopback_bind_host(server_host_)) {
     const bool opted_out = auth_env.auth_disabled || get_parameter("server.allow_unauthenticated_remote").as_bool();
     if (opted_out) {
       RCLCPP_WARN(get_logger(),
                   "Authentication is %s and the REST API binds %s: it is reachable without authentication from "
                   "the network (opted out of protected mode).",
-                  auth_enabled ? "on with auth.require_auth_for none" : "off", server_host_.c_str());
+                  auth_enabled ? ("on with auth.require_auth_for " + effective_require_auth_for).c_str() : "off",
+                  server_host_.c_str());
     } else {
-      const std::string state = auth_enabled ? "authentication is on but auth.require_auth_for is none, so every "
-                                               "route is open"
+      const std::string state = auth_enabled ? "authentication is on but auth.require_auth_for is " +
+                                                   effective_require_auth_for + ", so every route is open"
                                              : "authentication is off";
       RCLCPP_FATAL(get_logger(),
                    "Refusing to start: %s and server.host is %s, which is not a loopback address. Anyone who can "

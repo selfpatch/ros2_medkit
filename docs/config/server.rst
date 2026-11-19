@@ -110,16 +110,17 @@ Network Settings
 Protected mode
 ^^^^^^^^^^^^^^
 
-A gateway that serves anonymous requests binds only the local machine. A loopback
+A gateway that answers every request anonymously (authentication off, or
+``auth.require_auth_for`` ``none``) binds only the local machine. A loopback
 ``server.host`` (``127.0.0.0/8``, ``::1``, ``localhost``) starts as before; ``localhost`` counts
 as loopback by its name, as RFC 6761 reserves it, and the gateway binds what the resolver
 returns for it. Any other value (``0.0.0.0``, ``::``, a concrete address, a host name) makes the
 gateway exit with status 1 and a message that names the address, unless authentication is in
 force. The check uses the authentication the gateway enforces after the environment is
 applied, so ``MEDKIT_JWT_SECRET`` counts as authentication on whatever ``auth.enabled`` says.
-``auth.require_auth_for`` ``write`` and ``all`` count; ``write`` leaves reads anonymous on the
-network. ``none`` does not count: authentication on with ``none`` is refused like authentication
-off. Three ways out:
+``auth.require_auth_for`` ``write`` and ``all`` count, in any letter case; ``write`` binds the
+network and leaves reads anonymous. ``none`` does not count: authentication on with ``none`` is
+refused like authentication off. Three ways out:
 
 - Turn authentication on: ``MEDKIT_JWT_SECRET`` (with ``MEDKIT_CLIENTS``) or the ``auth``
   parameters with ``auth.require_auth_for`` ``write`` or ``all``; see
@@ -129,10 +130,14 @@ off. Three ways out:
   ``allow_unauthenticated_remote:=true``, or ``MEDKIT_AUTH_DISABLED=1``. Anyone who can reach
   the address then controls the robot; use it for demos and for networks you trust.
 
-A gateway that cannot bind ``server.host`` and ``server.port`` (port in use, an address the
-machine does not own, a name that does not resolve, a bracketed form such as ``[::1]``) also
-exits with status 1. The message names the host, the port and the reason, and the gateway
-never logs its ready line.
+A gateway that cannot bind ``server.host`` and ``server.port`` (the address:port is held by a
+live process, an address the machine does not own, a name that does not resolve, a bracketed form
+such as ``[::1]``) also exits with status 1. The message names the host, the port and the
+reason, and the gateway never logs its ready line. An address the machine does not own is
+refused unless the kernel allows non-local binds (``net.ipv4.ip_nonlocal_bind``,
+``net.ipv6.ip_nonlocal_bind``). A second gateway cannot bind an address:port a live process
+holds; ``127.0.0.1:P`` and ``127.0.0.2:P`` are different addresses. Connections an earlier
+process closed (TIME_WAIT) do not stop a restart.
 
 Example:
 

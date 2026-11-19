@@ -14,11 +14,22 @@
 
 #include "ros2_medkit_gateway/core/http/http_server.hpp"
 
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 
+#include <algorithm>
+#include <array>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "ros2_medkit_gateway/core/logging.hpp"
 
@@ -26,14 +37,147 @@ namespace ros2_medkit_gateway {
 
 namespace {
 
-// SO_REUSEADDR only: it lets a restarted gateway rebind over TIME_WAIT. cpp-httplib's
-// default sets SO_REUSEPORT, which lets a second gateway bind a port a first one
-// already serves.
+using Address = std::array<std::uint8_t, 16>;
+
+// SO_REUSEADDR only: it lets a restarted gateway rebind over TIME_WAIT, and it does not let
+// a second gateway bind an address:port a live gateway already serves.
 void reuse_address_only(httplib::Server & srv) {
   srv.set_socket_options([](socket_t sock) {
     int yes = 1;
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const void *>(&yes), sizeof(yes));
   });
+}
+
+// Also SO_REUSEPORT: needed to bind over TIME_WAIT left by a process that bound with it.
+void reuse_address_and_port(httplib::Server & srv) {
+  srv.set_socket_options([](socket_t sock) {
+    int yes = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const void *>(&yes), sizeof(yes));
+    setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<const void *>(&yes), sizeof(yes));
+  });
+}
+
+Address from_v4(const in_addr & a) {
+  Address out{};
+  out[10] = 0xff;
+  out[11] = 0xff;
+  std::memcpy(out.data() + 12, &a.s_addr, 4);
+  return out;
+}
+
+bool is_v4_mapped(const Address & a) {
+  static const std::array<std::uint8_t, 12> prefix{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+  return std::equal(prefix.begin(), prefix.end(), a.begin());
+}
+
+bool is_wildcard(const Address & a) {
+  Address any{};
+  if (a == any) {
+    return true;
+  }
+  return is_v4_mapped(a) && a[12] == 0 && a[13] == 0 && a[14] == 0 && a[15] == 0;
+}
+
+// Two bound addresses collide when they are equal, or one is a wildcard that covers the other:
+// 0.0.0.0 covers every IPv4 address, :: covers every address.
+bool addresses_collide(const Address & ours, const Address & theirs) {
+  if (ours == theirs) {
+    return true;
+  }
+  for (const auto & [a, b] : {std::pair{ours, theirs}, std::pair{theirs, ours}}) {
+    if (!is_wildcard(a)) {
+      continue;
+    }
+    if (is_v4_mapped(a)) {
+      if (is_v4_mapped(b)) {
+        return true;
+      }
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Reads LISTEN sockets on `port` from /proc/net/tcp and /proc/net/tcp6. The kernel table lists every
+// listener of the network namespace, whatever its user and whatever options it bound with, which a
+// connect probe cannot promise (a listener may be unreachable or not accepting).
+std::vector<Address> listeners_on_port(int port) {
+  std::vector<Address> found;
+  for (const char * table : {"/proc/net/tcp", "/proc/net/tcp6"}) {
+    std::ifstream in(table);
+    std::string line;
+    std::getline(in, line);  // header
+    while (std::getline(in, line)) {
+      std::istringstream row(line);
+      std::string slot, local, remote, state;
+      row >> slot >> local >> remote >> state;
+      const auto colon = local.find(':');
+      if (state != "0A" || colon == std::string::npos) {
+        continue;
+      }
+      if (std::stoi(local.substr(colon + 1), nullptr, 16) != port) {
+        continue;
+      }
+      const std::string hex = local.substr(0, colon);
+      Address addr{};
+      if (hex.size() == 8) {
+        in_addr a{};
+        a.s_addr = static_cast<std::uint32_t>(std::stoul(hex, nullptr, 16));
+        addr = from_v4(a);
+      } else if (hex.size() == 32) {
+        // Four 32-bit words, each printed in host (little-endian) order.
+        for (std::size_t w = 0; w < 4; ++w) {
+          const auto word = static_cast<std::uint32_t>(std::stoul(hex.substr(w * 8, 8), nullptr, 16));
+          std::memcpy(addr.data() + w * 4, &word, 4);
+        }
+      } else {
+        continue;
+      }
+      found.push_back(addr);
+    }
+  }
+  return found;
+}
+
+// The addresses `host` names. Empty when it does not resolve; `gai_error` then holds the reason.
+std::vector<Address> resolve(const std::string & host, std::string & gai_error) {
+  addrinfo hints{};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags = AI_PASSIVE;
+  addrinfo * res = nullptr;
+  const int rc = getaddrinfo(host.empty() ? nullptr : host.c_str(), nullptr, &hints, &res);
+  if (rc != 0) {
+    gai_error = gai_strerror(rc);
+    return {};
+  }
+  std::vector<Address> out;
+  for (addrinfo * ai = res; ai != nullptr; ai = ai->ai_next) {
+    if (ai->ai_family == AF_INET) {
+      out.push_back(from_v4(reinterpret_cast<sockaddr_in *>(ai->ai_addr)->sin_addr));
+    } else if (ai->ai_family == AF_INET6) {
+      Address a{};
+      std::memcpy(a.data(), &reinterpret_cast<sockaddr_in6 *>(ai->ai_addr)->sin6_addr, 16);
+      out.push_back(a);
+    }
+  }
+  freeaddrinfo(res);
+  return out;
+}
+
+// True when a live listener may hold the address:port `host`:`port` names.
+bool live_listener_holds(const std::string & host, int port) {
+  std::string unused;
+  const auto ours = resolve(host, unused);
+  for (const auto & theirs : listeners_on_port(port)) {
+    for (const auto & mine : ours) {
+      if (addresses_collide(mine, theirs)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -128,8 +272,28 @@ bool HttpServerManager::bind(const std::string & host, int port, std::string & e
   if (srv->bind_to_port(host, port)) {
     return true;
   }
-  // cpp-httplib reports no reason; errno is the last failing call's, 0 when the name did not resolve.
-  error = errno != 0 ? std::strerror(errno) : "address does not resolve or is not usable";
+  const int bind_errno = errno;
+  std::string gai_error;
+  if (resolve(host, gai_error).empty()) {
+    error = "cannot resolve the host: " + gai_error;
+    return false;
+  }
+  error = bind_errno != 0 ? std::strerror(bind_errno) : "bind failed";
+  if (bind_errno != EADDRINUSE || live_listener_holds(host, port)) {
+    return false;
+  }
+  // The address is in use with no live listener: connections an earlier process closed are in
+  // TIME_WAIT, and a process that bound with SO_REUSEPORT blocks a bind without it.
+  reuse_address_and_port(*srv);
+  errno = 0;
+  if (srv->bind_to_port(host, port)) {
+    MEDKIT_LOG_INFO(log::Logger("http_server"),
+                    "%s:%d is held only by closing connections of an earlier process on this port; "
+                    "bound with SO_REUSEPORT",
+                    host.c_str(), port);
+    return true;
+  }
+  error = std::strerror(errno != 0 ? errno : bind_errno);
   return false;
 }
 

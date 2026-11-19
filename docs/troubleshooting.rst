@@ -83,10 +83,19 @@ authentication on or opt out:
 
 **Gateway exits with "Refusing to start: cannot bind the REST API to <host>:<port>"**
 
-Nothing could listen on that address: the port is in use by another process, the
-machine does not own the address, or the name does not resolve. The message ends
-with the reason. Free the port, change ``server.port`` or fix ``server.host``. A
-bracketed IPv6 address such as ``[::1]`` is not a bind form; write ``::1``.
+Nothing could listen on that address. The message ends with the reason:
+
+- ``Address already in use``: another live process listens on the same
+  address:port (``127.0.0.1:8080`` and ``127.0.0.2:8080`` are different
+  addresses), or the kernel refused the fallback bind after the address looked
+  free. Find the process (``ss -ltnp``), stop it or change ``server.port``.
+  Connections an earlier gateway closed (TIME_WAIT) do not cause this: the
+  gateway rebinds over them and logs one line saying so.
+- ``Cannot assign requested address``: the machine does not own the address.
+  Fix ``server.host``. (A kernel with ``net.ipv4.ip_nonlocal_bind`` or
+  ``net.ipv6.ip_nonlocal_bind`` set accepts such a bind.)
+- ``cannot resolve the host``: the name does not resolve. A bracketed IPv6
+  address such as ``[::1]`` is not a bind form; write ``::1``.
 
 **Gateway exits with "Refusing to start: authentication is off"**
 
