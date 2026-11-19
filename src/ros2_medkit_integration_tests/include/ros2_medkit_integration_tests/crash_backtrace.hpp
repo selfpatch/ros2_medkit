@@ -178,10 +178,10 @@ inline void install_crash_backtrace() {
   // Blocks the other fatal signals for the duration of the handler ON THIS
   // THREAD. That is all sa_mask can do - the cross-thread case is what
   // crash_reporting_flag() above is for.
-  ::sigemptyset(&action.sa_mask);
-  ::sigaddset(&action.sa_mask, SIGSEGV);
-  ::sigaddset(&action.sa_mask, SIGBUS);
-  ::sigaddset(&action.sa_mask, SIGABRT);
+  sigemptyset(&action.sa_mask);
+  sigaddset(&action.sa_mask, SIGSEGV);
+  sigaddset(&action.sa_mask, SIGBUS);
+  sigaddset(&action.sa_mask, SIGABRT);
   // SA_RESETHAND restores the default disposition before the handler runs, so
   // returning from it re-raises the signal and the process dies the way it
   // would have without us.
