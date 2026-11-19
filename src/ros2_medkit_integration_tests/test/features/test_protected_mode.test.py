@@ -519,6 +519,16 @@ class TestBindFailure(unittest.TestCase):
         with _run(self, '127.0.0.1', FILE_AUTH_OFF) as gateway:
             gateway.assert_answers('127.0.0.1')
 
+    def test_a_port_held_by_another_gateway_ends_the_second(self):
+        with _run(self, '127.0.0.1', FILE_AUTH_OFF) as first:
+            first.assert_answers('127.0.0.1')
+            with _run(self, '127.0.0.1', FILE_AUTH_OFF, port=first.port) as second:
+                second.assert_bind_failed('127.0.0.1')
+            self.assertEqual(_listener_pids(first.port) <= _tree(first.pid), True)
+            self.assertEqual(
+                requests.get(f'http://127.0.0.1:{first.port}{API_BASE_PATH}/health',
+                             timeout=15).status_code in (200, 401, 403), True)
+
     def test_an_address_the_machine_does_not_own_ends_the_gateway(self):
         for host in UNBINDABLE_HOSTS:
             with self.subTest(host=host):

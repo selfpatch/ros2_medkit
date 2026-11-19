@@ -14,6 +14,8 @@
 
 #include "ros2_medkit_gateway/core/http/http_server.hpp"
 
+#include <sys/socket.h>
+
 #include <cerrno>
 #include <cstring>
 #include <stdexcept>
@@ -21,6 +23,20 @@
 #include "ros2_medkit_gateway/core/logging.hpp"
 
 namespace ros2_medkit_gateway {
+
+namespace {
+
+// SO_REUSEADDR only: it lets a restarted gateway rebind over TIME_WAIT. cpp-httplib's
+// default sets SO_REUSEPORT, which lets a second gateway bind a port a first one
+// already serves.
+void reuse_address_only(httplib::Server & srv) {
+  srv.set_socket_options([](socket_t sock) {
+    int yes = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const void *>(&yes), sizeof(yes));
+  });
+}
+
+}  // namespace
 
 HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t thread_pool_size,
                                      std::time_t keep_alive_timeout_sec)
@@ -39,6 +55,7 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t t
     // Configure additional TLS settings
     configure_tls();
     apply_thread_pool(*ssl_server_);
+    reuse_address_only(*ssl_server_);
     apply_keep_alive(*ssl_server_);
 
     MEDKIT_LOG_INFO(log::Logger("http_server"), "TLS/HTTPS enabled - cert: %s, min_version: %s",
@@ -46,6 +63,7 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t t
     // Note: key_file path intentionally not logged for security reasons
   } else {
     server_ = std::make_unique<httplib::Server>();
+    reuse_address_only(*server_);
     apply_thread_pool(*server_);
     apply_keep_alive(*server_);
     MEDKIT_LOG_DEBUG(log::Logger("http_server"), "TLS/HTTPS disabled - using plain HTTP");
@@ -57,6 +75,7 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t t
         "Ensure CPPHTTPLIB_OPENSSL_SUPPORT is defined.");
   }
   server_ = std::make_unique<httplib::Server>();
+  reuse_address_only(*server_);
   apply_thread_pool(*server_);
   apply_keep_alive(*server_);
 #endif
