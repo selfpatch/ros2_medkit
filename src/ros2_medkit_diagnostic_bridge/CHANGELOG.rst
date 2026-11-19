@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_diagnostic_bridge
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.2 (2026-11-19)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.1 (2026-11-18)
 ------------------
 * Reporter parameters out of range fall back to their defaults with a warning: a ``default_threshold`` above INT_MAX falls back to 3 and a ``bypass_severity`` of 256 to 2. 0.7.0 narrowed them to 1 and 0, so a WARN went through at once (`#739 <https://github.com/selfpatch/ros2_medkit/pull/739>`_)

@@ -21,7 +21,7 @@ namespace ros2_medkit_gateway {
 #ifdef GATEWAY_VERSION_STRING
 constexpr const char * kGatewayVersion = GATEWAY_VERSION_STRING;
 #else
-constexpr const char * kGatewayVersion = "0.7.1";
+constexpr const char * kGatewayVersion = "0.7.2";
 #endif
 
 /// SOVD specification version

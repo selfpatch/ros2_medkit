@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_cmake
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.2 (2026-11-19)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.1 (2026-11-18)
 ------------------
 * Test support: shared memory of killed Fast DDS participants is reclaimed after each test, ``fastdds`` is run through ``sh`` when its launcher has no shebang, and a failed clean is reported (`#708 <https://github.com/selfpatch/ros2_medkit/pull/708>`_)

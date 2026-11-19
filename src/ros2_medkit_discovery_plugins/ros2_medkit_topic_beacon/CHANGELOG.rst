@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_topic_beacon
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.2 (2026-11-19)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.1 (2026-11-18)
 ------------------
 * Configuration values are bounded: ``max_messages_per_second`` at 10000 (0.7.0 took any larger value, ``+inf`` too), ``beacon_ttl_sec`` and ``beacon_expiry_sec`` at 2147483647 s, and ``max_hints`` at 1..2147483647 (`#660 <https://github.com/selfpatch/ros2_medkit/pull/660>`_)

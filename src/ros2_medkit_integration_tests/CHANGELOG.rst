@@ -2,6 +2,11 @@
 Changelog for package ros2_medkit_integration_tests
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.2 (2026-11-19)
+------------------
+* The package builds as a binary package again. ``topics_test_plugin`` and its lookup of ``ros2_medkit_gateway`` are inside ``BUILD_TESTING``, because the gateway is a ``test_depend``. 0.7.1 failed to build on the buildfarm for Jazzy and Lyrical (`#805 <https://github.com/selfpatch/ros2_medkit/issues/805>`_). The binary package no longer installs ``topics_test_plugin`` (`#806 <https://github.com/selfpatch/ros2_medkit/pull/806>`_)
+* Contributors: @mfaferek93
+
 0.7.1 (2026-11-18)
 ------------------
 * Test only: coverage for recording manifests and per-file downloads, the gateway's helper nodes, fault lists on a chain of gateways, trigger and subscription paths, and steadier timing in the launch tests

@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_opcua
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.2 (2026-11-19)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.1 (2026-11-18)
 ------------------
 * **Breaking:** read-only is a property of the build, not a setting. The default build and the published images carry no controller write path: a write the build does not carry is refused with ``501``, ``POST /apps/{id}/x-plc-operations/{op}`` is not registered and answers ``404``, and ``acknowledge_fault`` and ``confirm_fault`` are refused. ``x-plc-status`` has a new field ``write_capable``. A warning is logged only for a write setting someone wrote. A write-capable plugin is built with ``-DMEDKIT_OPCUA_READ_ONLY=OFF`` (`#657 <https://github.com/selfpatch/ros2_medkit/pull/657>`_)

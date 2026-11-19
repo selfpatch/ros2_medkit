@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_fault_reporter
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.2 (2026-11-19)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.1 (2026-11-18)
 ------------------
 * Delivery of a report is confirmed, and a report without a response is sent again. ``fault_reporter.delivery.ack_timeout_sec`` sets how long a response is awaited, a queued report is dropped after ``fault_reporter.delivery.max_attempts`` (10) tries, and a new report is dropped when ``fault_reporter.delivery.max_pending`` (1024) reports are queued. A report made while the service is not ready is dropped. When a reporter is destroyed, the ROS context takes its pending reports and keeps sending them (`#764 <https://github.com/selfpatch/ros2_medkit/pull/764>`_)

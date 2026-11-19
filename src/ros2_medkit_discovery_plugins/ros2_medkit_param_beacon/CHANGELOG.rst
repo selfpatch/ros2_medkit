@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_param_beacon
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.2 (2026-11-19)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.1 (2026-11-18)
 ------------------
 * Each parameter list and get call gives up after ``param_timeout_sec``, and the plugin backs off a node that does not answer. In 0.7.0 one node whose parameter services never answered stalled the polling. Duration settings and ``max_hints`` are bounded (`#660 <https://github.com/selfpatch/ros2_medkit/pull/660>`_)

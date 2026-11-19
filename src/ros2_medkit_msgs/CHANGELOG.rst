@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_msgs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.2 (2026-11-19)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.1 (2026-11-18)
 ------------------
 * ``Snapshot``, ``GetRosbag`` and ``ListRosbags`` define a recording's size as the sum of the storage files its metadata names. For a split recording that is more than the first file the download serves. The fields are unchanged (`#679 <https://github.com/selfpatch/ros2_medkit/pull/679>`_)
