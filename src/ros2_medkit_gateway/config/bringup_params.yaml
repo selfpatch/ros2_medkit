@@ -26,11 +26,12 @@ fault_manager:
     # Black-box rosbag capture: a crash-safe ring buffer flushed on fault confirmation.
     snapshots.rosbag.enabled: true
 
-    # "all", not the parameter default of "entity": this preset runs without a
-    # manifest, and its faults come from the bridges. "entity" writes the topics
-    # of the node that reported the fault, which for a bridged fault is the
-    # bridge itself, so a /diagnostics fault gets a bag with /diagnostics only.
-    # Image and point cloud topics stay out (snapshots.rosbag.exclude_sensor_topics).
+    # "all", not the parameter default of "entity": "entity" writes the topics of
+    # the node that reported the fault. The diagnostic_bridge reports a fault as
+    # itself, so a /diagnostics fault gets a bag with /diagnostics only. The log
+    # and action status bridges report with the node the fault is about.
+    # Topics whose name contains /image, /points, /depth or /compressed stay out
+    # (snapshots.rosbag.exclude_sensor_topics). The message type is not looked at.
     snapshots.rosbag.topics: all
 
 # The bridges run with their own config/<bridge>.yaml defaults; they are toggled

@@ -4,7 +4,7 @@ Changelog for package ros2_medkit_gateway
 
 0.7.2 (2026-11-19)
 ------------------
-* The bringup preset (``config/bringup_params.yaml``) sets ``snapshots.rosbag.topics`` to ``all``. With the parameter default ``entity`` a fault that comes through a bridge was recorded with the bridge's own topics only, so a ``/diagnostics`` fault got a recording with ``/diagnostics`` and nothing about the robot. The parameter default stays ``entity``, and image and point cloud topics stay out of the recording. A recording made with the preset is larger than before (`#804 <https://github.com/selfpatch/ros2_medkit/pull/804>`_)
+* The bringup preset (``config/bringup_params.yaml``) sets ``snapshots.rosbag.topics`` to ``all``. With the parameter default ``entity`` a fault from the diagnostic_bridge was recorded with the bridge's own topics only, so a ``/diagnostics`` fault got a recording with ``/diagnostics`` and nothing about the robot. The parameter default stays ``entity``, and topics whose name contains ``/image``, ``/points``, ``/depth`` or ``/compressed`` stay out of the recording. A recording made with the preset is larger than before (`#804 <https://github.com/selfpatch/ros2_medkit/pull/804>`_)
 * Contributors: @mfaferek93
 
 0.7.1 (2026-11-18)
