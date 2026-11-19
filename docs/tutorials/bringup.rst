@@ -75,6 +75,12 @@ launch arguments:
 
 .. note::
 
+   The launch ends when the gateway exits, with a non-zero exit code when the
+   gateway failed (for example, when it refuses a non-loopback ``server_host``
+   without authentication).
+
+.. note::
+
    In a container without ``--network host``, ``127.0.0.1`` is the container's
    own loopback: the published port answers with ``Connection reset by peer``
    or an empty reply. Run ``bringup.launch.py server_host:=0.0.0.0 allow_unauthenticated_remote:=true``

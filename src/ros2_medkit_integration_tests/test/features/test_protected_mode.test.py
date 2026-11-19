@@ -111,19 +111,18 @@ def _listening():
 
 
 class _Process:
-    """A subprocess whose output is read until a marker, or until it exits.
+    """A subprocess whose output is read until the ready line, or until it exits.
 
-    `rc` is the exit code when the process ended before `until` showed, else
+    `rc` is the exit code when the process ended before the ready line, else
     None. Leaving the block kills the process group.
     """
 
-    def __init__(self, testcase, command, env_extra=None, timeout=60, until=READY_LINE):
+    def __init__(self, testcase, command, env_extra=None, timeout=60):
         self.testcase = testcase
         self.command = command
         self.env = {k: v for k, v in os.environ.items() if not k.startswith('MEDKIT_')}
         self.env.update(env_extra or {})
         self.timeout = timeout
-        self.until = until
         self.rc = None
         self.ready = False
         self._chunks = []
@@ -151,7 +150,7 @@ class _Process:
         self._process = subprocess.Popen(
             self.command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             env=self.env, start_new_session=True)
-        outcome = self._read_until(self.until)
+        outcome = self._read_until(READY_LINE)
         self.ready = READY_LINE in self.output
         if outcome == 'exit':
             self._process.wait(timeout=15)
@@ -317,10 +316,9 @@ class TestLaunchArgument(unittest.TestCase):
         with _Process(self, self._launch('bringup.launch.py', 'enable_log_bridge:=false',
                                          'enable_action_status_bridge:=false',
                                          'enable_fault_manager:=false'),
-                      timeout=90, until=REFUSAL) as launched:
-            self.assertIn(REFUSAL, launched.output)
-            self.assertNotIn(READY_LINE, launched.output)
-            self.assertFalse(_listening())
+                      timeout=90) as launched:
+            # The launch ends, and fails, with the gateway.
+            launched.assert_refused('0.0.0.0')
 
     def test_bringup_with_the_argument_starts(self):
         with _Process(self, self._launch('bringup.launch.py', 'allow_unauthenticated_remote:=true',
@@ -332,9 +330,8 @@ class TestLaunchArgument(unittest.TestCase):
 
     def test_gateway_launch_pair(self):
         command = self._launch('gateway.launch.py')
-        with _Process(self, command, timeout=90, until=REFUSAL) as launched:
-            self.assertIn(REFUSAL, launched.output)
-            self.assertNotIn(READY_LINE, launched.output)
+        with _Process(self, command, timeout=90) as launched:
+            launched.assert_refused('0.0.0.0')
         command = self._launch('gateway.launch.py', 'allow_unauthenticated_remote:=true')
         with _Process(self, command, timeout=90) as launched:
             launched.assert_started('0.0.0.0', expect_open_warning=True)

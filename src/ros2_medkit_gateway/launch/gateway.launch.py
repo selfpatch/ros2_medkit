@@ -18,7 +18,8 @@ from ament_index_python.packages import get_package_prefix
 from ament_index_python.packages import get_package_share_directory
 from ament_index_python.packages import PackageNotFoundError
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventHandler, Shutdown
+from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -130,13 +131,26 @@ def generate_launch_description():
         param_overrides.update(cors_override(
             LaunchConfiguration('cors_allowed_origins').perform(context),
             LaunchConfiguration('config_file').perform(context), default_config))
-        return [Node(
+        gateway = Node(
             package='ros2_medkit_gateway',
             executable='gateway_node',
             name='ros2_medkit_gateway',
             output='screen',
             parameters=[default_config, LaunchConfiguration('config_file'), param_overrides],
-            arguments=['--ros-args', '--log-level', 'info'])]
+            arguments=['--ros-args', '--log-level', 'info'])
+
+        def _gateway_exited(event, context):
+            # A stack whose gateway is gone serves nothing: end the launch, and fail
+            # it when the gateway failed (a refused start included). An exit during
+            # the launch's own shutdown is not a failure.
+            if context.is_shutdown:
+                return None
+            if event.returncode:
+                raise RuntimeError(f'gateway_node exited with code {event.returncode}')
+            return [Shutdown(reason='gateway_node exited')]
+
+        on_exit = OnProcessExit(target_action=gateway, on_exit=_gateway_exited)
+        return [gateway, RegisterEventHandler(on_exit)]
 
     return LaunchDescription([
         declare_override_config_arg,
