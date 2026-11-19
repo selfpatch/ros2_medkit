@@ -23,9 +23,15 @@ fault_manager:
     healing_enabled: true
     healing_threshold: 0
 
-    # Black-box rosbag capture: a crash-safe, entity-scoped ring buffer flushed on
-    # fault confirmation. Produces a non-empty bag on the happy path.
+    # Black-box rosbag capture: a crash-safe ring buffer flushed on fault confirmation.
     snapshots.rosbag.enabled: true
+
+    # "all", not the parameter default of "entity": this preset runs without a
+    # manifest, and its faults come from the bridges. "entity" writes the topics
+    # of the node that reported the fault, which for a bridged fault is the
+    # bridge itself, so a /diagnostics fault gets a bag with /diagnostics only.
+    # Image and point cloud topics stay out (snapshots.rosbag.exclude_sensor_topics).
+    snapshots.rosbag.topics: all
 
 # The bridges run with their own config/<bridge>.yaml defaults; they are toggled
 # on/off with the enable_* launch args. Tune their runtime cost in those configs
