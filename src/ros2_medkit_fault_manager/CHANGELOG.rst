@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_fault_manager
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.2 (2026-11-19)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.1 (2026-11-18)
 ------------------
 * Recordings: every bag gets a unique path and the recording just stored is kept, a recording is hashed and stored off the executor thread, and a clear that arrives while a row is being stored takes that row (`#785 <https://github.com/selfpatch/ros2_medkit/pull/785>`_)

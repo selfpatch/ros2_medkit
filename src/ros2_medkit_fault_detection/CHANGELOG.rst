@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_fault_detection
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.2 (2026-11-19)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.1 (2026-11-18)
 ------------------
 * A rule can wait before it raises a fault: for a number of samples or for a time. For a source that only reports changes, a samples rule becomes a wait (`#767 <https://github.com/selfpatch/ros2_medkit/pull/767>`_)

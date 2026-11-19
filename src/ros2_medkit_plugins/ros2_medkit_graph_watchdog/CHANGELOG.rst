@@ -2,6 +2,10 @@
 Changelog for package ros2_medkit_graph_watchdog
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.7.2 (2026-11-19)
+------------------
+* No changes. Version aligned with the rest of the stack
+
 0.7.1 (2026-11-18)
 ------------------
 * Presence ownership is kept only on a measured active state (`#732 <https://github.com/selfpatch/ros2_medkit/pull/732>`_)

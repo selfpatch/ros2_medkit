@@ -42,8 +42,8 @@ project = 'ros2_medkit'
 project_copyright = f'{datetime.now().year}, selfpatch'
 author = 'selfpatch Team'
 
-version = '0.7.1'
-release = '0.7.1'
+version = '0.7.2'
+release = '0.7.2'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
