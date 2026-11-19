@@ -118,6 +118,17 @@ jobs:
                   python3 src/ros2_medkit_plugins/ros2_medkit_opcua/test/inspect_build_variant.py \
                     "$RUNNER_TEMP/plugin-from-image.so" --expect read-only
 
+            # The entrypoint and the config layers are shell and Dockerfile, which
+            # no colcon test reaches. Runs on every architecture's own runner,
+            # because each digest is a separate image that the merge job tags.
+            # The merge job needs this job, so a failing digest is never tagged.
+            - name: Check the image's auth posture
+              run: |
+                  set -euo pipefail
+                  img=${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}@${{ steps.build.outputs.digest }}
+                  SMOKE_PREFIX="medkit-smoke-${{ matrix.ros_distro }}-${PLATFORM_PAIR}" \
+                    scripts/smoke_image_auth_posture.sh "$img"
+
             - name: Export digest
               run: |
                   mkdir -p /tmp/digests

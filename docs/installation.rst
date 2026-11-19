@@ -157,7 +157,9 @@ ROS 2 distributions:
 
 The gateway will be available at http://localhost:8080/api/v1/health.
 
-To use a custom configuration, mount a params file:
+To close the container, set ``MEDKIT_JWT_SECRET`` and ``MEDKIT_CLIENTS`` (see
+:doc:`tutorials/docker`). To use a custom configuration, mount a params file; it
+is applied on top of the image's own settings:
 
 .. code-block:: bash
 
