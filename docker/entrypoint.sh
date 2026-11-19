@@ -33,9 +33,11 @@ export MEDKIT_JWT_SECRET MEDKIT_CLIENTS MEDKIT_AUTH_DISABLED
 #   - empty, or starts with "-": run the gateway node with the three config
 #     layers first and the caller's arguments after them. rclcpp applies node
 #     entries in order of first appearance, so a caller's `-p` wins over the files.
+#     The executable is exec'd directly: `ros2 run` would stay as its parent and
+#     not pass the container's SIGTERM on.
 #   - a full command (`ros2 launch ...`, `bash`): exec it as-is.
 if [ -z "$1" ] || [ "${1#-}" != "$1" ]; then
-  exec ros2 run ros2_medkit_gateway gateway_node \
+  exec "${COLCON_WS}/install/ros2_medkit_gateway/lib/ros2_medkit_gateway/gateway_node" \
     --ros-args \
     --params-file /etc/ros2_medkit/base.yaml \
     --params-file /etc/ros2_medkit/container.yaml \

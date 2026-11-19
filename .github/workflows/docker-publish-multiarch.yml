@@ -126,7 +126,7 @@ jobs:
               run: |
                   set -euo pipefail
                   img=${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}@${{ steps.build.outputs.digest }}
-                  SMOKE_PREFIX="medkit-smoke-${{ matrix.ros_distro }}-${PLATFORM_PAIR}" \
+                  SMOKE_PREFIX="medkit-smoke-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.ros_distro }}-${PLATFORM_PAIR}" \
                     scripts/smoke_image_auth_posture.sh "$img"
 
             - name: Export digest
@@ -200,9 +200,12 @@ jobs:
                   # Both arches or no tag: never publish a single-arch image.
                   n=$(find . -maxdepth 1 -type f | wc -l)
                   [ "$n" -eq 2 ] || { echo "expected 2 digests, found $n" >&2; exit 1; }
-                  docker buildx imagetools create \
-                    $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-                    $(printf '${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}@sha256:%s ' *)
+                  mapfile -t tag_args < <(jq -r '.tags[] | "-t", .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+                  refs=()
+                  for d in *; do
+                    refs+=("${{ env.REGISTRY }}/${{ github.repository_owner }}/ros2_medkit-${{ matrix.ros_distro }}@sha256:$d")
+                  done
+                  docker buildx imagetools create "${tag_args[@]}" "${refs[@]}"
 
             - name: Inspect manifest
               run: |

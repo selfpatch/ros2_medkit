@@ -18,7 +18,8 @@
 # of that.
 #
 # Usage: scripts/smoke_image_auth_posture.sh <image reference>
-#        SMOKE_PREFIX=<container name prefix> (default medkit-smoke)
+#        SMOKE_PREFIX=<container name prefix> (default medkit-smoke-<pid>-<random>,
+#        unique per run: the run removes only the containers it created)
 #
 # Two instruments, both read from the running gateway and not from the command
 # given to it: the HTTP answer from the container's bridge address, and the
@@ -36,7 +37,7 @@
 set -euo pipefail
 
 IMAGE="${1:?usage: $0 <image reference>}"
-PREFIX="${SMOKE_PREFIX:-medkit-smoke}"
+PREFIX="${SMOKE_PREFIX:-medkit-smoke-$$-$RANDOM}"
 SECRET="smoke_image_posture_secret_of_at_least_32_chars"
 CLIENT_ID="smoke"
 CLIENT_SECRET="smoke_client_secret"
@@ -44,15 +45,12 @@ CLIENTS="${CLIENT_ID}:${CLIENT_SECRET}:admin"
 WORKDIR="$(mktemp -d)"
 DEADLINE_S=120
 
-# Fixed list: cases capture output in command substitutions, so a list built
-# while they run would be empty when the trap fires.
-CONTAINERS=()
-for n in open closed override disabled mount hostmount argonly cors corsmount launch launchclosed; do
-  CONTAINERS+=("${PREFIX}-${n}")
-done
+# Names of the containers this run created. Appended to in the main shell only
+# (never inside a command substitution), so the trap sees all of them.
+CREATED=()
 
 cleanup() {
-  for name in "${CONTAINERS[@]}"; do
+  for name in "${CREATED[@]}"; do
     docker rm -f "$name" >/dev/null 2>&1 || true
   done
   rm -rf "$WORKDIR"
@@ -90,8 +88,12 @@ start_container() {
     shift
   done
   [ $# -gt 0 ] && shift
-  docker rm -f "$name" >/dev/null 2>&1 || true
+  if docker inspect "$name" >/dev/null 2>&1; then
+    echo "container name $name is already in use; set SMOKE_PREFIX" >&2
+    exit 2
+  fi
   docker create --name "$name" "${flags[@]}" "$IMAGE" "$@" >/dev/null
+  CREATED+=("$name")
   if [ -n "${COPY_FILE:-}" ]; then
     docker cp "$COPY_FILE" "$name:${COPY_DEST:?COPY_DEST required with COPY_FILE}"
   fi
@@ -167,6 +169,28 @@ expect_token_works() {
   expect "$label: GET /areas with the token" 200 "$code"
 }
 
+# Checks beyond GET /areas for a closed container: the health probe is refused,
+# and so is a write. DELETE /api/v1/faults is the write because it exists on a
+# gateway with nothing in it (a fixed route, no entity needed) and needs the
+# OPERATOR role, which the admin client has. With the token it must answer
+# something other than 401.
+expect_closed_routes() {
+  local label=$1 name=$2 ip token code
+  ip=$(ip_of "$name")
+  code=$(curl -s -o /dev/null -w '%{http_code}' "http://$ip:8080/api/v1/health") || true
+  expect "$label: anonymous GET /health" 401 "$code"
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "http://$ip:8080/api/v1/faults") || true
+  expect "$label: anonymous DELETE /faults" 401 "$code"
+  token=$(token_for "$name")
+  code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $token" \
+    "http://$ip:8080/api/v1/faults") || true
+  if [ -n "$token" ] && [ "$code" != "401" ] && [ "$code" != "000" ]; then
+    ok "$label: DELETE /faults with the token -> $code (not 401)"
+  else
+    fail "$label: DELETE /faults with the token -> ${code:-<none>}, token '${token:+issued}'"
+  fi
+}
+
 # A file that turns authentication off and names a secret of its own.
 cat > "$WORKDIR/auth-off.yaml" <<'YAML'
 ros2_medkit_gateway:
@@ -196,6 +220,21 @@ YAML
 chmod 755 "$WORKDIR"
 chmod a+r "$WORKDIR"/*.yaml
 
+# The image's own configuration, read out of the image under test. Config.Cmd is
+# empty and the entrypoint carries the layers; container.yaml lists exactly the
+# two default web UI origins, so an added origin fails here.
+cmd_json=$(docker image inspect -f '{{json .Config.Cmd}}' "$IMAGE")
+case "$cmd_json" in
+  null|'[]') ok "image Config.Cmd is empty -> $cmd_json" ;;
+  *) fail "image Config.Cmd -> $cmd_json, expected empty" ;;
+esac
+expect "image Config.Entrypoint" '["/entrypoint.sh"]' "$(docker image inspect -f '{{json .Config.Entrypoint}}' "$IMAGE")"
+docker create --name "${PREFIX}-config" "$IMAGE" >/dev/null
+CREATED+=("${PREFIX}-config")
+docker cp "${PREFIX}-config:/etc/ros2_medkit/container.yaml" "$WORKDIR/container.yaml"
+origins=$(sed -n '/allowed_origins:/,$p' "$WORKDIR/container.yaml" | sed -n 's/^[[:space:]]*-[[:space:]]*//p' | tr -d '"' | tr '\n' ' ')
+expect "image container.yaml cors.allowed_origins" "http://localhost:3000 http://localhost:5173 " "$origins"
+
 # C2: no environment, the image answers anonymous requests.
 start_container "${PREFIX}-open" --
 expect "no environment: anonymous GET /areas" 200 "$(wait_code "${PREFIX}-open" 8080 /api/v1/areas)"
@@ -206,6 +245,7 @@ expect_contains "no environment: startup line" "REST API at 0.0.0.0:8080, backst
 start_container "${PREFIX}-closed" -e MEDKIT_JWT_SECRET="$SECRET" -e MEDKIT_CLIENTS="$CLIENTS" --
 expect "MEDKIT_JWT_SECRET: anonymous GET /areas" 401 "$(wait_code "${PREFIX}-closed" 8080 /api/v1/areas)"
 expect_token_works "MEDKIT_CLIENTS" "${PREFIX}-closed"
+expect_closed_routes "MEDKIT_JWT_SECRET" "${PREFIX}-closed"
 
 # C3: the environment beats a mounted file that says auth off.
 COPY_FILE="$WORKDIR/auth-off.yaml" COPY_DEST=/etc/ros2_medkit/params.yaml \
@@ -213,6 +253,7 @@ COPY_FILE="$WORKDIR/auth-off.yaml" COPY_DEST=/etc/ros2_medkit/params.yaml \
 expect "environment over a mounted file with auth off: anonymous GET /areas" 401 \
   "$(wait_code "${PREFIX}-override" 8080 /api/v1/areas)"
 expect_token_works "environment over a mounted file" "${PREFIX}-override"
+expect_closed_routes "environment over a mounted file" "${PREFIX}-override"
 
 # C4: MEDKIT_AUTH_DISABLED=1 opens the image even with a secret.
 start_container "${PREFIX}-disabled" -e MEDKIT_JWT_SECRET="$SECRET" -e MEDKIT_CLIENTS="$CLIENTS" \
@@ -267,6 +308,24 @@ expect "launch command: layer origin is not applied" "<none>" "$(acao_for "${PRE
 start_container "${PREFIX}-launchclosed" -e MEDKIT_JWT_SECRET="$SECRET" -e MEDKIT_CLIENTS="$CLIENTS" -- bash -c "$LAUNCH_CMD"
 expect "launch command with MEDKIT_JWT_SECRET: anonymous GET /areas" 401 "$(wait_code "${PREFIX}-launchclosed" 8080 /api/v1/areas)"
 expect_token_works "launch command with MEDKIT_CLIENTS" "${PREFIX}-launchclosed"
+expect_closed_routes "launch command with MEDKIT_JWT_SECRET" "${PREFIX}-launchclosed"
+
+# The gateway gets the container's SIGTERM itself and shuts down cleanly: exit
+# code 0, its own shutdown line in the log, and `docker stop` returns well before
+# its timeout (a SIGKILL after the timeout exits 137).
+start_container "${PREFIX}-stop" --
+expect "stop: container answers" 200 "$(wait_code "${PREFIX}-stop" 8080 /api/v1/health)"
+stop_timeout=30
+t0=$(date +%s%N)
+docker stop -t "$stop_timeout" "${PREFIX}-stop" >/dev/null
+elapsed_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+expect "stop: exit code" 0 "$(docker inspect -f '{{.State.ExitCode}}' "${PREFIX}-stop")"
+expect_contains "stop: gateway's shutdown line" "Shutting down ROS 2 Medkit Gateway" "$(docker logs "${PREFIX}-stop" 2>&1)"
+if [ "$elapsed_ms" -lt $((stop_timeout * 1000 / 2)) ]; then
+  ok "stop: returned in ${elapsed_ms} ms, before the ${stop_timeout} s timeout"
+else
+  fail "stop: took ${elapsed_ms} ms of a ${stop_timeout} s timeout"
+fi
 
 echo "image posture: $passed passed, $failures failed"
 [ "$failures" -eq 0 ]

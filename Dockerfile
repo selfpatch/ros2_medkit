@@ -170,6 +170,10 @@ COPY --from=builder /root/ws/install/ ${COLCON_WS}/install/
 #   params.yaml     the mount point; the image's copy repeats container.yaml
 # Arguments given to `docker run` come after all three. Mounting a file at
 # params.yaml replaces only that copy; base.yaml and container.yaml still apply.
+# The layers apply when the container runs its default command, or arguments
+# that start with a ROS flag. A command such as `bash -c ...` runs as given,
+# without them. All three files are keyed by the node's full name
+# (/ros2_medkit_gateway); a renamed node or namespace gets none of them.
 COPY src/ros2_medkit_gateway/config/gateway_params.yaml /etc/ros2_medkit/base.yaml
 COPY docker/container_params.yaml /etc/ros2_medkit/container.yaml
 COPY docker/container_params.yaml /etc/ros2_medkit/params.yaml

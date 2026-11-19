@@ -85,7 +85,8 @@ Running the container closed
 ----------------------------
 
 Set ``MEDKIT_JWT_SECRET`` and ``MEDKIT_CLIENTS`` and the container requires a
-token on every request. The secret signs the tokens. Each client is written
+token on every route except ``/api/v1/auth/*``, which answers without one so a
+client can obtain its token. The secret signs the tokens. Each client is written
 ``id:secret:role`` and exchanges its credential for a token at
 ``POST /api/v1/auth/authorize``:
 
@@ -121,7 +122,7 @@ params file, including a mounted one that says ``auth.enabled: false``:
 See :doc:`authentication` for the entry syntax, the refusal rules and the
 startup warnings.
 
-A closed container answers ``401`` to an unauthenticated health probe, so use a
+A closed container answers ``401`` to an unauthenticated ``/api/v1/health`` probe, so use a
 probe that accepts it (see `Health Checks`_).
 
 Custom Configuration
@@ -143,9 +144,24 @@ ROS argument flag such as ``--ros-args``. A command that starts with anything
 else (``ros2 launch ...``, ``bash -c '...'``) runs exactly as given and takes its
 configuration from its own arguments.
 
+The three files are keyed by the node's full name, ``/ros2_medkit_gateway``. A
+node renamed with ``-r __node:=...`` or moved with ``-r __ns:=...`` gets none of
+them, so such a container needs a params file keyed on its new full name.
+
 A mounted file names only the keys it changes and keeps every other layer's
 value. It can set ``server.host`` and ``refresh_interval_ms`` again. A file that
-sets ``cors.allowed_origins`` replaces the list. A wildcard origin is not used.
+sets ``cors.allowed_origins`` replaces the list. To turn CORS off from a mounted
+file, set ``allowed_origins: [""]``: the parameter is a typed string array and
+``[]`` stops the gateway at start. A wildcard origin is not used.
+
+.. note::
+
+   Upgrading: a file mounted at ``/etc/ros2_medkit/params.yaml`` used to replace
+   the image's own file, so a file without ``server.host`` gave the compiled
+   default ``127.0.0.1``. It now inherits ``server.host: "0.0.0.0"`` and the two
+   CORS origins from the container layer. A container with such a file and
+   ``--network host`` now listens on every interface. To keep the old behaviour,
+   put ``server.host: "127.0.0.1"`` in the mounted file.
 
 .. note::
 
@@ -193,9 +209,8 @@ override changes the key it names and nothing else:
    docker run -p 9090:9090 ghcr.io/selfpatch/ros2_medkit-jazzy:latest \
      --ros-args -p server.port:=9090
 
-The layers are keyed on the default node name ``ros2_medkit_gateway``. A node
-renamed with ``--ros-args -r __node:=other`` gets none of them and needs a params
-file keyed on its new name.
+If the node is renamed or moved to another namespace, none of the image's files
+apply (see above).
 
 External Plugins
 ----------------
@@ -320,7 +335,8 @@ The image enables CORS for the default web UI origins (``http://localhost:3000``
 and ``http://localhost:5173``). A wildcard is deliberately not used: with auth
 disabled and write methods enabled it would let any site drive cross-origin
 writes. A mounted file that sets ``cors.allowed_origins`` replaces the whole
-list, so name every origin you need:
+list, so name every origin you need (``allowed_origins: [""]`` turns CORS off;
+``[]`` stops the gateway at start):
 
 .. code-block:: yaml
 
