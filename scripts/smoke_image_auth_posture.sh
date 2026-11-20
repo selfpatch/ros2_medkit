@@ -29,6 +29,9 @@
 #
 # Every refusal is paired with an answer in the same run (the open container,
 # the token, an allowed origin), so "nothing answered" cannot pass for "refused".
+# The image binds 0.0.0.0, so without MEDKIT_JWT_SECRET or MEDKIT_AUTH_DISABLED=1
+# the gateway refuses to start (protected mode); the cases that need an open
+# gateway pass MEDKIT_AUTH_DISABLED=1.
 #
 # The bridge address is used because a published port is not reachable from
 # every shell that has a docker client. Files go in with `docker cp` because a
@@ -111,7 +114,7 @@ wait_code() {
   local ip code="000" end=$((SECONDS + DEADLINE_S))
   ip=$(ip_of "$name")
   while [ "$SECONDS" -lt "$end" ]; do
-    code=$(curl -s -o /dev/null -w '%{http_code}' "http://$ip:$port$path") || true
+    code=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' "http://$ip:$port$path") || true
     [ -n "$code" ] && [ "$code" != "000" ] && break
     sleep 1
   done
@@ -139,7 +142,7 @@ startup_line() {
 acao_for() {
   local name=$1 origin=$2 ip headers
   ip=$(ip_of "$name")
-  headers=$(curl -s -D - -o /dev/null -H "Origin: $origin" "http://$ip:8080/api/v1/health") || true
+  headers=$(curl --noproxy '*' -s -D - -o /dev/null -H "Origin: $origin" "http://$ip:8080/api/v1/health") || true
   if [ -z "$headers" ]; then echo "<no answer>"; return; fi
   echo "$headers" | tr -d '\r' | sed -n 's/^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin:[[:space:]]*//p' | head -1 \
     | { read -r v || true; echo "${v:-<none>}"; }
@@ -148,7 +151,7 @@ acao_for() {
 token_for() {
   local ip
   ip=$(ip_of "$1")
-  curl -s -X POST "http://$ip:8080/api/v1/auth/authorize" \
+  curl --noproxy '*' -s -X POST "http://$ip:8080/api/v1/auth/authorize" \
     -H 'Content-Type: application/json' \
     -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"$CLIENT_ID\",\"client_secret\":\"$CLIENT_SECRET\"}" \
     | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
@@ -165,7 +168,7 @@ expect_token_works() {
     return
   fi
   ip=$(ip_of "$name")
-  code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://$ip:8080/api/v1/areas") || true
+  code=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "http://$ip:8080/api/v1/areas") || true
   expect "$label: GET /areas with the token" 200 "$code"
 }
 
@@ -177,18 +180,65 @@ expect_token_works() {
 expect_closed_routes() {
   local label=$1 name=$2 ip token code
   ip=$(ip_of "$name")
-  code=$(curl -s -o /dev/null -w '%{http_code}' "http://$ip:8080/api/v1/health") || true
+  code=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' "http://$ip:8080/api/v1/health") || true
   expect "$label: anonymous GET /health" 401 "$code"
-  code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "http://$ip:8080/api/v1/faults") || true
+  code=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' -X DELETE "http://$ip:8080/api/v1/faults") || true
   expect "$label: anonymous DELETE /faults" 401 "$code"
   token=$(token_for "$name")
-  code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $token" \
+  code=$(curl --noproxy '*' -s -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer $token" \
     "http://$ip:8080/api/v1/faults") || true
   if [ -n "$token" ] && [ "$code" != "401" ] && [ "$code" != "000" ]; then
     ok "$label: DELETE /faults with the token -> $code (not 401)"
   else
     fail "$label: DELETE /faults with the token -> ${code:-<none>}, token '${token:+issued}'"
   fi
+}
+
+# Waits for the container to exit and checks it refused to start: a non-zero
+# exit code, the refusal in `docker logs`, and no startup line, so a container
+# that never ran cannot pass for one that refused.
+expect_refusal() {
+  local label=$1 name=$2 rc="" end=$((SECONDS + DEADLINE_S)) logs
+  while [ "$SECONDS" -lt "$end" ]; do
+    [ "$(docker inspect -f '{{.State.Running}}' "$name")" = "false" ] && break
+    sleep 1
+  done
+  rc=$(docker inspect -f '{{.State.ExitCode}}' "$name")
+  if [ "$(docker inspect -f '{{.State.Running}}' "$name")" = "true" ]; then
+    fail "$label: still running, expected a refusal"
+    return
+  fi
+  if [ "$rc" != "0" ]; then ok "$label: exit code $rc (non-zero)"; else fail "$label: exit code 0, expected non-zero"; fi
+  logs=$(docker logs "$name" 2>&1)
+  expect_contains "$label: message names the address" "server.host is 0.0.0.0," "$logs"
+  expect_contains "$label: message names the secret" "MEDKIT_JWT_SECRET" "$logs"
+  expect_contains "$label: message names the opt-out" "MEDKIT_AUTH_DISABLED=1" "$logs"
+  case "$logs" in
+    *"ready on"*) fail "$label: the log has a ready line" ;;
+    *) ok "$label: no ready line" ;;
+  esac
+}
+
+# Waits for the container to exit and checks it could not bind: a non-zero exit
+# code, a message naming host, port and reason, and no ready line.
+expect_bind_failure() {
+  local label=$1 name=$2 host=$3 port=$4 cause=$5 rc="" end=$((SECONDS + DEADLINE_S)) logs
+  while [ "$SECONDS" -lt "$end" ]; do
+    [ "$(docker inspect -f '{{.State.Running}}' "$name")" = "false" ] && break
+    sleep 1
+  done
+  if [ "$(docker inspect -f '{{.State.Running}}' "$name")" = "true" ]; then
+    fail "$label: still running, expected an exit"
+    return
+  fi
+  rc=$(docker inspect -f '{{.State.ExitCode}}' "$name")
+  if [ "$rc" != "0" ]; then ok "$label: exit code $rc (non-zero)"; else fail "$label: exit code 0, expected non-zero"; fi
+  logs=$(docker logs "$name" 2>&1)
+  expect_contains "$label: message names host and port" "cannot bind the REST API to ${host}:${port}: ${cause}" "$logs"
+  case "$logs" in
+    *"ready on"*) fail "$label: the log has a ready line" ;;
+    *) ok "$label: no ready line" ;;
+  esac
 }
 
 # A file that turns authentication off and names a secret of its own.
@@ -235,10 +285,14 @@ docker cp "${PREFIX}-config:/etc/ros2_medkit/container.yaml" "$WORKDIR/container
 origins=$(sed -n '/allowed_origins:/,$p' "$WORKDIR/container.yaml" | sed -n 's/^[[:space:]]*-[[:space:]]*//p' | tr -d '"' | tr '\n' ' ')
 expect "image container.yaml cors.allowed_origins" "http://localhost:3000 http://localhost:5173 " "$origins"
 
-# C2: no environment, the image answers anonymous requests.
-start_container "${PREFIX}-open" --
-expect "no environment: anonymous GET /areas" 200 "$(wait_code "${PREFIX}-open" 8080 /api/v1/areas)"
-expect_contains "no environment: startup line" "REST API at 0.0.0.0:8080, backstop refresh interval: 2000ms" \
+# C2: no environment, the image refuses to start.
+start_container "${PREFIX}-bare" --
+expect_refusal "no environment" "${PREFIX}-bare"
+
+# C2: MEDKIT_AUTH_DISABLED=1 opens the image.
+start_container "${PREFIX}-open" -e MEDKIT_AUTH_DISABLED=1 --
+expect "MEDKIT_AUTH_DISABLED=1: anonymous GET /areas" 200 "$(wait_code "${PREFIX}-open" 8080 /api/v1/areas)"
+expect_contains "MEDKIT_AUTH_DISABLED=1: startup line" "REST API at 0.0.0.0:8080, backstop refresh interval: 2000ms" \
   "$(startup_line "${PREFIX}-open")"
 
 # C3: secret and clients close the image; the credential still gets in.
@@ -263,7 +317,7 @@ expect "MEDKIT_AUTH_DISABLED=1 with a secret: anonymous GET /areas" 200 \
 
 # C1: a mounted file wins over the container layer (refresh_interval_ms), keeps
 # the keys it does not name (server.host, CORS origins).
-COPY_FILE="$WORKDIR/refresh.yaml" COPY_DEST=/etc/ros2_medkit/params.yaml start_container "${PREFIX}-mount" --
+COPY_FILE="$WORKDIR/refresh.yaml" COPY_DEST=/etc/ros2_medkit/params.yaml start_container "${PREFIX}-mount" -e MEDKIT_AUTH_DISABLED=1 --
 expect "mounted file: anonymous GET /areas" 200 "$(wait_code "${PREFIX}-mount" 8080 /api/v1/areas)"
 expect_contains "mounted file: refresh_interval_ms and untouched server.host" \
   "REST API at 0.0.0.0:8080, backstop refresh interval: 4321ms" "$(startup_line "${PREFIX}-mount")"
@@ -271,18 +325,19 @@ expect "mounted file without cors: Origin http://localhost:3000" "http://localho
   "$(acao_for "${PREFIX}-mount" http://localhost:3000)"
 
 # C1: a mounted file can set server.host again. The startup line is the proof;
-# a gateway bound to loopback cannot be reached from the bridge.
+# a gateway bound to loopback cannot be reached from the bridge. Loopback needs
+# no opt-out.
 COPY_FILE="$WORKDIR/host.yaml" COPY_DEST=/etc/ros2_medkit/params.yaml start_container "${PREFIX}-hostmount" --
 expect_contains "mounted file: server.host" "REST API at 127.0.0.1:8080" "$(startup_line "${PREFIX}-hostmount")"
 
 # C1: an argument-only override keeps the container layer.
-start_container "${PREFIX}-argonly" -- --ros-args -p server.port:=9090
+start_container "${PREFIX}-argonly" -e MEDKIT_AUTH_DISABLED=1 -- --ros-args -p server.port:=9090
 expect "arg-only override: anonymous GET /areas on 9090" 200 "$(wait_code "${PREFIX}-argonly" 9090 /api/v1/areas)"
 expect_contains "arg-only override: bind address and port" "REST API at 0.0.0.0:9090" \
   "$(startup_line "${PREFIX}-argonly")"
 
 # C5: default CORS origins.
-start_container "${PREFIX}-cors" --
+start_container "${PREFIX}-cors" -e MEDKIT_AUTH_DISABLED=1 --
 expect "default CORS: container answers" 200 "$(wait_code "${PREFIX}-cors" 8080 /api/v1/health)"
 for origin in http://localhost:3000 http://localhost:5173; do
   expect "default CORS: Origin $origin" "$origin" "$(acao_for "${PREFIX}-cors" "$origin")"
@@ -290,7 +345,7 @@ done
 expect "default CORS: Origin http://evil.example" "<none>" "$(acao_for "${PREFIX}-cors" http://evil.example)"
 
 # C5: a mounted file that sets cors.allowed_origins replaces the list.
-COPY_FILE="$WORKDIR/cors.yaml" COPY_DEST=/etc/ros2_medkit/params.yaml start_container "${PREFIX}-corsmount" --
+COPY_FILE="$WORKDIR/cors.yaml" COPY_DEST=/etc/ros2_medkit/params.yaml start_container "${PREFIX}-corsmount" -e MEDKIT_AUTH_DISABLED=1 --
 expect "mounted CORS list: container answers" 200 "$(wait_code "${PREFIX}-corsmount" 8080 /api/v1/health)"
 expect "mounted CORS list: its own origin" "https://my-dashboard.example.com" \
   "$(acao_for "${PREFIX}-corsmount" https://my-dashboard.example.com)"
@@ -301,19 +356,71 @@ expect "mounted CORS list: default origin is gone" "<none>" \
 # consumer runs the image through `bash -c 'exec ros2 launch ...'`. The layers do
 # not apply to it; the node still reads the MEDKIT_* variables itself.
 LAUNCH_CMD='exec ros2 launch ros2_medkit_gateway bringup.launch.py enable_diagnostic_bridge:=true server_host:=0.0.0.0 cors_allowed_origins:=https://example.test'
-start_container "${PREFIX}-launch" -- bash -c "$LAUNCH_CMD"
-expect "launch command: anonymous GET /health" 200 "$(wait_code "${PREFIX}-launch" 8080 /api/v1/health)"
+start_container "${PREFIX}-launchbare" -- bash -c "$LAUNCH_CMD"
+expect_refusal "launch command with no environment" "${PREFIX}-launchbare"
+start_container "${PREFIX}-launch" -e MEDKIT_AUTH_DISABLED=1 -- bash -c "$LAUNCH_CMD"
+expect "launch command with MEDKIT_AUTH_DISABLED=1: anonymous GET /health" 200 "$(wait_code "${PREFIX}-launch" 8080 /api/v1/health)"
 expect "launch command: its own origin" "https://example.test" "$(acao_for "${PREFIX}-launch" https://example.test)"
 expect "launch command: layer origin is not applied" "<none>" "$(acao_for "${PREFIX}-launch" http://localhost:3000)"
+start_container "${PREFIX}-launcharg" -- bash -c "$LAUNCH_CMD allow_unauthenticated_remote:=true"
+expect "launch command with allow_unauthenticated_remote:=true: anonymous GET /health" 200 \
+  "$(wait_code "${PREFIX}-launcharg" 8080 /api/v1/health)"
 start_container "${PREFIX}-launchclosed" -e MEDKIT_JWT_SECRET="$SECRET" -e MEDKIT_CLIENTS="$CLIENTS" -- bash -c "$LAUNCH_CMD"
 expect "launch command with MEDKIT_JWT_SECRET: anonymous GET /areas" 401 "$(wait_code "${PREFIX}-launchclosed" 8080 /api/v1/areas)"
 expect_token_works "launch command with MEDKIT_CLIENTS" "${PREFIX}-launchclosed"
 expect_closed_routes "launch command with MEDKIT_JWT_SECRET" "${PREFIX}-launchclosed"
 
+# A port another container holds in the same network namespace, and an address
+# the container does not own: the gateway exits instead of announcing itself.
+start_container "${PREFIX}-portheld" --network "container:${PREFIX}-open" -e MEDKIT_AUTH_DISABLED=1 --
+expect_bind_failure "port held in the shared namespace" "${PREFIX}-portheld" 0.0.0.0 8080 "Address already in use"
+expect "port held: the first container still answers" 200 "$(wait_code "${PREFIX}-open" 8080 /api/v1/areas)"
+start_container "${PREFIX}-nobind" -e MEDKIT_AUTH_DISABLED=1 -- --ros-args -p server.host:=192.0.2.10
+expect_bind_failure "address the container does not own" "${PREFIX}-nobind" 192.0.2.10 8080 "Cannot assign requested address"
+
+# A stop during the bind wait: a helper leaves TIME_WAIT on 8080 in a shared network namespace,
+# as a released gateway does (SO_REUSEPORT listener, server side closes first). The gateway
+# waits; `docker stop` ends the wait at once and the container exits 0.
+TIMEWAIT_PY='
+import socket, sys
+srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+srv.bind(("0.0.0.0", 8080)); srv.listen()
+cli = socket.create_connection(("127.0.0.1", 8080))
+conn, _ = srv.accept(); conn.close(); cli.recv(1); cli.close(); srv.close()
+rows = [r.split() for r in open("/proc/net/tcp").read().splitlines()[1:]]
+print("time_wait" if any(r[3] == "06" and int(r[1].split(":")[1], 16) == 8080 for r in rows) else "none")
+'
+start_container "${PREFIX}-ns" --entrypoint sleep -- 600
+CREATED+=("${PREFIX}-timewait")
+docker run --rm --name "${PREFIX}-timewait" --network "container:${PREFIX}-ns" --entrypoint python3 "$IMAGE" \
+  -c "$TIMEWAIT_PY" > "$WORKDIR/timewait.out" 2>&1 || true
+expect "stop during the wait: helper left a TIME_WAIT entry" "time_wait" "$(tr -d '\n' < "$WORKDIR/timewait.out")"
+start_container "${PREFIX}-waitstop" --network "container:${PREFIX}-ns" -e MEDKIT_AUTH_DISABLED=1 --
+wait_end=$((SECONDS + DEADLINE_S))
+while [ "$SECONDS" -lt "$wait_end" ]; do
+  case "$(docker logs "${PREFIX}-waitstop" 2>&1)" in *"waiting up to"*) break ;; esac
+  sleep 1
+done
+expect_contains "stop during the wait: the gateway logged the wait" "waiting up to" "$(docker logs "${PREFIX}-waitstop" 2>&1)"
+t0=$(date +%s%N)
+docker stop -t 10 "${PREFIX}-waitstop" >/dev/null
+elapsed_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+expect "stop during the wait: exit code" 0 "$(docker inspect -f '{{.State.ExitCode}}' "${PREFIX}-waitstop")"
+expect_contains "stop during the wait: stop line" "start stopped during the bind wait" "$(docker logs "${PREFIX}-waitstop" 2>&1)"
+case "$(docker logs "${PREFIX}-waitstop" 2>&1)" in
+  *"ready on"*) fail "stop during the wait: the log has a ready line" ;;
+  *) ok "stop during the wait: no ready line" ;;
+esac
+if [ "$elapsed_ms" -lt 3000 ]; then
+  ok "stop during the wait: stopped in ${elapsed_ms} ms"
+else
+  fail "stop during the wait: took ${elapsed_ms} ms"
+fi
+
 # The gateway gets the container's SIGTERM itself and shuts down cleanly: exit
 # code 0, its own shutdown line in the log, and `docker stop` returns well before
 # its timeout (a SIGKILL after the timeout exits 137).
-start_container "${PREFIX}-stop" --
+start_container "${PREFIX}-stop" -e MEDKIT_AUTH_DISABLED=1 --
 expect "stop: container answers" 200 "$(wait_code "${PREFIX}-stop" 8080 /api/v1/health)"
 stop_timeout=30
 t0=$(date +%s%N)

@@ -18,7 +18,8 @@ from ament_index_python.packages import get_package_prefix
 from ament_index_python.packages import get_package_share_directory
 from ament_index_python.packages import PackageNotFoundError
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventHandler, Shutdown
+from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -82,6 +83,12 @@ def generate_launch_description():
         'server_host', default_value='127.0.0.1',
         description='Host to bind REST server (127.0.0.1 or 0.0.0.0)')
 
+    declare_allow_remote_arg = DeclareLaunchArgument(
+        'allow_unauthenticated_remote', default_value='false',
+        description='Let the gateway bind a non-loopback host with authentication off. '
+                    'Without it such a gateway refuses to start. Sets '
+                    'server.allow_unauthenticated_remote.')
+
     declare_port_arg = DeclareLaunchArgument(
         'server_port', default_value='8080',
         description='Port for REST API')
@@ -117,20 +124,38 @@ def generate_launch_description():
         if graph_provider_path:
             param_overrides['plugins'] = ['graph_provider']
             param_overrides['plugins.graph_provider.path'] = graph_provider_path
+        # Only a `true` is passed on: a `false` default must not override a config_file.
+        allow_remote = LaunchConfiguration('allow_unauthenticated_remote').perform(context)
+        if allow_remote.strip().lower() == 'true':
+            param_overrides['server.allow_unauthenticated_remote'] = True
         param_overrides.update(cors_override(
             LaunchConfiguration('cors_allowed_origins').perform(context),
             LaunchConfiguration('config_file').perform(context), default_config))
-        return [Node(
+        gateway = Node(
             package='ros2_medkit_gateway',
             executable='gateway_node',
             name='ros2_medkit_gateway',
             output='screen',
             parameters=[default_config, LaunchConfiguration('config_file'), param_overrides],
-            arguments=['--ros-args', '--log-level', 'info'])]
+            arguments=['--ros-args', '--log-level', 'info'])
+
+        def _gateway_exited(event, context):
+            # A stack whose gateway is gone serves nothing: end the launch, and fail
+            # it when the gateway failed (a refused start included). An exit during
+            # the launch's own shutdown is not a failure.
+            if context.is_shutdown:
+                return None
+            if event.returncode:
+                raise RuntimeError(f'gateway_node exited with code {event.returncode}')
+            return [Shutdown(reason='gateway_node exited')]
+
+        on_exit = OnProcessExit(target_action=gateway, on_exit=_gateway_exited)
+        return [gateway, RegisterEventHandler(on_exit)]
 
     return LaunchDescription([
         declare_override_config_arg,
         declare_host_arg,
+        declare_allow_remote_arg,
         declare_port_arg,
         declare_refresh_arg,
         declare_cors_arg,

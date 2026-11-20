@@ -67,11 +67,52 @@ Possible causes:
 2. **Wrong port** - Default is 8080 (HTTP) or 8443 (HTTPS)
 3. **Localhost binding** - Gateway binds to 127.0.0.1 by default
 
-For network access, set host to 0.0.0.0:
+For network access, set host to 0.0.0.0. Without authentication the gateway
+refuses to start on a non-loopback host (see :ref:`protected-mode`), so turn
+authentication on or opt out:
 
 .. code-block:: bash
 
-   ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0
+   # authentication on
+   MEDKIT_JWT_SECRET=<32+ characters> MEDKIT_CLIENTS=<id>:<secret>:admin \
+     ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0
+
+   # no authentication, trusted network only
+   ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0 \
+     allow_unauthenticated_remote:=true
+
+**Gateway exits with "Refusing to start: cannot bind the REST API to <host>:<port>"**
+
+Nothing could listen on that address. The message ends with the reason:
+
+- ``Address already in use``: another live process listens on the same
+  address:port (``127.0.0.1:8080`` and ``127.0.0.2:8080`` are different
+  addresses), or the wait ended (``(waited N s; no live listener appeared; ...``).
+  Find the process (``ss -ltnp``), stop it or change ``server.port``. If
+  nothing listens, raise ``server.bind_wait_sec`` (range 0 to 300).
+  The wait: when the first bind fails and no live process listens on the address,
+  the gateway logs ``is held, and no live listener holds it: closing connections
+  of an earlier process, or a socket bound without listening; waiting up to N s``
+  and retries, then ``bound after waiting``. This shows mainly on the first start
+  after an upgrade from an earlier release (its closed connections stay in
+  TIME_WAIT, which normally ends 60 s after the close; a late packet from the old
+  peer can extend it, and then the wait ends with exit 1). It also shows when a
+  process holds the port without listening; ``ss -tanp`` shows which. A restart of
+  this version over its own TIME_WAIT needs no wait.
+- ``Cannot assign requested address``: the machine does not own the address.
+  Fix ``server.host``. (A kernel with ``net.ipv4.ip_nonlocal_bind`` or
+  ``net.ipv6.ip_nonlocal_bind`` set accepts such a bind.)
+- ``cannot resolve the host``: the name does not resolve. A bracketed IPv6
+  address such as ``[::1]`` is not a bind form; write ``::1``.
+
+**Gateway exits with "Refusing to start: authentication is off"**
+
+``server.host`` is not a loopback address and authentication is off (or on with
+``auth.require_auth_for`` ``none``, which the message then says). Do one of:
+set ``MEDKIT_JWT_SECRET`` (and ``MEDKIT_CLIENTS``); bind ``127.0.0.1``; or opt out
+with ``allow_unauthenticated_remote:=true`` (launch), ``server.allow_unauthenticated_remote: true``
+(parameter) or ``MEDKIT_AUTH_DISABLED=1``. A container started with no environment
+exits with this message, because the image binds ``0.0.0.0``.
 
 **"Connection reset by peer" or "Empty reply from server" from a container**
 
@@ -94,12 +135,15 @@ Bind all interfaces inside the container:
 
 .. code-block:: bash
 
-   ros2 launch ros2_medkit_gateway bringup.launch.py server_host:=0.0.0.0
+   ros2 launch ros2_medkit_gateway bringup.launch.py server_host:=0.0.0.0 \
+     allow_unauthenticated_remote:=true
 
-Publish the port as ``-p 127.0.0.1:8080:8080`` to keep the API off the LAN;
-authentication is off by default. With ``--network host`` the default bind is
-enough, because the container shares the host's loopback. The Docker image's
-default command already binds ``0.0.0.0``.
+Drop ``allow_unauthenticated_remote:=true`` and set ``MEDKIT_JWT_SECRET`` and
+``MEDKIT_CLIENTS`` to require a login instead. Publish the port as
+``-p 127.0.0.1:8080:8080`` to keep the API off the LAN. With ``--network host``
+the default bind is enough, because the container shares the host's loopback.
+The Docker image's default command already binds ``0.0.0.0``, so it needs
+``MEDKIT_JWT_SECRET`` or ``MEDKIT_AUTH_DISABLED=1``.
 
 **Topic data returns empty or timeout**
 
@@ -196,7 +240,10 @@ For development, try ``network_mode: host``.
 
    .. code-block:: bash
 
-      ros2 launch ros2_medkit_gateway bringup.launch.py server_host:=0.0.0.0
+      ros2 launch ros2_medkit_gateway bringup.launch.py server_host:=0.0.0.0 \
+        allow_unauthenticated_remote:=true
+
+   (or set ``MEDKIT_JWT_SECRET`` and ``MEDKIT_CLIENTS`` instead of the last argument).
 
 2. CORS must allow the UI origin exactly as the browser sends it (scheme, host
    and port): ``http://127.0.0.1:3000`` is not ``http://localhost:3000``. The

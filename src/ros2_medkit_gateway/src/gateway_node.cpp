@@ -37,6 +37,7 @@
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
 #include "ros2_medkit_gateway/core/discovery/refresh_debounce.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
+#include "ros2_medkit_gateway/core/net/bind_address.hpp"
 #include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
@@ -141,6 +142,18 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
   // recovers workers quickly while retaining connection reuse for legitimate
   // clients. Clamped to [1, 3600] on read (see clamp_keep_alive_timeout).
   declare_parameter("server.keep_alive_timeout_sec", 2);
+  {
+    // Refused outside the range: the gateway does not start.
+    rcl_interfaces::msg::ParameterDescriptor desc;
+    desc.description =
+        "Longest wait (s) for closing connections of an earlier process to release the bind address; 0 = none";
+    rcl_interfaces::msg::IntegerRange range;
+    range.from_value = 0;
+    range.to_value = 300;
+    range.step = 1;
+    desc.integer_range.push_back(range);
+    declare_parameter("server.bind_wait_sec", 70, desc);
+  }
   // Safety-backstop refresh interval. Primary discovery refresh is driven
   // by rclcpp graph events; this only controls the periodic forced
   // refresh used when a graph event would otherwise be missed.
@@ -217,6 +230,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
 
   // Authentication parameters (REQ_INTEROP_086, REQ_INTEROP_087)
   declare_parameter("auth.enabled", false);
+  // Opt-out of protected mode: without authentication the gateway binds only a loopback address.
+  declare_parameter("server.allow_unauthenticated_remote", false);
   declare_parameter("auth.jwt_public_key", "");
   declare_parameter("auth.jwt_algorithm", "HS256");
   declare_parameter("auth.token_expiry_seconds", 3600);
@@ -656,6 +671,37 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
   }
 
   apply_effective_auth_parameters(auth_enabled, effective_require_auth_for);
+
+  // Protected mode: a gateway that serves anonymous requests binds only a loopback
+  // address, unless the operator opts out. Decided on the posture in force, after
+  // the environment is applied. `write` and `all` count as authentication;
+  // `none` leaves every route open.
+  // Parsed, as the middleware reads it: the case of the operator's string must not matter.
+  const bool authenticated =
+      auth_enabled && string_to_auth_requirement(effective_require_auth_for) != AuthRequirement::NONE;
+  if (!authenticated && !is_loopback_bind_host(server_host_)) {
+    const bool opted_out = auth_env.auth_disabled || get_parameter("server.allow_unauthenticated_remote").as_bool();
+    if (opted_out) {
+      RCLCPP_WARN(get_logger(),
+                  "Authentication is %s and the REST API binds %s: it is reachable without authentication from "
+                  "the network (opted out of protected mode).",
+                  auth_enabled ? ("on with auth.require_auth_for " + effective_require_auth_for).c_str() : "off",
+                  server_host_.c_str());
+    } else {
+      const std::string state = auth_enabled ? "authentication is on but auth.require_auth_for is " +
+                                                   effective_require_auth_for + ", so every route is open"
+                                             : "authentication is off";
+      RCLCPP_FATAL(get_logger(),
+                   "Refusing to start: %s and server.host is %s, which is not a loopback address. Anyone who can "
+                   "reach this address controls the robot. Do one of: turn authentication on (set "
+                   "MEDKIT_JWT_SECRET, or the auth.* parameters with auth.require_auth_for write or all); bind a "
+                   "loopback address (server.host: 127.0.0.1); or accept the risk with "
+                   "server.allow_unauthenticated_remote: true (launch argument allow_unauthenticated_remote:=true, "
+                   "or MEDKIT_AUTH_DISABLED=1).",
+                   state.c_str(), server_host_.c_str());
+      throw std::runtime_error("Anonymous access and server.host '" + server_host_ + "' is not a loopback address");
+    }
+  }
 
   // Build Rate Limiting configuration
   bool rate_limit_enabled = get_parameter("rate_limiting.enabled").as_bool();
@@ -1360,6 +1406,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
   rest_config.docs_enabled = get_parameter("docs.enabled").as_bool();
   rest_config.server_host = server_host_;
   rest_config.server_port = server_port_;
+  rest_config.bind_wait_sec = get_parameter("server.bind_wait_sec").as_int();
   fault_event_source_ = std::make_unique<Ros2FaultEventSource>(*this, build_fault_manager_events_topic(this));
   rest_config.logger_name = get_logger().get_name();
 
@@ -2212,6 +2259,18 @@ void GatewayNode::refresh_cache() {
 }
 
 void GatewayNode::start_rest_server() {
+  // Bound here so a failure ends the gateway before it announces itself.
+  std::string bind_error;
+  const BindResult bound = rest_server_->bind(bind_error);
+  if (bound == BindResult::kStopped) {
+    throw StartStopped();
+  }
+  if (bound == BindResult::kFailed) {
+    RCLCPP_FATAL(get_logger(), "Refusing to start: cannot bind the REST API to %s:%d: %s.", server_host_.c_str(),
+                 server_port_, bind_error.c_str());
+    throw std::runtime_error("Cannot bind the REST API to " + server_host_ + ":" + std::to_string(server_port_) + ": " +
+                             bind_error);
+  }
   server_thread_ = std::make_unique<std::thread>([this]() {
     try {
       rest_server_->start();

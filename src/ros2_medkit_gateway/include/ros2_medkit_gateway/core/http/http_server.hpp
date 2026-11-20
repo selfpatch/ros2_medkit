@@ -33,6 +33,13 @@ namespace ros2_medkit_gateway {
  * or SSLServer instances based on TLS configuration. It provides a unified
  * interface to get the active server pointer, eliminating code duplication.
  */
+/// Outcome of HttpServerManager::bind().
+enum class BindResult {
+  kBound,   ///< the socket is bound
+  kFailed,  ///< it could not be bound; the reason is in `error`
+  kStopped  ///< SIGINT or SIGTERM was pending during the wait for the address
+};
+
 class HttpServerManager {
  public:
   /**
@@ -77,11 +84,21 @@ class HttpServerManager {
   }
 
   /**
-   * @brief Start listening on the specified host and port
+   * @brief Bind the listening socket to host and port, in the calling thread
    * @param host Host address to bind to
    * @param port Port number to bind to
+   * @param wait_sec Longest wait, in seconds, for closing connections of an earlier process
+   *        (TIME_WAIT) to release the address when no live listener holds it; 0 = no wait
+   * @param error Receives the reason when the bind fails
+   * @return kBound when the socket is bound (listen_bound() then serves it); kStopped when a
+   *         stop signal, held by the caller, is pending during the wait
    */
-  void listen(const std::string & host, int port);
+  BindResult bind(const std::string & host, int port, int64_t wait_sec, std::string & error);
+
+  /**
+   * @brief Serve the socket bound by bind(); blocks until stop()
+   */
+  void listen_bound();
 
   /**
    * @brief Stop the server if running

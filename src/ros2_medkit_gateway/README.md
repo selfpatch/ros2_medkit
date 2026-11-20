@@ -1377,6 +1377,7 @@ The gateway can be configured via parameters in `config/gateway_params.yaml` or 
 | Parameter                    | Type   | Default     | Description                                                                            |
 | ---------------------------- | ------ | ----------- | -------------------------------------------------------------------------------------- |
 | `server.host`                | string | `127.0.0.1` | Host to bind the REST server (`127.0.0.1` for localhost, `0.0.0.0` for all interfaces) |
+| `server.allow_unauthenticated_remote` | bool | `false` | Let a gateway without authentication bind a non-loopback host. Without it (and without `MEDKIT_JWT_SECRET`) such a gateway exits at start; `MEDKIT_AUTH_DISABLED=1` implies it |
 | `server.port`                | int    | `8080`      | Port for the REST API (range: 1024-65535)                                              |
 | `refresh_interval_ms`        | int    | `30000`     | Safety-backstop refresh interval in milliseconds. Primary refresh is graph-event driven; this controls only the periodic forced refresh (range: 100-60000) |
 | `data_provider.max_parallel_samples` | int | `8` | Max concurrent topic samples when fetching data (range: 1-256)                                |
@@ -1465,8 +1466,12 @@ ros2 run ros2_medkit_gateway gateway_node --ros-args -p server.port:=9090
 
 **Change host via launch file:**
 ```bash
-ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0
+ros2 launch ros2_medkit_gateway gateway.launch.py server_host:=0.0.0.0 allow_unauthenticated_remote:=true
 ```
+
+Without authentication the gateway binds only a loopback address (protected mode). A non-loopback
+`server_host` needs authentication (`MEDKIT_JWT_SECRET` and `MEDKIT_CLIENTS`, or the `auth.*` parameters)
+or the opt-out `allow_unauthenticated_remote:=true` (`MEDKIT_AUTH_DISABLED=1` also opts out).
 
 **Enable CORS for local development:**
 ```yaml
@@ -1503,6 +1508,7 @@ ros2 launch ros2_medkit_gateway gateway.launch.py \
 | --------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `config_file`         | packaged `config/gateway_params.yaml` | Path to a YAML parameter file applied on top of the packaged defaults.                               |
 | `server_host`         | `127.0.0.1`                           | Host to bind the REST server (`127.0.0.1` or `0.0.0.0`). Launch-arg only.                           |
+| `allow_unauthenticated_remote` | `false`                      | Let the gateway bind a non-loopback `server_host` with authentication off. Passed on only when `true`, so it does not override a `config_file`. |
 | `server_port`         | `8080`                                | Port for the REST API. Launch-arg only.                                                              |
 | `refresh_interval_ms` | `30000`                               | Safety-backstop refresh interval in ms (graph events drive the primary refresh). Launch-arg only.    |
 | `cors_allowed_origins` | `http://localhost:3000,http://localhost:5173` | Comma-separated browser origins, matched exactly (`http://127.0.0.1:3000` is not `http://localhost:3000`). A value replaces the defaults; empty disables CORS. With a custom `config_file` and this argument unset, CORS comes from the config files only. |
@@ -1583,7 +1589,8 @@ The package includes a helper script to generate self-signed certificates for de
 # ./certs/client.key       - Client private key
 ```
 
-**Basic TLS (HTTPS only):**
+**Basic TLS (HTTPS only):** (TLS does not authenticate clients: with `0.0.0.0` and authentication off, add
+`allow_unauthenticated_remote: true` under `server`, or configure authentication.)
 ```yaml
 server:
   host: "0.0.0.0"
@@ -1652,6 +1659,7 @@ ros2 launch ros2_medkit_gateway gateway_https.launch.py \
 | `config_file`         | packaged `config/gateway_params.yaml` | Path to a YAML parameter file applied on top of the packaged defaults.                   |
 | `cert_dir`            | `/tmp/ros2_medkit_certs`              | Directory for auto-generated certificates. Launch-arg only.                              |
 | `server_host`         | `127.0.0.1`                           | Host to bind HTTPS server. Launch-arg only.                                              |
+| `allow_unauthenticated_remote` | `false`                      | Let the gateway bind a non-loopback `server_host` with authentication off. Without it such a gateway refuses to start. |
 | `server_port`         | `8443`                                | Port for HTTPS API. Launch-arg only.                                                     |
 | `min_tls_version`     | `1.2`                                 | Minimum TLS version (`1.2` or `1.3`). Launch-arg only.                                  |
 | `refresh_interval_ms` | `30000`                               | Safety-backstop refresh interval (graph events drive primary refresh). Launch-arg only.  |

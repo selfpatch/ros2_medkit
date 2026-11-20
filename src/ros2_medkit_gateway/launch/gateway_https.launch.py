@@ -167,6 +167,10 @@ def launch_setup(context):
     min_tls_version = LaunchConfiguration('min_tls_version').perform(context)
     override_config = LaunchConfiguration('config_file').perform(context)
     cors_arg = LaunchConfiguration('cors_allowed_origins').perform(context)
+    allow_remote = LaunchConfiguration('allow_unauthenticated_remote').perform(context)
+    # Only a `true` is passed on: a `false` default must not override a config_file.
+    remote_override = ({'server.allow_unauthenticated_remote': True}
+                       if allow_remote.strip().lower() == 'true' else {})
 
     # Use temp directory if not specified
     if not cert_dir:
@@ -215,6 +219,7 @@ def launch_setup(context):
                     'server.tls.key_file': cert_paths['key_file'],
                     'server.tls.min_version': min_tls_version,
                     'refresh_interval_ms': int(refresh_interval),
+                    **remote_override,
                     **cors_override(cors_arg, override_config, default_config),
                 }
             ],
@@ -238,6 +243,15 @@ def generate_launch_description():
             'server_host',
             default_value='127.0.0.1',
             description='Host to bind HTTPS server (127.0.0.1 or 0.0.0.0)'
+        ),
+
+        DeclareLaunchArgument(
+            'allow_unauthenticated_remote',
+            default_value='false',
+            description=(
+                'Let the gateway bind a non-loopback server_host with authentication off. '
+                'Without it such a gateway refuses to start.'
+            )
         ),
 
         DeclareLaunchArgument(

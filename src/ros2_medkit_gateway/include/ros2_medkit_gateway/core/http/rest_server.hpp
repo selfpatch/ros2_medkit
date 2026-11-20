@@ -72,6 +72,11 @@ class RESTServer {
   RESTServer(RESTServer &&) = delete;
   RESTServer & operator=(RESTServer &&) = delete;
 
+  /// Bind the listening socket in the calling thread; kFailed, with the reason in `error`, when it
+  /// cannot. Call before start() to learn the outcome; GatewayNode does.
+  BindResult bind(std::string & error);
+  /// Serve; blocks until stop(). Binds first, as bind() does, when the socket is not bound yet; a
+  /// failed bind is logged and start() returns.
   void start();
   void stop();
 
@@ -117,6 +122,8 @@ class RESTServer {
   GatewayServices & services_;
   std::string host_;
   int port_;
+  int64_t bind_wait_sec_{70};
+  bool bound_{false};
   CorsConfig cors_config_;
   AuthConfig auth_config_;
   TlsConfig tls_config_;

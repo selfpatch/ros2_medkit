@@ -132,11 +132,14 @@ To build from source or use Pixi, follow the
 
 - Robot missing? Run ros2_medkit on the robot's computer, or one on the same network, from a
   terminal where your ROS 2 setup works.
-- Opening it from another computer? Add `server_host:=0.0.0.0` to the end of the command in
-  step 2, on a network you trust, and use the robot's IP address instead of `localhost`.
+- Opening it from another computer? Add `server_host:=0.0.0.0 allow_unauthenticated_remote:=true`
+  to the end of the command in step 2, on a network you trust, and use the robot's IP address
+  instead of `localhost`. Without authentication the gateway refuses to bind anything but a
+  loopback address unless you pass `allow_unauthenticated_remote:=true`; to require a login
+  instead, set `MEDKIT_JWT_SECRET` and `MEDKIT_CLIENTS`.
 - Running it in a container without `--network host`? `bringup.launch.py` binds the REST API to
   `127.0.0.1`, which is then the container's own loopback, and the published port answers with
-  `Connection reset by peer` or an empty reply. Add `server_host:=0.0.0.0` and publish the port as
+  `Connection reset by peer` or an empty reply. Add `server_host:=0.0.0.0 allow_unauthenticated_remote:=true` and publish the port as
   `-p 127.0.0.1:8080:8080`, which keeps the API, unauthenticated by default, off the LAN.
 - No faults from `/diagnostics`? Add `enable_diagnostic_bridge:=true` to the end of the command
   in step 2.
