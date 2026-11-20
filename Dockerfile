@@ -164,8 +164,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy built workspace from builder (builder uses /root/ws, runtime uses /home/medkit/ws)
 COPY --from=builder /root/ws/install/ ${COLCON_WS}/install/
 
-# Default config - can be overridden via volume mount
-COPY docker/gateway_docker_params.yaml /etc/ros2_medkit/params.yaml
+# Configuration layers, applied in this order by the entrypoint; a later one wins:
+#   base.yaml       the file the package ships (the same one a source install gets)
+#   container.yaml  what a container needs on top of it
+#   params.yaml     the mount point; the image's copy repeats container.yaml
+# Arguments given to `docker run` come after all three. Mounting a file at
+# params.yaml replaces only that copy; base.yaml and container.yaml still apply.
+# The layers apply when the container runs its default command, or arguments
+# that start with a ROS flag. A command such as `bash -c ...` runs as given,
+# without them. All three files are keyed by the node's full name
+# (/ros2_medkit_gateway); a renamed node or namespace gets none of them.
+COPY src/ros2_medkit_gateway/config/gateway_params.yaml /etc/ros2_medkit/base.yaml
+COPY docker/container_params.yaml /etc/ros2_medkit/container.yaml
+COPY docker/container_params.yaml /etc/ros2_medkit/params.yaml
 
 # When running via ros2 run (as this container does), plugin .so paths must be
 # configured explicitly via plugins.<name>.path parameters in the params file.
@@ -188,4 +199,6 @@ USER medkit
 EXPOSE 8080
 
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["--ros-args", "--params-file", "/etc/ros2_medkit/params.yaml"]
+# Empty on purpose: the base image sets a CMD, and the layers live in the
+# entrypoint so that arguments given to `docker run` do not replace them.
+CMD []

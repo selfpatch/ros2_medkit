@@ -77,14 +77,91 @@ Test the gateway:
    curl http://localhost:8080/api/v1/version-info
    # {"items":[{"version":"<gateway-version>","vendor_info":{"name":"ros2_medkit",...}}]}
 
+With no ``MEDKIT_*`` variable set, the container answers requests without a
+credential, as a source install does. Publish the port only where that is
+acceptable, or close the container as described next.
+
+Running the container closed
+----------------------------
+
+Set ``MEDKIT_JWT_SECRET`` and ``MEDKIT_CLIENTS`` and the container requires a
+token on every route except ``/api/v1/auth/*``, which answers without one so a
+client can obtain its token. The secret signs the tokens. Each client is written
+``id:secret:role`` and exchanges its credential for a token at
+``POST /api/v1/auth/authorize``:
+
+.. code-block:: bash
+
+   CLIENT_SECRET="$(head -c 24 /dev/urandom | base64 | tr -d '=+/')"
+   echo "client secret: ${CLIENT_SECRET}"
+   docker run -p 8080:8080 \
+     -e MEDKIT_JWT_SECRET="$(head -c 32 /dev/urandom | base64)" \
+     -e MEDKIT_CLIENTS="medkit:${CLIENT_SECRET}:admin" \
+     ghcr.io/selfpatch/ros2_medkit-jazzy:latest
+
+The client secret is generated and printed first, so whoever has to log in knows
+it. The signing secret is needed by nothing outside the container.
+
+The three variables are read by the gateway itself, so they apply to every way
+of starting it in the image: the default command, an arguments-only override,
+``docker run <image> ros2 launch ...`` and a shell. They take effect over any
+params file, including a mounted one that says ``auth.enabled: false``:
+
+``MEDKIT_JWT_SECRET``
+  Authentication on, ``auth.require_auth_for`` ``all``, this signing secret.
+
+``MEDKIT_CLIENTS``
+  The clients that can obtain a token. It replaces ``auth.clients`` when
+  ``MEDKIT_JWT_SECRET`` is set.
+
+``MEDKIT_AUTH_DISABLED``
+  Set to exactly ``1``, it turns authentication off even when
+  ``MEDKIT_JWT_SECRET`` is set. Anyone who can set it on a gateway's environment
+  can open that gateway.
+
+See :doc:`authentication` for the entry syntax, the refusal rules and the
+startup warnings.
+
+A closed container answers ``401`` to an unauthenticated ``/api/v1/health`` probe, so use a
+probe that accepts it (see `Health Checks`_).
+
 Custom Configuration
 --------------------
 
-The image's default command runs the gateway alone with
-``/etc/ros2_medkit/params.yaml``, which listens on ``0.0.0.0:8080``. CORS is
-enabled for the default web UI origins (``http://localhost:3000`` and
-``http://localhost:5173``) so the web UI works out of the box; add your own UI
-origin(s) as needed (see `CORS for Web UI`_ below).
+The image applies its configuration in layers, each one overriding the one
+before it:
+
+1. ``/etc/ros2_medkit/base.yaml`` - the packaged ``gateway_params.yaml``, the
+   same file a source install gets
+2. ``/etc/ros2_medkit/container.yaml`` - the container settings:
+   ``server.host: "0.0.0.0"``, ``refresh_interval_ms: 2000`` and the CORS origins
+   ``http://localhost:3000`` and ``http://localhost:5173``
+3. ``/etc/ros2_medkit/params.yaml`` - the mount point
+4. the arguments given to ``docker run``
+
+The layers apply to the default command, and to a command that starts with a
+ROS argument flag such as ``--ros-args``. A command that starts with anything
+else (``ros2 launch ...``, ``bash -c '...'``) runs exactly as given and takes its
+configuration from its own arguments.
+
+The three files are keyed by the node's full name, ``/ros2_medkit_gateway``. A
+node renamed with ``-r __node:=...`` or moved with ``-r __ns:=...`` gets none of
+them, so such a container needs a params file keyed on its new full name.
+
+A mounted file names only the keys it changes and keeps every other layer's
+value. It can set ``server.host`` and ``refresh_interval_ms`` again. A file that
+sets ``cors.allowed_origins`` replaces the list. To turn CORS off from a mounted
+file, set ``allowed_origins: [""]``: the parameter is a typed string array and
+``[]`` stops the gateway at start. A wildcard origin is not used.
+
+.. note::
+
+   Upgrading: a file mounted at ``/etc/ros2_medkit/params.yaml`` used to replace
+   the image's own file, so a file without ``server.host`` gave the compiled
+   default ``127.0.0.1``. It now inherits ``server.host: "0.0.0.0"`` and the two
+   CORS origins from the container layer. A container with such a file and
+   ``--network host`` now listens on every interface. To keep the old behaviour,
+   put ``server.host: "127.0.0.1"`` in the mounted file.
 
 .. note::
 
@@ -124,12 +201,16 @@ Example ``my_params.yaml``:
        discovery:
          mode: "runtime_only"
 
-You can also pass ROS arguments directly:
+You can also pass ROS arguments directly. The three layers stay in place, so an
+override changes the key it names and nothing else:
 
 .. code-block:: bash
 
    docker run -p 9090:9090 ghcr.io/selfpatch/ros2_medkit-jazzy:latest \
-     --ros-args --params-file /etc/ros2_medkit/params.yaml -p server.port:=9090
+     --ros-args -p server.port:=9090
+
+If the node is renamed or moved to another namespace, none of the image's files
+apply (see above).
 
 External Plugins
 ----------------
@@ -187,7 +268,13 @@ Example ``docker-compose.yml`` with the gateway and web UI:
        environment:
          - ROS_DOMAIN_ID=42
        healthcheck:
-         test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+         # A closed container answers 401, which still shows the process is up.
+         test:
+           - CMD-SHELL
+           - >-
+             code=$$(curl -s -o /dev/null -w '%{http_code}'
+             http://localhost:8080/api/v1/health) && case "$$code" in
+             200|401|403) exit 0 ;; *) exit 1 ;; esac
          interval: 10s
          timeout: 5s
          retries: 3
@@ -247,7 +334,9 @@ CORS for Web UI
 The image enables CORS for the default web UI origins (``http://localhost:3000``
 and ``http://localhost:5173``). A wildcard is deliberately not used: with auth
 disabled and write methods enabled it would let any site drive cross-origin
-writes. Add your own UI origin(s):
+writes. A mounted file that sets ``cors.allowed_origins`` replaces the whole
+list, so name every origin you need (``allowed_origins: [""]`` turns CORS off;
+``[]`` stops the gateway at start):
 
 .. code-block:: yaml
 
@@ -266,12 +355,20 @@ the argument replaces the defaults.
 Health Checks
 -------------
 
-The gateway exposes a health endpoint at ``/api/v1/health``:
+The gateway exposes a health endpoint at ``/api/v1/health``. A container at the
+image default answers it without a credential; a closed one answers ``401``.
+A probe that works for both accepts any of these HTTP answers as proof that the
+process is up:
 
 .. code-block:: yaml
 
    healthcheck:
-     test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+     test:
+       - CMD-SHELL
+       - >-
+         code=$$(curl -s -o /dev/null -w '%{http_code}'
+         http://localhost:8080/api/v1/health) && case "$$code" in
+         200|401|403) exit 0 ;; *) exit 1 ;; esac
      interval: 10s
      timeout: 5s
      retries: 3
