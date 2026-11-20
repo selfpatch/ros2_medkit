@@ -14,8 +14,13 @@
 
 #include <poll.h>
 #include <pthread.h>
-#include <sys/eventfd.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/eventfd.h>
+#else
+#include <fcntl.h>
+#include <sys/select.h>
+#endif
 
 #include <algorithm>
 #include <cerrno>
@@ -147,9 +152,9 @@ sigset_t shutdown_signal_set() {
 // a thread parked in a mutex wait runs only once that thread gets the mutex.
 class ShutdownSignalThread {
  public:
-  ShutdownSignalThread() : wake_fd_(eventfd(0, EFD_CLOEXEC)) {
+  ShutdownSignalThread() : wake_fd_(make_wake_fd(write_fd_)) {
     if (wake_fd_ < 0) {
-      throw std::runtime_error(std::string("could not create the signal thread eventfd: ") + std::strerror(errno));
+      throw std::runtime_error(std::string("could not create the signal thread wake fd: ") + std::strerror(errno));
     }
     sigset_t wait_mask;
     pthread_sigmask(SIG_BLOCK, nullptr, &wait_mask);
@@ -158,18 +163,18 @@ class ShutdownSignalThread {
     try {
       thread_ = std::thread(wait_for_signals, wake_fd_, wait_mask);
     } catch (...) {
-      close(wake_fd_);
+      close_wake_fds();
       throw;
     }
   }
 
-  // Woken by a write to the eventfd, never by a signal.
+  // Woken by a write to the wake fd, never by a signal.
   // The destroying thread then unblocks the signals, so one sent after the join still arrives.
   ~ShutdownSignalThread() {
     const uint64_t one = 1;
-    if (write(wake_fd_, &one, sizeof(one)) == static_cast<ssize_t>(sizeof(one))) {
+    if (write(write_fd_, &one, sizeof(one)) == static_cast<ssize_t>(sizeof(one))) {
       thread_.join();
-      close(wake_fd_);
+      close_wake_fds();
     } else {
       thread_.detach();  // it cannot be woken; it reads only its own copies
     }
@@ -183,17 +188,52 @@ class ShutdownSignalThread {
   ShutdownSignalThread & operator=(ShutdownSignalThread &&) = delete;
 
  private:
+  // Linux: an eventfd, read and written through the same descriptor. Elsewhere (macOS has no
+  // eventfd): a pipe, written at write_fd and waited on at the returned read end.
+  static int make_wake_fd(int & write_fd) {
+#ifdef __linux__
+    write_fd = eventfd(0, EFD_CLOEXEC);
+    return write_fd;
+#else
+    int fds[2];
+    if (pipe(fds) != 0) {
+      return -1;
+    }
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    write_fd = fds[1];
+    return fds[0];
+#endif
+  }
+
+  void close_wake_fds() {
+    close(wake_fd_);
+    if (write_fd_ != wake_fd_) {
+      close(write_fd_);
+    }
+  }
+
   static void wait_for_signals(int wake_fd, sigset_t wait_mask) {
-    // ppoll unblocks the signals only while it waits, so their handler runs inside it.
+    // ppoll / pselect unblock the signals only while they wait, so their handler runs inside them.
+#ifdef __linux__
     pollfd wake{wake_fd, POLLIN, 0};
     while (ppoll(&wake, 1, nullptr, &wait_mask) < 0) {
+#else
+    fd_set wake;
+    FD_ZERO(&wake);
+    FD_SET(wake_fd, &wake);
+    while (pselect(wake_fd + 1, &wake, nullptr, nullptr, nullptr, &wait_mask) < 0) {
+      FD_ZERO(&wake);
+      FD_SET(wake_fd, &wake);
+#endif
       if (errno != EINTR) {
-        fprintf(stderr, "[ros2_medkit_gateway] signal thread: ppoll failed: %s\n", std::strerror(errno));
+        fprintf(stderr, "[ros2_medkit_gateway] signal thread: wait failed: %s\n", std::strerror(errno));
         return;
       }
     }
   }
 
+  int write_fd_ = -1;
   int wake_fd_;
   std::thread thread_;
 };
