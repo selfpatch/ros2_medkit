@@ -94,6 +94,12 @@ Network Settings
      - Host to bind the REST server. Without authentication only a loopback host is
        accepted (see :ref:`protected-mode`); use ``"0.0.0.0"`` for Docker or network access
        together with authentication or ``server.allow_unauthenticated_remote``.
+   * - ``server.bind_wait_sec``
+     - int
+     - ``70``
+     - Longest wait (seconds) at start for closing connections of an earlier process to release
+       the bind address when no live listener holds it. Range 0 to 300; a value outside it stops
+       the gateway at start. ``0`` means no wait. See :ref:`protected-mode`.
    * - ``server.allow_unauthenticated_remote``
      - bool
      - ``false``
@@ -136,8 +142,13 @@ such as ``[::1]``) also exits with status 1. The message names the host, the por
 reason, and the gateway never logs its ready line. An address the machine does not own is
 refused unless the kernel allows non-local binds (``net.ipv4.ip_nonlocal_bind``,
 ``net.ipv6.ip_nonlocal_bind``). A second gateway cannot bind an address:port a live process
-holds; ``127.0.0.1:P`` and ``127.0.0.2:P`` are different addresses. Connections an earlier
-process closed (TIME_WAIT) do not stop a restart.
+holds, and the gateway never binds with ``SO_REUSEPORT``: two gateways never serve one
+address:port. ``127.0.0.1:P`` and ``127.0.0.2:P`` are different addresses. A live listener on
+the same address:port ends the start at once. When the bind fails with no live listener (the
+first start after an upgrade from a release before this one, whose closed connections stay in
+TIME_WAIT for about 60 s), the gateway logs one line naming the address:port and the wait,
+retries the bind until it succeeds or ``server.bind_wait_sec`` ends, and then exits 1 with the
+wait named in the message. A restart of this version over its own TIME_WAIT needs no wait.
 
 Example:
 

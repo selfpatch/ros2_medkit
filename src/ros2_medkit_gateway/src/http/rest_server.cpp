@@ -98,6 +98,7 @@ RESTServer::RESTServer(GatewayServices & services, std::shared_ptr<LifecycleStat
   : services_(services)
   , host_(host)
   , port_(port)
+  , bind_wait_sec_(rest_config.bind_wait_sec)
   , cors_config_(cors_config)
   , auth_config_(auth_config)
   , tls_config_(tls_config) {
@@ -2670,7 +2671,7 @@ void RESTServer::report_route_metadata_issues() const {
 }
 
 bool RESTServer::bind(std::string & error) {
-  return http_server_->bind(host_, port_, error);
+  return http_server_->bind(host_, port_, bind_wait_sec_, error);
 }
 
 void RESTServer::start() {

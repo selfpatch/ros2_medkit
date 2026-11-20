@@ -87,10 +87,15 @@ Nothing could listen on that address. The message ends with the reason:
 
 - ``Address already in use``: another live process listens on the same
   address:port (``127.0.0.1:8080`` and ``127.0.0.2:8080`` are different
-  addresses), or the kernel refused the fallback bind after the address looked
-  free. Find the process (``ss -ltnp``), stop it or change ``server.port``.
-  Connections an earlier gateway closed (TIME_WAIT) do not cause this: the
-  gateway rebinds over them and logs one line saying so.
+  addresses), or the wait ended (``(waited N s for closing connections ...``).
+  Find the process (``ss -ltnp``), stop it or change ``server.port``. If
+  nothing listens, raise ``server.bind_wait_sec`` (range 0 to 300).
+  The wait: when the first bind fails and no live process holds the address, the
+  gateway logs ``held by closing connections of an earlier process; waiting up to
+  N s`` and retries, then ``bound after waiting``. This shows only on the first
+  start after an upgrade from a release before this one (its closed connections
+  stay in TIME_WAIT for about 60 s). A restart of this version over its own
+  TIME_WAIT needs no wait.
 - ``Cannot assign requested address``: the machine does not own the address.
   Fix ``server.host``. (A kernel with ``net.ipv4.ip_nonlocal_bind`` or
   ``net.ipv6.ip_nonlocal_bind`` set accepts such a bind.)

@@ -25,6 +25,7 @@ bind exits instead of announcing itself.
 @verifies REQ_INTEROP_086
 """
 
+import errno
 import os
 import select
 import shutil
@@ -53,7 +54,8 @@ READY_LINE = 'Medkit Gateway ready on'
 REFUSAL_OFF = 'Refusing to start: authentication is off'
 REFUSAL_ON = 'Refusing to start: authentication is on but auth.require_auth_for is'
 BIND_REFUSAL = 'Refusing to start: cannot bind the REST API to'
-FALLBACK_LINE = 'held only by closing connections of an earlier process'
+WAIT_LINE = 'held by closing connections of an earlier process; waiting up to'
+BOUND_LINE = 'bound after waiting'
 # A session that ignores proxy settings of the environment: every request goes direct.
 _HTTP = requests.Session()
 _HTTP.trust_env = False
@@ -382,6 +384,39 @@ class _StandIn:
         return False
 
 
+class _Listener:
+    """A process listening on 127.0.0.1:`port` with SO_REUSEPORT only, like a released gateway."""
+
+    SCRIPT = r"""
+import socket, sys
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+srv.bind(('127.0.0.1', int(sys.argv[1])))
+srv.listen()
+print('listening', flush=True)
+sys.stdin.read()
+"""
+
+    def __init__(self, testcase, port):
+        self.testcase = testcase
+        self.port = port
+
+    def __enter__(self):
+        self._process = subprocess.Popen(['python3', '-c', self.SCRIPT, str(self.port)],
+                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.testcase.assertEqual(self._process.stdout.readline().strip(), 'listening')
+        return self
+
+    @property
+    def pid(self):
+        return self._process.pid
+
+    def __exit__(self, exc_type, exc, tb):
+        self._process.stdin.close()
+        self._process.wait(timeout=15)
+        return False
+
+
 class _Process:
     """A subprocess whose output is read until the ready line, or until it exits.
 
@@ -389,12 +424,15 @@ class _Process:
     None. Leaving the block kills the process group.
     """
 
-    def __init__(self, testcase, command, env_extra=None, timeout=60, port=None):
+    def __init__(self, testcase, command, env_extra=None, timeout=60, port=None, until=READY_LINE):
         self.testcase = testcase
         self.command = command
         self.env = {k: v for k, v in os.environ.items() if not k.startswith('MEDKIT_')}
         self.env.update(env_extra or {})
         self.timeout = timeout
+        self.until = until
+        self.wait_seen_at = None
+        self.exit_at = None
         self.port = port if port is not None else PORT
         self.rc = None
         self.ready = False
@@ -417,8 +455,12 @@ class _Process:
                 continue
             chunk = os.read(self._process.stdout.fileno(), 65536)
             if not chunk:
+                if self.exit_at is None:
+                    self.exit_at = time.monotonic()
                 return 'exit'
             self._chunks.append(chunk)
+            if self.wait_seen_at is None and WAIT_LINE.encode() in b''.join(self._chunks[-2:]):
+                self.wait_seen_at = time.monotonic()
             if marker.encode() in b''.join(self._chunks[-2:]):
                 return 'marker'
         return 'deadline'
@@ -427,12 +469,22 @@ class _Process:
         self._process = subprocess.Popen(
             self.command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             env=self.env, start_new_session=True)
-        outcome = self._read_until(READY_LINE)
+        outcome = self._read_until(self.until)
         self.ready = READY_LINE in self.output
         if outcome == 'exit':
             self._process.wait(timeout=15)
             self.rc = self._process.returncode
         return self
+
+    def wait_exit(self, timeout=90):
+        """Read until the process ends; return its exit code."""
+        if self.rc is not None:
+            return self.rc
+        outcome = self._read_until('\0never')
+        self.testcase.assertEqual(outcome, 'exit', f'still running: {self.output[-400:]}')
+        self._process.wait(timeout=timeout)
+        self.rc = self._process.returncode
+        return self.rc
 
     def __exit__(self, exc_type, exc, tb):
         if self.rc is None and self._process.poll() is None:
@@ -462,12 +514,11 @@ class _Process:
         t = self.testcase
         t.assertIsNotNone(self.rc, f'the gateway did not exit on {host}: {self.output[-600:]}')
         t.assertNotEqual(self.rc, 0, self.output[-600:])
-        t.assertIn(f'{BIND_REFUSAL} {host}:{self.port}:', self.output)
-        t.assertIn(cause, self.output)
+        t.assertIn(f'{BIND_REFUSAL} {host}:{self.port}: {cause}', self.output)
         t.assertNotIn(READY_LINE, self.output)
 
     def assert_started(self, host, expect_open_warning=False, probe='default',
-                       expect_fallback=False):
+                       expect_wait=False):
         """Assert the started process answers HTTP on a port it alone listens on."""
         t = self.testcase
         t.assertIsNone(self.rc, self.output[-600:])
@@ -476,7 +527,8 @@ class _Process:
         t.assertNotIn('Refusing to start', self.output)
         warned = 'reachable without authentication' in self.output
         t.assertEqual(warned, expect_open_warning, self.output[-800:])
-        t.assertEqual(FALLBACK_LINE in self.output, expect_fallback, self.output[-800:])
+        t.assertEqual(WAIT_LINE in self.output, expect_wait, self.output[-800:])
+        t.assertEqual(BOUND_LINE in self.output, expect_wait, self.output[-800:])
         owners = _listener_pids(self.port)
         t.assertTrue(owners, f'nobody listens on port {self.port}: {self.output[-600:]}')
         t.assertTrue(owners <= _tree(self.pid),
@@ -711,26 +763,74 @@ class TestBindFailure(unittest.TestCase):
             self.assertIn('HTTPS://127.0.0.1', gateway.output)
 
 
-class TestRestartOverTimeWait(unittest.TestCase):
-    """E2: a closed connection left in TIME_WAIT does not stop a restart; a live listener does."""
+def _leave_time_wait(testcase, port):
+    """Have a stand-in for a released gateway leave a TIME_WAIT entry on 127.0.0.1:`port`."""
+    with _StandIn(testcase, port, hold=False) as old:
+        old.wait_exit()
+    testcase.assertTrue(_time_wait(port), 'no TIME_WAIT entry, so a clean port proves nothing')
 
-    def test_the_first_start_after_a_so_reuseport_gateway_succeeds_at_once(self):
+
+class TestRestartOverTimeWait(unittest.TestCase):
+    """The gateway never shares a port: it waits out TIME_WAIT; a live listener ends the wait."""
+
+    def test_the_first_start_after_a_so_reuseport_gateway_waits_and_is_not_shared(self):
         port = _clean_port()
-        with _StandIn(self, port, hold=False) as old:
-            old.wait_exit()
-        self.assertTrue(_time_wait(port), 'no TIME_WAIT entry, so a clean port proves nothing')
-        with _Process(self, _gateway('127.0.0.1', port, FILE_AUTH_OFF), port=port) as gateway:
-            gateway.assert_answers('127.0.0.1', expect_fallback=True)
+        _leave_time_wait(self, port)
+        command = _gateway('127.0.0.1', port, FILE_AUTH_OFF)
+        with _Process(self, command, port=port, timeout=150) as gateway:
+            gateway.assert_answers('127.0.0.1', expect_wait=True)
+            self.assertIn('waiting up to 70 s', gateway.output)
+            # A later process of the same user that binds with SO_REUSEPORT must not share it.
+            late = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.addCleanup(late.close)
+            late.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            with self.assertRaises(OSError) as raised:
+                late.bind(('127.0.0.1', port))
+            self.assertEqual(raised.exception.errno, errno.EADDRINUSE)
+            self.assertTrue(_listener_pids(port) <= _tree(gateway.pid))
+
+    def test_a_short_wait_ends_with_the_cause_and_the_wait_named(self):
+        port = _clean_port()
+        _leave_time_wait(self, port)
+        command = _gateway('127.0.0.1', port, FILE_AUTH_OFF, ['-p', 'server.bind_wait_sec:=2'])
+        with _Process(self, command, port=port) as gateway:
+            gateway.wait_exit()
+            gateway.assert_bind_failed(
+                '127.0.0.1', 'Address already in use (waited 2 s for closing connections')
+            waited = gateway.exit_at - gateway.wait_seen_at
+            self.assertTrue(1.5 < waited < 30, f'waited {waited:.1f} s')
+
+    def test_no_wait_exits_at_once(self):
+        port = _clean_port()
+        _leave_time_wait(self, port)
+        command = _gateway('127.0.0.1', port, FILE_AUTH_OFF, ['-p', 'server.bind_wait_sec:=0'])
+        with _Process(self, command, port=port) as gateway:
+            gateway.assert_bind_failed('127.0.0.1', 'Address already in use (no live listener')
+            self.assertNotIn(WAIT_LINE, gateway.output)
+
+    def test_a_live_listener_that_appears_during_the_wait_ends_it(self):
+        port = _clean_port()
+        _leave_time_wait(self, port)
+        command = _gateway('127.0.0.1', port, FILE_AUTH_OFF)
+        with _Process(self, command, port=port, until=WAIT_LINE, timeout=90) as gateway:
+            self.assertIsNone(gateway.rc, gateway.output[-400:])
+            self.assertIn(WAIT_LINE, gateway.output)
+            # Over the same TIME_WAIT a SO_REUSEPORT process can bind, as a released gateway does.
+            with _Listener(self, port):
+                gateway.wait_exit()
+                gateway.assert_bind_failed('127.0.0.1', 'Address already in use')
+                self.assertNotIn('waited', gateway.output.split(BIND_REFUSAL)[1])
+                self.assertEqual(len(_listener_pids(port)), 1)
 
     def test_a_live_so_reuseport_listener_is_never_shared(self):
         port = _clean_port()
         with _StandIn(self, port, hold=True) as old:
             with _Process(self, _gateway('127.0.0.1', port, FILE_AUTH_OFF), port=port) as gateway:
                 gateway.assert_bind_failed('127.0.0.1', 'Address already in use')
-                self.assertNotIn(FALLBACK_LINE, gateway.output)
+                self.assertNotIn(WAIT_LINE, gateway.output)
             self.assertEqual(_listener_pids(port), {old.pid}, 'the old listener lost its port')
 
-    def test_a_restart_of_the_new_gateway_needs_no_fallback(self):
+    def test_a_restart_of_the_new_gateway_needs_no_wait(self):
         port = _clean_port()
         with _Process(self, _gateway('127.0.0.1', port, FILE_AUTH_OFF), port=port) as first:
             first.assert_answers('127.0.0.1')
@@ -742,7 +842,29 @@ class TestRestartOverTimeWait(unittest.TestCase):
             first._process.wait(timeout=60)
         self.assertTrue(_time_wait(port), 'the TIME_WAIT entry is gone: nothing was tested')
         with _Process(self, _gateway('127.0.0.1', port, FILE_AUTH_OFF), port=port) as second:
-            second.assert_answers('127.0.0.1', expect_fallback=False)
+            second.assert_answers('127.0.0.1', expect_wait=False)
+
+
+class TestBindWaitRange(unittest.TestCase):
+    """server.bind_wait_sec is 0 to 300; outside that the gateway does not start."""
+
+    def test_outside_the_range_refuses_and_names_the_parameter(self):
+        for value in ('-1', '301'):
+            with self.subTest(value=value):
+                port = _free_port()
+                command = _gateway('127.0.0.1', port, FILE_AUTH_OFF,
+                                   ['-p', f'server.bind_wait_sec:={value}'])
+                with _Process(self, command, port=port) as gateway:
+                    self.assertIsNotNone(gateway.rc, gateway.output[-400:])
+                    self.assertNotEqual(gateway.rc, 0)
+                    self.assertIn('server.bind_wait_sec', gateway.output)
+                    self.assertNotIn(READY_LINE, gateway.output)
+
+    def test_the_upper_bound_starts(self):
+        port = _free_port()
+        command = _gateway('127.0.0.1', port, FILE_AUTH_OFF, ['-p', 'server.bind_wait_sec:=300'])
+        with _Process(self, command, port=port) as gateway:
+            gateway.assert_answers('127.0.0.1')
 
 
 class TestLaunchArgument(unittest.TestCase):

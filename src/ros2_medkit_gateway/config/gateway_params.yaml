@@ -37,6 +37,10 @@ ros2_medkit_gateway:
       # Without it such a gateway refuses to start. MEDKIT_AUTH_DISABLED=1 implies it.
       allow_unauthenticated_remote: false
 
+      # Longest wait (s) at start for closing connections of an earlier process to release the
+      # bind address. Range 0-300; 0 = no wait. The kernel keeps them 60 s.
+      bind_wait_sec: 70
+
       # Port for REST API
       # Valid range: 1024-65535
       port: 8080

@@ -80,10 +80,12 @@ class HttpServerManager {
    * @brief Bind the listening socket to host and port, in the calling thread
    * @param host Host address to bind to
    * @param port Port number to bind to
+   * @param wait_sec Longest wait, in seconds, for closing connections of an earlier process
+   *        (TIME_WAIT) to release the address when no live listener holds it; 0 = no wait
    * @param error Receives the reason when the bind fails
    * @return true when the socket is bound; listen_bound() then serves it
    */
-  bool bind(const std::string & host, int port, std::string & error);
+  bool bind(const std::string & host, int port, int64_t wait_sec, std::string & error);
 
   /**
    * @brief Serve the socket bound by bind(); blocks until stop()

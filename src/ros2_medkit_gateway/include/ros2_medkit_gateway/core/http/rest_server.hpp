@@ -120,6 +120,7 @@ class RESTServer {
   GatewayServices & services_;
   std::string host_;
   int port_;
+  int64_t bind_wait_sec_{70};
   CorsConfig cors_config_;
   AuthConfig auth_config_;
   TlsConfig tls_config_;

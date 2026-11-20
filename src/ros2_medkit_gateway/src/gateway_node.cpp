@@ -142,6 +142,18 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
   // recovers workers quickly while retaining connection reuse for legitimate
   // clients. Clamped to [1, 3600] on read (see clamp_keep_alive_timeout).
   declare_parameter("server.keep_alive_timeout_sec", 2);
+  {
+    // Refused outside the range: the gateway does not start.
+    rcl_interfaces::msg::ParameterDescriptor desc;
+    desc.description =
+        "Longest wait (s) for closing connections of an earlier process to release the bind address; 0 = none";
+    rcl_interfaces::msg::IntegerRange range;
+    range.from_value = 0;
+    range.to_value = 300;
+    range.step = 1;
+    desc.integer_range.push_back(range);
+    declare_parameter("server.bind_wait_sec", 70, desc);
+  }
   // Safety-backstop refresh interval. Primary discovery refresh is driven
   // by rclcpp graph events; this only controls the periodic forced
   // refresh used when a graph event would otherwise be missed.
@@ -1394,6 +1406,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
   rest_config.docs_enabled = get_parameter("docs.enabled").as_bool();
   rest_config.server_host = server_host_;
   rest_config.server_port = server_port_;
+  rest_config.bind_wait_sec = get_parameter("server.bind_wait_sec").as_int();
   fault_event_source_ = std::make_unique<Ros2FaultEventSource>(*this, build_fault_manager_events_topic(this));
   rest_config.logger_name = get_logger().get_name();
 

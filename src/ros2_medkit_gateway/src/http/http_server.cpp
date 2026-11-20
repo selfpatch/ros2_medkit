@@ -22,12 +22,15 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
+#include <cinttypes>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -39,21 +42,12 @@ namespace {
 
 using Address = std::array<std::uint8_t, 16>;
 
-// SO_REUSEADDR only: it lets a restarted gateway rebind over TIME_WAIT, and it does not let
-// a second gateway bind an address:port a live gateway already serves.
+// SO_REUSEADDR only: it lets a restarted gateway rebind over TIME_WAIT. Never SO_REUSEPORT,
+// which would let a second process bind the same address:port while this one serves it.
 void reuse_address_only(httplib::Server & srv) {
   srv.set_socket_options([](socket_t sock) {
     int yes = 1;
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const void *>(&yes), sizeof(yes));
-  });
-}
-
-// Also SO_REUSEPORT: needed to bind over TIME_WAIT left by a process that bound with it.
-void reuse_address_and_port(httplib::Server & srv) {
-  srv.set_socket_options([](socket_t sock) {
-    int yes = 1;
-    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const void *>(&yes), sizeof(yes));
-    setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<const void *>(&yes), sizeof(yes));
   });
 }
 
@@ -259,7 +253,7 @@ httplib::Server * HttpServerManager::get_server() {
   return server_.get();
 }
 
-bool HttpServerManager::bind(const std::string & host, int port, std::string & error) {
+bool HttpServerManager::bind(const std::string & host, int port, int64_t wait_sec, std::string & error) {
   std::string protocol = tls_config_.enabled ? "HTTPS" : "HTTP";
   MEDKIT_LOG_INFO(log::Logger("http_server"), "Starting %s server on %s:%d...", protocol.c_str(), host.c_str(), port);
 
@@ -272,7 +266,7 @@ bool HttpServerManager::bind(const std::string & host, int port, std::string & e
   if (srv->bind_to_port(host, port)) {
     return true;
   }
-  const int bind_errno = errno;
+  int bind_errno = errno;
   std::string gai_error;
   if (resolve(host, gai_error).empty()) {
     error = "cannot resolve the host: " + gai_error;
@@ -282,18 +276,40 @@ bool HttpServerManager::bind(const std::string & host, int port, std::string & e
   if (bind_errno != EADDRINUSE || live_listener_holds(host, port)) {
     return false;
   }
-  // The address is in use with no live listener: connections an earlier process closed are in
-  // TIME_WAIT, and a process that bound with SO_REUSEPORT blocks a bind without it.
-  reuse_address_and_port(*srv);
-  errno = 0;
-  if (srv->bind_to_port(host, port)) {
-    MEDKIT_LOG_INFO(log::Logger("http_server"),
-                    "%s:%d is held only by closing connections of an earlier process on this port; "
-                    "bound with SO_REUSEPORT",
-                    host.c_str(), port);
-    return true;
+  if (wait_sec <= 0) {
+    error += " (no live listener holds it; server.bind_wait_sec is 0, so no wait)";
+    return false;
   }
-  error = std::strerror(errno != 0 ? errno : bind_errno);
+
+  // EADDRINUSE with no live listener: connections an earlier process closed are still in
+  // TIME_WAIT (a release that bound with SO_REUSEPORT blocks a SO_REUSEADDR bind). They end
+  // within the kernel's TIME_WAIT period; retry the same bind until then.
+  MEDKIT_LOG_INFO(log::Logger("http_server"),
+                  "%s:%d is held by closing connections of an earlier process; waiting up to %" PRId64
+                  " s for them to end (server.bind_wait_sec)",
+                  host.c_str(), port, wait_sec);
+  const auto start = std::chrono::steady_clock::now();
+  const auto deadline = start + std::chrono::seconds(wait_sec);
+  while (std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    if (live_listener_holds(host, port)) {
+      error = std::strerror(EADDRINUSE);
+      return false;
+    }
+    errno = 0;
+    if (srv->bind_to_port(host, port)) {
+      const double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+      MEDKIT_LOG_INFO(log::Logger("http_server"), "%s:%d bound after waiting %.1f s", host.c_str(), port, waited);
+      return true;
+    }
+    bind_errno = errno;
+    if (bind_errno != EADDRINUSE) {
+      error = bind_errno != 0 ? std::strerror(bind_errno) : "bind failed";
+      return false;
+    }
+  }
+  error = std::string(std::strerror(EADDRINUSE)) + " (waited " + std::to_string(wait_sec) +
+          " s for closing connections of an earlier process; server.bind_wait_sec)";
   return false;
 }
 
