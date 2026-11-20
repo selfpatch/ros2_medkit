@@ -426,8 +426,9 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   /// so a misconfigured bringup is not a silent empty tree.
   void log_startup_summary();
 
-  /// Writes the enforced posture into `auth.enabled` and `auth.require_auth_for`,
-  /// then refuses every later write to `auth.*` and `aggregation.peer_auth_header`.
+  /// Writes the enforced posture into auth.enabled and auth.require_auth_for,
+  /// then refuses every later write to any auth parameter and to
+  /// aggregation.peer_auth_header.
   void apply_effective_auth_parameters(bool auth_enabled, const std::string & require_auth_for);
 
   /// Refuses runtime writes to the auth parameters; installed by
