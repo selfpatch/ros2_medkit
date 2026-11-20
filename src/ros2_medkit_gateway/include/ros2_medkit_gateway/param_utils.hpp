@@ -14,14 +14,11 @@
 
 #pragma once
 
-#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
-#include <rcl/arguments.h>
-#include <rcl_yaml_param_parser/parser.h>
 #include <rclcpp/rclcpp.hpp>
 
 namespace ros2_medkit_gateway {
@@ -120,97 +117,8 @@ inline void insert_nested_param(nlohmann::json & root, const std::string & dotte
   (*cur)[leaf] = std::move(value);
 }
 
-/// Declare plugin config parameters from the global --params-file YAML.
-///
-/// Parameters from --params-file go into the ROS 2 global rcl context,
-/// NOT into NodeOptions::parameter_overrides(). We must discover and
-/// declare them explicitly so list_parameters()/get_parameter() can find them.
-inline void declare_plugin_params_from_yaml(rclcpp::Node * node, const std::string & prefix,
-                                            const std::string & path_key = "") {
-  auto rcl_ctx = node->get_node_base_interface()->get_context()->get_rcl_context();
-  rcl_params_t * global_params = nullptr;
-  auto ret = rcl_arguments_get_param_overrides(&rcl_ctx->global_arguments, &global_params);
-  if (ret != RCL_RET_OK || global_params == nullptr) {
-    return;
-  }
-  auto cleanup = [](rcl_params_t * p) {
-    if (p) {
-      rcl_yaml_node_struct_fini(p);
-    }
-  };
-  std::unique_ptr<rcl_params_t, decltype(cleanup)> guard(global_params, cleanup);
-
-  std::string node_name = node->get_name();
-  std::string node_fqn = node->get_fully_qualified_name();
-  for (size_t n = 0; n < global_params->num_nodes; ++n) {
-    std::string yaml_node = global_params->node_names[n];
-    if (yaml_node != node_name && yaml_node != node_fqn && yaml_node != "/**") {
-      continue;
-    }
-    auto * node_p = &global_params->params[n];
-    for (size_t p = 0; p < node_p->num_params; ++p) {
-      std::string pname = node_p->parameter_names[p];
-      if (pname.rfind(prefix, 0) == 0 && pname != path_key && !node->has_parameter(pname)) {
-        auto & val = node_p->parameter_values[p];
-        try {
-          if (val.string_value != nullptr) {
-            node->declare_parameter(pname, std::string(val.string_value));
-          } else if (val.bool_value != nullptr) {
-            node->declare_parameter(pname, *val.bool_value);
-          } else if (val.integer_value != nullptr) {
-            node->declare_parameter(pname, static_cast<int64_t>(*val.integer_value));
-          } else if (val.double_value != nullptr) {
-            node->declare_parameter(pname, *val.double_value);
-          } else if (val.string_array_value != nullptr) {
-            // Preserve index alignment: map null elements to empty strings rather than
-            // dropping them, so plugin configs see the same length the YAML declared.
-            std::vector<std::string> arr;
-            arr.reserve(val.string_array_value->size);
-            for (size_t i = 0; i < val.string_array_value->size; ++i) {
-              const char * elem = val.string_array_value->data[i];
-              arr.emplace_back(elem != nullptr ? elem : "");
-            }
-            node->declare_parameter(pname, arr);
-          } else if (val.bool_array_value != nullptr) {
-            // Explicit loop (rather than range ctor) avoids UB when size==0 and
-            // values==nullptr - nullptr+0 pointer arithmetic is undefined in C++.
-            std::vector<bool> arr;
-            arr.reserve(val.bool_array_value->size);
-            for (size_t i = 0; i < val.bool_array_value->size; ++i) {
-              arr.push_back(val.bool_array_value->values[i]);
-            }
-            node->declare_parameter(pname, arr);
-          } else if (val.integer_array_value != nullptr) {
-            std::vector<int64_t> arr;
-            arr.reserve(val.integer_array_value->size);
-            for (size_t i = 0; i < val.integer_array_value->size; ++i) {
-              arr.push_back(val.integer_array_value->values[i]);
-            }
-            node->declare_parameter(pname, arr);
-          } else if (val.double_array_value != nullptr) {
-            std::vector<double> arr;
-            arr.reserve(val.double_array_value->size);
-            for (size_t i = 0; i < val.double_array_value->size; ++i) {
-              arr.push_back(val.double_array_value->values[i]);
-            }
-            node->declare_parameter(pname, arr);
-          } else {
-            RCLCPP_WARN(node->get_logger(), "Skipping param '%s': unsupported type", pname.c_str());
-          }
-        } catch (const rclcpp::exceptions::ParameterAlreadyDeclaredException &) {
-          // Expected when a base class / earlier pass already declared the
-          // same parameter - ignore silently to keep idempotency.
-        } catch (const std::exception & e) {
-          // Real errors (invalid type/value, RCL errors, bad YAML typos) must
-          // surface to the operator, not vanish into DEBUG.
-          RCLCPP_WARN(node->get_logger(), "Could not declare param '%s': %s", pname.c_str(), e.what());
-        }
-      }
-    }
-  }
-}
-
-/// Extract per-plugin config from ROS 2 parameters into a NESTED JSON object.
+/// Extract per-plugin config from the node's parameter overrides into a NESTED
+/// JSON object.
 ///
 /// Scans for keys matching "plugins.<name>.<key>[.<subkey>...]" (excluding
 /// ".path") and reconstructs the dotted remainder into a hierarchy of nested
@@ -218,36 +126,20 @@ inline void declare_plugin_params_from_yaml(rclcpp::Node * node, const std::stri
 /// {"enabled": true}}. Plugins read their config as nested objects
 /// (config.contains("native_alarms"), config["native_alarms"]["enabled"], ...),
 /// so a flat object keyed by the dotted string would never match. Single-level
-/// keys stay flat, unchanged.
+/// keys stay flat.
 ///
-/// Checks two sources:
-///   1. NodeOptions::parameter_overrides (set programmatically, e.g. in unit tests)
-///   2. Global YAML overrides from --params-file (declared on-demand, production path)
+/// The overrides hold the params files, `-p` arguments and
+/// NodeOptions::parameter_overrides. The keys are never declared as parameters,
+/// so the parameter services and /parameter_events do not serve them.
 inline nlohmann::json extract_plugin_config(rclcpp::Node * node, const std::string & plugin_name) {
   auto config = nlohmann::json::object();
-  std::string prefix = "plugins." + plugin_name + ".";
-  std::string path_key = prefix + "path";
+  const std::string prefix = "plugins." + plugin_name + ".";
+  const std::string path_key = prefix + "path";
 
-  // Source 1: NodeOptions parameter_overrides (programmatic, used in tests)
-  for (const auto & param : node->get_node_options().parameter_overrides()) {
-    const auto & name = param.get_name();
+  const auto & overrides = node->get_node_parameters_interface()->get_parameter_overrides();
+  for (const auto & [name, value] : overrides) {
     if (name.rfind(prefix, 0) == 0 && name != path_key) {
-      insert_nested_param(config, name.substr(prefix.size()), parameter_to_json(param), node->get_logger());
-    }
-  }
-  if (!config.empty()) {
-    return config;
-  }
-
-  // Source 2: global YAML overrides from --params-file
-  declare_plugin_params_from_yaml(node, prefix, path_key);
-
-  // list_parameters uses "." as hierarchy separator - prefix must NOT have trailing dot.
-  std::string list_prefix = "plugins." + plugin_name;
-  auto result = node->list_parameters({list_prefix}, 10);
-  for (const auto & name : result.names) {
-    if (name != path_key) {
-      insert_nested_param(config, name.substr(prefix.size()), parameter_to_json(node->get_parameter(name)),
+      insert_nested_param(config, name.substr(prefix.size()), parameter_to_json(rclcpp::Parameter(name, value)),
                           node->get_logger());
     }
   }

@@ -48,25 +48,30 @@ Credential and certificate provisioning
    (HS256) or provision an RS256 key pair. Inject it at deploy time from a
    secret store or environment variable - do not commit it to source control.
 
+   The gateway node reads ``MEDKIT_JWT_SECRET``, ``MEDKIT_CLIENTS`` and
+   ``MEDKIT_AUTH_DISABLED`` itself, so the same rule holds on every way of
+   starting it, and the environment wins over the params file. A non-empty
+   ``MEDKIT_JWT_SECRET`` closes the gateway (``require_auth_for`` ``all``); set
+   but empty, the gateway refuses to start.
+
+   .. note::
+
+      The gateway does not publish the secret as a parameter value. It declares
+      ``auth.jwt_secret`` with a placeholder that names the source
+      (``<from MEDKIT_JWT_SECRET>`` or ``<set at start>``), so ``ros2 param get``
+      and ``/parameter_events`` do not carry it. ``auth.clients`` and
+      ``aggregation.peer_auth_header`` get the same treatment, and none of them
+      can be changed at runtime. Plugin config (``plugins.<name>.<key>``) is read
+      from the node's parameter overrides and handed to the plugin; it is never
+      declared as a parameter, so it is not served by the parameter services and
+      does not appear on ``/parameter_events``.
+
    .. warning::
 
-      ``auth.jwt_secret`` is a plain readable ROS 2 parameter. Beyond source
-      control it is exposed on two planes:
-
-      - **DDS control plane.** Any peer on the ROS 2 graph can read it with
-        ``ros2 param get /<gateway_node> auth.jwt_secret`` - the parameter is
-        declared readable and the DDS domain is unauthenticated by default.
-      - **Process table.** Passing it inline (``-p auth.jwt_secret:=...`` as in
-        the launch example above) also leaks the value via ``ps`` and
-        ``/proc/<pid>/cmdline``.
-
-      Injecting from an environment variable / params file instead of an inline
-      ``-p`` closes the process-table leak, but the value still lands in a
-      readable parameter, so it remains exposed on the DDS plane. To close that,
-      lock down the control plane: ROS 2 security (SROS2) with an access-control
-      policy that denies parameter reads to untrusted participants, or a
-      dedicated / firewalled ``ROS_DOMAIN_ID`` (optionally with
-      ``ROS_LOCALHOST_ONLY=1``) that no untrusted peer can join.
+      Passing the secret inline (``-p auth.jwt_secret:=...`` as in the launch
+      example above) leaks it through ``ps`` and ``/proc/<pid>/cmdline``. Inject
+      it from ``MEDKIT_JWT_SECRET`` or from a params file that only the gateway's
+      user can read.
 
 3. **Role-scoped clients.** Create the minimum set of clients in
    ``auth.clients`` (``client_id:client_secret:role``). Roles, least to most

@@ -18,6 +18,66 @@ For production deployments, you should enable authentication to:
 - Limit write operations to authorized users
 - Audit API access
 
+Environment Variables
+---------------------
+
+The gateway node reads three environment variables when it loads its
+parameters, so the rule is the same however it is started (``ros2 run``, any
+launch file, a container). The environment wins over the params file and over
+``-p`` arguments.
+A wrongly typed ``auth.*`` value in a params file still stops the gateway at
+start, even when an environment variable would replace it.
+
+.. list-table::
+   :widths: 28 72
+   :header-rows: 1
+
+   * - Variable
+     - Effect
+   * - ``MEDKIT_JWT_SECRET``
+     - A non-empty value turns authentication on, sets ``require_auth_for`` to
+       ``all`` and is the signing secret. Set but empty, the gateway refuses to
+       start (exit code 1): a blank value is usually a failed interpolation, and
+       starting open under it is the outcome the variable exists to prevent.
+       With ``auth.jwt_algorithm`` ``RS256`` it is refused at startup, because
+       the variable carries a shared secret and RS256 wants a key file path.
+   * - ``MEDKIT_CLIENTS``
+     - Replaces ``auth.clients``. Comma-separated ``id:secret:role`` entries;
+       surrounding spaces and tabs are trimmed. The id ends at the first colon
+       and the role starts after the last, so a secret may contain colons. A
+       repeated id keeps the first entry and logs a warning. A malformed entry
+       is dropped and reported by its position, never by its text. An empty
+       value means no clients and logs a warning; a value of which every entry
+       was refused stops the gateway. Ignored with a warning unless
+       ``MEDKIT_JWT_SECRET`` is set and non-empty.
+   * - ``MEDKIT_AUTH_DISABLED``
+     - Exactly ``1`` turns authentication off, over the params file and over
+       ``MEDKIT_JWT_SECRET``. Any other value has no effect.
+
+``ros2 param get`` reports what the gateway enforces: ``auth.enabled`` and
+``auth.require_auth_for`` hold the effective values (``none`` while
+authentication is off). No secret is readable: ``auth.jwt_secret`` reads
+``<from MEDKIT_JWT_SECRET>``, ``<set at start>`` or empty, each
+``auth.clients`` entry reads ``<id>:<sentinel>:<role>``, and
+``aggregation.peer_auth_header`` reads ``<set at start>`` or empty. The auth
+configuration is built once at start, so ``ros2 param set``, ``ros2 param load``
+and atomic batches touching ``auth.*`` or ``aggregation.peer_auth_header`` are
+refused; restart the gateway with the new configuration.
+
+Plugin config (``plugins.<name>.<key>``) is read at start and is not served as
+parameters, so a plugin password never reaches ``ros2 param get`` or
+``/parameter_events``.
+
+Where a secret is safe:
+
+- The environment variable (``MEDKIT_JWT_SECRET``, ``MEDKIT_CLIENTS``) keeps the
+  secret out of params files and out of the process list. The same user and
+  root can still read it from ``/proc/<pid>/environ``, and child processes
+  inherit it.
+- A params file that holds a secret must be readable only by the gateway's user.
+- A value given with ``-p`` on the command line is visible to every local user
+  in the process list.
+
 Authentication Modes
 --------------------
 
