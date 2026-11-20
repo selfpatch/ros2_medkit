@@ -54,7 +54,7 @@ READY_LINE = 'Medkit Gateway ready on'
 REFUSAL_OFF = 'Refusing to start: authentication is off'
 REFUSAL_ON = 'Refusing to start: authentication is on but auth.require_auth_for is'
 BIND_REFUSAL = 'Refusing to start: cannot bind the REST API to'
-WAIT_LINE = 'held by closing connections of an earlier process; waiting up to'
+WAIT_LINE = 'a socket bound without listening; waiting up to'
 BOUND_LINE = 'bound after waiting'
 # A session that ignores proxy settings of the environment: every request goes direct.
 _HTTP = requests.Session()
@@ -796,9 +796,10 @@ class TestRestartOverTimeWait(unittest.TestCase):
         with _Process(self, command, port=port) as gateway:
             gateway.wait_exit()
             gateway.assert_bind_failed(
-                '127.0.0.1', 'Address already in use (waited 2 s for closing connections')
+                '127.0.0.1', 'Address already in use (waited 2.')
             waited = gateway.exit_at - gateway.wait_seen_at
-            self.assertTrue(1.5 < waited < 30, f'waited {waited:.1f} s')
+            self.assertTrue(1.5 < waited < 5, f'waited {waited:.1f} s')
+            self.assertIn('server.bind_wait_sec', gateway.output)
 
     def test_no_wait_exits_at_once(self):
         port = _clean_port()

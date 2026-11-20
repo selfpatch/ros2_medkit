@@ -26,6 +26,7 @@
 #include <chrono>
 #include <cinttypes>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -74,7 +75,9 @@ bool is_wildcard(const Address & a) {
 }
 
 // Two bound addresses collide when they are equal, or one is a wildcard that covers the other:
-// 0.0.0.0 covers every IPv4 address, :: covers every address.
+// 0.0.0.0 covers every IPv4 address, :: covers every address. A `::` listener counts as holding
+// the IPv4 addresses too, also when it is IPv6-only: /proc does not show IPV6_V6ONLY. This errs
+// to an immediate exit, never to sharing.
 bool addresses_collide(const Address & ours, const Address & theirs) {
   if (ours == theirs) {
     return true;
@@ -293,24 +296,34 @@ BindResult HttpServerManager::bind(const std::string & host, int port, int64_t w
     return BindResult::kFailed;
   }
 
-  // EADDRINUSE with no live listener: connections an earlier process closed are still in
-  // TIME_WAIT (a release that bound with SO_REUSEPORT blocks a SO_REUSEADDR bind). They end
-  // within the kernel's TIME_WAIT period; retry the same bind until then.
+  // EADDRINUSE with no live listener: connections an earlier process closed are in TIME_WAIT (a
+  // release that bound with SO_REUSEPORT blocks a SO_REUSEADDR bind), or a process holds the port
+  // without listening. TIME_WAIT normally ends 60 s after the close; a late packet from the old
+  // peer can extend it. Retry the same bind until it succeeds or the wait ends.
   MEDKIT_LOG_INFO(log::Logger("http_server"),
-                  "%s:%d is held by closing connections of an earlier process; waiting up to %" PRId64
-                  " s for them to end (server.bind_wait_sec)",
+                  "%s:%d is held, and no live listener holds it: closing connections of an earlier process, "
+                  "or a socket bound without listening; waiting up to %" PRId64 " s (server.bind_wait_sec)",
                   host.c_str(), port, wait_sec);
   const auto start = std::chrono::steady_clock::now();
-  if (stop_signal_pending()) {
+  const auto deadline = start + std::chrono::seconds(wait_sec);
+  const auto stopped = [&]() {
+    if (!stop_signal_pending()) {
+      return false;
+    }
     MEDKIT_LOG_INFO(log::Logger("http_server"), "start stopped during the bind wait for %s:%d", host.c_str(), port);
+    return true;
+  };
+  if (stopped()) {
     return BindResult::kStopped;
   }
-  const auto deadline = start + std::chrono::seconds(wait_sec);
-  while (std::chrono::steady_clock::now() < deadline) {
+  for (;;) {
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
-    if (stop_signal_pending()) {
-      MEDKIT_LOG_INFO(log::Logger("http_server"), "start stopped during the bind wait for %s:%d", host.c_str(), port);
+    if (stopped()) {
       return BindResult::kStopped;
+    }
+    // No attempt starts after the wait ended.
+    if (std::chrono::steady_clock::now() >= deadline) {
+      break;
     }
     if (live_listener_holds(host, port)) {
       error = std::strerror(EADDRINUSE);
@@ -328,8 +341,14 @@ BindResult HttpServerManager::bind(const std::string & host, int port, int64_t w
       return BindResult::kFailed;
     }
   }
-  error = std::string(std::strerror(EADDRINUSE)) + " (waited " + std::to_string(wait_sec) +
-          " s for closing connections of an earlier process; server.bind_wait_sec)";
+  error = std::strerror(EADDRINUSE);
+  // A listener that appeared after the last check is a live holder, not a wait that ran out.
+  if (!live_listener_holds(host, port)) {
+    char waited[32];
+    std::snprintf(waited, sizeof(waited), "%.1f",
+                  std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+    error += std::string(" (waited ") + waited + " s; no live listener appeared; server.bind_wait_sec)";
+  }
   return BindResult::kFailed;
 }
 
