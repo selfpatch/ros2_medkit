@@ -211,6 +211,21 @@ TEST_F(CorrelationEngineTest, ClearRootCauseClearsSymptoms) {
   EXPECT_EQ(0u, engine.get_muted_count());
 }
 
+TEST_F(CorrelationEngineTest, ClearedSymptomIsNotClearedAgainWithItsRoot) {
+  auto config = create_hierarchical_config();
+  CorrelationEngine engine(config);
+
+  engine.process_fault("ESTOP_001", "CRITICAL");
+  engine.process_fault("MOTOR_COMM_FL", "ERROR");
+  engine.process_fault("MOTOR_COMM_FR", "ERROR");
+
+  engine.process_clear("MOTOR_COMM_FL");
+  auto clear_result = engine.process_clear("ESTOP_001");
+
+  ASSERT_EQ(1u, clear_result.auto_cleared_codes.size());
+  EXPECT_EQ("MOTOR_COMM_FR", clear_result.auto_cleared_codes[0]);
+}
+
 TEST_F(CorrelationEngineTest, UnrelatedFaultNotCorrelated) {
   auto config = create_hierarchical_config();
   CorrelationEngine engine(config);

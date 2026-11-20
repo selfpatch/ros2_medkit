@@ -184,6 +184,12 @@ ProcessClearResult CorrelationEngine::process_clear(const std::string & fault_co
     fault_to_cluster_.erase(cluster_it);
   }
 
+  // A cleared symptom is no longer its root's: a later recurrence outside the window is independent.
+  for (auto & entry : root_to_symptoms_) {
+    auto & symptoms = entry.second;
+    symptoms.erase(std::remove(symptoms.begin(), symptoms.end(), fault_code), symptoms.end());
+  }
+
   // Remove from muted faults if it was a symptom
   muted_faults_.erase(fault_code);
 

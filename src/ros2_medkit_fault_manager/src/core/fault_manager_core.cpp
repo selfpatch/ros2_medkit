@@ -364,7 +364,8 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
 
     // Process through correlation engine (if enabled). Only FAILED events correlate.
     bool should_mute = false;
-    if (correlation_ && failed) {
+    // A FAILED that leaves the fault HEALED (hysteresis) is not an active fault yet.
+    if (correlation_ && failed && fault_after->status != fd::fault_status::kHealed) {
       auto correlation_result =
           correlation_->process_fault(report.fault_code, correlation::severity_to_string(report.severity));
 
@@ -423,7 +424,19 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
     // consumers act on it; the payload's status = HEALED distinguishes auto-heal from
     // an acknowledged clear.
     if (just_healed) {
-      publish_event(fd::fault_event_type::kCleared, *fault_after);
+      // A healed fault leaves the correlation state like a cleared one. For a root cause that
+      // takes its symptoms with it (auto_clear_with_root), or they stay muted under a cause
+      // that is no longer on the list.
+      std::vector<std::string> healed_symptoms;
+      if (correlation_) {
+        const auto symptoms = correlation_->process_clear(report.fault_code).auto_cleared_codes;
+        try {
+          clear_symptoms(symptoms, report.fault_code, "auto_heal", healed_symptoms);
+        } catch (const FaultStorage::IgnorableConnectionException & e) {
+          connection_lost(e);
+        }
+      }
+      publish_event(fd::fault_event_type::kCleared, *fault_after, healed_symptoms);
     }
 
     // Append tamper-evident audit records for the transitions that just happened.
@@ -467,6 +480,24 @@ ReportOutcome FaultManagerCore::report_locked(const fd::FaultReport & report) {
   return outcome;
 }
 
+void FaultManagerCore::clear_symptoms(const std::vector<std::string> & symptom_codes, const std::string & root_code,
+                                      const char * audit_source, std::vector<std::string> & cleared) {
+  for (const auto & symptom_code : symptom_codes) {
+    last_capture_times_.erase(symptom_code);
+    storage_->clear_fault(symptom_code);
+    if (audit_) {
+      auto symptom = storage_->get_fault(symptom_code);
+      if (symptom) {
+        audit_transition(kTransitionCleared, *symptom, audit_source, clock_.now_ns());
+      }
+    }
+    logf(log_, LogLevel::kDebug, config_.logger_name, "Auto-cleared symptom: %s (root cause: %s)", symptom_code.c_str(),
+         root_code.c_str());
+    hooks_.on_cleared(symptom_code);
+    cleared.push_back(symptom_code);
+  }
+}
+
 ClearOutcome FaultManagerCore::clear_locked(const std::string & code, bool skip_correlation_auto_clear) {
   const std::string & logger = config_.logger_name;
   ClearOutcome outcome;
@@ -508,38 +539,14 @@ ClearOutcome FaultManagerCore::clear_locked(const std::string & code, bool skip_
     return outcome;
   }
 
-  // Evict cooldown tracking for the cleared fault and the auto-cleared symptoms
   last_capture_times_.erase(code);
-  for (const auto & symptom_code : auto_cleared_codes) {
-    last_capture_times_.erase(symptom_code);
-  }
-
-  // Auto-clear correlated symptoms
-  for (const auto & symptom_code : auto_cleared_codes) {
-    try {
-      storage_->clear_fault(symptom_code);
-    } catch (const FaultStorage::IgnorableConnectionException & e) {
-      connection_lost(e);
-      outcome.message = storage_unavailable(e);
-      return outcome;
-    }
-    if (audit_) {
-      std::optional<fd::FaultRecord> symptom;
-      try {
-        symptom = storage_->get_fault(symptom_code);
-      } catch (const FaultStorage::IgnorableConnectionException & e) {
-        connection_lost(e);
-        outcome.message = storage_unavailable(e);
-        return outcome;
-      }
-      if (symptom) {
-        audit_transition(kTransitionCleared, *symptom, "clear_service", clock_.now_ns());
-      }
-    }
-    logf(log_, LogLevel::kDebug, logger, "Auto-cleared symptom: %s (root cause: %s)", symptom_code.c_str(),
-         code.c_str());
-    // Also cleanup rosbag for auto-cleared faults
-    hooks_.on_cleared(symptom_code);
+  std::vector<std::string> cleared_symptoms;
+  try {
+    clear_symptoms(auto_cleared_codes, code, "clear_service", cleared_symptoms);
+  } catch (const FaultStorage::IgnorableConnectionException & e) {
+    connection_lost(e);
+    outcome.message = storage_unavailable(e);
+    return outcome;
   }
 
   outcome.auto_cleared_codes = auto_cleared_codes;

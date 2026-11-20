@@ -428,7 +428,7 @@ correlation:
         - pattern: drive_faults
       window_ms: 1000 # Symptoms within 1s of root cause
       mute_symptoms: true # Don't publish symptom events
-      auto_clear_with_root: true # Clear symptoms when root cause clears
+      auto_clear_with_root: true # Clear symptoms when root cause clears or heals
 
     # Auto-cluster rule: Group communication errors
     - id: comm_storm
