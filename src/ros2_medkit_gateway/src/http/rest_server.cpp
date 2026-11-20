@@ -2671,10 +2671,25 @@ void RESTServer::report_route_metadata_issues() const {
 }
 
 BindResult RESTServer::bind(std::string & error) {
-  return http_server_->bind(host_, port_, bind_wait_sec_, error);
+  const BindResult result = http_server_->bind(host_, port_, bind_wait_sec_, error);
+  bound_ = result == BindResult::kBound;
+  return result;
 }
 
 void RESTServer::start() {
+  if (!bound_) {
+    std::string error;
+    switch (bind(error)) {
+      case BindResult::kBound:
+        break;
+      case BindResult::kStopped:
+        return;
+      case BindResult::kFailed:
+        MEDKIT_LOG_ERROR(log::Logger("rest_server"), "REST server cannot bind %s:%d: %s", host_.c_str(), port_,
+                         error.c_str());
+        return;
+    }
+  }
   http_server_->listen_bound();
 }
 
