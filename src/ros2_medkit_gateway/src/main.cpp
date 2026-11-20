@@ -211,6 +211,15 @@ int main(int argc, char ** argv) {
     return 1;
   }
 
+  // A handler, so that a stop signal stays pending while blocked even when this process is PID 1:
+  // the kernel drops a signal with the default disposition sent to PID 1. rclcpp installs its own
+  // handlers once startup ends.
+  struct sigaction hold {};
+  hold.sa_handler = [](int) {};
+  sigemptyset(&hold.sa_mask);
+  sigaction(SIGINT, &hold, nullptr);
+  sigaction(SIGTERM, &hold, nullptr);
+
   bool ros_inited = false;
   try {
     rclcpp::init(argc, argv, rclcpp::InitOptions(), rclcpp::SignalHandlerOptions::None);
@@ -362,6 +371,12 @@ int main(int argc, char ** argv) {
     node.reset();
 
     rclcpp::shutdown();
+  } catch (const ros2_medkit_gateway::StartStopped &) {
+    // A stop during the bind wait ends the start the way a stop during startup ends it: exit 0.
+    if (ros_inited && rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
+    return 0;
   } catch (const std::exception & ex) {
     fprintf(stderr, "[ros2_medkit_gateway] Fatal exception in main: %s\n", ex.what());
     if (ros_inited && rclcpp::ok()) {

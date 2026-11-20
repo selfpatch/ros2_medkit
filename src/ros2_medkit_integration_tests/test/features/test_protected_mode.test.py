@@ -822,6 +822,25 @@ class TestRestartOverTimeWait(unittest.TestCase):
                 self.assertNotIn('waited', gateway.output.split(BIND_REFUSAL)[1])
                 self.assertEqual(len(_listener_pids(port)), 1)
 
+    def test_a_stop_during_the_wait_ends_the_start_at_once(self):
+        for name, number in (('SIGTERM', signal.SIGTERM), ('SIGINT', signal.SIGINT)):
+            with self.subTest(signal=name):
+                port = _clean_port()
+                _leave_time_wait(self, port)
+                command = _gateway('127.0.0.1', port, FILE_AUTH_OFF)
+                with _Process(self, command, port=port, until=WAIT_LINE, timeout=90) as gateway:
+                    self.assertIn(WAIT_LINE, gateway.output)
+                    nodes = [pid for pid in _tree(gateway.pid) if _is_gateway_node(pid)]
+                    self.assertEqual(len(nodes), 1, f'gateway_node processes: {nodes}')
+                    sent = time.monotonic()
+                    os.kill(nodes[0], number)
+                    self.assertEqual(gateway.wait_exit(), 0, gateway.output[-400:])
+                    elapsed = gateway.exit_at - sent
+                    self.assertLess(elapsed, 2, f'{name}: stopped after {elapsed:.1f} s')
+                    self.assertIn('start stopped during the bind wait', gateway.output)
+                    self.assertNotIn(READY_LINE, gateway.output)
+                    self.assertNotIn(BOUND_LINE, gateway.output)
+
     def test_a_live_so_reuseport_listener_is_never_shared(self):
         port = _clean_port()
         with _StandIn(self, port, hold=True) as old:

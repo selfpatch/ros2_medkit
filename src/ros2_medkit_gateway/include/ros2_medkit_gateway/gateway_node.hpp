@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <stdexcept>
+
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -75,6 +77,12 @@
 #include "ros2_medkit_gateway/trigger_fault_subscriber.hpp"
 
 namespace ros2_medkit_gateway {
+
+/// Thrown by the constructor when SIGINT or SIGTERM arrived while it waited for the bind address.
+struct StartStopped : std::runtime_error {
+  StartStopped() : std::runtime_error("stopped during the bind wait") {
+  }
+};
 
 class GatewayNode : public rclcpp::Node, public GatewayServices {
  public:

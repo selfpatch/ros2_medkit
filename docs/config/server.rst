@@ -99,7 +99,8 @@ Network Settings
      - ``70``
      - Longest wait (seconds) at start for closing connections of an earlier process to release
        the bind address when no live listener holds it. Range 0 to 300; a value outside it stops
-       the gateway at start. ``0`` means no wait. See :ref:`protected-mode`.
+       the gateway at start. ``0`` means no wait. A stop (SIGINT or SIGTERM) during the wait ends
+       it at once. See :ref:`protected-mode`.
    * - ``server.allow_unauthenticated_remote``
      - bool
      - ``false``

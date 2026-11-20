@@ -17,6 +17,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <signal.h>
 #include <sys/socket.h>
 
 #include <algorithm>
@@ -174,6 +175,17 @@ bool live_listener_holds(const std::string & host, int port) {
   return false;
 }
 
+// True when SIGINT or SIGTERM is pending. The gateway blocks both until startup ends, so a stop
+// requested during the wait stays pending; sigpending() reads it without consuming it, and
+// the signal thread started after startup still receives it.
+bool stop_signal_pending() {
+  sigset_t pending;
+  if (sigpending(&pending) != 0) {
+    return false;
+  }
+  return sigismember(&pending, SIGINT) == 1 || sigismember(&pending, SIGTERM) == 1;
+}
+
 }  // namespace
 
 HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t thread_pool_size,
@@ -253,32 +265,32 @@ httplib::Server * HttpServerManager::get_server() {
   return server_.get();
 }
 
-bool HttpServerManager::bind(const std::string & host, int port, int64_t wait_sec, std::string & error) {
+BindResult HttpServerManager::bind(const std::string & host, int port, int64_t wait_sec, std::string & error) {
   std::string protocol = tls_config_.enabled ? "HTTPS" : "HTTP";
   MEDKIT_LOG_INFO(log::Logger("http_server"), "Starting %s server on %s:%d...", protocol.c_str(), host.c_str(), port);
 
   httplib::Server * srv = get_server();
   if (srv == nullptr) {
     error = "no server instance";
-    return false;
+    return BindResult::kFailed;
   }
   errno = 0;
   if (srv->bind_to_port(host, port)) {
-    return true;
+    return BindResult::kBound;
   }
   int bind_errno = errno;
   std::string gai_error;
   if (resolve(host, gai_error).empty()) {
     error = "cannot resolve the host: " + gai_error;
-    return false;
+    return BindResult::kFailed;
   }
   error = bind_errno != 0 ? std::strerror(bind_errno) : "bind failed";
   if (bind_errno != EADDRINUSE || live_listener_holds(host, port)) {
-    return false;
+    return BindResult::kFailed;
   }
   if (wait_sec <= 0) {
     error += " (no live listener holds it; server.bind_wait_sec is 0, so no wait)";
-    return false;
+    return BindResult::kFailed;
   }
 
   // EADDRINUSE with no live listener: connections an earlier process closed are still in
@@ -289,28 +301,36 @@ bool HttpServerManager::bind(const std::string & host, int port, int64_t wait_se
                   " s for them to end (server.bind_wait_sec)",
                   host.c_str(), port, wait_sec);
   const auto start = std::chrono::steady_clock::now();
+  if (stop_signal_pending()) {
+    MEDKIT_LOG_INFO(log::Logger("http_server"), "start stopped during the bind wait for %s:%d", host.c_str(), port);
+    return BindResult::kStopped;
+  }
   const auto deadline = start + std::chrono::seconds(wait_sec);
   while (std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    if (stop_signal_pending()) {
+      MEDKIT_LOG_INFO(log::Logger("http_server"), "start stopped during the bind wait for %s:%d", host.c_str(), port);
+      return BindResult::kStopped;
+    }
     if (live_listener_holds(host, port)) {
       error = std::strerror(EADDRINUSE);
-      return false;
+      return BindResult::kFailed;
     }
     errno = 0;
     if (srv->bind_to_port(host, port)) {
       const double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
       MEDKIT_LOG_INFO(log::Logger("http_server"), "%s:%d bound after waiting %.1f s", host.c_str(), port, waited);
-      return true;
+      return BindResult::kBound;
     }
     bind_errno = errno;
     if (bind_errno != EADDRINUSE) {
       error = bind_errno != 0 ? std::strerror(bind_errno) : "bind failed";
-      return false;
+      return BindResult::kFailed;
     }
   }
   error = std::string(std::strerror(EADDRINUSE)) + " (waited " + std::to_string(wait_sec) +
           " s for closing connections of an earlier process; server.bind_wait_sec)";
-  return false;
+  return BindResult::kFailed;
 }
 
 void HttpServerManager::listen_bound() {

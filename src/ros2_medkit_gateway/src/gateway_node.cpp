@@ -2261,7 +2261,11 @@ void GatewayNode::refresh_cache() {
 void GatewayNode::start_rest_server() {
   // Bound here so a failure ends the gateway before it announces itself.
   std::string bind_error;
-  if (!rest_server_->bind(bind_error)) {
+  const BindResult bound = rest_server_->bind(bind_error);
+  if (bound == BindResult::kStopped) {
+    throw StartStopped();
+  }
+  if (bound == BindResult::kFailed) {
     RCLCPP_FATAL(get_logger(), "Refusing to start: cannot bind the REST API to %s:%d: %s.", server_host_.c_str(),
                  server_port_, bind_error.c_str());
     throw std::runtime_error("Cannot bind the REST API to " + server_host_ + ":" + std::to_string(server_port_) + ": " +

@@ -2670,7 +2670,7 @@ void RESTServer::report_route_metadata_issues() const {
   }
 }
 
-bool RESTServer::bind(std::string & error) {
+BindResult RESTServer::bind(std::string & error) {
   return http_server_->bind(host_, port_, bind_wait_sec_, error);
 }
 

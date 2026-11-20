@@ -378,6 +378,45 @@ expect "port held: the first container still answers" 200 "$(wait_code "${PREFIX
 start_container "${PREFIX}-nobind" -e MEDKIT_AUTH_DISABLED=1 -- --ros-args -p server.host:=192.0.2.10
 expect_bind_failure "address the container does not own" "${PREFIX}-nobind" 192.0.2.10 8080 "Cannot assign requested address"
 
+# A stop during the bind wait: a helper leaves TIME_WAIT on 8080 in a shared network namespace,
+# as a released gateway does (SO_REUSEPORT listener, server side closes first). The gateway
+# waits; `docker stop` ends the wait at once and the container exits 0.
+TIMEWAIT_PY='
+import socket, sys
+srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+srv.bind(("0.0.0.0", 8080)); srv.listen()
+cli = socket.create_connection(("127.0.0.1", 8080))
+conn, _ = srv.accept(); conn.close(); cli.recv(1); cli.close(); srv.close()
+rows = [r.split() for r in open("/proc/net/tcp").read().splitlines()[1:]]
+print("time_wait" if any(r[3] == "06" and int(r[1].split(":")[1], 16) == 8080 for r in rows) else "none")
+'
+start_container "${PREFIX}-ns" --entrypoint sleep -- 600
+CREATED+=("${PREFIX}-timewait")
+docker run --rm --name "${PREFIX}-timewait" --network "container:${PREFIX}-ns" --entrypoint python3 "$IMAGE" \
+  -c "$TIMEWAIT_PY" > "$WORKDIR/timewait.out" 2>&1 || true
+expect "stop during the wait: helper left a TIME_WAIT entry" "time_wait" "$(tr -d '\n' < "$WORKDIR/timewait.out")"
+start_container "${PREFIX}-waitstop" --network "container:${PREFIX}-ns" -e MEDKIT_AUTH_DISABLED=1 --
+wait_end=$((SECONDS + DEADLINE_S))
+while [ "$SECONDS" -lt "$wait_end" ]; do
+  case "$(docker logs "${PREFIX}-waitstop" 2>&1)" in *"waiting up to"*) break ;; esac
+  sleep 1
+done
+expect_contains "stop during the wait: the gateway logged the wait" "waiting up to" "$(docker logs "${PREFIX}-waitstop" 2>&1)"
+t0=$(date +%s%N)
+docker stop -t 10 "${PREFIX}-waitstop" >/dev/null
+elapsed_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+expect "stop during the wait: exit code" 0 "$(docker inspect -f '{{.State.ExitCode}}' "${PREFIX}-waitstop")"
+expect_contains "stop during the wait: stop line" "start stopped during the bind wait" "$(docker logs "${PREFIX}-waitstop" 2>&1)"
+case "$(docker logs "${PREFIX}-waitstop" 2>&1)" in
+  *"ready on"*) fail "stop during the wait: the log has a ready line" ;;
+  *) ok "stop during the wait: no ready line" ;;
+esac
+if [ "$elapsed_ms" -lt 3000 ]; then
+  ok "stop during the wait: stopped in ${elapsed_ms} ms"
+else
+  fail "stop during the wait: took ${elapsed_ms} ms"
+fi
+
 # The gateway gets the container's SIGTERM itself and shuts down cleanly: exit
 # code 0, its own shutdown line in the log, and `docker stop` returns well before
 # its timeout (a SIGKILL after the timeout exits 137).
