@@ -610,6 +610,55 @@ TEST_F(SecuredOpcuaClientReconnect, ChannelClosesAfterConnectReturned) {
   client_.disconnect();
   EXPECT_FALSE(client_.is_connected());
 }
+
+// A key, certificate or trust-list entry that can be read but not used is the
+// client's own configuration: the server is never contacted.
+TEST_F(SecuredOpcuaClientReconnect, UnusableSecurityMaterialIsAConfigurationError) {
+  auto write_file = [this](const std::string & name, const std::string & content) {
+    const std::string path = cert_dir_ + "/" + name;
+    std::FILE * f = std::fopen(path.c_str(), "wb");
+    EXPECT_NE(f, nullptr);
+    if (f != nullptr) {
+      std::fwrite(content.data(), 1, content.size(), f);
+      std::fclose(f);
+    }
+    return path;
+  };
+  const std::string garbage(512, '\x5a');
+  auto expect_refused = [this](const OpcuaClientConfig & config, const char * what) {
+    OpcuaClient client;
+    EXPECT_FALSE(client.connect(config)) << what;
+    EXPECT_FALSE(client.is_connected()) << what;
+    EXPECT_EQ(client.last_error(), "BadConfigurationError") << what;
+  };
+
+  OpcuaClientConfig bad_key = config_;
+  bad_key.client_key_path = write_file("garbage_key.pem", garbage);
+  expect_refused(bad_key, "a key of random bytes");
+
+  const std::string encrypt = "openssl rsa -in '" + cert_dir_ + "/client_key.pem' -aes256 -passout pass:secret -out '" +
+                              cert_dir_ + "/locked_key.pem' 2>/dev/null";
+  ASSERT_EQ(std::system(encrypt.c_str()), 0);
+  OpcuaClientConfig locked_key = config_;
+  locked_key.client_key_path = cert_dir_ + "/locked_key.pem";
+  expect_refused(locked_key, "a passphrase-protected key");
+
+  OpcuaClientConfig bad_cert = config_;
+  bad_cert.client_cert_path = write_file("garbage_cert.der", garbage);
+  expect_refused(bad_cert, "a certificate of random bytes");
+
+  OpcuaClientConfig bad_trust = config_;
+  bad_trust.trust_list_paths.push_back(write_file("garbage_trust.der", garbage));
+  expect_refused(bad_trust, "a trust-list entry of random bytes");
+
+  OpcuaClientConfig no_policy = config_;
+  no_policy.security_policy = SecurityPolicy::Aes256Sha256RsaPss;
+  expect_refused(no_policy, "a policy the bundled open62541 does not have");
+
+  // The same settings with the real key and certificate do connect.
+  EXPECT_TRUE(client_.connect(config_));
+  EXPECT_EQ(client_.last_error(), "");
+}
 #endif  // UA_ENABLE_ENCRYPTION
 
 }  // namespace
