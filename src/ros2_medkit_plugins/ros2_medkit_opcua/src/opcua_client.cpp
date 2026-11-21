@@ -1044,12 +1044,20 @@ std::vector<ReadResult> OpcuaClient::read_values(const std::vector<opcua::NodeId
 // The whole value-write path, compiled in only by -DMEDKIT_OPCUA_READ_ONLY=OFF.
 // The read-only build emits none of it, so the object carries no symbol that
 // can reach an OPC-UA Write service call.
-tl::expected<void, OpcuaClient::WriteErrorInfo>
-OpcuaClient::write_value(const opcua::NodeId & node_id, const OpcuaValue & value, const std::string & data_type_hint) {
+tl::expected<void, OpcuaClient::WriteErrorInfo> OpcuaClient::write_value(const opcua::NodeId & node_id,
+                                                                         const OpcuaValue & value,
+                                                                         const std::string & data_type_hint,
+                                                                         std::optional<uint64_t> session) {
   std::lock_guard<std::mutex> lock(impl_->client_mutex);
 
   if (!impl_->connected) {
     return tl::make_unexpected(WriteErrorInfo{WriteError::NotConnected, "Not connected to OPC-UA server"});
+  }
+  // connect() counts a new session under this lock, so the check and the write
+  // are one step: a NodeId resolved on an earlier session is never written.
+  if (session && *session != impl_->connect_generation.load(std::memory_order_acquire)) {
+    return tl::make_unexpected(
+        WriteErrorInfo{WriteError::NodeNotResolved, "browse_path is not resolved on this session yet"});
   }
 
   // Helper: coerce OpcuaValue to double for numeric writes

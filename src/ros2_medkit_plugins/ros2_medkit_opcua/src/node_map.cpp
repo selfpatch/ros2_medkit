@@ -1554,7 +1554,8 @@ bool NodeMap::has_browse_entries() const {
 }
 
 NodeMap::BrowseResolution
-NodeMap::resolve_browse_entries(const std::function<std::optional<opcua::NodeId>(const NodeMapEntry &)> & resolve) {
+NodeMap::resolve_browse_entries(const std::function<std::optional<opcua::NodeId>(const NodeMapEntry &)> & resolve,
+                                uint64_t session) {
   BrowseResolution result;
   // Stage every move first. After a renumbering two entries can trade NodeIds,
   // so a destination is checked against where the others end up, not against
@@ -1579,6 +1580,7 @@ NodeMap::resolve_browse_entries(const std::function<std::optional<opcua::NodeId>
       continue;
     }
     if (node_id->toString() == entry.node_id_str) {
+      entries_[idx].browse_session = session;
       continue;
     }
     vacated.insert(entry.node_id_str);
@@ -1626,6 +1628,7 @@ NodeMap::resolve_browse_entries(const std::function<std::optional<opcua::NodeId>
     result.moved.emplace_back(entry.node_id_str, move.to);
     entry.node_id = std::move(move.node_id);
     entry.node_id_str = std::move(move.to);
+    entry.browse_session = session;
   }
   if (!moves.empty()) {
     std::sort(displaced.rbegin(), displaced.rend());
@@ -1650,6 +1653,7 @@ NodeMap::resolve_browse_entries(const std::function<std::optional<opcua::NodeId>
     }
     entry.node_id = *node_id;
     entry.node_id_str = node_id->toString();
+    entry.browse_session = session;
     auto existing = node_id_index_.find(entry.node_id_str);
     if (existing != node_id_index_.end()) {
       auto & current = entries_[existing->second];

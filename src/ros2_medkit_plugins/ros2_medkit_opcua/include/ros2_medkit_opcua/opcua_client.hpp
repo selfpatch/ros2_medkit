@@ -16,9 +16,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <variant>
 #include <vector>
@@ -200,7 +202,7 @@ class OpcuaClient {
   /// not a setting.
 
   /// OPC-UA write error classification
-  enum class WriteError { NotConnected, TypeMismatch, AccessDenied, NodeNotFound, TransportError };
+  enum class WriteError { NotConnected, TypeMismatch, AccessDenied, NodeNotFound, TransportError, NodeNotResolved };
 
   /// Detailed write error info
   struct WriteErrorInfo {
@@ -212,9 +214,14 @@ class OpcuaClient {
   /// @param data_type_hint If non-empty, skip readValue type-probe and use this hint
   ///        ("bool", "int", "float", "string") to select the write coercion directly.
   ///        Halves mutex hold time by eliminating a round-trip to the server.
+  /// @param session If set, the ``connection_generation()`` on which ``node_id`` was
+  ///        resolved. The write is refused with ``NodeNotResolved`` when another
+  ///        session is live: checked under the lock a connect holds, so no write
+  ///        reaches a session the NodeId was not resolved on.
   /// @return void on success, WriteErrorInfo on failure with specific error code
   tl::expected<void, WriteErrorInfo> write_value(const opcua::NodeId & node_id, const OpcuaValue & value,
-                                                 const std::string & data_type_hint = "");
+                                                 const std::string & data_type_hint = "",
+                                                 std::optional<uint64_t> session = std::nullopt);
 #endif
 
   /// The AccessLevel / UserAccessLevel bits of a Variable node, read straight

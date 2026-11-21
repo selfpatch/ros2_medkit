@@ -40,7 +40,9 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace ros2_medkit_gateway {
@@ -324,6 +326,45 @@ TEST_F(OpcuaClientReconnect, NotConnectedValueKeepsSession) {
   ASSERT_TRUE(fire_and_wait(old_events));
   EXPECT_TRUE(client_.is_connected());
 }
+
+#if !MEDKIT_OPCUA_READ_ONLY
+// A write that names the session its NodeId was resolved on is refused on the
+// next session, and the value on the server stays what it was.
+TEST_F(OpcuaClientReconnect, WriteNamedForAnEarlierSessionIsRefused) {
+  const opcua::NodeId status_word(server_.namespace_index(), "StatusWord");
+  auto value_on_server = [&]() -> int64_t {
+    const auto read = client_.read_value(status_word);
+    EXPECT_TRUE(read.good);
+    return std::visit(
+        [](auto && v) -> int64_t {
+          if constexpr (std::is_arithmetic_v<std::decay_t<decltype(v)>>) {
+            return static_cast<int64_t>(v);
+          }
+          return -1;
+        },
+        read.value);
+  };
+  const uint64_t first = client_.connection_generation();
+  ASSERT_TRUE(client_.write_value(status_word, OpcuaValue{int32_t{5}}, "int", first));
+  ASSERT_EQ(value_on_server(), 5);
+
+  proxy_.cut();
+  EXPECT_FALSE(client_.read_value(kServerCurrentTime).good);
+  ASSERT_TRUE(client_.connect(config_));
+  ASSERT_NE(client_.connection_generation(), first);
+
+  const auto refused = client_.write_value(status_word, OpcuaValue{int32_t{9}}, "int", first);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code, OpcuaClient::WriteError::NodeNotResolved);
+  EXPECT_EQ(value_on_server(), 5);
+
+  EXPECT_TRUE(client_.write_value(status_word, OpcuaValue{int32_t{9}}, "int", client_.connection_generation()));
+  EXPECT_EQ(value_on_server(), 9);
+  // A write that names no session is a plain node_id entry: not checked.
+  EXPECT_TRUE(client_.write_value(status_word, OpcuaValue{int32_t{7}}, "int"));
+  EXPECT_EQ(value_on_server(), 7);
+}
+#endif  // !MEDKIT_OPCUA_READ_ONLY
 
 // Same, with the read failing on a link that was cut instead.
 TEST_F(OpcuaClientReconnect, CutLinkReadThenReconnect) {
