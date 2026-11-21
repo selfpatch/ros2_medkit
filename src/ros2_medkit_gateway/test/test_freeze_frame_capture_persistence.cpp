@@ -14,7 +14,9 @@
 
 // The core capture with a store, in process. Four tests need a retained-frame bound
 // below the gateway node's literal 256. Two order a request inside the start: one holds
-// the lister, one holds a store delete.
+// the lister, one holds a store delete. The hosted-entity tests run here because no
+// open-source plugin serves values through the x-plc-data route alone, and an OPC UA app
+// cannot take a ROS binding.
 
 #include <gtest/gtest.h>
 
@@ -42,12 +44,16 @@
 
 #include <nlohmann/json.hpp>
 
+#include "ros2_medkit_gateway/core/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/faults/entity_freeze_frame_store.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_event_source.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_json.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/faults/freeze_frame_capture.hpp"
 #include "ros2_medkit_gateway/core/faults/sqlite_entity_freeze_frame_store.hpp"
 #include "ros2_medkit_gateway/core/logging.hpp"
+#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
 
@@ -385,6 +391,23 @@ class FreezeFrameCapturePersistenceTest : public ::testing::Test {
     hooks.standing_lister = std::move(standing);
     hooks.store = std::move(store);
     return std::make_unique<FreezeFrameCapture>(events_, FreezeFrameCaptureConfig{true, max_faults}, std::move(hooks));
+  }
+
+  /// A capture with one provider per entity id and a hosted-entity lookup.
+  std::unique_ptr<FreezeFrameCapture> make_hosted_capture(Plant & plant,
+                                                          std::map<std::string, DataProvider *> providers,
+                                                          FreezeFrameCapture::HostedEntitiesResolver hosted) {
+    FreezeFrameCapture::Hooks hooks;
+    hooks.readers =
+        PluginDataReaders{[providers = std::move(providers)](const std::string & entity_id) -> DataProvider * {
+                            auto it = providers.find(entity_id);
+                            return it == providers.end() ? nullptr : it->second;
+                          },
+                          [&plant](const std::string & entity_id) {
+                            return plant.read(entity_id);
+                          }};
+    hooks.hosted = std::move(hosted);
+    return std::make_unique<FreezeFrameCapture>(events_, FreezeFrameCaptureConfig{true, 256}, std::move(hooks));
   }
 
   /// Queues a probe confirm and waits for its read. The drain loop starts after the
@@ -783,6 +806,7 @@ TEST_F(FreezeFrameCapturePersistenceTest, ANewOccurrenceWithNoValuesDropsTheFram
         << logs;
   }
   EXPECT_NE(logs.find("so this occurrence has no freeze-frame"), std::string::npos) << logs;
+  EXPECT_NE(logs.find("(entity 'route_reloaded') was dropped"), std::string::npos) << logs;
 }
 
 /// @verifies REQ_INTEROP_088
@@ -1020,4 +1044,167 @@ TEST_F(FreezeFrameCapturePersistenceTest, ADiscardedStaleFrameAtTheBoundNeverCos
   EXPECT_EQ(stored_codes(*store), (std::vector<std::string>{"PLC_KEEP", "PLC_NEW"}));
   const auto logs = log_sink().text();
   EXPECT_NE(logs.find("so they have no freeze-frame: PLC_STALE"), std::string::npos) << logs;
+}
+
+/// The hosted-entity lookup of a PLC runtime: the component hosts two apps.
+FreezeFrameCapture::HostedEntitiesResolver plc_runtime_hosting(std::vector<std::string> apps) {
+  return [apps = std::move(apps)](const std::string & source_id) {
+    return source_id == "plc_runtime" ? apps : std::vector<std::string>{};
+  };
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(FreezeFrameCapturePersistenceTest, ACatchUpFramesAStandingComponentFaultFromItsHostedApps) {
+  Plant plant(42.0);
+  plant.make_unreachable("plc_runtime");
+  FreezeFrameCapture::Hooks hooks;
+  hooks.readers = PluginDataReaders{[](const std::string &) -> DataProvider * {
+                                      return nullptr;
+                                    },
+                                    [&plant](const std::string & entity_id) {
+                                      return plant.read(entity_id);
+                                    }};
+  hooks.standing_lister = listed({standing_fault("PLC_COMMS_LOST_STANDING", {"plc_runtime"}, {1, kStoredAtNs})});
+  hooks.hosted = plc_runtime_hosting({"load_process"});
+  FreezeFrameCapture capture(events_, FreezeFrameCaptureConfig{true, 256}, std::move(hooks));
+  ASSERT_TRUE(wait_for_frames(capture, "PLC_COMMS_LOST_STANDING"));
+
+  const auto frames = capture.frames_for("PLC_COMMS_LOST_STANDING");
+  ASSERT_EQ(frames.size(), 1u);
+  EXPECT_EQ(frames[0].entity_id, "load_process");
+  EXPECT_TRUE(frames[0].startup_catchup);
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(FreezeFrameCapturePersistenceTest, ComponentFramesFromItsHostedAppsViaRoute) {
+  // The component reads nothing of its own (unreachable), so the frames come from the apps
+  // it hosts, in the lookup's order, one each and none for the component.
+  Plant plant(42.0);
+  plant.make_unreachable("plc_runtime");
+  auto capture = make_hosted_capture(plant, {}, plc_runtime_hosting({"load_process", "aux_process"}));
+
+  events_.deliver(confirmed("PLC_COMMS_LOST", {"plc_runtime"}));
+  ASSERT_TRUE(wait_for_frames(*capture, "PLC_COMMS_LOST"));
+
+  const auto frames = capture->frames_for("PLC_COMMS_LOST");
+  ASSERT_EQ(frames.size(), 2u);
+  EXPECT_EQ(frames[0].entity_id, "load_process");
+  EXPECT_DOUBLE_EQ(frames[0].values.value("level", 0.0), 42.0);
+  EXPECT_EQ(frames[0].source, FreezeFrameCapture::kSourceXPlcDataRoute);
+  EXPECT_EQ(frames[1].entity_id, "aux_process");
+  EXPECT_EQ(frames[1].source, FreezeFrameCapture::kSourceXPlcDataRoute);
+  EXPECT_GT(plant.reads("plc_runtime"), 0) << "the source itself is read";
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(FreezeFrameCapturePersistenceTest, AHostedAppWithNoDataAddsNoFrame) {
+  Plant plant(42.0);
+  plant.make_unreachable("plc_runtime");
+  plant.make_unreachable("plc_runtime_alarms");
+  auto capture = make_hosted_capture(plant, {}, plc_runtime_hosting({"load_process", "plc_runtime_alarms"}));
+
+  events_.deliver(confirmed("PLC_COMMS_LOST_ALARM_HOST", {"plc_runtime"}));
+  ASSERT_TRUE(wait_for_frames(*capture, "PLC_COMMS_LOST_ALARM_HOST"));
+
+  const auto frames = capture->frames_for("PLC_COMMS_LOST_ALARM_HOST");
+  ASSERT_EQ(frames.size(), 1u);
+  EXPECT_EQ(frames[0].entity_id, "load_process");
+  // The app is read and yields no frame.
+  EXPECT_GT(plant.reads("plc_runtime_alarms"), 0);
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(FreezeFrameCapturePersistenceTest, ASourceWithItsOwnFrameIsNotDescendedInto) {
+  FakePlcDataProvider own("plc_runtime");
+  Plant plant(42.0);
+  plant.make_unreachable("other_runtime");
+  auto capture = make_hosted_capture(plant, {{"plc_runtime", &own}}, [](const std::string &) {
+    return std::vector<std::string>{"load_process"};
+  });
+
+  events_.deliver(confirmed("PLC_COMMS_LOST_OWN_DATA", {"plc_runtime"}));
+  // The control, queued after the first: a source that reads nothing does descend, and its
+  // frames mean the first confirm was handled in full.
+  events_.deliver(confirmed("PLC_COMMS_LOST_NO_DATA", {"other_runtime"}));
+  ASSERT_TRUE(wait_for_frames(*capture, "PLC_COMMS_LOST_NO_DATA"));
+
+  const auto hosted = capture->frames_for("PLC_COMMS_LOST_NO_DATA");
+  ASSERT_EQ(hosted.size(), 1u);
+  EXPECT_EQ(hosted[0].entity_id, "load_process");
+  const auto frames = capture->frames_for("PLC_COMMS_LOST_OWN_DATA");
+  ASSERT_EQ(frames.size(), 1u);
+  EXPECT_EQ(frames[0].entity_id, "plc_runtime");
+  EXPECT_EQ(plant.reads("load_process"), 1) << "only the control descended";
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(FreezeFrameCapturePersistenceTest, AHostedAppIsFramedOnceWhenItIsAlsoAReportingSource) {
+  // The fault names both the component and one of its apps. The app is read once, so the
+  // served frames and the frames after a restart are the same set.
+  const auto path =
+      std::filesystem::temp_directory_path() / ("test_freeze_frame_once_" + std::to_string(::getpid()) + ".db");
+  std::filesystem::remove(path);
+  Plant plant(42.0);
+  plant.make_unreachable("plc_runtime");
+  const auto frame_entities = [](const std::vector<FreezeFrameCapture::Frame> & frames) {
+    std::vector<std::string> ids;
+    for (const auto & frame : frames) {
+      ids.push_back(frame.entity_id);
+    }
+    return ids;
+  };
+  {
+    auto store = std::make_shared<SqliteEntityFreezeFrameStore>(path.string());
+    FreezeFrameCapture::Hooks hooks;
+    hooks.readers = PluginDataReaders{[](const std::string &) -> DataProvider * {
+                                        return nullptr;
+                                      },
+                                      [&plant](const std::string & entity_id) {
+                                        return plant.read(entity_id);
+                                      }};
+    hooks.hosted = plc_runtime_hosting({"load_process"});
+    hooks.store = store;
+    FreezeFrameCapture capture(events_, FreezeFrameCaptureConfig{true, 256}, std::move(hooks));
+    events_.deliver(confirmed("PLC_COMMS_LOST_BOTH", {"plc_runtime", "load_process"}));
+    ASSERT_TRUE(wait_for_frames(capture, "PLC_COMMS_LOST_BOTH"));
+    EXPECT_EQ(frame_entities(capture.frames_for("PLC_COMMS_LOST_BOTH")), (std::vector<std::string>{"load_process"}));
+    EXPECT_EQ(plant.reads("load_process"), 1);
+  }
+  {
+    auto store = std::make_shared<SqliteEntityFreezeFrameStore>(path.string());
+    FreezeFrameCapture::Hooks hooks;
+    hooks.store = store;
+    FreezeFrameCapture reopened(events_, FreezeFrameCaptureConfig{true, 256}, std::move(hooks));
+    EXPECT_EQ(frame_entities(reopened.frames_for("PLC_COMMS_LOST_BOTH")), (std::vector<std::string>{"load_process"}));
+  }
+  std::filesystem::remove(path);
+}
+
+TEST(HostedEntitiesOf, ListsTheIdsOfTheAppsAComponentHosts) {
+  // A hosted app bound to a ROS node has a fault source FQN that is not its id. The frames
+  // are read by entity id, so the lookup returns ids.
+  ros2_medkit_gateway::ThreadSafeEntityCache cache;
+  ros2_medkit_gateway::Component component;
+  component.id = "plc_runtime";
+  component.name = "plc_runtime";
+  cache.update_components({component});
+  ros2_medkit_gateway::App bound;
+  bound.id = "pump_app";
+  bound.name = "pump_app";
+  bound.component_id = "plc_runtime";
+  ros2_medkit_gateway::App::RosBinding binding;
+  binding.node_name = "pump";
+  binding.namespace_pattern = "/ns";
+  bound.ros_binding = binding;
+  ros2_medkit_gateway::App external;
+  external.id = "tank_app";
+  external.name = "tank_app";
+  external.component_id = "plc_runtime";
+  external.external = true;
+  cache.update_apps({bound, external});
+
+  auto hosted = ros2_medkit_gateway::faults::hosted_entities_of(cache, "plc_runtime");
+  std::sort(hosted.begin(), hosted.end());
+  EXPECT_EQ(hosted, (std::vector<std::string>{"pump_app", "tank_app"}));
+  EXPECT_TRUE(ros2_medkit_gateway::faults::hosted_entities_of(cache, "pump_app").empty());
 }

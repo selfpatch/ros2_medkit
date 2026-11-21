@@ -57,10 +57,11 @@ struct FreezeFrameCaptureConfig {
 /// it. This class subscribes to a `FaultEventSource` and, on `fault_confirmed`,
 /// reads the data of each reporting source through the same path as
 /// `GET /{entity}/data` (the plugin's `DataProvider`, else its `x-plc-data`
-/// route). The frames are served through `FreezeFrameSource` and merged into the
-/// fault detail's `environment_data`. A frame set stays after `fault_cleared`. The next
-/// confirmation replaces it, or drops it with a warning when the read gets no values and
-/// the occurrence is another one.
+/// route). A source that yields no frame gets one frame per hosted entity with data
+/// (`Hooks::hosted`). The frames are served through `FreezeFrameSource` and merged into
+/// the fault detail's `environment_data`. A frame set stays after `fault_cleared`. The
+/// next confirmation replaces it, or drops it with a warning when the read gets no values
+/// and the occurrence is another one.
 ///
 /// With an `EntityFreezeFrameStore`, each capture is written through with the fault's
 /// occurrence, and the stored frames load on construction. With a lister, no reloaded
@@ -125,6 +126,9 @@ class FreezeFrameCapture : public FreezeFrameSource {
   /// lister's snapshot and the feed attaching is not lost.
   using EventsReadyWaiter = std::function<void(const std::function<bool()> & should_abort)>;
 
+  /// Lists the entity ids of the entities a reporting source hosts. Called on the capture thread.
+  using HostedEntitiesResolver = std::function<std::vector<std::string>(const std::string & source_id)>;
+
   struct Hooks {
     /// Both reads of an entity's data. Without them nothing is captured.
     PluginDataReaders readers;
@@ -134,6 +138,9 @@ class FreezeFrameCapture : public FreezeFrameSource {
     EventsReadyWaiter events_ready;
     /// Optional persistence. Null keeps the frames in memory only.
     std::shared_ptr<EntityFreezeFrameStore> store;
+    /// Optional. A source that yields no frame gets one frame per hosted entity with data,
+    /// one level deep. An entity gets at most one frame per fault.
+    HostedEntitiesResolver hosted;
   };
 
   /// @param events Feed of fault events. Subscribed on construction; the subscription
@@ -167,6 +174,8 @@ class FreezeFrameCapture : public FreezeFrameSource {
   std::optional<Frame> frame_from_content(const std::string & entity_id, const std::string & fault_code,
                                           const nlohmann::json & content, const std::string & source);
   std::optional<Frame> capture_via_route(const std::string & entity_id, const std::string & fault_code);
+  /// One entity's values: its `DataProvider`, else its `x-plc-data` route.
+  std::optional<Frame> capture_from_entity(const std::string & entity_id, const std::string & fault_code);
   void log_fallback_failure_once(const std::string & fault_code, const std::string & message);
 
   /// Fills frames_ from the store, keeping the newest codes under max_faults_.
@@ -194,6 +203,7 @@ class FreezeFrameCapture : public FreezeFrameSource {
   StandingFaultLister standing_lister_;
   EventsReadyWaiter events_ready_;
   std::shared_ptr<EntityFreezeFrameStore> store_;
+  HostedEntitiesResolver hosted_;
   const log::Logger logger_{"entity_freeze_frame"};
   const size_t max_faults_;
 
@@ -231,13 +241,14 @@ class FreezeFrameCapture : public FreezeFrameSource {
 /// A host attaches the result with `GatewayServices::freeze_frames()`, and passes:
 /// - `events`: its fault event source, which may also feed the fault SSE stream;
 /// - `plugins`: the manager that owns the entities;
-/// - `standing_lister`, `events_ready` and `store`: optional, see `Hooks`.
+/// - `standing_lister`, `events_ready`, `store` and `hosted`: optional, see `Hooks`.
 ///
 /// Returns null when the configuration is disabled or `plugins` has no plugin loaded.
 std::unique_ptr<FreezeFrameCapture>
 make_freeze_frame_capture(const FreezeFrameCaptureConfig & config, FaultEventSource & events, PluginManager * plugins,
                           FreezeFrameCapture::StandingFaultLister standing_lister = nullptr,
                           FreezeFrameCapture::EventsReadyWaiter events_ready = nullptr,
-                          std::shared_ptr<EntityFreezeFrameStore> store = nullptr);
+                          std::shared_ptr<EntityFreezeFrameStore> store = nullptr,
+                          FreezeFrameCapture::HostedEntitiesResolver hosted = nullptr);
 
 }  // namespace ros2_medkit_gateway

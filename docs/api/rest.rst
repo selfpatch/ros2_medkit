@@ -1536,8 +1536,13 @@ Query and manage faults.
      (``plugin_data_provider`` for the owning plugin's DataProvider,
      ``plugin_x_plc_data_route`` for its ``x-plc-data`` route). These values
      are not a ROS message, so ``topic`` and ``message_type`` are empty and
-     ``source`` is the only field saying where the numbers came from. For a
-     plugin-backed entity that reports its link down, the values are the
+     ``source`` is the only field saying where the numbers came from. An entity
+     frame's ``name`` is the entity whose values it holds. When a component that
+     reports a fault yields no values of its own, as the OPC UA plugin's
+     component does, the frames are named after the apps it hosts, one per
+     hosted app that has values. A component whose plugin serves its own
+     values gets its own frame and is not descended into.
+     For a plugin-backed entity that reports its link down, the values are the
      plugin's last known ones and may predate the confirmation by the length of
      the outage. Such entries carry ``connected`` (the payload's link flag,
      ``false`` for the loss-of-comms case) and ``source_timestamp`` (the

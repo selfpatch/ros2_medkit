@@ -82,6 +82,7 @@ FreezeFrameCapture::FreezeFrameCapture(FaultEventSource & events, const FreezeFr
   , standing_lister_(std::move(hooks.standing_lister))
   , events_ready_(std::move(hooks.events_ready))
   , store_(std::move(hooks.store))
+  , hosted_(std::move(hooks.hosted))
   , max_faults_(config.max_faults > 0 ? config.max_faults : 1) {
   // Before the first event and the first request: the catch-up must see the reloaded frames.
   load_persisted_frames();
@@ -485,6 +486,35 @@ std::optional<FreezeFrameCapture::Frame> FreezeFrameCapture::capture_via_route(c
   return frame_from_content(entity_id, fault_code, *content, kSourceXPlcDataRoute);
 }
 
+std::optional<FreezeFrameCapture::Frame> FreezeFrameCapture::capture_from_entity(const std::string & entity_id,
+                                                                                 const std::string & fault_code) {
+  DataProvider * provider = readers_.provider ? readers_.provider(entity_id) : nullptr;
+  if (provider == nullptr) {
+    // No DataProvider: the owning plugin may still serve live values through
+    // its own x-plc-data route (the commercial PLC bridges). For non-plugin
+    // (ROS) sources the fetcher resolves no owner and returns nullopt.
+    if (!readers_.route) {
+      return std::nullopt;
+    }
+    return capture_via_route(entity_id, fault_code);
+  }
+
+  // list_data is expected to serve from the plugin's latest polled values
+  // (cheap); plugin code still gets exception-guarded like every other
+  // provider call site.
+  try {
+    auto result = provider->list_data(entity_id);
+    if (!result) {
+      log_fallback_failure_once(fault_code, "list_data('" + entity_id + "') failed: " + result.error().message);
+      return std::nullopt;
+    }
+    return frame_from_content(entity_id, fault_code, result->content, kSourceDataProvider);
+  } catch (const std::exception & e) {
+    log_fallback_failure_once(fault_code, "plugin threw for entity '" + entity_id + "': " + e.what());
+  }
+  return std::nullopt;
+}
+
 void FreezeFrameCapture::log_fallback_failure_once(const std::string & fault_code, const std::string & message) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -658,39 +688,42 @@ bool FreezeFrameCapture::capture_for_event(const fd::FaultEventRecord & event, c
   const std::string & fault_code = event.fault.fault_code;
 
   std::vector<Frame> frames;
+  // At most one frame per entity: the store keys its rows by (fault code, entity id).
+  std::unordered_set<std::string> framed;
   for (const auto & source : event.fault.reporting_sources) {
-    DataProvider * provider = readers_.provider ? readers_.provider(source) : nullptr;
-    if (provider == nullptr) {
-      // No DataProvider: the owning plugin may still serve live values through
-      // its own x-plc-data route (the commercial PLC bridges). For non-plugin
-      // (ROS) sources the fetcher resolves no owner and returns nullopt.
-      if (readers_.route) {
-        if (auto frame = capture_via_route(source, fault_code)) {
-          frames.push_back(std::move(*frame));
-        }
-      }
+    if (framed.count(source) != 0) {
       continue;
     }
-
-    // list_data is expected to serve from the plugin's latest polled values
-    // (cheap); plugin code still gets exception-guarded like every other
-    // provider call site.
+    if (auto frame = capture_from_entity(source, fault_code)) {
+      framed.insert(source);
+      frames.push_back(std::move(*frame));
+      continue;
+    }
+    if (!hosted_) {
+      continue;
+    }
+    // The source reads nothing of its own: frame the entities it hosts instead.
+    std::vector<std::string> hosted;
     try {
-      auto result = provider->list_data(source);
-      if (!result) {
-        log_fallback_failure_once(fault_code, "list_data('" + source + "') failed: " + result.error().message);
+      hosted = hosted_(source);
+    } catch (const std::exception & e) {
+      log_fallback_failure_once(fault_code, "hosted-entity lookup threw for '" + source + "': " + e.what());
+      continue;
+    }
+    for (const auto & hosted_id : hosted) {
+      if (hosted_id == source || framed.count(hosted_id) != 0) {
         continue;
       }
-      if (auto frame = frame_from_content(source, fault_code, result->content, kSourceDataProvider)) {
+      if (auto frame = capture_from_entity(hosted_id, fault_code)) {
+        framed.insert(hosted_id);
         frames.push_back(std::move(*frame));
       }
-    } catch (const std::exception & e) {
-      log_fallback_failure_once(fault_code, "plugin threw for entity '" + source + "': " + e.what());
     }
   }
 
   if (frames.empty()) {
     uint32_t dropped_count = 0;
+    std::vector<std::string> dropped_entities;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       const auto held = occurrences_.find(fault_code);
@@ -699,13 +732,20 @@ bool FreezeFrameCapture::capture_for_event(const fd::FaultEventRecord & event, c
         return false;
       }
       dropped_count = held->second.count;
+      const auto frames_it = frames_.find(fault_code);
+      if (frames_it != frames_.end()) {
+        for (const auto & frame : frames_it->second) {
+          dropped_entities.push_back(frame.entity_id);
+        }
+      }
       discard_locked(fault_code);
     }
     // Serving the held frame would present the previous occurrence's values as this one's.
     MEDKIT_LOG_WARN(logger_,
-                    "Entity freeze-frame for fault '%s': occurrence %u confirmed and entity '%s' served no values, so "
-                    "this occurrence has no freeze-frame. The frame of occurrence %u was dropped.",
-                    fault_code.c_str(), occurrence.count, join(event.fault.reporting_sources).c_str(), dropped_count);
+                    "Entity freeze-frame for fault '%s': occurrence %u confirmed and no entity read for it served "
+                    "values, so this occurrence has no freeze-frame. The frame of occurrence %u (entity '%s') was "
+                    "dropped.",
+                    fault_code.c_str(), occurrence.count, dropped_count, join(dropped_entities).c_str());
     return false;
   }
   if (startup_catchup) {
@@ -748,7 +788,8 @@ std::unique_ptr<FreezeFrameCapture> make_freeze_frame_capture(const FreezeFrameC
                                                               FaultEventSource & events, PluginManager * plugins,
                                                               FreezeFrameCapture::StandingFaultLister standing_lister,
                                                               FreezeFrameCapture::EventsReadyWaiter events_ready,
-                                                              std::shared_ptr<EntityFreezeFrameStore> store) {
+                                                              std::shared_ptr<EntityFreezeFrameStore> store,
+                                                              FreezeFrameCapture::HostedEntitiesResolver hosted) {
   // Only plugins own entities whose values the fault manager cannot capture.
   if (!config.enabled || plugins == nullptr || !plugins->has_plugins()) {
     return nullptr;
@@ -758,6 +799,7 @@ std::unique_ptr<FreezeFrameCapture> make_freeze_frame_capture(const FreezeFrameC
   hooks.standing_lister = std::move(standing_lister);
   hooks.events_ready = std::move(events_ready);
   hooks.store = std::move(store);
+  hooks.hosted = std::move(hosted);
   return std::make_unique<FreezeFrameCapture>(events, config, std::move(hooks));
 }
 
