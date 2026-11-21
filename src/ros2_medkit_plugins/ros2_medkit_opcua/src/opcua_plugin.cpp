@@ -981,6 +981,8 @@ void OpcuaPlugin::start_fault_executor() {
     while (!fault_executor_stop_.load() && rclcpp::ok(context_)) {
       try {
         fault_executor_->spin_once(kFaultExecutorWait);
+        // A clear queued behind a report that was never answered goes out here.
+        fault_lanes_.expire();
       } catch (const std::exception & e) {
         RCLCPP_WARN(opcua_plugin_logger(), "fault-service client executor stopped: %s", e.what());
         break;
