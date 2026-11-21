@@ -1973,15 +1973,25 @@ void OpcuaPlugin::resolve_browse_paths() {
       return std::nullopt;
     });
   }
+  // Taken out first and put back under the new ids after: two entries can
+  // trade NodeIds, and a publisher must follow its entry.
+  std::vector<std::pair<std::string, rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr>> carried;
   for (const auto & [old_id, new_id] : resolution.moved) {
     std::string moved = "browse_path node moved on this session: ";
     moved.append(old_id).append(" -> ").append(new_id);
     log_warn(moved);
     auto pub = publishers_.find(old_id);
     if (pub != publishers_.end()) {
-      publishers_[new_id] = std::move(pub->second);
-      publishers_.erase(old_id);
+      carried.emplace_back(new_id, std::move(pub->second));
+      publishers_.erase(pub);
     }
+  }
+  for (auto & [new_id, pub] : carried) {
+    publishers_[new_id] = std::move(pub);
+  }
+  // The publisher of a replaced auto-browsed entry is on that entry's topic.
+  for (const auto & node_id : resolution.replaced) {
+    publishers_.erase(node_id);
   }
   if (resolution.joined > 0) {
     for (const auto & entry : node_map_.entries()) {

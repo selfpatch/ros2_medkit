@@ -359,6 +359,9 @@ class NodeMap {
     /// (the server restarted with its namespaces in another order): old and
     /// new ``node_id_str``.
     std::vector<std::pair<std::string, std::string>> moved;
+    /// NodeIds whose auto-browsed entry a joining entry took the place of:
+    /// whatever was set up for the old entry (its topic) no longer fits.
+    std::vector<std::string> replaced;
   };
 
   /// Resolve every ``browse_path:`` entry with ``resolve`` (a live session's

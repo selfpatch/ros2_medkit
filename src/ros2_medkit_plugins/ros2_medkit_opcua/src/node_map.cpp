@@ -28,6 +28,7 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 
@@ -1555,8 +1556,18 @@ bool NodeMap::has_browse_entries() const {
 NodeMap::BrowseResolution
 NodeMap::resolve_browse_entries(const std::function<std::optional<opcua::NodeId>(const NodeMapEntry &)> & resolve) {
   BrowseResolution result;
+  // Stage every move first. After a renumbering two entries can trade NodeIds,
+  // so a destination is checked against where the others end up, not against
+  // where they were.
+  struct Move {
+    std::size_t idx;
+    opcua::NodeId node_id;
+    std::string to;
+  };
+  std::vector<Move> moves;
+  std::unordered_set<std::string> vacated;
   for (std::size_t idx = 0; idx < entries_.size(); ++idx) {
-    auto & entry = entries_[idx];
+    const auto & entry = entries_[idx];
     if (entry.browse_path.empty()) {
       continue;
     }
@@ -1564,18 +1575,39 @@ NodeMap::resolve_browse_entries(const std::function<std::optional<opcua::NodeId>
     if (!node_id || node_id->toString() == entry.node_id_str) {
       continue;
     }
-    const std::string moved_to = node_id->toString();
-    if (node_id_index_.count(moved_to) > 0) {
+    vacated.insert(entry.node_id_str);
+    moves.push_back({idx, *node_id, node_id->toString()});
+  }
+  // A move is dropped when its destination stays taken: by an entry that does
+  // not move, or by another move. A dropped move keeps its own NodeId taken,
+  // so the rest is checked again.
+  for (bool dropped = true; dropped;) {
+    dropped = false;
+    std::unordered_set<std::string> claimed;
+    for (auto it = moves.begin(); it != moves.end(); ++it) {
+      const bool taken = node_id_index_.count(it->to) > 0 && vacated.count(it->to) == 0;
+      if (!taken && claimed.insert(it->to).second) {
+        continue;
+      }
+      const auto & entry = entries_[it->idx];
       RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"),
                   "browse_path '%s' now resolves to %s, which another entry maps - keeping %s",
-                  entry.browse_path_str.c_str(), moved_to.c_str(), entry.node_id_str.c_str());
-      continue;
+                  entry.browse_path_str.c_str(), it->to.c_str(), entry.node_id_str.c_str());
+      vacated.erase(entry.node_id_str);
+      moves.erase(it);
+      dropped = true;
+      break;
     }
-    node_id_index_.erase(entry.node_id_str);
-    node_id_index_[moved_to] = idx;
-    result.moved.emplace_back(entry.node_id_str, moved_to);
-    entry.node_id = *node_id;
-    entry.node_id_str = moved_to;
+  }
+  for (const auto & move : moves) {
+    node_id_index_.erase(entries_[move.idx].node_id_str);
+  }
+  for (auto & move : moves) {
+    auto & entry = entries_[move.idx];
+    node_id_index_[move.to] = move.idx;
+    result.moved.emplace_back(entry.node_id_str, move.to);
+    entry.node_id = std::move(move.node_id);
+    entry.node_id_str = std::move(move.to);
   }
 
   std::size_t resolved = 0;
@@ -1605,6 +1637,7 @@ NodeMap::resolve_browse_entries(const std::function<std::optional<opcua::NodeId>
         entity_index_.erase(current.entity_id);
       }
       entity_index_[entry.entity_id].push_back(existing->second);
+      result.replaced.push_back(entry.node_id_str);
       current = std::move(entry);
     } else {
       const std::size_t idx = entries_.size();
