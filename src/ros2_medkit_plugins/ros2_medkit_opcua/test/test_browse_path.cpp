@@ -400,12 +400,14 @@ TEST_F(BrowsePathNodeMap, FollowsANodeThatMovedOnTheNextSession) {
   ASSERT_NE(map_.find_by_node_id(new_id), nullptr);
   EXPECT_EQ(map_.find_by_node_id(new_id)->data_name, "emergency_stop");
 
-  // Not found on a later session: the entry keeps the node it has.
-  EXPECT_TRUE(map_.resolve_browse_entries([](const NodeMapEntry &) {
-                    return std::optional<opcua::NodeId>{};
-                  })
-                  .moved.empty());
-  EXPECT_NE(map_.find_by_node_id(new_id), nullptr);
+  // Not found on a later session: the entry keeps the node it has and is reported.
+  const auto later = map_.resolve_browse_entries([](const NodeMapEntry &) {
+    return std::optional<opcua::NodeId>{};
+  });
+  EXPECT_TRUE(later.moved.empty());
+  ASSERT_NE(map_.find_by_node_id(new_id), nullptr);
+  ASSERT_EQ(later.not_found.size(), 1u);
+  EXPECT_EQ(later.not_found[0], map_.find_by_node_id(new_id)->browse_path_str);
 }
 
 TEST_F(BrowsePathNodeMap, FaultCodesStayUniqueAcrossBothKinds) {
