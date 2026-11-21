@@ -1395,6 +1395,21 @@ checks that:
 bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_freeze_frame_restart_tests.sh
 ```
 
+The last scenario covers the freeze frame of a loss-of-comms fault. The
+`plc_runtime` component maps no node, so the frames of `PLC_COMMS_LOST` come from
+the apps it hosts. The scenario sets a distinctive value on the server node of
+each of two hosted apps, kills the server, and asserts that the component's fault
+carries one frame per app with the value read before the link died and none for
+the component. Then the gateway container restarts, and the frames keep their
+`captured_at`. Last, the link comes back and the fault clears. The gateway stops,
+the link dies, and the gateway starts: the fault confirms again as occurrence 2
+with empty reads, and no frame of occurrence 1 is served. It runs in the
+read-only leg of the `integration-alarms` job of `opcua-plugin.yml`.
+
+```bash
+bash src/ros2_medkit_plugins/ros2_medkit_opcua/docker/scripts/run_comms_lost_frame_test.sh
+```
+
 ### Test Coverage
 
 | Category | read-only | write-capable | What it validates |

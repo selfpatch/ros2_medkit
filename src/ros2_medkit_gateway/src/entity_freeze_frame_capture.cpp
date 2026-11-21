@@ -142,7 +142,8 @@ void SlotFaultEvents::wait_for_publisher(const std::function<bool()> & should_ab
 EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, ros2_common::Ros2SubscriptionExecutor & exec,
                                                    DataProviderResolver resolver, RouteDataFetcher route_fetcher,
                                                    size_t max_faults, StandingFaultLister standing_lister,
-                                                   std::shared_ptr<EntityFreezeFrameStore> store)
+                                                   std::shared_ptr<EntityFreezeFrameStore> store,
+                                                   FreezeFrameCapture::HostedEntitiesResolver hosted)
   : logger_(node->get_logger())
   , events_(node, exec)
   , capture_(std::make_unique<FreezeFrameCapture>(
@@ -152,7 +153,7 @@ EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, ros2_com
                                   [&events = events_](const std::function<bool()> & should_abort) {
                                     events.wait_for_publisher(should_abort);
                                   },
-                                  std::move(store)})) {
+                                  std::move(store), std::move(hosted)})) {
   RCLCPP_INFO(logger_, "EntityFreezeFrameCapture initialized, subscribed to %s", events_.topic().c_str());
 }
 
