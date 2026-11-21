@@ -147,6 +147,14 @@ std::set<std::string> resolve_entity_source_fqns(const ThreadSafeEntityCache & c
   return fqns;
 }
 
+std::vector<std::string> hosted_entities_of(const ThreadSafeEntityCache & cache, const std::string & source_id) {
+  auto entity = cache.find_entity(source_id);
+  if (!entity || entity->type != SovdEntityType::COMPONENT) {
+    return {};
+  }
+  return cache.get_apps_for_component(source_id);
+}
+
 bool fault_in_source_scope(const nlohmann::json & fault, const std::set<std::string> & source_fqns) {
   if (source_fqns.empty()) {
     return false;
