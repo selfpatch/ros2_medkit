@@ -436,6 +436,9 @@ nodes:
 # is not in the map, is the entry itself, or `values` is not a non-empty list
 # of integers. The gate point must be a `node_id` entry, the gated entry may
 # be a `browse_path` one. Until the gate point has been read once the rule is ungated.
+# Under a subscription a gated point and its gate that change in one publish
+# response are evaluated together, and after a reconnect a gated point is not
+# evaluated until its gate point has reported again.
 # Gates work with all three detection modes. A gate is applied before
 # `raise_after_samples` / `raise_after_ms`: a fault a gate holds back does not
 # wait, and its wait starts when the gate lets it through.

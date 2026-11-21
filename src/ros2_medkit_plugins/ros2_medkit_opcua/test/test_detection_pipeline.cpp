@@ -516,6 +516,34 @@ TEST(DetectionPipeline, SubscribedGateChangeStartsTheWaitOfAHeldValue) {
   EXPECT_EQ(h.pass(kSubscribed, Pass::kRecheck, milliseconds(6000)), 1);
 }
 
+TEST(DetectionPipeline, SubscribedGatedPointWaitsForItsGateAfterTheLinkCameBack) {
+  Harness h("gate_stale_subscribed", kInhibit);
+  ASSERT_TRUE(h.loaded());
+  h.arrive(kOther, 1.0);
+  h.arrive(kTemp, 20.0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(0)), 0);
+
+  // The link drops while the gate reads 1. The machine comes back with the
+  // gate at 2 (inhibited) and the gated value bad, and the gated value reports
+  // first: the cached gate value 1 is from before the outage.
+  h.pipeline().link_lost();
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(1000)), 0);
+  EXPECT_FALSE(h.shown_active());
+  h.arrive(kOther, 2.0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(1100)), 0);  // inhibited
+  EXPECT_FALSE(h.shown_active());
+
+  // The same outage with the gate still at 1 afterwards: raised once it says so.
+  h.arrive(kTemp, 20.0);
+  h.pass(kSubscribed, Pass::kValues, milliseconds(1200));
+  h.pipeline().link_lost();
+  h.arrive(kTemp, 90.0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(2000)), 0);
+  h.arrive(kOther, 1.0);
+  EXPECT_EQ(h.pass(kSubscribed, Pass::kValues, milliseconds(2100)), 1);
+}
+
 // -- Value translation ----------------------------------------------------------
 
 TEST(DetectionPipeline, TranslatesEveryOpcuaValueType) {

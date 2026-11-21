@@ -24,6 +24,10 @@ drives the three registers and checks the fault manager status of each fault
 after every step. auto_browse walks the same server, an Int32 array included,
 which must be skipped rather than read as a scalar.
 
+A second gateway then runs in subscription mode with the gated point listed
+before its gate. MachineState and UnitMode change in one step, as a PLC sets
+them in one scan, and the fault must be judged against the new UnitMode.
+
 No step waits a fixed time. After a write the test waits until the plugin has
 evaluated it (poll cycles counted by poll_count), checks the plugin's own
 verdict in active_alarms, and then waits for the fault manager to show it.
@@ -53,6 +57,7 @@ UNMAPPED = 'MACHINE_STATE_UNMAPPED'
 JAM = 'MACHINE_JAM'
 STOPPED, IDLE, EXECUTE, ABORTED_STATE, HELD = 2, 4, 6, 9, 11
 PRODUCTION, MAINTENANCE = 1, 2
+SUB_ABORTED = 'MACHINE_ABORTED_SUBSCRIBED'
 
 
 def write_files(workdir, plugin, gateway_port, server_port):
@@ -95,6 +100,41 @@ nodes:
 """)
     return write_params(workdir, 'gateway.yaml', plugin, gateway_port, server_port, node_map,
                         ['    plugins.opcua.poll_interval_ms: 200'])
+
+
+def write_subscription_files(workdir, plugin, gateway_port, server_port):
+    node_map = workdir / 'nodes_subscription.yaml'
+    # The gated point first, its gate after it: the order of the publish response.
+    node_map.write_text(f"""area_id: plc_systems
+component_id: {COMPONENT}
+nodes:
+  - node_id: "ns=2;s=MachineState"
+    entity_id: {ENTITY}
+    data_name: state
+    data_type: int
+    fault_enum:
+      ok_value: {EXECUTE}
+      ok_values: [{STOPPED}, {IDLE}]
+      codes:
+        - code: {ABORTED_STATE}
+          fault_code: {SUB_ABORTED}
+    inhibit_when:
+      node_id: "ns=2;s=UnitMode"
+      values: [{MAINTENANCE}]
+  - node_id: "ns=2;s=UnitMode"
+    entity_id: {ENTITY}
+    data_name: unit_mode
+    data_type: int
+  - node_id: "ns=2;s=StatusWord"
+    entity_id: {ENTITY}
+    data_name: marker
+    data_type: int
+""")
+    # A poll every 60 s: nothing below is seen through a poll.
+    return write_params(workdir, 'gateway_subscription.yaml', plugin, gateway_port, server_port,
+                        node_map, ['    plugins.opcua.poll_interval_ms: 60000',
+                                   '    plugins.opcua.prefer_subscriptions: true',
+                                   '    plugins.opcua.subscription_interval_ms: 250.0'])
 
 
 def write_params(workdir, name, plugin, gateway_port, server_port, node_map, extra):
@@ -170,6 +210,63 @@ class Leg:
             self.statuses, lambda s: all(s[c] == w for c, w in want.items()),
             5 * helpers.SCALE, period=0.05)
         helpers.check(ok, f'{step}: {want} (got {got!r})')
+
+
+class SubscriptionLeg(Leg):
+    """A leg whose gateway gets values as data changes."""
+
+    marker = 1000
+
+    def put_together(self, pairs):
+        """Write several registers in one fixture step."""
+        log = Path(self.server_log)
+        needles = [f'OK {name}={value}' for name, value in pairs]
+        before = [log.read_text(errors='replace').count(n) for n in needles]
+        self.server.stdin.write('set ' + ' '.join(f'{n} {v}' for n, v in pairs) + '\n')
+        self.server.stdin.flush()
+        _, ok = helpers.wait_for(
+            lambda: [log.read_text(errors='replace').count(n) for n in needles],
+            lambda counts: all(c > b for c, b in zip(counts, before)),
+            5 * helpers.SCALE, period=0.05)
+        helpers.check(ok, f'{pairs} set in one step')
+
+    def marker_value(self):
+        data = helpers.http_json(f'{self.base}/apps/{ENTITY}/x-plc-data') or {}
+        for item in data.get('items', []):
+            if item.get('name') == 'marker':
+                return item.get('value')
+        return None
+
+    def evaluated(self):
+        # Two marker changes one after the other. The second arrives in a later
+        # publish response than the first, and the first arrives with the
+        # writes of the step or after them. The plugin evaluates a response
+        # before it reads the next one.
+        for _ in range(2):
+            SubscriptionLeg.marker += 1
+            want = SubscriptionLeg.marker
+            self.put('StatusWord', want)
+            got, ok = helpers.wait_for(self.marker_value, lambda v: v == want,
+                                       5 * helpers.SCALE, period=0.05)
+            helpers.check(ok, f'the marker change {want} arrived (got {got!r})')
+
+
+def subscription_leg(leg):
+    leg.put_together([('UnitMode', PRODUCTION), ('MachineState', EXECUTE)])
+    leg.expect('running in production', {SUB_ABORTED: 'ABSENT'})
+
+    # MachineState is first in the publish response, UnitMode second.
+    leg.put_together([('MachineState', ABORTED_STATE), ('UnitMode', MAINTENANCE)])
+    leg.expect('abort and maintenance mode in one scan raise nothing', {SUB_ABORTED: 'ABSENT'})
+
+    leg.put('UnitMode', PRODUCTION)
+    leg.expect('still aborted when production resumes raises', {SUB_ABORTED: 'CONFIRMED'})
+
+    leg.put_together([('MachineState', EXECUTE), ('UnitMode', MAINTENANCE)])
+    leg.expect('the state clears it', {SUB_ABORTED: 'CLEARED'})
+
+    leg.put_together([('MachineState', ABORTED_STATE), ('UnitMode', PRODUCTION)])
+    leg.expect('abort and production mode in one scan raise', {SUB_ABORTED: 'CONFIRMED'})
 
 
 def poll_leg(leg, gateway):
@@ -271,6 +368,20 @@ def main():
             print(gateway_log.read_text(errors='replace')[-3000:], file=sys.stderr)
             return 1
         poll_leg(leg, gateway)
+
+        helpers.terminate(gateway)
+        gateway_log = workdir / 'gateway_subscription.log'
+        gateway = start_gateway(
+            write_subscription_files(workdir, plugin, gateway_port, server_port), gateway_log, env)
+        leg = SubscriptionLeg(server, server_log, gateway_port, (SUB_ABORTED,))
+        got, ok = helpers.wait_for(
+            leg.plc_status,
+            lambda s: s.get('mode') == 'subscription' and s.get('connected')
+            and s.get('poll_count', 0) > 0, 90 * scale)
+        if not check(ok, f'the second gateway gets values by subscription (got {got!r})'):
+            print(gateway_log.read_text(errors='replace')[-3000:], file=sys.stderr)
+            return 1
+        subscription_leg(leg)
         if helpers.failures:
             print(f'FAIL: {len(helpers.failures)} expectation(s) not met', file=sys.stderr)
             print(gateway_log.read_text(errors='replace')[-3000:], file=sys.stderr)

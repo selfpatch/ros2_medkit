@@ -54,7 +54,9 @@ namespace ros2_medkit_gateway {
 /// verdict before the raise qualifier. A fault held back by ``inhibit_when``
 /// does not wait: its wait starts when the gate stops matching. Under a
 /// subscription a change of the gate point counts as a new observation of the
-/// gated point.
+/// gated point, and a gated point is skipped while its gate point has not
+/// reported since the link was lost: the gate's cached value is not the
+/// current one.
 class DetectionPipeline {
  public:
   using Clock = ros2_medkit::fault_detection::RaiseQualifierFilter::Clock;
