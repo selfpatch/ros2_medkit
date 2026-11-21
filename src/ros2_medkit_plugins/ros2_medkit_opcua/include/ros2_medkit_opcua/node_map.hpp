@@ -362,6 +362,9 @@ class NodeMap {
     /// NodeIds whose auto-browsed entry a joining entry took the place of:
     /// whatever was set up for the old entry (its topic) no longer fits.
     std::vector<std::string> replaced;
+    /// Paths of entries in ``entries()`` that this session does not have. Each
+    /// keeps the NodeId of an earlier session and is logged.
+    std::vector<std::string> not_found;
   };
 
   /// Resolve every ``browse_path:`` entry with ``resolve`` (a live session's
@@ -371,7 +374,7 @@ class NodeMap {
   /// for the same node (explicit config wins); one whose node another explicit
   /// entry already maps is dropped with a warning. An entry already in
   /// ``entries()`` follows its path to a new NodeId; one whose path is not
-  /// found this time keeps the NodeId it has. Rebuilds the entity defs when
+  /// found this time keeps the NodeId it has, with a warning. Rebuilds the entity defs when
   /// an entry joined.
   BrowseResolution
   resolve_browse_entries(const std::function<std::optional<opcua::NodeId>(const NodeMapEntry &)> & resolve);

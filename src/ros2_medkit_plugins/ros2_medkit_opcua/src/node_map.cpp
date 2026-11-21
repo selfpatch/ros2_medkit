@@ -1572,7 +1572,13 @@ NodeMap::resolve_browse_entries(const std::function<std::optional<opcua::NodeId>
       continue;
     }
     auto node_id = resolve(entry);
-    if (!node_id || node_id->toString() == entry.node_id_str) {
+    if (!node_id) {
+      RCLCPP_WARN(rclcpp::get_logger("opcua.node_map"), "browse_path '%s' is not found on this session - keeping %s",
+                  entry.browse_path_str.c_str(), entry.node_id_str.c_str());
+      result.not_found.push_back(entry.browse_path_str);
+      continue;
+    }
+    if (node_id->toString() == entry.node_id_str) {
       continue;
     }
     vacated.insert(entry.node_id_str);
