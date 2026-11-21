@@ -675,6 +675,8 @@ if(BUILD_TESTING)
       test/integration/test_opcua_subscription_values.test.py
       test/integration/test_opcua_raise_qualifier.test.py
       test/integration/test_opcua_state_gates.test.py
+      test/integration/test_opcua_fault_order.test.py
+      test/integration/fault_service_stub.py
       test/integration/test_opcua_comms_lost.test.py
       test/integration/test_opcua_startup_sweep_signal.test.py
       DESTINATION lib/${PROJECT_NAME})
@@ -728,6 +730,17 @@ if(BUILD_TESTING)
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_state_gates.test.py"
               "${CMAKE_BINARY_DIR}/test_alarm_server")
     set_tests_properties(test_opcua_state_gates PROPERTIES
+      LABELS "integration"
+      TIMEOUT 300)
+    # ReportFault and ClearFault of one code against a stub that answers a
+    # report late and never answers another: the clear must leave after the
+    # answer, or after the report went stale. Waits: fixture 25 s, stub 30 s,
+    # gateway 90 s, the late code 52 s, the unanswered code 60 s, stops 24 s.
+    medkit_add_wrapped_test(test_opcua_fault_order
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_fault_order.test.py"
+              "${CMAKE_BINARY_DIR}/test_alarm_server")
+    set_tests_properties(test_opcua_fault_order PROPERTIES
       LABELS "integration"
       TIMEOUT 300)
     # This one boots a real gateway and fault manager, so it needs a domain, and
