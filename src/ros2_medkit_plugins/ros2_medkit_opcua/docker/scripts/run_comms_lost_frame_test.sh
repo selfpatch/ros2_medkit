@@ -216,9 +216,17 @@ wait_for "${API}/apps/${APP_A}/x-plc-data" \
 wait_for "${API}/apps/${APP_B}/x-plc-data" \
   ".connected == true and (.items[] | select(.name == \"fault_code\") | .value) == ${FROZEN_FAULT_CODE}" 30
 ok "status_word=${FROZEN_STATUS_WORD} and fault_code=${FROZEN_FAULT_CODE} read over a live link"
+for app in "${APP_A}" "${APP_B}"; do
+  wait_for "${API}/apps/${app}/data" '.["x-medkit"].connected == true' 30
+  ok "GET /apps/${app}/data reports x-medkit.connected == true over a live link"
+done
+# The snapshot time while the values were live: a frame taken after the outage must not be older.
+LIVE_TS_A="$(curl -sf "${API}/apps/${APP_A}/data" | jq -r '.["x-medkit"].timestamp')"
+LIVE_TS_B="$(curl -sf "${API}/apps/${APP_B}/data" | jq -r '.["x-medkit"].timestamp')"
 
 exec 3>&-
 docker rm -f "${SERVER_NAME}" >/dev/null 2>&1 || true
+OUTAGE_START="$(date +%s)"
 # comms_lost_debounce_ms defaults to 5000, so the fault confirms seconds after the link dies.
 wait_until_status CONFIRMED 90
 
@@ -227,10 +235,14 @@ FRAME_A="$(wait_frame "${APP_A}" ".[\"x-medkit\"].full_data.status_word == ${FRO
 ok "freeze_frame named ${APP_A} holds status_word=${FROZEN_STATUS_WORD} from before the outage"
 FRAME_B="$(wait_frame "${APP_B}" ".[\"x-medkit\"].full_data.fault_code == ${FROZEN_FAULT_CODE}")"
 ok "freeze_frame named ${APP_B} holds fault_code=${FROZEN_FAULT_CODE} from before the outage"
-for frame in "${FRAME_A}" "${FRAME_B}"; do
+for pair in "${FRAME_A}|${LIVE_TS_A}" "${FRAME_B}|${LIVE_TS_B}"; do
+  frame="${pair%|*}"
+  live_ts="${pair#*|}"
   check "${frame}" '.["x-medkit"].source == "plugin_data_provider"' "the frame was read through the app's DataProvider"
-  check "${frame}" '.["x-medkit"] | (has("connected") or has("source_timestamp")) | not' \
-    "an OPC UA frame carries no link flag and no timestamp"
+  check "${frame}" '.["x-medkit"].connected == false' "the frame reports x-medkit.connected == false"
+  # The snapshot time is when the values were last seen: not before they were live, not after the link died.
+  check "${frame}" "(.[\"x-medkit\"].source_timestamp | type == \"number\") and .[\"x-medkit\"].source_timestamp >= ${live_ts} and .[\"x-medkit\"].source_timestamp <= ${OUTAGE_START}" \
+    "the frame's source_timestamp is from before the outage"
 done
 check "$(detail)" "[(.environment_data.snapshots // [])[] | select(.name == \"${COMPONENT_ID}\")] | length == 0" \
   "no frame is claimed for the component itself"

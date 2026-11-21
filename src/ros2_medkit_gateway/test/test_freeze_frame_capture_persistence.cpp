@@ -170,6 +170,11 @@ class FakePlcDataProvider : public DataProvider {
     temperature_.store(value);
   }
 
+  /// Adds an `x-medkit` block with the link state and a timestamp to the list_data payload.
+  void set_link_state(bool connected, int64_t timestamp) {
+    link_state_ = json{{"connected", connected}, {"timestamp", timestamp}};
+  }
+
   tl::expected<ros2_medkit_gateway::dto::DataListResult, DataProviderErrorInfo>
   list_data(const std::string & entity_id) override {
     if (entity_id != entity_id_) {
@@ -178,7 +183,11 @@ class FakePlcDataProvider : public DataProvider {
     json items = json::array();
     items.push_back({{"id", "temperature"}, {"value", temperature_.load()}});
     items.push_back({{"id", "pressure"}, {"value", 3.2}});
-    return ros2_medkit_gateway::dto::DataListResult{json{{"items", std::move(items)}}};
+    json content{{"items", std::move(items)}};
+    if (!link_state_.is_null()) {
+      content["x-medkit"] = link_state_;
+    }
+    return ros2_medkit_gateway::dto::DataListResult{std::move(content)};
   }
 
   tl::expected<ros2_medkit_gateway::dto::DataValue, DataProviderErrorInfo>
@@ -195,6 +204,7 @@ class FakePlcDataProvider : public DataProvider {
  private:
   std::string entity_id_;
   std::atomic<double> temperature_{42.5};
+  json link_state_;  ///< Set before the capture starts, read only afterwards.
 };
 
 /// Entity of the catch-up probe. It serves nothing, so its read stores no frame and evicts nothing.
@@ -1146,6 +1156,24 @@ FreezeFrameCapture::HostedEntitiesResolver plc_runtime_hosting(std::vector<std::
   return [apps = std::move(apps)](const std::string & source_id) {
     return source_id == "plc_runtime" ? apps : std::vector<std::string>{};
   };
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(FreezeFrameCapturePersistenceTest, AProviderFrameCarriesTheLinkStateOfItsXMedkitBlock) {
+  FakePlcDataProvider provider("plc_app");
+  provider.set_link_state(/*connected=*/false, /*timestamp=*/1'788'000'000);
+  Plant plant(0.0);
+  auto capture = make_capture(256, plant, std::make_shared<InMemoryEntityFreezeFrameStore>(), nullptr, &provider);
+
+  events_.deliver(confirmed("PLC_LINK_BLOCK", {"plc_app"}));
+  ASSERT_TRUE(wait_for_frames(*capture, "PLC_LINK_BLOCK"));
+
+  const auto frames = capture->frames_for("PLC_LINK_BLOCK");
+  ASSERT_EQ(frames.size(), 1u);
+  ASSERT_TRUE(frames[0].connected.has_value());
+  EXPECT_FALSE(*frames[0].connected);
+  EXPECT_EQ(frames[0].source_timestamp, json(1'788'000'000));
+  EXPECT_EQ(frames[0].source, FreezeFrameCapture::kSourceDataProvider);
 }
 
 /// @verifies REQ_INTEROP_088

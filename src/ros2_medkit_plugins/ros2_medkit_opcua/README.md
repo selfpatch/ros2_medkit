@@ -224,6 +224,24 @@ GET /api/v1/apps/tank_process/x-plc-data
 `writable` is `false` on every item in the default read-only build, whatever the
 node map or the server says.
 
+`GET /api/v1/apps/{id}/data` serves the same points and adds an `x-medkit` block
+with the snapshot's `connected` flag and `timestamp`, in the encoding of the
+`x-plc-data` route:
+
+```json
+GET /api/v1/apps/tank_process/data
+
+{
+  "items": [ ... ],
+  "x-medkit": {"connected": true, "timestamp": 1774185903}
+}
+```
+
+While the link is down the poller keeps the last values and does not touch the
+snapshot time, so `connected` is `false` and `timestamp` is the time of the last
+poll or data change before the poller saw the link down. A freeze frame of a loss-of-comms fault carries both as
+`connected` and `source_timestamp`.
+
 **Write to PLC:**
 ```json
 POST /api/v1/apps/fill_pump/x-plc-operations/set_pump_speed

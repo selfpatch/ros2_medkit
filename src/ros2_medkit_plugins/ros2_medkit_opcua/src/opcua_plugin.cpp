@@ -3008,7 +3008,12 @@ tl::expected<dto::DataListResult, DataProviderErrorInfo> OpcuaPlugin::list_data(
     items.push_back(std::move(item));
   }
 
-  return dto::DataListResult{nlohmann::json{{"items", std::move(items)}}};
+  // The snapshot's link state and time, as the x-plc-data route reports them.
+  nlohmann::json x_medkit;
+  x_medkit["connected"] = snap.connected;
+  x_medkit["timestamp"] = std::chrono::system_clock::to_time_t(snap.timestamp);
+
+  return dto::DataListResult{nlohmann::json{{"items", std::move(items)}, {"x-medkit", std::move(x_medkit)}}};
 }
 
 tl::expected<dto::DataValue, DataProviderErrorInfo> OpcuaPlugin::read_data(const std::string & entity_id,

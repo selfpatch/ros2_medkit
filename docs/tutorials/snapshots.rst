@@ -226,8 +226,12 @@ for that fault (explicit config wins). When the entity reports its link down
 and may predate the confirmation by the length of the outage. The entry's
 ``x-medkit`` block carries ``connected: false`` only when the plugin's payload
 has a link flag. When the payload has its own timestamp, the block also carries
-it as ``source_timestamp``, next to ``captured_at``. The OPC UA plugin's
-``DataProvider`` payload has neither, so its frames carry neither.
+it as ``source_timestamp``, next to ``captured_at``. A route payload gives both
+at its top level and a ``DataProvider`` payload in its own ``x-medkit`` block.
+The OPC UA plugin's ``DataProvider`` payload has that block, so its frames carry
+both. While the link is down the poller does not update the snapshot time, so
+``source_timestamp`` is the time of the last poll or data change before the
+poller saw the link down, in seconds.
 
 A fault reported under a component id (a bridge reports loss of comms under the
 PLC runtime component's own id) is framed from the apps that component hosts
