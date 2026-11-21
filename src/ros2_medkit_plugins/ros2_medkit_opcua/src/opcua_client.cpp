@@ -614,7 +614,14 @@ bool apply_security_config(opcua::Client & client, std::unique_ptr<opcua::Client
     // never on this stack frame (SIGSEGV in UA_ChannelModule_Delete_Context
     // on a dropped link). After the move it holds a default config, whose
     // logger is the stdout one.
-    auto next_config = std::make_unique<opcua::ClientConfig>(cert, key, trust, std::vector<opcua::ByteString>{});
+    std::unique_ptr<opcua::ClientConfig> next_config;
+    try {
+      next_config = std::make_unique<opcua::ClientConfig>(cert, key, trust, std::vector<opcua::ByteString>{});
+    } catch (const opcua::BadStatus & e) {
+      RCLCPP_ERROR(opcua_client_logger(), "OPC-UA: the client certificate, key or trust list could not be applied: %s",
+                   e.what());
+      return false;
+    }
     opcua::ClientConfig & cc = *next_config;
 
     // Force the requested SecurityPolicy. An empty URI lets open62541 pick the
@@ -624,6 +631,21 @@ bool apply_security_config(opcua::Client & client, std::unique_ptr<opcua::Client
     if (cfg.security_policy != SecurityPolicy::None && !policy_uri.empty()) {
       UA_String_clear(&cc.handle()->securityPolicyUri);
       cc.handle()->securityPolicyUri = UA_STRING_ALLOC(policy_uri.c_str());
+      // open62541 drops a policy it cannot set up with the key and certificate
+      // and only logs it. The connect would then fail on the endpoint choice.
+      bool available = false;
+      for (size_t i = 0; i < cc.handle()->securityPoliciesSize; ++i) {
+        const UA_String & uri = cc.handle()->securityPolicies[i].policyUri;
+        available = available || (uri.length == policy_uri.size() && uri.data != nullptr &&
+                                  std::memcmp(uri.data, policy_uri.data(), uri.length) == 0);
+      }
+      if (!available) {
+        RCLCPP_ERROR(opcua_client_logger(),
+                     "OPC-UA: security policy %s is not available: the client key or certificate could not be "
+                     "used, or this build does not have the policy",
+                     policy_uri.c_str());
+        return false;
+      }
     }
 
     cc.setSecurityMode(to_ua_security_mode(cfg.security_mode));
