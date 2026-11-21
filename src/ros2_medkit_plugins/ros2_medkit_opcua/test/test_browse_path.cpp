@@ -300,6 +300,73 @@ TEST_F(BrowsePathNodeMap, TakesThePlaceOfAnAutoBrowsedEntry) {
   EXPECT_TRUE(map_.entries_for_entity("cell_safety_parameterset").empty());
 }
 
+TEST_F(BrowsePathNodeMap, ReportsTheAutoBrowsedEntryItReplaced) {
+  ASSERT_TRUE(load(kRobotMap));
+  NodeMapEntry browsed;
+  browsed.node_id = NodeMap::parse_node_id("ns=4;s=Safety.EmergencyStop");
+  browsed.node_id_str = browsed.node_id.toString();
+  browsed.entity_id = "cell_safety_parameterset";
+  browsed.entity_display_name = "Cell / Safety / ParameterSet";
+  browsed.data_name = "emergencystop";
+  std::vector<NodeMapEntry> merged;
+  merged.push_back(browsed);
+  ASSERT_EQ(map_.merge_auto_browsed_entries(std::move(merged)), 1u);
+
+  TreeSource s;
+  add_robot(s, "R1");
+  const auto result = map_.resolve_browse_entries([&](const NodeMapEntry & e) {
+    return resolve_browse_path(s, e.browse_path);
+  });
+  ASSERT_EQ(result.replaced.size(), 1u);
+  EXPECT_EQ(result.replaced[0], browsed.node_id_str);
+}
+
+TEST_F(BrowsePathNodeMap, TwoEntriesThatTradeNodeIdsBothMove) {
+  ASSERT_TRUE(load(R"(
+component_id: line
+nodes:
+  - browse_path: "2:A"
+    entity_id: line
+    data_name: a
+  - browse_path: "2:B"
+    entity_id: line
+    data_name: b
+  - browse_path: "2:C"
+    entity_id: line
+    data_name: c
+  - node_id: "ns=4;s=Fixed"
+    entity_id: line
+    data_name: fixed
+)"));
+  auto resolve_to = [&](const std::map<std::string, std::string> & ids) {
+    return map_.resolve_browse_entries([ids](const NodeMapEntry & e) -> std::optional<opcua::NodeId> {
+      return NodeMap::parse_node_id(ids.at(e.data_name));
+    });
+  };
+  const auto id = [](const std::string & node_id) {
+    return NodeMap::parse_node_id(node_id).toString();
+  };
+  ASSERT_EQ(resolve_to({{"a", "ns=2;s=X"}, {"b", "ns=3;s=X"}, {"c", "ns=5;s=C"}}).joined, 3u);
+
+  // The namespaces at 2 and 3 changed places; c now leads to a node a plain
+  // entry maps, and stays where it is.
+  const auto result = resolve_to({{"a", "ns=3;s=X"}, {"b", "ns=2;s=X"}, {"c", "ns=4;s=Fixed"}});
+  EXPECT_EQ(result.moved.size(), 2u);
+  ASSERT_NE(map_.find_by_node_id(id("ns=3;s=X")), nullptr);
+  ASSERT_NE(map_.find_by_node_id(id("ns=2;s=X")), nullptr);
+  EXPECT_EQ(map_.find_by_node_id(id("ns=3;s=X"))->data_name, "a");
+  EXPECT_EQ(map_.find_by_node_id(id("ns=2;s=X"))->data_name, "b");
+  EXPECT_EQ(map_.find_by_data_name("line", "a")->node_id_str, id("ns=3;s=X"));
+  EXPECT_EQ(map_.find_by_data_name("line", "b")->node_id_str, id("ns=2;s=X"));
+  EXPECT_EQ(map_.find_by_node_id(id("ns=5;s=C"))->data_name, "c");
+  EXPECT_EQ(map_.find_by_node_id(id("ns=4;s=Fixed"))->data_name, "fixed");
+
+  // a wants the node b holds while b stays: a stays too, and nothing is lost.
+  EXPECT_TRUE(resolve_to({{"a", "ns=2;s=X"}, {"b", "ns=2;s=X"}, {"c", "ns=5;s=C"}}).moved.empty());
+  EXPECT_EQ(map_.find_by_node_id(id("ns=3;s=X"))->data_name, "a");
+  EXPECT_EQ(map_.find_by_node_id(id("ns=2;s=X"))->data_name, "b");
+}
+
 TEST_F(BrowsePathNodeMap, FollowsANodeThatMovedOnTheNextSession) {
   ASSERT_TRUE(load(kRobotMap));
   TreeSource s;
