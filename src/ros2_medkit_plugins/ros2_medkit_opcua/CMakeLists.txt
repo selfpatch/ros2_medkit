@@ -677,6 +677,8 @@ if(BUILD_TESTING)
       test/integration/test_opcua_state_gates.test.py
       test/integration/test_opcua_fault_order.test.py
       test/integration/fault_service_stub.py
+      test/integration/test_opcua_browse_path.test.py
+      test/fixtures/robot_server/robot_server.py
       test/integration/test_opcua_comms_lost.test.py
       test/integration/test_opcua_startup_sweep_signal.test.py
       DESTINATION lib/${PROJECT_NAME})
@@ -735,6 +737,22 @@ if(BUILD_TESTING)
     set_tests_properties(test_opcua_state_gates PROPERTIES
       LABELS "integration"
       TIMEOUT 600)
+    # browse_path entries against an asyncua server with the DI and Robotics
+    # namespaces, through four server restarts: a failed first connect, the
+    # namespaces in another order, a lost link, and a session without the
+    # paths. In the write-capable build it also proves that no write reaches a
+    # NodeId the live session did not resolve. Skips with CTest exit 77 when
+    # asyncua is not installed, unless ROS2_MEDKIT_OPCUA_SMOKE_REQUIRE is set.
+    # The waits add up to about 800 s.
+    medkit_add_wrapped_test(test_opcua_browse_path
+      COMMAND "${Python3_EXECUTABLE}"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_browse_path.test.py"
+              "${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/robot_server/robot_server.py"
+              "${_medkit_opcua_variant}")
+    set_tests_properties(test_opcua_browse_path PROPERTIES
+      LABELS "integration"
+      SKIP_RETURN_CODE 77
+      TIMEOUT 900)
     # ReportFault and ClearFault of one code against a stub that answers a
     # report late and never answers another: the clear must leave after the
     # answer, or after the report went stale. Waits: fixture 25 s, stub 30 s,
