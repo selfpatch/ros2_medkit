@@ -89,6 +89,29 @@ TEST(FaultCodeLanes, AnUnansweredCallStopsHoldingItsCodeAfterStaleAfter) {
   EXPECT_EQ(wire.sent, (std::vector<std::string>{"report", "clear", "report again"}));
 }
 
+// The last clear of a code sits behind a report that is never answered, and
+// nothing is submitted for that code again: expire() sends it.
+TEST(FaultCodeLanes, ExpireSendsTheClearQueuedBehindAnUnansweredReport) {
+  FaultCodeLanes lanes(std::chrono::seconds(5));
+  Wire wire;
+  const auto t0 = FaultCodeLanes::Clock::now();
+  lanes.submit("X", wire.call("report"), t0);
+  lanes.submit("X", wire.call("clear"), t0 + std::chrono::seconds(1));
+  lanes.expire(t0 + std::chrono::seconds(4));
+  EXPECT_EQ(wire.sent, std::vector<std::string>{"report"});
+  lanes.expire(t0 + std::chrono::seconds(5));
+  EXPECT_EQ(wire.sent, (std::vector<std::string>{"report", "clear"}));
+  wire.pending[0]();  // late answer to the abandoned report
+  EXPECT_EQ(lanes.busy_count(), 1u);
+  wire.pending[1]();
+  EXPECT_EQ(lanes.busy_count(), 0u);
+
+  // An unanswered call with nothing behind it stops holding its code.
+  lanes.submit("Y", wire.call("report Y"), t0);
+  lanes.expire(t0 + std::chrono::seconds(5));
+  EXPECT_EQ(lanes.busy_count(), 0u);
+}
+
 TEST(FaultCodeLanes, ASynchronousAnswerDrainsTheQueue) {
   FaultCodeLanes lanes;
   std::vector<std::string> sent;

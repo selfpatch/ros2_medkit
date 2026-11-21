@@ -19,8 +19,10 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace ros2_medkit_gateway {
 
@@ -34,7 +36,8 @@ namespace ros2_medkit_gateway {
 /// answered; calls for different codes do not wait for each other.
 ///
 /// A call never answered (fault_manager restarted under it) holds its code
-/// for at most ``stale_after``; the next call for that code then goes out.
+/// for at most ``stale_after``: the next ``submit`` for that code, or
+/// ``expire``, then lets the next call out.
 class FaultCodeLanes {
  public:
   using Clock = std::chrono::steady_clock;
@@ -63,6 +66,31 @@ class FaultCodeLanes {
       generation = ++lane.generation;
     }
     start(fault_code, send, generation);
+  }
+
+  /// Give up every call unanswered for ``stale_after`` and send what waits
+  /// behind it. Call it on a timer: without it a queued call would wait for
+  /// the next ``submit`` of its code, which may never come.
+  void expire(Clock::time_point now = Clock::now()) {
+    std::vector<std::tuple<std::string, Send, unsigned>> next;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      for (auto & [fault_code, lane] : lanes_) {
+        if (!lane.busy || now - lane.since < stale_after_) {
+          continue;
+        }
+        if (lane.queue.empty()) {
+          lane.busy = false;
+          continue;
+        }
+        next.emplace_back(fault_code, std::move(lane.queue.front()), ++lane.generation);
+        lane.queue.pop_front();
+        lane.since = now;
+      }
+    }
+    for (const auto & [fault_code, send, generation] : next) {
+      start(fault_code, send, generation);
+    }
   }
 
   /// Codes with a call in flight (tests and diagnostics).
