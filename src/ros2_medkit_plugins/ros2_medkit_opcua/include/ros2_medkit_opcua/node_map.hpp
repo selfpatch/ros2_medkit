@@ -359,8 +359,9 @@ class NodeMap {
     /// (the server restarted with its namespaces in another order): old and
     /// new ``node_id_str``.
     std::vector<std::pair<std::string, std::string>> moved;
-    /// NodeIds whose auto-browsed entry a joining entry took the place of:
-    /// whatever was set up for the old entry (its topic) no longer fits.
+    /// NodeIds whose auto-browsed entry a joining or moved entry took the
+    /// place of: whatever was set up for the old entry (its topic) no longer
+    /// fits.
     std::vector<std::string> replaced;
     /// Paths of entries in ``entries()`` that this session does not have. Each
     /// keeps the NodeId of an earlier session and is logged.
@@ -373,7 +374,8 @@ class NodeMap {
   /// next session. A joining entry takes the place of an auto-browsed entry
   /// for the same node (explicit config wins); one whose node another explicit
   /// entry already maps is dropped with a warning. An entry already in
-  /// ``entries()`` follows its path to a new NodeId; one whose path is not
+  /// ``entries()`` follows its path to a new NodeId, and an auto-browsed entry
+  /// that holds that NodeId is removed; one whose path is not
   /// found this time keeps the NodeId it has, with a warning. Rebuilds the entity defs when
   /// an entry joined.
   BrowseResolution

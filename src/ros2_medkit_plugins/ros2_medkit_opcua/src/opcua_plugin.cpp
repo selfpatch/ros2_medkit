@@ -1988,12 +1988,13 @@ void OpcuaPlugin::resolve_browse_paths() {
       publishers_.erase(pub);
     }
   }
-  for (auto & [new_id, pub] : carried) {
-    publishers_[new_id] = std::move(pub);
-  }
   // The publisher of a replaced auto-browsed entry is on that entry's topic.
+  // Dropped before the carried ones go back: a moved entry may now hold that id.
   for (const auto & node_id : resolution.replaced) {
     publishers_.erase(node_id);
+  }
+  for (auto & [new_id, pub] : carried) {
+    publishers_[new_id] = std::move(pub);
   }
   if (resolution.joined > 0) {
     for (const auto & entry : node_map_.entries()) {

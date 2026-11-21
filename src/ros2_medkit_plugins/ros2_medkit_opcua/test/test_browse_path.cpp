@@ -367,6 +367,59 @@ nodes:
   EXPECT_EQ(map_.find_by_node_id(id("ns=2;s=X"))->data_name, "b");
 }
 
+TEST_F(BrowsePathNodeMap, AMovedEntryTakesItsNodeFromAnAutoBrowsedEntry) {
+  ASSERT_TRUE(load(R"(
+component_id: line
+nodes:
+  - browse_path: "2:A"
+    entity_id: line
+    data_name: a
+  - node_id: "ns=4;s=Fixed"
+    entity_id: line
+    data_name: fixed
+)"));
+  auto resolve_to = [&](const std::string & node_id) {
+    return map_.resolve_browse_entries([node_id](const NodeMapEntry &) -> std::optional<opcua::NodeId> {
+      return NodeMap::parse_node_id(node_id);
+    });
+  };
+  const auto id = [](const std::string & node_id) {
+    return NodeMap::parse_node_id(node_id).toString();
+  };
+  ASSERT_EQ(resolve_to("ns=2;i=6001").joined, 1u);
+  NodeMapEntry browsed;
+  browsed.node_id = NodeMap::parse_node_id("ns=3;i=6001");
+  browsed.node_id_str = browsed.node_id.toString();
+  browsed.entity_id = "other";
+  browsed.entity_display_name = "Other";
+  browsed.data_name = "decoy";
+  std::vector<NodeMapEntry> merged;
+  merged.push_back(browsed);
+  ASSERT_EQ(map_.merge_auto_browsed_entries(std::move(merged)), 1u);
+
+  // The namespaces changed places: the path now leads to the NodeId the
+  // auto-browsed entry holds.
+  const auto result = resolve_to("ns=3;i=6001");
+  ASSERT_EQ(result.moved.size(), 1u);
+  EXPECT_EQ(result.moved[0].second, id("ns=3;i=6001"));
+  ASSERT_EQ(result.replaced.size(), 1u);
+  EXPECT_EQ(result.replaced[0], id("ns=3;i=6001"));
+  ASSERT_NE(map_.find_by_node_id(id("ns=3;i=6001")), nullptr);
+  EXPECT_EQ(map_.find_by_node_id(id("ns=3;i=6001"))->data_name, "a");
+  EXPECT_EQ(map_.find_by_node_id(id("ns=2;i=6001")), nullptr);
+  EXPECT_EQ(map_.find_by_data_name("line", "a")->node_id_str, id("ns=3;i=6001"));
+  EXPECT_EQ(map_.find_by_data_name("line", "fixed")->node_id_str, id("ns=4;s=Fixed"));
+  EXPECT_EQ(map_.entries().size(), 2u);
+  EXPECT_TRUE(map_.entries_for_entity("other").empty());
+  for (const auto & def : map_.entity_defs()) {
+    EXPECT_NE(def.id, "other");
+  }
+
+  // An explicit entry still keeps its node.
+  EXPECT_TRUE(resolve_to("ns=4;s=Fixed").moved.empty());
+  EXPECT_EQ(map_.find_by_data_name("line", "a")->node_id_str, id("ns=3;i=6001"));
+}
+
 TEST_F(BrowsePathNodeMap, FollowsANodeThatMovedOnTheNextSession) {
   ASSERT_TRUE(load(kRobotMap));
   TreeSource s;
