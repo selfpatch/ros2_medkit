@@ -288,6 +288,17 @@ jobs:
       - name: A PLC alarm becomes a fault
         run: |
           api=http://localhost:8080/api/v1
+          # Discovery can finish while the PLC link still retries, and a write then fails with 502.
+          deadline=$((SECONDS + 60))
+          until status=$(curl -s "$api/components/openplc_runtime/x-plc-status") &&
+                echo "$status" | jq -e '.connected == true and .poll_count > 0' >/dev/null 2>&1; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "FAIL: PLC link not up within 60s, last x-plc-status: $status"
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "PLC link up: $status"
           code=$(curl -s -o /tmp/put.json -w '%{http_code}' -X PUT \
             "$api/apps/tank_process/data/tank_temperature" \
             -H 'Content-Type: application/json' -d '{"value": 90.0}')
@@ -312,7 +323,7 @@ jobs:
           echo "=== Gateway logs ==="
           docker logs gateway 2>&1 | tail -80 || true
           echo "=== Fault manager logs ==="
-          docker exec gateway cat /var/lib/ros2_medkit/fault_manager.log 2>&1 | tail -80 || true
+          docker cp gateway:/var/lib/ros2_medkit/fault_manager.log fm.log && tail -n 80 fm.log || true
           echo "=== OpenPLC logs ==="
           docker logs openplc 2>&1 | tail -60 || true
 
