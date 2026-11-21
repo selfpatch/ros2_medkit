@@ -136,7 +136,7 @@ class OpcuaClient {
   /// refresh per-session state (e.g. re-read the device-info nameplate).
   uint64_t connection_generation() const;
 
-  /// Get the endpoint URL (for status reporting)
+  /// Get the endpoint URL (for status reporting). Never waits for a connect.
   std::string endpoint_url() const;
 
   /// The connected server's own ApplicationUri, read from the ServerArray
@@ -410,7 +410,8 @@ class OpcuaClient {
   std::vector<ConditionStateSnapshot> read_source_conditions(const opcua::NodeId & source_node,
                                                              bool * scan_ok = nullptr);
 
-  /// Get server description string (for status endpoint)
+  /// Get server description string (for status endpoint). Never waits for a
+  /// connect.
   std::string server_description() const;
 
   // --- Security config parsing helpers (pure, unit-testable without a

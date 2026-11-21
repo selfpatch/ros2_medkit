@@ -372,7 +372,6 @@ struct OpcuaClient::Impl {
   OpcuaClientConfig config;
   std::atomic<bool> connected{false};
   mutable std::mutex client_mutex;
-  std::string server_desc;
 
   // Subscription tracking - store actual Subscription objects
   struct SubInfo {
@@ -396,14 +395,29 @@ struct OpcuaClient::Impl {
   // (device-info nameplate) without re-reading on every introspect.
   std::atomic<uint64_t> connect_generation{0};
 
-  // Its own lock, so a status read never waits behind a connect that holds
-  // client_mutex for its whole timeout.
+  // What a status read returns, under its own lock, so that read never waits
+  // behind a connect that holds client_mutex for its whole timeout.
+  // ``status_endpoint_url`` is a copy of ``config.endpoint_url``. Both it and
+  // ``status_server_desc`` are written by connect(), with client_mutex held.
   mutable std::mutex error_mutex;
   std::string last_error;
+  std::string status_endpoint_url{config.endpoint_url};
+  std::string status_server_desc;
 
   void set_last_error(std::string why) {
     std::lock_guard<std::mutex> lock(error_mutex);
     last_error = std::move(why);
+  }
+
+  void set_config(const OpcuaClientConfig & next) {
+    config = next;
+    std::lock_guard<std::mutex> lock(error_mutex);
+    status_endpoint_url = next.endpoint_url;
+  }
+
+  void set_server_desc(std::string desc) {
+    std::lock_guard<std::mutex> lock(error_mutex);
+    status_server_desc = std::move(desc);
   }
 
   /// (subscription id, monitored item id) of every event item still held.
@@ -685,7 +699,7 @@ bool apply_security_config(opcua::Client & client, std::unique_ptr<opcua::Client
 
 bool OpcuaClient::connect(const OpcuaClientConfig & config) {
   std::lock_guard<std::mutex> lock(impl_->client_mutex);
-  impl_->config = config;
+  impl_->set_config(config);
 
   try {
     // A channel left open by a refused ActivateSession reads as connected to
@@ -721,10 +735,10 @@ bool OpcuaClient::connect(const OpcuaClientConfig & config) {
       opcua::Node node(impl_->client, opcua::NodeId(0, UA_NS0ID_SERVER_SERVERSTATUS_BUILDINFO_PRODUCTNAME));
       auto val = node.readValue();
       if (val.isScalar() && val.isType<opcua::String>()) {
-        impl_->server_desc = std::string(val.getScalarCopy<opcua::String>());
+        impl_->set_server_desc(std::string(val.getScalarCopy<opcua::String>()));
       }
     } catch (...) {
-      impl_->server_desc = "OPC-UA Server";
+      impl_->set_server_desc("OPC-UA Server");
     }
 
     return true;
@@ -794,8 +808,8 @@ OpcuaClientConfig OpcuaClient::current_config() const {
 }
 
 std::string OpcuaClient::endpoint_url() const {
-  std::lock_guard<std::mutex> lock(impl_->client_mutex);
-  return impl_->config.endpoint_url;
+  std::lock_guard<std::mutex> lock(impl_->error_mutex);
+  return impl_->status_endpoint_url;
 }
 
 std::vector<std::string> OpcuaClient::browse(const opcua::NodeId & parent_node) {
@@ -1264,8 +1278,8 @@ void OpcuaClient::remove_subscriptions() {
 }
 
 std::string OpcuaClient::server_description() const {
-  std::lock_guard<std::mutex> lock(impl_->client_mutex);
-  return impl_->server_desc;
+  std::lock_guard<std::mutex> lock(impl_->error_mutex);
+  return impl_->status_server_desc;
 }
 
 std::vector<OpcuaClient::ConditionStateSnapshot> OpcuaClient::read_source_conditions(const opcua::NodeId & source_node,

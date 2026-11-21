@@ -16,7 +16,15 @@
 
 #include <gtest/gtest.h>
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <atomic>
+#include <chrono>
 #include <string>
+#include <thread>
 
 #include "ros2_medkit_gateway/test_support/refused_port.hpp"
 
@@ -49,6 +57,44 @@ TEST(OpcuaClientTest, ConnectFailsWithoutServer) {
   const auto why = client.last_error();
   EXPECT_EQ(why.rfind("Bad", 0), 0u) << why;
   EXPECT_EQ(why.find("Certificate"), std::string::npos) << why;
+}
+
+// x-plc-status reads these three while the link is down, which is when a
+// connect holds the client for its whole timeout.
+TEST(OpcuaClientTest, StatusReadsDoNotWaitForAConnectInProgress) {
+  // A listener that never accepts: the TCP connect completes in the backlog
+  // and the OPC UA hello is never answered.
+  const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(listener, 0);
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  ASSERT_EQ(::bind(listener, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)), 0);
+  ASSERT_EQ(::listen(listener, 4), 0);
+  socklen_t len = sizeof(addr);
+  ASSERT_EQ(::getsockname(listener, reinterpret_cast<sockaddr *>(&addr), &len), 0);
+
+  OpcuaClient client;
+  OpcuaClientConfig config;
+  config.endpoint_url = "opc.tcp://127.0.0.1:" + std::to_string(ntohs(addr.sin_port));
+  config.connect_timeout = std::chrono::milliseconds(3000);
+  std::atomic<bool> connect_returned{false};
+  std::thread connecting([&]() {
+    EXPECT_FALSE(client.connect(config));
+    connect_returned = true;
+  });
+  // endpoint_url() changes once connect() holds the client.
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (client.endpoint_url() != config.endpoint_url && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  EXPECT_EQ(client.endpoint_url(), config.endpoint_url);
+  EXPECT_TRUE(client.server_description().empty());
+  EXPECT_TRUE(client.last_error().empty());
+  EXPECT_FALSE(connect_returned.load()) << "the connect ended before the status was read";
+  connecting.join();
+  ::close(listener);
+  EXPECT_EQ(client.last_error().rfind("Bad", 0), 0u) << client.last_error();
 }
 
 TEST(OpcuaClientTest, DisconnectWhenNotConnected) {
