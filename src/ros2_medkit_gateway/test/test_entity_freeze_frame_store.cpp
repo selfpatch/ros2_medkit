@@ -79,6 +79,8 @@ class EntityFreezeFrameStoreTest : public ::testing::TestWithParam<Backend> {
 TEST_P(EntityFreezeFrameStoreTest, RoundTripsEveryFieldOfARow) {
   auto row = make_row("JAM_INFEED", "plc_app", 1757353900387000000);
   row.capture_origin = "startup";
+  row.occurrence_count = 7;
+  row.first_occurred_ns = 1757353800123456789;  // above 2^32: needs the full 64 bits
   ASSERT_TRUE(store_->replace_frames("JAM_INFEED", {row}).has_value());
 
   auto loaded = store_->load_all();
@@ -91,6 +93,8 @@ TEST_P(EntityFreezeFrameStoreTest, RoundTripsEveryFieldOfARow) {
   EXPECT_EQ(got.captured_at_ns, 1757353900387000000);  // nanoseconds need the full 64 bits
   EXPECT_EQ(got.source, "plugin_x_plc_data_route");
   EXPECT_EQ(got.capture_origin, "startup");
+  EXPECT_EQ(got.occurrence_count, 7u);
+  EXPECT_EQ(got.first_occurred_ns, 1757353800123456789);
 }
 
 TEST_P(EntityFreezeFrameStoreTest, ReplaceDropsEntitiesTheNewCaptureNoLongerReports) {
