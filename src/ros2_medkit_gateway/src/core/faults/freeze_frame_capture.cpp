@@ -445,11 +445,16 @@ std::optional<FreezeFrameCapture::Frame> FreezeFrameCapture::frame_from_content(
   // Provenance for the snapshot's x-medkit block: the payload's link flag and
   // its own timestamp, when the plugin reports them. captured_at_ns dates the
   // capture; a disconnected entity's values may be much older.
-  if (content.contains("connected") && content["connected"].is_boolean()) {
-    frame.connected = content["connected"].get<bool>();
+  // A route payload carries them at the top level, a provider payload in its `x-medkit` block.
+  const nlohmann::json * link = &content;
+  if (content.contains("x-medkit") && content["x-medkit"].is_object() && !content.contains("connected")) {
+    link = &content["x-medkit"];
   }
-  if (content.contains("timestamp")) {
-    frame.source_timestamp = content["timestamp"];
+  if (link->contains("connected") && (*link)["connected"].is_boolean()) {
+    frame.connected = (*link)["connected"].get<bool>();
+  }
+  if (link->contains("timestamp")) {
+    frame.source_timestamp = (*link)["timestamp"];
   }
   frame.captured_at_ns =
       std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
