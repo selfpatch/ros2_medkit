@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -48,6 +49,9 @@ struct FreezeFrameCaptureConfig {
   /// Retained-frame bound: past it, the frames of the fault captured longest ago are
   /// evicted. Reloaded and captured frames count together. Not a node parameter.
   size_t max_faults{256};
+  /// Wait between two startup fault-list attempts while none has succeeded. Not a node
+  /// parameter.
+  std::chrono::milliseconds list_retry_interval{std::chrono::seconds(5)};
 };
 
 /// Freezes the data values of an entity when a fault of that entity confirms.
@@ -64,11 +68,13 @@ struct FreezeFrameCaptureConfig {
 ///
 /// With an `EntityFreezeFrameStore`, each capture is written through with the fault's
 /// occurrence, and the stored frames load on construction. With a lister, no reloaded
-/// frame is served before the lister has run. Its list drops a frame of another occurrence,
-/// or of a fault the list does not hold. An unknown occurrence, an empty list or a throw
-/// keeps the frame. With no lister, every reloaded frame is kept and served at once. Then
-/// each confirmed, unmuted fault with no frame is read and marked startup, while the bound
-/// has room.
+/// frame is served before a list has succeeded. A failed list is retried every
+/// `list_retry_interval`, and live confirms are captured in between; a capture replaces
+/// the reloaded frame of its code. The first list that succeeds drops a frame of another
+/// occurrence, or of a fault the list does not hold. An unknown occurrence or an empty
+/// list keeps the frame. With no lister, every reloaded frame is kept and served at once.
+/// Then each confirmed, unmuted fault with no frame is read and marked startup, while the
+/// bound has room.
 ///
 /// The reads run on a thread of this object, never on the thread that delivers
 /// the event.
@@ -115,10 +121,12 @@ class FreezeFrameCapture : public FreezeFrameSource {
   };
 
   /// Every fault the fault manager holds when the capture starts, in any status and
-  /// muted ones included. Called once, on the capture thread, never after the
+  /// muted ones included. Nullopt when the list could not be read; a throw counts the
+  /// same. Called on the capture thread until one call succeeds, never after the
   /// destructor has joined it. A blocking wait inside must poll `should_abort` and
-  /// return when it turns true. An empty answer or a throw drops no reloaded frame.
-  using StandingFaultLister = std::function<std::vector<StandingFault>(const std::function<bool()> & should_abort)>;
+  /// return when it turns true.
+  using StandingFaultLister =
+      std::function<std::optional<std::vector<StandingFault>>(const std::function<bool()> & should_abort)>;
 
   /// Blocks until the event feed delivers, or `should_abort` turns true. Runs on the
   /// capture thread before the lister, so a confirmation that falls between the
@@ -159,7 +167,12 @@ class FreezeFrameCapture : public FreezeFrameSource {
  private:
   void on_fault_event(const ros2_medkit::fault_detection::FaultEventRecord & event);
   void capture_worker();
-  void capture_standing_faults();
+  /// Lists the standing faults until a list succeeds. Captures live confirms between two
+  /// attempts. Nullopt when the capture stops first.
+  std::optional<std::vector<StandingFault>> list_standing_faults();
+  /// Captures the confirms that arrive until @p deadline. False when the capture stops.
+  bool capture_confirms_until(std::chrono::steady_clock::time_point deadline);
+  void capture_standing_faults(const std::vector<StandingFault> & listed);
   bool capture_for_event(const ros2_medkit::fault_detection::FaultEventRecord & event, const Occurrence & occurrence,
                          bool startup_catchup = false);
   /// The occurrence of @p record, through the ListFaults reply's encoding.
@@ -191,6 +204,7 @@ class FreezeFrameCapture : public FreezeFrameSource {
   std::shared_ptr<EntityFreezeFrameStore> store_;
   const log::Logger logger_{"entity_freeze_frame"};
   const size_t max_faults_;
+  const std::chrono::milliseconds list_retry_interval_;
 
   /// Guards frames_, insertion_order_, fallback_logged_, reloaded_codes_, occurrences_,
   /// reloaded_judged_ and store_write_warned_.
@@ -205,7 +219,7 @@ class FreezeFrameCapture : public FreezeFrameSource {
   std::unordered_set<std::string> reloaded_codes_;
   /// The occurrence of every code in frames_, reloaded or captured.
   std::unordered_map<std::string, Occurrence> occurrences_;
-  /// False until the start has judged the reloaded frames or given up: until then
+  /// False until a startup fault list has judged the reloaded frames: until then
   /// frames_for serves none of them.
   bool reloaded_judged_{false};
   /// One warning per process for a failed store write or delete. Only the capture

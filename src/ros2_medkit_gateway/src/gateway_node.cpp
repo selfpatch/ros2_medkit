@@ -22,7 +22,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -1526,12 +1528,21 @@ void GatewayNode::init_entity_freeze_frame_capture(ros2_common::Ros2Subscription
       // immediately, to nobody. The capture asks for those on its own thread,
       // which it joins on destruction; should_abort lets that join interrupt
       // the service wait. One list of every status, muted faults included,
-      // also judges the frames reloaded from the store.
-      [this](const std::function<bool()> & should_abort) {
-        std::vector<EntityFreezeFrameCapture::StandingFault> standing;
+      // also judges the frames reloaded from the store. Nullopt on every give-up
+      // path, so the capture retries; the reason is a WARN once, then DEBUG.
+      [this, reason_logged = std::make_shared<bool>(false)](const std::function<bool()> & should_abort)
+          -> std::optional<std::vector<EntityFreezeFrameCapture::StandingFault>> {
+        const auto give_up = [this, &reason_logged](const std::string & reason) {
+          if (*reason_logged) {
+            RCLCPP_DEBUG(get_logger(), "Standing-fault freeze-frame list not read: %s", reason.c_str());
+          } else {
+            *reason_logged = true;
+            RCLCPP_WARN(get_logger(), "Standing-fault freeze-frame list not read: %s", reason.c_str());
+          }
+          return std::nullopt;
+        };
         if (!fault_service_transport_) {
-          RCLCPP_WARN(get_logger(), "Standing-fault freeze-frame catch-up skipped: fault transport not initialised");
-          return standing;
+          return give_up("fault transport not initialised");
         }
         // One deadline for the whole wait, polled in slices so shutdown can
         // abort it (wait_for_services itself shares the slice across clients).
@@ -1542,7 +1553,7 @@ void GatewayNode::init_entity_freeze_frame_capture(ros2_common::Ros2Subscription
           // After rclcpp::shutdown() every wait returns at once, so the loop would spin.
           if (!rclcpp::ok(context)) {
             RCLCPP_INFO(get_logger(), "Standing-fault freeze-frame catch-up skipped: rclcpp is shutting down");
-            return standing;
+            return std::nullopt;
           }
           const std::chrono::duration<double> remaining = deadline - std::chrono::steady_clock::now();
           if (remaining <= std::chrono::duration<double>::zero()) {
@@ -1551,22 +1562,18 @@ void GatewayNode::init_entity_freeze_frame_capture(ros2_common::Ros2Subscription
           ready = fault_service_transport_->wait_for_services(std::min(std::chrono::duration<double>(0.5), remaining));
         }
         if (!ready) {
-          if (!should_abort()) {
-            RCLCPP_WARN(get_logger(),
-                        "Standing-fault freeze-frame catch-up skipped: fault services not available within 10s");
+          if (should_abort()) {
+            return std::nullopt;
           }
-          return standing;
+          return give_up("fault services not available within 10s");
         }
         auto result = fault_service_transport_->list_faults("", true, true, true, true, true, false);
         if (!result.success) {
-          RCLCPP_WARN(get_logger(), "Standing-fault freeze-frame catch-up skipped: ListFaults failed: %s",
-                      result.error_message.c_str());
-          return standing;
+          return give_up("ListFaults failed: " + result.error_message);
         }
         auto parsed = EntityFreezeFrameCapture::standing_faults_from_list_reply(result.data);
         if (!parsed) {
-          RCLCPP_WARN(get_logger(), "Standing-fault freeze-frame catch-up skipped: malformed ListFaults reply");
-          return standing;
+          return give_up("malformed ListFaults reply");
         }
         const bool none_confirmed =
             std::none_of(parsed->begin(), parsed->end(), [](const EntityFreezeFrameCapture::StandingFault & fault) {
@@ -1575,7 +1582,7 @@ void GatewayNode::init_entity_freeze_frame_capture(ros2_common::Ros2Subscription
         if (none_confirmed) {
           RCLCPP_INFO(get_logger(), "Standing-fault freeze-frame catch-up: no confirmed, unmuted faults at startup");
         }
-        return std::move(*parsed);
+        return parsed;
       },
       std::move(frame_store));
 }

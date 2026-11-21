@@ -1530,8 +1530,13 @@ Query and manage faults.
      their ``x-medkit`` block, unless a frame of the same occurrence was
      reloaded from the freeze-frame store (see
      ``entity_freeze_frame.storage.path`` in the server configuration). That
-     frame is served as it was captured. An entity frame also carries
-     ``source`` in
+     frame is served as it was captured. A reloaded frame is held back until
+     the fault manager has answered the gateway's startup fault list. While it
+     has not, the gateway retries the list, and the fault detail serves no
+     ``freeze_frame`` for those faults. This can last from about 10 s to as
+     long as the fault manager is down. Then the frame appears with its
+     original ``captured_at``, older than the restart. An entity frame also
+     carries ``source`` in
      ``x-medkit``, naming the path that read the values
      (``plugin_data_provider`` for the owning plugin's DataProvider,
      ``plugin_x_plc_data_route`` for its ``x-plc-data`` route). These values

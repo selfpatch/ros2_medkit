@@ -146,7 +146,7 @@ EntityFreezeFrameCapture::EntityFreezeFrameCapture(rclcpp::Node * node, ros2_com
   : logger_(node->get_logger())
   , events_(node, exec)
   , capture_(std::make_unique<FreezeFrameCapture>(
-        events_, FreezeFrameCaptureConfig{true, max_faults},
+        events_, FreezeFrameCaptureConfig{true, max_faults, std::chrono::seconds(5)},
         FreezeFrameCapture::Hooks{PluginDataReaders{std::move(resolver), std::move(route_fetcher)},
                                   std::move(standing_lister),
                                   [&events = events_](const std::function<bool()> & should_abort) {

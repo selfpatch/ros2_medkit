@@ -251,9 +251,13 @@ capture: the fault's ``occurrence_count`` and ``first_occurred``. The fault
 manager changes both only when a cleared fault fails again. At startup the
 gateway asks the fault manager once for its faults of every status, muted ones
 included, and judges every reloaded frame by that one answer. Until then the
-fault detail serves no reloaded frame. When the fault manager cannot be asked
-or answers with an empty list, the reloaded frames are kept and served
-unjudged.
+fault detail serves no reloaded frame. When the fault manager does not answer,
+the gateway logs the first failure as a warning and asks again every 5 s. Live confirmations are
+captured in the meantime, and a live capture replaces the reloaded frame of its
+fault. So after a restart, a client that polls the fault detail first sees no
+``freeze_frame`` for a reloaded fault, from about 10 s to as long as the fault
+manager is down, and then the frame with its original ``captured_at``, older
+than the restart.
 
 - The fault lists the stored occurrence: the frame is kept as it is, with no
   read. Clocks play no part, so a gateway clock that differs from the fault
@@ -266,10 +270,10 @@ unjudged.
   occurrence's confirmation.
 - The fault manager no longer holds the fault in any status (its storage was
   replaced or wiped): the frame is dropped, and the gateway logs one warning
-  that names up to 10 of those faults. When the fault manager cannot be asked,
-  or lists no fault at all, nothing is dropped: a fault manager that lost its
-  storage connection answers with an empty list. Such a frame leaves by
-  eviction or by the next capture of its fault.
+  that names up to 10 of those faults. When the fault manager lists no fault at
+  all, nothing is dropped: a fault manager that lost its storage connection
+  answers with an empty list. Such a frame leaves by eviction or by the next
+  capture of its fault.
 - A frame stored without an occurrence is kept, since nothing can be told
   from it.
 

@@ -82,7 +82,8 @@ FreezeFrameCapture::FreezeFrameCapture(FaultEventSource & events, const FreezeFr
   , standing_lister_(std::move(hooks.standing_lister))
   , events_ready_(std::move(hooks.events_ready))
   , store_(std::move(hooks.store))
-  , max_faults_(config.max_faults > 0 ? config.max_faults : 1) {
+  , max_faults_(config.max_faults > 0 ? config.max_faults : 1)
+  , list_retry_interval_(config.list_retry_interval) {
   // Before the first event and the first request: the catch-up must see the reloaded frames.
   load_persisted_frames();
   // With no lister nothing judges the reloaded frames, so they are served as loaded.
@@ -387,7 +388,7 @@ void FreezeFrameCapture::judge_reloaded_frames(const std::vector<StandingFault> 
   erase_persisted(dropped);
   if (kept_for_empty_list) {
     MEDKIT_LOG_INFO(logger_,
-                    "Entity freeze-frame: the fault list is empty or could not be read, so no reloaded frame is "
+                    "Entity freeze-frame: the fault manager lists no fault in any status, so no reloaded frame is "
                     "dropped");
   }
   if (!orphans.empty()) {
@@ -505,10 +506,7 @@ void FreezeFrameCapture::on_fault_event(const fd::FaultEventRecord & event) {
   queue_cv_.notify_one();
 }
 
-void FreezeFrameCapture::capture_standing_faults() {
-  if (!standing_lister_) {
-    return;
-  }
+std::optional<std::vector<FreezeFrameCapture::StandingFault>> FreezeFrameCapture::list_standing_faults() {
   const auto should_abort = [this] {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     return stop_;
@@ -519,24 +517,75 @@ void FreezeFrameCapture::capture_standing_faults() {
   if (events_ready_) {
     events_ready_(should_abort);
   }
-  if (should_abort()) {
-    return;
+  size_t failures = 0;
+  for (;;) {
+    if (should_abort()) {
+      return std::nullopt;
+    }
+    // The lister blocks until the fault services answer, so it runs here rather
+    // than on a thread of its own: this thread is joined by the destructor, and
+    // should_abort is what lets that join interrupt the wait.
+    std::optional<std::vector<StandingFault>> listed;
+    std::string reason;
+    try {
+      listed = standing_lister_(should_abort);
+    } catch (const std::exception & e) {
+      reason = std::string(" (the lister threw: ") + e.what() + ")";
+    } catch (...) {
+      reason = " (the lister threw)";
+    }
+    if (listed) {
+      if (failures > 0) {
+        MEDKIT_LOG_INFO(logger_,
+                        "Entity freeze-frame: the startup fault list was read after %zu failed attempt(s); the "
+                        "reloaded frames are judged now",
+                        failures);
+      }
+      return listed;
+    }
+    if (should_abort()) {
+      return std::nullopt;
+    }
+    if (failures++ == 0) {
+      // A fault cleared and confirmed again while the gateway was down would serve the
+      // previous occurrence's frame, so the reloaded frames wait for a list.
+      MEDKIT_LOG_WARN(logger_,
+                      "Entity freeze-frame: the startup fault list could not be read%s, so the reloaded frames stay "
+                      "hidden and the list is retried every %g s",
+                      reason.c_str(), static_cast<double>(list_retry_interval_.count()) / 1000.0);
+    }
+    if (!capture_confirms_until(std::chrono::steady_clock::now() + list_retry_interval_)) {
+      return std::nullopt;
+    }
   }
-  // The lister blocks until the fault services answer, so it runs here rather
-  // than on a thread of its own: this thread is joined by the destructor, and
-  // should_abort is what lets that join interrupt the wait.
-  std::vector<StandingFault> listed;
-  try {
-    listed = standing_lister_(should_abort);
-  } catch (const std::exception & e) {
-    MEDKIT_LOG_WARN(logger_, "Entity freeze-frame startup catch-up failed: standing-fault lister threw: %s", e.what());
-    return;
-  } catch (...) {
-    MEDKIT_LOG_WARN(logger_, "Entity freeze-frame startup catch-up failed: standing-fault lister threw");
-    return;
+}
+
+bool FreezeFrameCapture::capture_confirms_until(std::chrono::steady_clock::time_point deadline) {
+  for (;;) {
+    fd::FaultEventRecord event;
+    {
+      std::unique_lock<std::mutex> lock(queue_mutex_);
+      const bool woken = queue_cv_.wait_until(lock, deadline, [this] {
+        return stop_ || !queue_.empty();
+      });
+      if (stop_) {
+        return false;
+      }
+      if (!woken) {
+        return true;
+      }
+      event = std::move(queue_.front());
+      queue_.pop_front();
+    }
+    capture_for_event(event, occurrence_of(event.fault));
   }
-  // One answer decides both the reloaded frames and what is read now.
-  judge_reloaded_frames(listed);
+}
+
+void FreezeFrameCapture::capture_standing_faults(const std::vector<StandingFault> & listed) {
+  const auto should_abort = [this] {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    return stop_;
+  };
   // Codes with a confirm already queued belong to the drain loop: capturing
   // them here too would read the plugin twice for one confirm.
   std::unordered_set<std::string> queued_codes;
@@ -612,11 +661,14 @@ void FreezeFrameCapture::capture_standing_faults() {
 }
 
 void FreezeFrameCapture::capture_worker() {
-  capture_standing_faults();
-  {
-    // Also when the lister gave up or threw: then every reloaded frame is kept.
-    std::lock_guard<std::mutex> lock(mutex_);
-    reloaded_judged_ = true;
+  if (standing_lister_) {
+    const auto listed = list_standing_faults();
+    if (!listed) {
+      return;
+    }
+    // One answer decides both the reloaded frames and what is read now.
+    judge_reloaded_frames(*listed);
+    capture_standing_faults(*listed);
   }
   for (;;) {
     fd::FaultEventRecord event;
