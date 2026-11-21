@@ -273,6 +273,56 @@ nodes:
   EXPECT_FALSE(sent.back()) << "the last value was healthy, so the last edge must be a clear";
 }
 
+TEST(DetectionOrderTest, AGatedPointAndItsGateInOnePublishResponseAreEvaluatedTogether) {
+  // The gated point is listed before its gate, and both change in one publish
+  // response with the gated point first. Evaluated one by one, the state would
+  // be judged against the gate value of the response before.
+  const auto path = std::filesystem::temp_directory_path() / "test_opcua_poller_gate_one_pass.yaml";
+  std::ofstream(path) << R"(
+area_id: test
+component_id: test
+nodes:
+  - node_id: "ns=1;s=State"
+    entity_id: machine
+    data_name: state
+    data_type: int
+    fault_enum:
+      ok_value: 6
+      codes:
+        - code: 9
+          fault_code: MACHINE_ABORTED
+    inhibit_when:
+      node_id: "ns=1;s=Mode"
+      values: [2]
+  - node_id: "ns=1;s=Mode"
+    entity_id: machine
+    data_name: mode
+    data_type: int
+)";
+  NodeMap node_map;
+  const bool loaded = node_map.load(path.string());
+  std::remove(path.string().c_str());
+  ASSERT_TRUE(loaded);
+
+  OpcuaClient client;  // never connected: values are delivered by hand
+  OpcuaPoller poller(client, node_map);
+  std::vector<bool> sent;
+  poller.set_alarm_callback([&sent](const std::string &, const ros2_medkit::fault_detection::FaultSignal & s) {
+    sent.push_back(s.active);
+  });
+  poller.publish_response_for_test({{"ns=1;s=State", OpcuaValue{int32_t{6}}}, {"ns=1;s=Mode", OpcuaValue{int32_t{1}}}});
+  EXPECT_TRUE(sent.empty());
+
+  // Maintenance mode and the abort in one scan.
+  poller.publish_response_for_test({{"ns=1;s=State", OpcuaValue{int32_t{9}}}, {"ns=1;s=Mode", OpcuaValue{int32_t{2}}}});
+  EXPECT_TRUE(sent.empty()) << "raised against the mode of the response before";
+
+  // Back to production while still aborted: now it is a fault.
+  poller.publish_response_for_test({{"ns=1;s=Mode", OpcuaValue{int32_t{1}}}});
+  ASSERT_EQ(sent.size(), 1u);
+  EXPECT_TRUE(sent[0]);
+}
+
 TEST(AlarmRoutingTest, ARepinMovesConditionsAlreadyPinnedToTheNewEntity) {
   // apply_condition_state pins a fault's entity at the first sighting of its
   // ConditionId, so a config-less rename has to reach the conditions the poller

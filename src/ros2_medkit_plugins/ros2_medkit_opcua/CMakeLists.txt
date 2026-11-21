@@ -724,14 +724,17 @@ if(BUILD_TESTING)
       LABELS "integration"
       TIMEOUT 900)
     # State-register gates (ok_values, inhibit_when, only_when): raise, hold
-    # and clear decisions reach a real fault manager over real HTTP.
+    # and clear decisions reach a real fault manager over real HTTP, by polling
+    # and then by subscription. Waits: fixture 25 s, fault manager 30 s, two
+    # gateways 90 s each, 13 polled checks 10 s each, 5 subscribed checks 25 s
+    # each, stops 24 s, so about 515 s.
     medkit_add_wrapped_test(test_opcua_state_gates
       COMMAND "${Python3_EXECUTABLE}"
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_state_gates.test.py"
               "${CMAKE_BINARY_DIR}/test_alarm_server")
     set_tests_properties(test_opcua_state_gates PROPERTIES
       LABELS "integration"
-      TIMEOUT 300)
+      TIMEOUT 600)
     # ReportFault and ClearFault of one code against a stub that answers a
     # report late and never answers another: the clear must leave after the
     # answer, or after the report went stale. Waits: fixture 25 s, stub 30 s,

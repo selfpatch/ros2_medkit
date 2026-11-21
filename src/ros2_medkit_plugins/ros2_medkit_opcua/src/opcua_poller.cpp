@@ -29,6 +29,10 @@
 namespace ros2_medkit_gateway {
 
 namespace {
+// Set while this thread delivers the data changes of one iterate, so they are
+// evaluated in one pass after it and not one by one.
+thread_local bool t_collecting_changes = false;
+thread_local bool t_changes_collected = false;
 inline rclcpp::Logger opcua_poller_logger() {
   static auto logger = rclcpp::get_logger("opcua.poller");
   return logger;
@@ -266,7 +270,7 @@ void OpcuaPoller::event_pump_loop() {
   // magnitude below the client requestTimeout.
   while (running_.load()) {
     if (client_.is_connected() && event_subscription_id_ != 0) {
-      client_.run_iterate(20);
+      iterate(20);
     }
     std::unique_lock<std::mutex> lock(stop_mutex_);
     stop_cv_.wait_for(lock, std::chrono::milliseconds(100), [this] {
@@ -1197,7 +1201,32 @@ void OpcuaPoller::on_data_change(const std::string & node_id, const OpcuaValue &
     snapshot_.connected = true;
     snapshot_.poll_count++;
   }
+  if (t_collecting_changes) {
+    t_changes_collected = true;
+    return;
+  }
   evaluate_alarms(DetectionPipeline::Pass::kValues);
+}
+
+void OpcuaPoller::in_one_pass(const std::function<void()> & deliver) {
+  t_collecting_changes = true;
+  t_changes_collected = false;
+  try {
+    deliver();
+  } catch (...) {
+    t_collecting_changes = false;
+    throw;
+  }
+  t_collecting_changes = false;
+  if (t_changes_collected) {
+    evaluate_alarms(DetectionPipeline::Pass::kValues);
+  }
+}
+
+void OpcuaPoller::iterate(uint16_t timeout_ms) {
+  in_one_pass([this, timeout_ms] {
+    client_.run_iterate(timeout_ms);
+  });
 }
 
 bool OpcuaPoller::comms_lost_should_raise(bool enabled, bool already_raised,
@@ -1386,7 +1415,7 @@ void OpcuaPoller::poll_loop() {
     // Data-change subscriptions need the same pump: in subscription mode
     // do_poll() is skipped, so without it no value would ever arrive.
     if (event_subscription_id_ != 0 || using_subscriptions_.load()) {
-      client_.run_iterate(50);
+      iterate(50);
     }
 
     // Fire poll callback for value bridging.
@@ -1428,7 +1457,7 @@ void OpcuaPoller::poll_loop() {
       if (!client_.is_connected()) {
         break;
       }
-      client_.run_iterate(50);
+      iterate(50);
       // The iterate can find the link closed. The cached values are then no
       // longer observed, and a wait that ended on them would raise a fault the
       // reconnect keeps, so go back to the reconnect arm first.

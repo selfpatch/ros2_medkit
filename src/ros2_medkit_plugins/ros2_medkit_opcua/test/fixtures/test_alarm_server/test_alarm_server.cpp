@@ -675,23 +675,27 @@ void execute_command(UA_Server * server, UA_UInt16 ns, const std::string & line)
     // ``set <NodeName> <int>`` writes a polled Int32 variable (StatusWord /
     // FaultCode). Handled before the condition lookup because these nodes are
     // plain variables, not AlarmCondition instances in g_conditions.
+    // More ``<NodeName> <int>`` pairs on the line are written in the same step,
+    // before the server samples again, as a PLC changes them in one scan.
     if (cmd == "set") {
-      long val = 0;
-      if (!(iss >> val)) {
-        std::cout << "ERR set_missing_value:" << name << '\n';
-        return;
-      }
-      UA_Int32 v32 = static_cast<UA_Int32>(val);
-      UA_Variant var;
-      UA_Variant_setScalar(&var, &v32, &UA_TYPES[UA_TYPES_INT32]);
-      UA_NodeId target = UA_NODEID_STRING_ALLOC(ns, name.c_str());
-      UA_StatusCode rc = UA_Server_writeValue(server, target, var);
-      UA_NodeId_clear(&target);
-      if (rc == UA_STATUSCODE_GOOD) {
-        std::cout << "OK " << name << "=" << val << '\n';
-      } else {
-        std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << '\n';
-      }
+      do {
+        long val = 0;
+        if (!(iss >> val)) {
+          std::cout << "ERR set_missing_value:" << name << '\n';
+          return;
+        }
+        UA_Int32 v32 = static_cast<UA_Int32>(val);
+        UA_Variant var;
+        UA_Variant_setScalar(&var, &v32, &UA_TYPES[UA_TYPES_INT32]);
+        UA_NodeId target = UA_NODEID_STRING_ALLOC(ns, name.c_str());
+        UA_StatusCode rc = UA_Server_writeValue(server, target, var);
+        UA_NodeId_clear(&target);
+        if (rc == UA_STATUSCODE_GOOD) {
+          std::cout << "OK " << name << "=" << val << '\n';
+        } else {
+          std::cout << "ERR " << name << ":" << UA_StatusCode_name(rc) << '\n';
+        }
+      } while (iss >> name);
       return;
     }
     // ``notconnected <NodeName>``: reads of the variable then return

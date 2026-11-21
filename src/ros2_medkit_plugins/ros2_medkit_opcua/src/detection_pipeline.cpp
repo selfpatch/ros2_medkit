@@ -75,12 +75,14 @@ DetectionPipeline::evaluate(const std::vector<const NodeMapEntry *> & entries,
     // gated fault does not wait toward a raise. An unread gate point gates
     // nothing: the rule then behaves as ungated.
     std::uint64_t gate_stamp = 0;
+    bool gate_stale = false;
     auto gate_matches = [&](const std::optional<StateGate> & gate) -> std::optional<bool> {
       if (!gate) {
         return std::nullopt;
       }
       if (const auto n = nodes_.find(gate->node_id_str); n != nodes_.end()) {
         gate_stamp += n->second.received;
+        gate_stale = gate_stale || (subscribed && !n->second.seen_since_link);
       }
       const auto g = values.find(gate->node_id_str);
       std::int64_t v = 0;
@@ -91,6 +93,12 @@ DetectionPipeline::evaluate(const std::vector<const NodeMapEntry *> & entries,
     };
     const auto only = gate_matches(entry->only_when);
     const auto inhibit = gate_matches(entry->inhibit_when);
+    // Under a subscription a gate value from before the link came back is not
+    // the current one. The point waits for its gate to report, which then
+    // counts as a new observation below.
+    if (gate_stale) {
+      continue;
+    }
     // A new value of a gate point is an observation of this point too: under a
     // subscription the cached value is the current one, so a wait may start.
     bool gate_arrived = false;

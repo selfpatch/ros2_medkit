@@ -396,6 +396,17 @@ class OpcuaPoller {
     on_data_change(node_id, value);
   }
 
+  /// The data changes of one publish response, in the order given, the way an
+  /// iterate delivers them. Puts the poller in subscription mode.
+  void publish_response_for_test(const std::vector<std::pair<std::string, OpcuaValue>> & changes) {
+    using_subscriptions_ = true;
+    in_one_pass([&] {
+      for (const auto & [node_id, value] : changes) {
+        on_data_change(node_id, value);
+      }
+    });
+  }
+
   /// ``evaluate_alarms`` as the poll thread runs it for a recheck,
   /// with the poller treated as being in subscription mode.
   void evaluate_alarms_for_test(DetectionPipeline::Pass pass) {
@@ -440,6 +451,11 @@ class OpcuaPoller {
   void setup_subscriptions();
   void evaluate_alarms(DetectionPipeline::Pass pass);
   void on_data_change(const std::string & node_id, const OpcuaValue & value);
+  /// Run the client for ``timeout_ms`` and evaluate the data changes it
+  /// delivered in one pass, so a gated point and its gate that changed together
+  /// are looked at together whichever came first in the publish response.
+  void iterate(uint16_t timeout_ms);
+  void in_one_pass(const std::function<void()> & deliver);
 
   // Issue #386 helpers.
   void setup_event_subscriptions();
