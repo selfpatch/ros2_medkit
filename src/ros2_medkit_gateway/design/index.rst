@@ -67,9 +67,11 @@ store from it:
   each capture is written through with the fault's occurrence
   (``occurrence_count`` and ``first_occurred``), and the stored frames load
   before the first capture. With a lister, no reloaded frame is served before
-  the lister has run. Its fault list of every status drops a frame of another
-  occurrence, or of a fault the list does not hold. A throw or an empty list
-  keeps every frame. With no lister, every frame is kept and served at once.
+  a fault list of every status has succeeded. That list drops a frame of
+  another occurrence, or of a fault the list does not hold, and an empty list
+  keeps every frame. A list that could not be read is retried every
+  ``FreezeFrameCaptureConfig::list_retry_interval``, and live confirms are
+  captured in between. With no lister, every frame is kept and served at once.
   The catch-up then frames each confirmed, unmuted fault that has no frame,
   while the bound has room. The host passes the config, a
   ``FaultEventSource`` and the ``PluginManager``. A

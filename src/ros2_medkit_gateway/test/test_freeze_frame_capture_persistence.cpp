@@ -393,7 +393,8 @@ class FreezeFrameCapturePersistenceTest : public ::testing::Test {
   std::unique_ptr<FreezeFrameCapture> make_capture(size_t max_faults, Plant & plant,
                                                    std::shared_ptr<EntityFreezeFrameStore> store,
                                                    FreezeFrameCapture::StandingFaultLister standing = nullptr,
-                                                   DataProvider * provider = nullptr) {
+                                                   DataProvider * provider = nullptr,
+                                                   std::chrono::milliseconds list_retry = 5s) {
     FreezeFrameCapture::Hooks hooks;
     hooks.readers = PluginDataReaders{[provider](const std::string & entity_id) -> DataProvider * {
                                         return entity_id == "plc_app" ? provider : nullptr;
@@ -403,7 +404,8 @@ class FreezeFrameCapturePersistenceTest : public ::testing::Test {
                                       }};
     hooks.standing_lister = std::move(standing);
     hooks.store = std::move(store);
-    return std::make_unique<FreezeFrameCapture>(events_, FreezeFrameCaptureConfig{true, max_faults}, std::move(hooks));
+    return std::make_unique<FreezeFrameCapture>(events_, FreezeFrameCaptureConfig{true, max_faults, list_retry},
+                                                std::move(hooks));
   }
 
   /// Queues a probe confirm and waits for its read. The drain loop starts after the
@@ -573,25 +575,71 @@ TEST_F(FreezeFrameCapturePersistenceTest, ReloadDropsAFaultTheManagerNoLongerHol
 }
 
 /// @verifies REQ_INTEROP_088
-TEST_F(FreezeFrameCapturePersistenceTest, AFaultListerThatGivesUpDropsNothing) {
-  // Same seeding as the test above, whose lister can answer and drops PLC_GONE.
+TEST_F(FreezeFrameCapturePersistenceTest, ALiveConfirmIsCapturedWhileTheFaultListIsRetried) {
+  // In process: the lister fails on every call, which a fault manager that never answers
+  // cannot show. Same seeding as the test above, whose lister can answer and drops PLC_GONE.
   auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
   ASSERT_TRUE(store->replace_frames("PLC_GONE", {make_stored_row("PLC_GONE", "route_a", 100)}));
   ASSERT_TRUE(store->replace_frames("PLC_CLEARED", {make_stored_row("PLC_CLEARED", "route_b", 200)}));
 
   Plant plant(7.0);
-  std::atomic<bool> asked{false};
+  std::atomic<int> calls{0};
   auto capture = make_capture(
-      256, plant, store, [&asked](const std::function<bool()> &) -> std::vector<FreezeFrameCapture::StandingFault> {
-        asked.store(true);
-        throw std::runtime_error("fault manager unreachable");
-      });
-  ASSERT_TRUE(wait_for_catch_up(plant));
+      256, plant, store,
+      [&calls](const std::function<bool()> &) -> std::optional<std::vector<FreezeFrameCapture::StandingFault>> {
+        // The first call throws, the later ones cannot list: both count as a failure.
+        if (calls.fetch_add(1) == 0) {
+          throw std::runtime_error("fault manager unreachable");
+        }
+        return std::nullopt;
+      },
+      nullptr, 20ms);
+  ASSERT_TRUE(log_sink().wait_for("the list is retried every 0.02 s", 15s));
 
-  EXPECT_TRUE(asked.load());
-  EXPECT_FALSE(capture->frames_for("PLC_GONE").empty());
-  EXPECT_FALSE(capture->frames_for("PLC_CLEARED").empty());
+  // A confirm of PLC_CLEARED while no list has succeeded is read at once.
+  events_.deliver(confirmed("PLC_CLEARED", {"route_b"}));
+  ASSERT_TRUE(wait_for_frames(*capture, "PLC_CLEARED"));
+  const auto live = capture->frames_for("PLC_CLEARED");
+  ASSERT_EQ(live.size(), 1u);
+  EXPECT_NE(live[0].captured_at_ns, 200);  // the live capture replaced the reloaded frame
+  EXPECT_DOUBLE_EQ(live[0].values.value("level", 0.0), 7.0);
+
+  // Later attempts fail with nullopt: still nothing is served or dropped.
+  const auto deadline = std::chrono::steady_clock::now() + 15s;
+  while (calls.load() < 3 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(5ms);
+  }
+  ASSERT_GE(calls.load(), 3);
+  EXPECT_TRUE(capture->frames_for("PLC_GONE").empty()) << "a reloaded frame was served before a list succeeded";
   EXPECT_EQ(stored_codes(*store), (std::vector<std::string>{"PLC_CLEARED", "PLC_GONE"}));
+  const auto logs = log_sink().text();
+  const std::string warned = "the startup fault list could not be read";
+  EXPECT_EQ(logs.find(warned), logs.rfind(warned)) << "one warning for many failed attempts\n" << logs;
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(FreezeFrameCapturePersistenceTest, StoppingDuringAFaultListRetryReturnsPromptly) {
+  // In process: the stop must land inside the retry wait, which only a held lister can order.
+  auto store = std::make_shared<InMemoryEntityFreezeFrameStore>();
+  ASSERT_TRUE(store->replace_frames(
+      "PLC_HELD", {make_stored_row("PLC_HELD", "route_stored_app", kStoredAtNs, 10.0, kFirstOccurrence)}));
+  Plant plant(99.0);
+  std::atomic<int> calls{0};
+  auto capture = make_capture(
+      256, plant, store,
+      [&calls](const std::function<bool()> &) -> std::optional<std::vector<FreezeFrameCapture::StandingFault>> {
+        calls.fetch_add(1);
+        return std::nullopt;
+      },
+      nullptr, std::chrono::hours(1));
+  // Logged right before the wait for the next attempt starts.
+  ASSERT_TRUE(log_sink().wait_for("the list is retried every 3600 s", 15s));
+  EXPECT_TRUE(capture->frames_for("PLC_HELD").empty());
+
+  const auto started = std::chrono::steady_clock::now();
+  capture.reset();
+  EXPECT_LT(std::chrono::steady_clock::now() - started, 5s) << "the destructor waited for the retry interval";
+  EXPECT_EQ(calls.load(), 1);
 }
 
 /// @verifies REQ_INTEROP_088
@@ -610,7 +658,7 @@ TEST_F(FreezeFrameCapturePersistenceTest, AnEmptyFaultListDropsNoReloadedFrame) 
   EXPECT_FALSE(capture->frames_for("PLC_B").empty());
   EXPECT_EQ(stored_codes(*store), (std::vector<std::string>{"PLC_A", "PLC_B"}));
   const auto logs = log_sink().text();
-  EXPECT_NE(logs.find("Entity freeze-frame: the fault list is empty or could not be read, so no reloaded frame is "
+  EXPECT_NE(logs.find("Entity freeze-frame: the fault manager lists no fault in any status, so no reloaded frame is "
                       "dropped"),
             std::string::npos)
       << logs;

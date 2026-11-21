@@ -30,6 +30,10 @@
 #      at once, and scenario 2's startup frame holds the current value. GET /data
 #      also serves values at once when a server that was down at gateway start
 #      comes up, and serves the new value at once when the server restarts with it.
+#   8. The fault manager starts after the first startup fault list has failed: the
+#      reloaded frame stays hidden, the list is retried, and the frame of the earlier
+#      occurrence is discarded once the fault manager answers. No fault detail serves
+#      it in between.
 #
 # A check that something did NOT happen first waits for a sentinel fault the
 # plugin confirms after start: its frame comes from the drain loop, which runs
@@ -326,7 +330,7 @@ docker rm -f "${SERVER_NAME}" "${GATEWAY_NAME}" >/dev/null 2>&1 || true
 docker network rm "${NET_NAME}" >/dev/null 2>&1 || true
 docker volume rm "${VOLUME}" >/dev/null 2>&1 || true
 
-echo "[1/5] Build test_alarm_server and gateway-opcua images"
+echo "[1/6] Build test_alarm_server and gateway-opcua images"
 docker build --network=host \
   -f src/ros2_medkit_plugins/ros2_medkit_opcua/docker/test_alarm_server/Dockerfile \
   -t ros2_medkit_alarm_test_server:freeze-frame-test . >/dev/null
@@ -334,7 +338,7 @@ docker build --network=host \
   -f src/ros2_medkit_plugins/ros2_medkit_opcua/docker/Dockerfile.gateway \
   -t gateway-opcua:freeze-frame-test . >/dev/null
 
-echo "[2/5] Start test_alarm_server"
+echo "[2/6] Start test_alarm_server"
 docker network create "${NET_NAME}" >/dev/null
 docker volume create "${VOLUME}" >/dev/null
 SERVER_CTRL="$(mktemp -d)"
@@ -429,8 +433,17 @@ EOF
         path: ":memory:"
 EOF
 } >"${CONFIG_DIR}/params_memory_triggers.yaml"
+PENDING_STORE="${STATE_DIR}/pending/entity_freeze_frames.db"
+{
+  base_params
+  cat <<EOF
+    entity_freeze_frame:
+      storage:
+        path: "${PENDING_STORE}"
+EOF
+} >"${CONFIG_DIR}/params_pending.yaml"
 
-echo "[3/5] Restart scenarios on the demo parameters (explicit store path)"
+echo "[3/6] Restart scenarios on the demo parameters (explicit store path)"
 gw_container_start
 fm_start "${STATE_DIR}/faults.db"
 first_life_with_frame explicit /config/gateway_params.yaml 111
@@ -513,7 +526,7 @@ server set StatusWord 0
 fm_stop
 fm_start "${STATE_DIR}/faults-empty.db"
 gw_start empty-fault-manager /config/gateway_params.yaml
-wait_log "Entity freeze-frame: the fault list is empty or could not be read, so no reloaded frame is dropped"
+wait_log "Entity freeze-frame: the fault manager lists no fault in any status, so no reloaded frame is dropped"
 [[ "$(stored_codes "${EXPLICIT_STORE}")" == "PLC_SENTINEL_A PLC_SENTINEL_B" ]] ||
   fail "store rows: $(stored_codes "${EXPLICIT_STORE}")"
 ok "an empty fault list drops nothing: the store still holds PLC_SENTINEL_A and PLC_SENTINEL_B"
@@ -525,7 +538,7 @@ rows="$(stored_codes "${EXPLICIT_STORE}")"
 [[ -z "${rows}" || "${rows}" == "PLC_UNRELATED" ]] || fail "store rows: ${rows}"
 ok "the frames of PLC_SENTINEL_A and PLC_SENTINEL_B, which the fault manager does not hold, are dropped (rows: ${rows:-none})"
 
-echo "[4/5] entity_freeze_frame.storage.path cases (scenario 6)"
+echo "[4/6] entity_freeze_frame.storage.path cases (scenario 6)"
 storage_case() {
   local name="$1" params="$2" marker="$3" logged="$4" survives="$5"
   echo "  [case ${name}]"
@@ -566,8 +579,42 @@ if in_gw "test -e '${gw_cwd}/entity_freeze_frames.db'"; then
 fi
 ok "memory-triggers: no entity_freeze_frames.db in the gateway's working directory (${gw_cwd})"
 
+echo "[5/6] The fault manager answers after the first startup fault list failed (scenario 8)"
+gw_stop
+fm_stop
+in_gw "mkdir -p ${STATE_DIR}/pending"
+fm_start "${STATE_DIR}/faults-pending.db"
+first_life_with_frame pending /config/params_pending.yaml 800
+captured_pending="${CAPTURED}"
+gw_stop
+fm_clear "${FAULT}"
+fm_report "${FAULT}"
+fm_stop
+gw_start pending-2 /config/params_pending.yaml
+# The ROS lister's wait for the fault services has run out once.
+wait_log "Standing-fault freeze-frame list not read: fault services not available within 10s"
+fm_start "${STATE_DIR}/faults-pending.db"
+# The fault manager answers from here. Until the discard, no detail may serve the frame of occurrence 1.
+dropped=""
+for _ in $(seq 1 120); do
+  frame="$(frame_of "${FAULT}" || true)"
+  if [[ -n "${frame}" ]] && jq -e ".[\"x-medkit\"].captured_at == \"${captured_pending}\"" <<<"${frame}" >/dev/null; then
+    fail "pending: the detail serves the frame of occurrence 1 (captured_at ${captured_pending}): ${frame}"
+  fi
+  if docker exec "${GATEWAY_NAME}" grep -qF -- "Entity freeze-frame for fault '${FAULT}': the stored frame of entity '${ENTITY}' is from an earlier occurrence and was discarded (stored occurrence 1, the fault manager lists occurrence 2, CONFIRMED)" "${GW_LOG}"; then
+    dropped=yes
+    break
+  fi
+  sleep 0.5
+done
+[[ -n "${dropped}" ]] || fail "pending: the frame of occurrence 1 was never discarded"
+ok "pending: no detail served the frame of occurrence 1, and it was discarded once the fault manager answered"
+assert_logged "Entity freeze-frame: the startup fault list could not be read, so the reloaded frames stay hidden and the list is retried every 5 s"
+assert_logged "Entity freeze-frame: the startup fault list was read after"
+frame="$(wait_frame "${FAULT}" '.["x-medkit"].capture_origin == "startup"')"
+check_frame "${frame}" '.["x-medkit"].full_data.fault_code == 801' "pending: the startup frame holds the current value (801)"
 
-echo "[5/5] Subscription mode with a publishing interval of 60 s (scenario 7)"
+echo "[6/6] Subscription mode with a publishing interval of 60 s (scenario 7)"
 # A subscription publishes its first values one interval after it is created.
 # GET /data must serve values within 15 s, and the one catch-up read must find them.
 SUB_STORE="${STATE_DIR}/sub/entity_freeze_frames.db"

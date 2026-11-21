@@ -402,14 +402,16 @@ Configure how the gateway connects to the fault manager services and event topic
        ``entity_freeze_frames.db`` in the directory of ``triggers.storage.path``.
        With that empty too, or with ``triggers.storage.path`` set to
        ``:memory:``, the frames stay in memory and a restart loses them (logged
-       at startup). A file that cannot be opened is logged as an error,
-       and the frames stay in memory. Each row stores the fault's
-       ``occurrence_count`` and ``first_occurred``. At startup one fault list
-       judges the reloaded frames, and none is served before that. A frame of
+       at startup). A file that cannot be opened is logged as an error, and the
+       frames stay in memory. Each row stores the fault's ``occurrence_count``
+       and ``first_occurred``. At startup one fault list judges the reloaded
+       frames, and none is served before that. While the fault manager does not
+       answer, the list is retried every 5 s, and the first failure is logged
+       as a warning. A frame of
        another occurrence, or of a fault the fault manager does not hold, is
-       dropped with a warning. When the fault manager cannot be asked or lists
-       no fault, every frame is kept. A kept frame is served as captured, with
-       its ``captured_at`` and ``capture_origin``. The 256-fault bound counts
+       dropped with a warning. When the fault manager lists no fault, every
+       frame is kept. A kept frame is served as captured, with its
+       ``captured_at`` and ``capture_origin``. The 256-fault bound counts
        reloaded and captured frames together. One file belongs to one gateway.
        See :doc:`/tutorials/snapshots` for each case.
 
