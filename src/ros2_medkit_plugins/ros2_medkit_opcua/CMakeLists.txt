@@ -740,11 +740,14 @@ if(BUILD_TESTING)
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/gen_test_certs.sh")
     # TIMEOUT must exceed the sum of the script's internal wait deadlines so a
     # slow failing run still reaches its own FAIL diagnostics instead of being
-    # killed by CTest.
+    # killed by CTest. The waits add up to 760 s (two server starts 40 s, the
+    # good gateway 240 s, the catch-all gateway 210 s, the wrong password 90 s,
+    # the three other refusals 60 s each), the fault manager start is about
+    # 22 s and seven process stops are at most 8 s each: about 840 s.
     set_tests_properties(test_opcua_secured PROPERTIES
       LABELS "integration"
       SKIP_RETURN_CODE 77
-      TIMEOUT 420)
+      TIMEOUT 900)
 
     # PLC_COMMS_LOST decisions against a real gateway and fault manager. The
     # timeout exceeds the sum of the script's wait deadlines. Discovery binds

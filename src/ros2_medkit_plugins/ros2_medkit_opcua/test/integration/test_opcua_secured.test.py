@@ -148,7 +148,10 @@ def http_json(url, timeout=2):
 def wait_json(url, predicate, deadline=60, period=2.0):
     """Poll <url> until predicate(json) is true; return the final json or None."""
     last = None
-    for _ in range(int(deadline / period) + 1):
+    # By the clock, not by the number of tries: a GET that times out takes 2 s
+    # of the deadline, it does not add to it.
+    end = time.monotonic() + deadline
+    while True:
         last = http_json(url)
         if last is not None:
             try:
@@ -156,8 +159,9 @@ def wait_json(url, predicate, deadline=60, period=2.0):
                     return last
             except (KeyError, TypeError, ValueError):
                 pass
+        if time.monotonic() + period > end:
+            return last
         time.sleep(period)
-    return last
 
 
 def wait_log(path, needle, deadline=30, period=0.5):
