@@ -120,8 +120,8 @@ TEST(BrowsePathParse, AliasesIndicesAndWildcards) {
 
 TEST(BrowsePathParse, RefusesWhatItCannotResolve) {
   const std::map<std::string, std::string> aliases{{"di", kDi}};
-  for (const std::string bad :
-       {"", "/", "di:DeviceSet/*", "nope:DeviceSet/di:X", "DeviceSet/di:X", "di:/di:X", "70000:X", "di:X\\"}) {
+  for (const std::string bad : {"", "/", "di:DeviceSet/*", "nope:DeviceSet/di:X", "DeviceSet/di:X", "di:/di:X",
+                                "70000:X", "99999999999999999999999999:X", "di:X\\"}) {
     std::vector<BrowsePathElement> out;
     std::string error;
     EXPECT_FALSE(NodeMap::parse_browse_path(bad, aliases, out, error)) << bad;

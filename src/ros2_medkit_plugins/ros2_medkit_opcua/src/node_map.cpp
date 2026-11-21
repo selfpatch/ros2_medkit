@@ -1518,8 +1518,9 @@ bool NodeMap::parse_browse_path(const std::string & str, const std::map<std::str
     if (std::all_of(prefix.begin(), prefix.end(), [](unsigned char c) {
           return std::isdigit(c);
         })) {
-      const auto index = std::stoul(prefix);
-      if (prefix.size() > 5 || index > 65535) {
+      // Length first: stoul throws on a number too long for unsigned long.
+      const auto index = prefix.size() > 5 ? 65536UL : std::stoul(prefix);
+      if (index > 65535) {
         error = "step " + std::to_string(i + 1) + ": namespace index " + prefix + " is out of range";
         out.clear();
         return false;
