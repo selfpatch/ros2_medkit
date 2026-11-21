@@ -16,7 +16,8 @@
 #      stored frame is discarded with a warning, and the startup catch-up reads
 #      the entity and marks the frame capture_origin: startup.
 #   3. A fault cleared, confirmed again and cleared again while gateway_node is
-#      down: the frame of the first occurrence is discarded with a warning.
+#      down: the frame of the first occurrence is discarded with a warning, and
+#      the fault has no frame after the catch-up.
 #   4. Scenario 2 with the OPC-UA server unreachable: the frame is discarded with a
 #      warning that names the fault and the entity, and no frame replaces it.
 #   5. The fault manager restarts with empty storage: nothing is dropped. With one
@@ -472,13 +473,10 @@ fm_report PLC_VALVE_STUCK
 fm_clear PLC_VALVE_STUCK
 gw_start reoccurred-and-cleared /config/gateway_params.yaml
 wait_log "Entity freeze-frame for fault 'PLC_VALVE_STUCK': the stored frame of entity '${ENTITY}' is from an earlier occurrence and was discarded (stored occurrence 1, the fault manager lists occurrence 2, CLEARED)"
-frame="$(frame_of PLC_VALVE_STUCK)"
-if [[ -n "${frame}" ]]; then
-  check_frame "${frame}" ".[\"x-medkit\"].captured_at != \"${captured_cleared}\" and .[\"x-medkit\"].full_data.fault_code != 121" \
-    "the detail does not serve the first occurrence's frame"
-else
-  ok "the detail does not serve the first occurrence's frame (no frame)"
-fi
+# PLC_VALVE_STUCK is listed CLEARED, so the catch-up does not read it.
+catch_up_done $((BIT_FAULT + BIT_SENTINEL_A + BIT_SENTINEL_B)) PLC_SENTINEL_B
+[[ -z "$(frame_of PLC_VALVE_STUCK)" ]] || fail "the cleared fault serves a frame: $(frame_of PLC_VALVE_STUCK)"
+ok "PLC_VALVE_STUCK serves no frame after the catch-up"
 
 echo "  [scenario 4] the same as scenario 2 with the OPC-UA server unreachable"
 gw_stop
@@ -492,7 +490,8 @@ wait_log "Entity freeze-frame for fault '${FAULT}': entity '${ENTITY}' values ar
 curl -sf "${API}/apps/${ENTITY}/faults/${FAULT}" >/dev/null || fail "no fault detail for ${FAULT}"
 [[ -z "$(frame_of "${FAULT}")" ]] || fail "the fault detail still serves a frame: $(frame_of "${FAULT}")"
 ok "the fault detail serves no frame"
-[[ "$(stored_codes "${EXPLICIT_STORE}")" == "PLC_SENTINEL_A" ]] || fail "store rows: $(stored_codes "${EXPLICIT_STORE}")"
+[[ "$(stored_codes "${EXPLICIT_STORE}")" == "PLC_SENTINEL_A PLC_SENTINEL_B" ]] ||
+  fail "store rows: $(stored_codes "${EXPLICIT_STORE}")"
 ok "the stored row of ${FAULT} is gone"
 docker network connect "${NET_NAME}" "${SERVER_NAME}"
 
@@ -503,15 +502,16 @@ fm_stop
 fm_start "${STATE_DIR}/faults-empty.db"
 gw_start empty-fault-manager /config/gateway_params.yaml
 wait_log "Entity freeze-frame: the fault list is empty or could not be read, so no reloaded frame is dropped"
-[[ "$(stored_codes "${EXPLICIT_STORE}")" == "PLC_SENTINEL_A" ]] || fail "store rows: $(stored_codes "${EXPLICIT_STORE}")"
-ok "an empty fault list drops nothing: the store still holds PLC_SENTINEL_A"
+[[ "$(stored_codes "${EXPLICIT_STORE}")" == "PLC_SENTINEL_A PLC_SENTINEL_B" ]] ||
+  fail "store rows: $(stored_codes "${EXPLICIT_STORE}")"
+ok "an empty fault list drops nothing: the store still holds PLC_SENTINEL_A and PLC_SENTINEL_B"
 gw_stop
 fm_report PLC_UNRELATED
 gw_start one-unrelated-fault /config/gateway_params.yaml
-wait_log "Entity freeze-frame: dropped the reloaded frames of 1 fault(s) the fault manager no longer holds: PLC_SENTINEL_A"
+wait_log "Entity freeze-frame: dropped the reloaded frames of 2 fault(s) the fault manager no longer holds: PLC_SENTINEL_A, PLC_SENTINEL_B"
 rows="$(stored_codes "${EXPLICIT_STORE}")"
 [[ -z "${rows}" || "${rows}" == "PLC_UNRELATED" ]] || fail "store rows: ${rows}"
-ok "the frame of PLC_SENTINEL_A, which the fault manager does not hold, is dropped (rows: ${rows:-none})"
+ok "the frames of PLC_SENTINEL_A and PLC_SENTINEL_B, which the fault manager does not hold, are dropped (rows: ${rows:-none})"
 
 echo "[4/5] entity_freeze_frame.storage.path cases (scenario 6)"
 storage_case() {
