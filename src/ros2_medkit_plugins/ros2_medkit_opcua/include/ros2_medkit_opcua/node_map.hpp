@@ -228,6 +228,10 @@ struct NodeMapEntry {
   // (``NodeMap::resolve_browse_entries``); node_id / node_id_str are set then.
   std::vector<BrowsePathElement> browse_path;
   std::string browse_path_str;
+  // The session (``OpcuaClient::connection_generation``) on which the path
+  // last led to ``node_id``. On any other session the NodeId is not known to
+  // name this node, so nothing is written to it.
+  uint64_t browse_session{0};
 
   // Shared fault-detection rule for this point: threshold, status-word bit
   // decode, or fault-code enum. Built at load time from the ``alarm:``,
@@ -377,9 +381,12 @@ class NodeMap {
   /// ``entries()`` follows its path to a new NodeId, and an auto-browsed entry
   /// that holds that NodeId is removed; one whose path is not
   /// found this time keeps the NodeId it has, with a warning. Rebuilds the entity defs when
-  /// an entry joined.
+  /// an entry joined. ``session`` is stamped on every entry whose path led to
+  /// the NodeId it now holds (``NodeMapEntry::browse_session``); an entry that
+  /// kept an older NodeId keeps its older stamp.
   BrowseResolution
-  resolve_browse_entries(const std::function<std::optional<opcua::NodeId>(const NodeMapEntry &)> & resolve);
+  resolve_browse_entries(const std::function<std::optional<opcua::NodeId>(const NodeMapEntry &)> & resolve,
+                         uint64_t session = 0);
 
   /// True when any ``browse_path:`` entry exists, resolved or not.
   bool has_browse_entries() const;

@@ -193,6 +193,16 @@ tl::expected<OpcuaValue, std::string> parse_coerce_validate(const nlohmann::json
 }
 #endif  // MEDKIT_OPCUA_READ_ONLY
 
+#if !MEDKIT_OPCUA_READ_ONLY
+/// The session a write to ``entry`` names. For a browse_path entry it is the
+/// one its path was last resolved on, so the client refuses the write while
+/// any other session is live: during the walk after a reconnect, and after a
+/// walk that did not find the path.
+std::optional<uint64_t> write_session(const NodeMapEntry & entry) {
+  return entry.browse_path.empty() ? std::nullopt : std::optional<uint64_t>(entry.browse_session);
+}
+#endif  // !MEDKIT_OPCUA_READ_ONLY
+
 bool is_valid_path_segment(const std::string & s) {
   if (s.empty() || s.size() > 256) {
     return false;
@@ -1263,12 +1273,15 @@ void OpcuaPlugin::handle_plc_operations(const PluginRequest & req, PluginRespons
     return;
   }
 
-  auto write_result = client_->write_value(entry->node_id, *parsed, entry->data_type);
+  auto write_result = client_->write_value(entry->node_id, *parsed, entry->data_type, write_session(*entry));
   if (!write_result) {
     int status = (write_result.error().code == OpcuaClient::WriteError::NotConnected ||
                   write_result.error().code == OpcuaClient::WriteError::TransportError)
                      ? 502
                      : 400;
+    if (write_result.error().code == OpcuaClient::WriteError::NodeNotResolved) {
+      status = 503;
+    }
     res.send_error(status, ERR_SERVICE_UNAVAILABLE, write_result.error().message);
     return;
   }
@@ -1948,6 +1961,9 @@ void OpcuaPlugin::resolve_browse_paths() {
   if (!node_map_.has_browse_entries() || !client_ || !client_->is_connected()) {
     return;
   }
+  // Read before the walk: an entry is stamped with the session its path was
+  // walked on, and until then a write to it is refused (see write_session).
+  const uint64_t session = client_->connection_generation();
   OpcuaClientBrowseSource source(*client_);
   // The walk is a series of blocking round-trips: done before taking the lock.
   // Every path, resolved or not: a restarted server may have moved a node.
@@ -1966,14 +1982,16 @@ void OpcuaPlugin::resolve_browse_paths() {
   NodeMap::BrowseResolution resolution;
   {
     std::unique_lock<std::shared_mutex> lock(node_map_mutex_);
-    resolution = node_map_.resolve_browse_entries([&found](const NodeMapEntry & entry) -> std::optional<opcua::NodeId> {
-      for (const auto & [path, node_id] : found) {
-        if (path == entry.browse_path_str) {
-          return node_id;
-        }
-      }
-      return std::nullopt;
-    });
+    resolution = node_map_.resolve_browse_entries(
+        [&found](const NodeMapEntry & entry) -> std::optional<opcua::NodeId> {
+          for (const auto & [path, node_id] : found) {
+            if (path == entry.browse_path_str) {
+              return node_id;
+            }
+          }
+          return std::nullopt;
+        },
+        session);
   }
   // Taken out first and put back under the new ids after: two entries can
   // trade NodeIds, and a publisher must follow its entry.
@@ -3038,7 +3056,7 @@ tl::expected<dto::DataWriteResult, DataProviderErrorInfo> OpcuaPlugin::write_dat
     return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::InvalidValue, parsed.error(), 400});
   }
 
-  auto write_result = client_->write_value(entry->node_id, *parsed, entry->data_type);
+  auto write_result = client_->write_value(entry->node_id, *parsed, entry->data_type, write_session(*entry));
   if (!write_result) {
     auto wcode = write_result.error().code;
     if (wcode == OpcuaClient::WriteError::TypeMismatch) {
@@ -3047,6 +3065,10 @@ tl::expected<dto::DataWriteResult, DataProviderErrorInfo> OpcuaPlugin::write_dat
     }
     if (wcode == OpcuaClient::WriteError::AccessDenied) {
       return tl::make_unexpected(DataProviderErrorInfo{DataProviderError::ReadOnly, write_result.error().message, 403});
+    }
+    if (wcode == OpcuaClient::WriteError::NodeNotResolved) {
+      return tl::make_unexpected(
+          DataProviderErrorInfo{DataProviderError::TransportError, write_result.error().message, 503});
     }
     return tl::make_unexpected(
         DataProviderErrorInfo{DataProviderError::TransportError, write_result.error().message, 502});
@@ -3282,7 +3304,7 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
         OperationProviderErrorInfo{OperationProviderError::InvalidParameters, parsed.error(), 400});
   }
 
-  auto write_result = client_->write_value(entry->node_id, *parsed, entry->data_type);
+  auto write_result = client_->write_value(entry->node_id, *parsed, entry->data_type, write_session(*entry));
   if (!write_result) {
     auto wcode = write_result.error().code;
     if (wcode == OpcuaClient::WriteError::TypeMismatch) {
@@ -3292,6 +3314,10 @@ OpcuaPlugin::execute_operation(const std::string & entity_id, const std::string 
     if (wcode == OpcuaClient::WriteError::AccessDenied) {
       return tl::make_unexpected(
           OperationProviderErrorInfo{OperationProviderError::Rejected, write_result.error().message, 403});
+    }
+    if (wcode == OpcuaClient::WriteError::NodeNotResolved) {
+      return tl::make_unexpected(
+          OperationProviderErrorInfo{OperationProviderError::TransportError, write_result.error().message, 503});
     }
     return tl::make_unexpected(
         OperationProviderErrorInfo{OperationProviderError::TransportError, write_result.error().message, 502});

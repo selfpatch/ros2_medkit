@@ -596,6 +596,12 @@ nodes:
   such instance; with two robots on one controller, name the robot instead of
   `*`. The walk looks at no more than 2000 children per path.
 - A `browse_path` entry wins over an `auto_browse` entry for the same node.
+- A path that an entry already in the map no longer finds on a new session is
+  logged, and the entry keeps the NodeId of the session before.
+- Write-capable build only: a write to a `browse_path` entry is refused with
+  503 until its path has been resolved on the live session. That covers the
+  walk after a reconnect and a session that does not have the path, where the
+  old NodeId may name another node.
 - Read-only: resolving uses Browse and reads the server's NamespaceArray,
   nothing else.
 

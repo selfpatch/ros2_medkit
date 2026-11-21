@@ -463,6 +463,52 @@ TEST_F(BrowsePathNodeMap, FollowsANodeThatMovedOnTheNextSession) {
   EXPECT_EQ(later.not_found[0], map_.find_by_node_id(new_id)->browse_path_str);
 }
 
+TEST_F(BrowsePathNodeMap, AnEntryCarriesTheSessionItsPathWasResolvedOn) {
+  ASSERT_TRUE(load(R"(
+component_id: line
+nodes:
+  - browse_path: "2:A"
+    entity_id: line
+    data_name: a
+  - browse_path: "2:B"
+    entity_id: line
+    data_name: b
+  - node_id: "ns=4;s=Fixed"
+    entity_id: line
+    data_name: fixed
+)"));
+  auto resolve_to = [&](const std::map<std::string, std::string> & ids, uint64_t session) {
+    return map_.resolve_browse_entries(
+        [ids](const NodeMapEntry & e) -> std::optional<opcua::NodeId> {
+          const auto it = ids.find(e.data_name);
+          return it == ids.end() ? std::nullopt : std::optional<opcua::NodeId>(NodeMap::parse_node_id(it->second));
+        },
+        session);
+  };
+  auto session_of = [&](const std::string & name) {
+    return map_.find_by_data_name("line", name)->browse_session;
+  };
+  ASSERT_EQ(resolve_to({{"a", "ns=2;s=A"}, {"b", "ns=2;s=B"}}, 1).joined, 2u);
+  EXPECT_EQ(session_of("a"), 1u);
+  EXPECT_EQ(session_of("b"), 1u);
+
+  // Session 2: a is where it was, b moved.
+  resolve_to({{"a", "ns=2;s=A"}, {"b", "ns=3;s=B"}}, 2);
+  EXPECT_EQ(session_of("a"), 2u);
+  EXPECT_EQ(session_of("b"), 2u);
+
+  // Session 3: a is not found, and b leads to a node a plain entry maps. Both
+  // keep a NodeId this session did not confirm, and the stamp says so.
+  resolve_to({{"b", "ns=4;s=Fixed"}}, 3);
+  EXPECT_EQ(session_of("a"), 2u);
+  EXPECT_EQ(session_of("b"), 2u);
+
+  // Session 4 finds both again.
+  resolve_to({{"a", "ns=2;s=A"}, {"b", "ns=3;s=B"}}, 4);
+  EXPECT_EQ(session_of("a"), 4u);
+  EXPECT_EQ(session_of("b"), 4u);
+}
+
 TEST_F(BrowsePathNodeMap, FaultCodesStayUniqueAcrossBothKinds) {
   EXPECT_FALSE(load(R"(
 namespaces: {rob: "http://opcfoundation.org/UA/Robotics/"}
