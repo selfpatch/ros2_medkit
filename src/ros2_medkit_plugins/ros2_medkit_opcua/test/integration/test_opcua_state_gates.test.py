@@ -24,6 +24,10 @@ drives the three registers and checks the fault manager status of each fault
 after every step. auto_browse walks the same server, an Int32 array included,
 which must be skipped rather than read as a scalar.
 
+No step waits a fixed time. After a write the test waits until the plugin has
+evaluated it (poll cycles counted by poll_count), checks the plugin's own
+verdict in active_alarms, and then waits for the fault manager to show it.
+
 Usage: test_opcua_state_gates.test.py <test_alarm_server>
 """
 
@@ -34,7 +38,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 
 HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location(
@@ -90,9 +93,14 @@ nodes:
       node_id: "ns=2;s=MachineState"
       values: [{STOPPED}, {ABORTED_STATE}]
 """)
+    return write_params(workdir, 'gateway.yaml', plugin, gateway_port, server_port, node_map,
+                        ['    plugins.opcua.poll_interval_ms: 200'])
+
+
+def write_params(workdir, name, plugin, gateway_port, server_port, node_map, extra):
     manifest = workdir / 'manifest.yaml'
     manifest.write_text('manifest_version: "1.0"\n')
-    params = workdir / 'gateway.yaml'
+    params = workdir / name
     params.write_text('\n'.join([
         'ros2_medkit_gateway:',
         '  ros__parameters:',
@@ -103,12 +111,122 @@ nodes:
         f'    plugins.opcua.path: "{plugin}"',
         f'    plugins.opcua.endpoint_url: "opc.tcp://127.0.0.1:{server_port}"',
         f'    plugins.opcua.node_map_path: "{node_map}"',
-        '    plugins.opcua.poll_interval_ms: 200',
+        *extra,
         '    discovery.mode: "hybrid"',
         f'    discovery.manifest_path: "{manifest}"',
         '    discovery.manifest_strict_validation: false',
     ]) + '\n')
     return params
+
+
+def start_gateway(params, log_path, env):
+    log = open(log_path, 'w')
+    gateway = subprocess.Popen(
+        ['ros2', 'run', 'ros2_medkit_gateway', 'gateway_node',
+         '--ros-args', '--params-file', str(params)],
+        stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
+    gateway._log = log
+    return gateway
+
+
+class Leg:
+    """One gateway against the fixture: writes registers and checks the faults."""
+
+    def __init__(self, server, server_log, gateway_port, codes):
+        self.server = server
+        self.server_log = server_log
+        self.base = f'http://127.0.0.1:{gateway_port}/api/v1'
+        self.codes = codes
+
+    def plc_status(self):
+        return helpers.http_json(f'{self.base}/components/{COMPONENT}/x-plc-status')
+
+    def put(self, name, value):
+        helpers.check(helpers.set_register(self.server, self.server_log, name, value),
+                      f'{name} set to {value}')
+
+    def statuses(self):
+        return {code: helpers.fault_status(self.base, code) for code in self.codes}
+
+    def evaluated(self):
+        """Wait until the plugin has evaluated the registers as they are now."""
+        # The cycle in flight may have read a value from before the write, so
+        # the one after it is the first that must have the new one, and it is
+        # evaluated before the next one is counted.
+        start = (self.plc_status() or {}).get('poll_count', 0)
+        got, ok = helpers.wait_for(
+            self.plc_status, lambda s: s.get('poll_count', 0) >= start + 3,
+            5 * helpers.SCALE, period=0.05)
+        helpers.check(ok, f'three poll cycles ran after the write (got {got!r})')
+
+    def expect(self, step, want):
+        """After the writes of <step>: the plugin's verdict, then the fault manager's."""
+        self.evaluated()
+        active = (self.plc_status() or {}).get('active_alarms', [])
+        verdict = {code: code in active for code in want}
+        helpers.check(verdict == {c: w == 'CONFIRMED' for c, w in want.items()},
+                      f'{step}: the plugin holds {verdict}')
+        got, ok = helpers.wait_for(
+            self.statuses, lambda s: all(s[c] == w for c, w in want.items()),
+            5 * helpers.SCALE, period=0.05)
+        helpers.check(ok, f'{step}: {want} (got {got!r})')
+
+
+def poll_leg(leg, gateway):
+    # An array value is not a data point, and reading one must not take
+    # the gateway down.
+    walked = helpers.http_json(f'{leg.base}/apps') or {}
+    points = []
+    for app in walked.get('items', []):
+        data = helpers.http_json(f"{leg.base}/apps/{app['id']}/x-plc-data") or {}
+        points += [i.get('node_id') for i in data.get('items', [])]
+    helpers.check('ns=2;s=StatusWord' in points and 'ns=2;s=Recipe.Steps' not in points,
+                  f'auto_browse maps the scalars and skips the array (got {sorted(points)})')
+    helpers.check(gateway.poll() is None, 'the gateway is still running after the walk')
+
+    put, expect = leg.put, leg.expect
+    put('UnitMode', PRODUCTION)
+    put('MachineState', EXECUTE)
+    expect('running in production', {ABORTED: 'ABSENT', UNMAPPED: 'ABSENT', JAM: 'ABSENT'})
+
+    for state in (STOPPED, IDLE):
+        put('MachineState', state)
+        expect(f'healthy state {state}', {ABORTED: 'ABSENT', UNMAPPED: 'ABSENT'})
+
+    put('MachineState', ABORTED_STATE)
+    expect('aborted in production raises', {ABORTED: 'CONFIRMED', UNMAPPED: 'ABSENT'})
+
+    put('UnitMode', MAINTENANCE)
+    expect('maintenance mode keeps a raised fault', {ABORTED: 'CONFIRMED'})
+
+    put('MachineState', STOPPED)
+    expect('the state clears it, inhibited or not', {ABORTED: 'CLEARED'})
+
+    put('MachineState', ABORTED_STATE)
+    expect('aborted during maintenance is not raised',
+           {ABORTED: 'CLEARED', UNMAPPED: 'ABSENT'})
+
+    put('UnitMode', PRODUCTION)
+    expect('still aborted when production resumes raises', {ABORTED: 'CONFIRMED'})
+
+    put('MachineState', HELD)
+    expect('an unmapped state raises the catch-all',
+           {ABORTED: 'CLEARED', UNMAPPED: 'CONFIRMED'})
+
+    put('MachineState', EXECUTE)
+    put('StopReason', 101)
+    expect('a latched stop reason while running is ignored',
+           {JAM: 'ABSENT', UNMAPPED: 'CLEARED'})
+
+    put('MachineState', STOPPED)
+    expect('the same reason while stopped raises', {JAM: 'CONFIRMED'})
+
+    put('MachineState', EXECUTE)
+    expect('running again clears it', {JAM: 'CLEARED'})
+
+    put('StopReason', 10)
+    put('MachineState', STOPPED)
+    expect('a planned stop reason raises nothing', {JAM: 'CLEARED', ABORTED: 'CLEARED'})
 
 
 def main():
@@ -144,91 +262,15 @@ def main():
             print('FAIL: fault_manager_node did not start', file=sys.stderr)
             return 1
         params = write_files(workdir, plugin, gateway_port, server_port)
-        log = open(gateway_log, 'w')
-        gateway = subprocess.Popen(
-            ['ros2', 'run', 'ros2_medkit_gateway', 'gateway_node',
-             '--ros-args', '--params-file', str(params)],
-            stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True)
-        gateway._log = log
-        base = f'http://127.0.0.1:{gateway_port}/api/v1'
-
-        def plc_status():
-            return helpers.http_json(f'{base}/components/{COMPONENT}/x-plc-status')
-
+        gateway = start_gateway(params, gateway_log, env)
+        leg = Leg(server, server_log, gateway_port, (ABORTED, UNMAPPED, JAM))
         got, ok = helpers.wait_for(
-            plc_status, lambda s: s.get('connected') and s.get('poll_count', 0) > 2, 90 * scale)
+            leg.plc_status, lambda s: s.get('connected') and s.get('poll_count', 0) > 2,
+            90 * scale)
         if not check(ok, f'the gateway polls the fixture (got {got!r})'):
             print(gateway_log.read_text(errors='replace')[-3000:], file=sys.stderr)
             return 1
-
-        def put(name, value):
-            check(helpers.set_register(server, server_log, name, value), f'{name} set to {value}')
-
-        def statuses():
-            return {code: helpers.fault_status(base, code) for code in (ABORTED, UNMAPPED, JAM)}
-
-        def expect(step, want, settle=1.5):
-            # A raise must arrive within the deadline, a non-raise must hold for
-            # several poll cycles, so both wait the same settle time first.
-            time.sleep(settle * scale)
-            got, ok = helpers.wait_for(
-                statuses, lambda s: all(s[c] == w for c, w in want.items()), 3 * scale)
-            check(ok, f'{step}: {want} (got {got!r})')
-
-        # An array value is not a data point, and reading one must not take
-        # the gateway down.
-        walked = helpers.http_json(f'{base}/apps') or {}
-        points = []
-        for app in walked.get('items', []):
-            data = helpers.http_json(f"{base}/apps/{app['id']}/x-plc-data") or {}
-            points += [i.get('node_id') for i in data.get('items', [])]
-        check('ns=2;s=StatusWord' in points and 'ns=2;s=Recipe.Steps' not in points,
-              f'auto_browse maps the scalars and skips the array (got {sorted(points)})')
-        check(gateway.poll() is None, 'the gateway is still running after the walk')
-
-        put('UnitMode', PRODUCTION)
-        put('MachineState', EXECUTE)
-        expect('running in production', {ABORTED: 'ABSENT', UNMAPPED: 'ABSENT', JAM: 'ABSENT'})
-
-        for state in (STOPPED, IDLE):
-            put('MachineState', state)
-            expect(f'healthy state {state}', {ABORTED: 'ABSENT', UNMAPPED: 'ABSENT'})
-
-        put('MachineState', ABORTED_STATE)
-        expect('aborted in production raises', {ABORTED: 'CONFIRMED', UNMAPPED: 'ABSENT'})
-
-        put('UnitMode', MAINTENANCE)
-        expect('maintenance mode keeps a raised fault', {ABORTED: 'CONFIRMED'})
-
-        put('MachineState', STOPPED)
-        expect('the state clears it, inhibited or not', {ABORTED: 'CLEARED'})
-
-        put('MachineState', ABORTED_STATE)
-        expect('aborted during maintenance is not raised',
-               {ABORTED: 'CLEARED', UNMAPPED: 'ABSENT'})
-
-        put('UnitMode', PRODUCTION)
-        expect('still aborted when production resumes raises', {ABORTED: 'CONFIRMED'})
-
-        put('MachineState', HELD)
-        expect('an unmapped state raises the catch-all',
-               {ABORTED: 'CLEARED', UNMAPPED: 'CONFIRMED'})
-
-        put('MachineState', EXECUTE)
-        put('StopReason', 101)
-        expect('a latched stop reason while running is ignored',
-               {JAM: 'ABSENT', UNMAPPED: 'CLEARED'})
-
-        put('MachineState', STOPPED)
-        expect('the same reason while stopped raises', {JAM: 'CONFIRMED'})
-
-        put('MachineState', EXECUTE)
-        expect('running again clears it', {JAM: 'CLEARED'})
-
-        put('StopReason', 10)
-        put('MachineState', STOPPED)
-        expect('a planned stop reason raises nothing', {JAM: 'CLEARED', ABORTED: 'CLEARED'})
-
+        poll_leg(leg, gateway)
         if helpers.failures:
             print(f'FAIL: {len(helpers.failures)} expectation(s) not met', file=sys.stderr)
             print(gateway_log.read_text(errors='replace')[-3000:], file=sys.stderr)
