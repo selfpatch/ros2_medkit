@@ -240,8 +240,9 @@ it at start, and serves it exactly as it was captured, with its original
 ``captured_at`` and its ``capture_origin``. Put the file on a volume that
 outlives the container, or leave the path empty and the frames go in
 ``entity_freeze_frames.db`` next to the trigger store
-(``triggers.storage.path``). With neither set the frames are process memory
-only, and a restart loses them. The file belongs to one gateway. Do not share
+(``triggers.storage.path``). With neither set, or with ``triggers.storage.path``
+set to ``:memory:``, the frames are process memory only, and a restart loses
+them. The file belongs to one gateway. Do not share
 it between gateways: at start, each gateway drops the frames of faults its own
 fault manager does not hold.
 

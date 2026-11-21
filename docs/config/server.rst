@@ -400,8 +400,9 @@ Configure how the gateway connects to the fault manager services and event topic
      - SQLite file of the captured entity frames. A restart serves the values
        frozen when the fault confirmed. When empty, the frames go in
        ``entity_freeze_frames.db`` in the directory of ``triggers.storage.path``.
-       With that empty too, the frames stay in memory and a restart loses them
-       (logged at startup). A file that cannot be opened is logged as an error,
+       With that empty too, or with ``triggers.storage.path`` set to
+       ``:memory:``, the frames stay in memory and a restart loses them (logged
+       at startup). A file that cannot be opened is logged as an error,
        and the frames stay in memory. Each row stores the fault's
        ``occurrence_count`` and ``first_occurred``. At startup one fault list
        judges the reloaded frames, and none is served before that. A frame of
