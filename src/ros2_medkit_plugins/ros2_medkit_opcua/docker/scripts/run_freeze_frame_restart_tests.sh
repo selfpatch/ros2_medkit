@@ -24,7 +24,8 @@
 #      unrelated fault in it, the frames of the faults it does not hold are dropped
 #      with a warning that names them.
 #   6. entity_freeze_frame.storage.path: next to triggers.storage.path, neither
-#      path, and a path that cannot be opened (scenario 1 covers an explicit path).
+#      path, a path that cannot be opened, and triggers.storage.path ":memory:",
+#      which writes no file (scenario 1 covers an explicit path).
 #   7. Subscription mode with a publishing interval of 60 s: GET /data serves values
 #      at once, and scenario 2's startup frame holds the current value. GET /data
 #      also serves values at once when a server that was down at gateway start
@@ -417,6 +418,17 @@ EOF
         path: "${STATE_DIR}/no-such-dir/entity_freeze_frames.db"
 EOF
 } >"${CONFIG_DIR}/params_unopenable.yaml"
+{
+  base_params
+  cat <<EOF
+    entity_freeze_frame:
+      storage:
+        path: ""
+    triggers:
+      storage:
+        path: ":memory:"
+EOF
+} >"${CONFIG_DIR}/params_memory_triggers.yaml"
 
 echo "[3/5] Restart scenarios on the demo parameters (explicit store path)"
 gw_container_start
@@ -544,6 +556,16 @@ storage_case no-store /config/params_no_store.yaml 500 \
   "Entity freeze-frames are not persisted (no entity_freeze_frame.storage.path and no triggers.storage.path); they are lost on restart" no
 storage_case unopenable /config/params_unopenable.yaml 600 \
   "Entity freeze-frame store '${STATE_DIR}/no-such-dir/entity_freeze_frames.db' could not be opened, frames stay in memory" no
+storage_case memory-triggers /config/params_memory_triggers.yaml 700 \
+  "Entity freeze-frames are not persisted (entity_freeze_frame.storage.path is empty and triggers.storage.path is :memory:); they are lost on restart" no
+# shellcheck disable=SC2016  # expanded by the shell in the gateway container
+gw_cwd="$(in_gw 'readlink "/proc/$(pgrep -f "[l]ib/ros2_medkit_gateway/gateway_node" | head -1)/cwd"')"
+[[ -n "${gw_cwd}" ]] || fail "no working directory for gateway_node"
+if in_gw "test -e '${gw_cwd}/entity_freeze_frames.db'"; then
+  fail "memory-triggers: ${gw_cwd}/entity_freeze_frames.db was created"
+fi
+ok "memory-triggers: no entity_freeze_frames.db in the gateway's working directory (${gw_cwd})"
+
 
 echo "[5/5] Subscription mode with a publishing interval of 60 s (scenario 7)"
 # A subscription publishes its first values one interval after it is created.

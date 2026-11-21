@@ -1591,6 +1591,13 @@ std::shared_ptr<EntityFreezeFrameStore> GatewayNode::open_entity_freeze_frame_st
                   "triggers.storage.path); they are lost on restart");
       return nullptr;
     }
+    // An in-memory trigger store has no directory, and the operator asked for no file.
+    if (trigger_path == ":memory:") {
+      RCLCPP_INFO(get_logger(),
+                  "Entity freeze-frames are not persisted (entity_freeze_frame.storage.path is empty and "
+                  "triggers.storage.path is :memory:); they are lost on restart");
+      return nullptr;
+    }
     path = (std::filesystem::path(trigger_path).parent_path() / "entity_freeze_frames.db").string();
   }
   try {
