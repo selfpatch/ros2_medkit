@@ -18,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -749,16 +750,57 @@ TEST(ValuesFromListContent, NonStringIdOrNameNeverThrows) {
 }
 
 TEST(StandingFaultsFromListReply, ParsesWellFormedReply) {
-  const json data = {{"faults", json::array({json{{"fault_code", "F1"}, {"reporting_sources", json::array({"a", "b"})}},
-                                             json{{"fault_code", "F2"}, {"reporting_sources", json::array()}}})},
-                     {"count", 2}};
+  // F2 is muted: the reply lists it under "muted_faults" as well.
+  const json data = {
+      {"faults",
+       json::array({json{{"fault_code", "F1"}, {"reporting_sources", json::array({"a", "b"})}},
+                    json{{"fault_code", "F2"}, {"reporting_sources", json::array()}, {"status", "CLEARED"}}})},
+      {"count", 2},
+      {"muted_faults", json::array({json{{"fault_code", "F2"}, {"root_cause_code", "F1"}}})}};
   const auto standing = EntityFreezeFrameCapture::standing_faults_from_list_reply(data);
   ASSERT_TRUE(standing.has_value());
   ASSERT_EQ(standing->size(), 2u);
   EXPECT_EQ((*standing)[0].fault_code, "F1");
   EXPECT_EQ((*standing)[0].reporting_sources, (std::vector<std::string>{"a", "b"}));
+  EXPECT_EQ((*standing)[0].status, "CONFIRMED");  // no status in the item
+  EXPECT_FALSE((*standing)[0].muted);
   EXPECT_EQ((*standing)[1].fault_code, "F2");
   EXPECT_TRUE((*standing)[1].reporting_sources.empty());
+  EXPECT_EQ((*standing)[1].status, "CLEARED");
+  EXPECT_TRUE((*standing)[1].muted);
+}
+
+TEST(StandingFaultsFromListReply, FirstOccurredIsReadInSecondsAndKeptInNanoseconds) {
+  // Seconds on the wire. Anything that is not a positive number within int64 nanoseconds
+  // leaves 0, which reads as "cannot tell" and keeps a stored frame.
+  const auto item = [](const std::string & code, const json & first_occurred) {
+    json fault = {{"fault_code", code}, {"reporting_sources", json::array({"a"})}};
+    if (!first_occurred.is_null()) {
+      fault["first_occurred"] = first_occurred;
+    }
+    return fault;
+  };
+  const json data = {
+      {"faults", json::array({item("SECONDS", 1788948705.5),
+                              // 2^63 - 854775808 ns, a double that is exact.
+                              item("JUST_UNDER_INT64", 9223372036.0), item("ABSENT", nullptr),
+                              item("NOT_A_NUMBER", "yesterday"), item("ZERO", 0),
+                              // Past int64 once in nanoseconds: the cast would be undefined.
+                              item("HUGE", 1e19), item("INFINITE", std::numeric_limits<double>::infinity()),
+                              item("NAN_SECONDS", std::numeric_limits<double>::quiet_NaN())})}};
+  const auto standing = EntityFreezeFrameCapture::standing_faults_from_list_reply(data);
+  ASSERT_TRUE(standing.has_value());
+  ASSERT_EQ(standing->size(), 8u);
+  EXPECT_EQ((*standing)[0].fault_code, "SECONDS");
+  EXPECT_EQ((*standing)[0].occurrence.first_occurred_ns, 1788948705500000000);
+  EXPECT_EQ((*standing)[1].fault_code, "JUST_UNDER_INT64");
+  EXPECT_EQ((*standing)[1].occurrence.first_occurred_ns, 9223372036000000000);
+  for (size_t i = 2; i < standing->size(); ++i) {
+    EXPECT_EQ((*standing)[i].occurrence.first_occurred_ns, 0) << (*standing)[i].fault_code;
+  }
+  EXPECT_EQ((*standing)[5].fault_code, "HUGE");
+  EXPECT_EQ((*standing)[6].fault_code, "INFINITE");
+  EXPECT_EQ((*standing)[7].fault_code, "NAN_SECONDS");
 }
 
 TEST(StandingFaultsFromListReply, RepliesNotShapedLikeListFaultsYieldNullopt) {

@@ -430,6 +430,8 @@ class OpcuaPoller {
   /// the alarm callback (fault_code ``PLC_COMMS_LOST``, scoped to the node
   /// map's root component).
   void emit_comms_lost(bool active);
+  /// With a session up, reads every point once in subscription mode, then subscribes.
+  void read_and_subscribe();
   void setup_subscriptions();
   void evaluate_alarms(DetectionPipeline::Pass pass);
   void on_data_change(const std::string & node_id, const OpcuaValue & value);

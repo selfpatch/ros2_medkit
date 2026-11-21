@@ -70,4 +70,7 @@ Faults
    stored as environment data associated with the fault and accessible via the bulk-data
    endpoints on the fault's reporting entity. For faults already confirmed when the
    capturing component starts (e.g. the gateway restarts while a fault is standing), an
-   equivalent snapshot shall be captured at startup and marked with its capture origin.
+   equivalent snapshot shall be captured at startup and marked with its capture origin,
+   unless a snapshot captured for the same occurrence of the fault was kept across the
+   restart; that snapshot shall be served as it was captured. This holds within the
+   retained-frame bound of 256 faults.
