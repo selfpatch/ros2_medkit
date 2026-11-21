@@ -219,35 +219,22 @@ std::optional<FreezeFrameCapture::Frame> FreezeFrameCapture::from_stored(const S
   return frame;
 }
 
-void FreezeFrameCapture::persist_frames_locked(const std::string & fault_code, const std::vector<Frame> & frames,
-                                               const Occurrence & occurrence) {
+void FreezeFrameCapture::write_persisted(const std::string & fault_code,
+                                         const std::vector<StoredEntityFreezeFrame> & rows) {
   if (!store_) {
     return;
-  }
-  std::vector<StoredEntityFreezeFrame> rows;
-  rows.reserve(frames.size());
-  for (const auto & frame : frames) {
-    rows.push_back(to_stored(fault_code, frame, occurrence));
   }
   auto written = store_->replace_frames(fault_code, rows);
-  if (!written && !store_write_warned_) {
-    // A read-only or full volume costs one line, and the frames still work in memory.
-    store_write_warned_ = true;
-    MEDKIT_LOG_WARN(logger_,
-                    "Entity freeze-frame store write failed; frames stay in memory and a restart may lose them "
-                    "(logged once): %s",
-                    written.error().c_str());
-  }
-}
-
-void FreezeFrameCapture::erase_persisted_locked(const std::string & fault_code) {
-  if (!store_) {
-    return;
-  }
-  auto erased = store_->erase_frames(fault_code);
-  if (!erased && !store_write_warned_) {
-    store_write_warned_ = true;
-    MEDKIT_LOG_WARN(logger_, "Entity freeze-frame store delete failed: %s", erased.error().c_str());
+  if (!written) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!store_write_warned_) {
+      // A read-only or full volume costs one line, and the frames still work in memory.
+      store_write_warned_ = true;
+      MEDKIT_LOG_WARN(logger_,
+                      "Entity freeze-frame store write failed; frames stay in memory and a restart may lose them "
+                      "(logged once): %s",
+                      written.error().c_str());
+    }
   }
 }
 
@@ -313,13 +300,14 @@ void FreezeFrameCapture::load_persisted_frames() {
   const size_t over_cap = codes.size() > max_faults_ ? codes.size() - max_faults_ : 0;
 
   size_t reloaded = 0;
+  std::vector<std::string> past_the_bound;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     for (size_t i = 0; i < codes.size(); ++i) {
       const auto & code = codes[i];
       if (i < over_cap) {
         // A row past the bound would be read and dropped again on every start.
-        erase_persisted_locked(code);
+        past_the_bound.push_back(code);
         continue;
       }
       insertion_order_.push_back(code);
@@ -329,6 +317,7 @@ void FreezeFrameCapture::load_persisted_frames() {
     }
     reloaded = frames_.size();
   }
+  erase_persisted(past_the_bound);
   if (reloaded > 0) {
     MEDKIT_LOG_INFO(logger_, "Entity freeze-frame: reloaded frames for %zu fault(s) from the store", reloaded);
   }
@@ -431,11 +420,6 @@ void FreezeFrameCapture::forget_locked(const std::string & fault_code) {
                          insertion_order_.end());
   reloaded_codes_.erase(fault_code);
   occurrences_.erase(fault_code);
-}
-
-void FreezeFrameCapture::discard_locked(const std::string & fault_code) {
-  forget_locked(fault_code);
-  erase_persisted_locked(fault_code);
 }
 
 std::optional<FreezeFrameCapture::Frame> FreezeFrameCapture::frame_from_content(const std::string & entity_id,
@@ -699,8 +683,9 @@ bool FreezeFrameCapture::capture_for_event(const fd::FaultEventRecord & event, c
         return false;
       }
       dropped_count = held->second.count;
-      discard_locked(fault_code);
+      forget_locked(fault_code);
     }
+    erase_persisted({fault_code});
     // Serving the held frame would present the previous occurrence's values as this one's.
     MEDKIT_LOG_WARN(logger_,
                     "Entity freeze-frame for fault '%s': occurrence %u confirmed and entity '%s' served no values, so "
@@ -714,31 +699,40 @@ bool FreezeFrameCapture::capture_for_event(const fd::FaultEventRecord & event, c
     }
   }
 
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (frames_.find(fault_code) != frames_.end()) {
-    // A recapture is the newest frame, as its captured_at says after a reload.
-    insertion_order_.erase(std::remove(insertion_order_.begin(), insertion_order_.end(), fault_code),
-                           insertion_order_.end());
-    insertion_order_.push_back(fault_code);
-  } else {
-    insertion_order_.push_back(fault_code);
-    while (frames_.size() >= max_faults_ && !insertion_order_.empty()) {
-      const std::string evicted = insertion_order_.front();
-      frames_.erase(evicted);
-      insertion_order_.pop_front();
-      // The rows go too, or the evicted frame comes back on the next start.
-      reloaded_codes_.erase(evicted);
-      occurrences_.erase(evicted);
-      erase_persisted_locked(evicted);
+  std::vector<std::string> evicted;
+  std::vector<StoredEntityFreezeFrame> rows;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (frames_.find(fault_code) != frames_.end()) {
+      // A recapture is the newest frame, as its captured_at says after a reload.
+      insertion_order_.erase(std::remove(insertion_order_.begin(), insertion_order_.end(), fault_code),
+                             insertion_order_.end());
+      insertion_order_.push_back(fault_code);
+    } else {
+      insertion_order_.push_back(fault_code);
+      while (frames_.size() >= max_faults_ && !insertion_order_.empty()) {
+        const std::string oldest = insertion_order_.front();
+        insertion_order_.pop_front();
+        forget_locked(oldest);
+        // The rows go too, or the evicted frame comes back on the next start.
+        evicted.push_back(oldest);
+      }
+    }
+    // A capture on this fault's own edge supersedes what was reloaded for it.
+    reloaded_codes_.erase(fault_code);
+    occurrences_[fault_code] = occurrence;
+    auto & stored = frames_[fault_code];
+    stored = std::move(frames);
+    if (store_) {
+      rows.reserve(stored.size());
+      for (const auto & frame : stored) {
+        rows.push_back(to_stored(fault_code, frame, occurrence));
+      }
     }
   }
-  // A capture on this fault's own edge supersedes what was reloaded for it.
-  reloaded_codes_.erase(fault_code);
-  occurrences_[fault_code] = occurrence;
-  auto & stored = frames_[fault_code];
-  stored = std::move(frames);
-  // Under the same lock as the map, so the store and what is served agree.
-  persist_frames_locked(fault_code, stored, occurrence);
+  // Outside mutex_, so a fault-detail request does not wait for the store.
+  erase_persisted(evicted);
+  write_persisted(fault_code, rows);
 
   MEDKIT_LOG_DEBUG(logger_, "Captured entity freeze-frame(s) for fault '%s'", fault_code.c_str());
   return true;

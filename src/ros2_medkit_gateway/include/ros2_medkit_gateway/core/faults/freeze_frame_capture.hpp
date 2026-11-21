@@ -175,11 +175,8 @@ class FreezeFrameCapture : public FreezeFrameSource {
                                            const Occurrence & occurrence);
   /// Nullopt for a row whose blob is not shaped like a frame.
   static std::optional<Frame> from_stored(const StoredEntityFreezeFrame & row);
-  /// Writes the code's frames through to the store. The caller holds mutex_.
-  void persist_frames_locked(const std::string & fault_code, const std::vector<Frame> & frames,
-                             const Occurrence & occurrence);
-  /// Deletes the code's rows from the store. The caller holds mutex_.
-  void erase_persisted_locked(const std::string & fault_code);
+  /// Replaces the code's rows in the store. The caller does not hold mutex_.
+  void write_persisted(const std::string & fault_code, const std::vector<StoredEntityFreezeFrame> & rows);
   /// Deletes the rows of each code from the store. The caller does not hold mutex_.
   void erase_persisted(const std::vector<std::string> & fault_codes);
   /// Keeps or discards each reloaded frame against @p listed, then lets frames_for serve
@@ -187,8 +184,6 @@ class FreezeFrameCapture : public FreezeFrameSource {
   void judge_reloaded_frames(const std::vector<StandingFault> & listed);
   /// Erases a code's frames from memory. The caller holds mutex_.
   void forget_locked(const std::string & fault_code);
-  /// Erases a code's frames from memory and the store. The caller holds mutex_.
-  void discard_locked(const std::string & fault_code);
 
   PluginDataReaders readers_;
   StandingFaultLister standing_lister_;
@@ -213,7 +208,8 @@ class FreezeFrameCapture : public FreezeFrameSource {
   /// False until the start has judged the reloaded frames or given up: until then
   /// frames_for serves none of them.
   bool reloaded_judged_{false};
-  /// One warning per process for a failed store write or delete.
+  /// One warning per process for a failed store write or delete. Only the capture
+  /// thread writes the store, so the writes keep the capture order.
   bool store_write_warned_{false};
 
   /// Confirm events waiting for capture. Bounded: the oldest event is dropped when full.

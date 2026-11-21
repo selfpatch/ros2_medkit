@@ -297,22 +297,26 @@ std::vector<std::string> stored_codes(EntityFreezeFrameStore & store) {
   return codes;
 }
 
-/// An in-memory store whose erase_frames waits until the test opens the latch.
-class EraseLatchStore : public EntityFreezeFrameStore {
+/// An in-memory store whose erase_frames, or replace_frames, waits until the test opens
+/// the latch.
+class LatchStore : public EntityFreezeFrameStore {
  public:
+  enum class Held { kErase, kReplace };
+
+  explicit LatchStore(Held held) : held_(held) {
+  }
+
   tl::expected<void, std::string> replace_frames(const std::string & fault_code,
                                                  const std::vector<StoredEntityFreezeFrame> & frames) override {
+    if (held_ == Held::kReplace) {
+      hold();
+    }
     return rows_.replace_frames(fault_code, frames);
   }
 
   tl::expected<void, std::string> erase_frames(const std::string & fault_code) override {
-    {
-      std::unique_lock<std::mutex> lock(mutex_);
-      erasing_ = true;
-      cv_.notify_all();
-      cv_.wait(lock, [this] {
-        return open_;
-      });
+    if (held_ == Held::kErase) {
+      hold();
     }
     return rows_.erase_frames(fault_code);
   }
@@ -321,10 +325,15 @@ class EraseLatchStore : public EntityFreezeFrameStore {
     return rows_.load_all();
   }
 
-  bool wait_until_erasing(std::chrono::milliseconds timeout) {
+  /// Seeds a row without passing the latch.
+  void seed(const std::string & fault_code, const std::vector<StoredEntityFreezeFrame> & frames) {
+    ASSERT_TRUE(rows_.replace_frames(fault_code, frames));
+  }
+
+  bool wait_until_held(std::chrono::milliseconds timeout) {
     std::unique_lock<std::mutex> lock(mutex_);
     return cv_.wait_for(lock, timeout, [this] {
-      return erasing_;
+      return holding_;
     });
   }
 
@@ -337,10 +346,20 @@ class EraseLatchStore : public EntityFreezeFrameStore {
   }
 
  private:
+  void hold() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    holding_ = true;
+    cv_.notify_all();
+    cv_.wait(lock, [this] {
+      return open_;
+    });
+  }
+
+  const Held held_;
   InMemoryEntityFreezeFrameStore rows_;
   std::mutex mutex_;
   std::condition_variable cv_;
-  bool erasing_{false};
+  bool holding_{false};
   bool open_{false};
 };
 
@@ -947,16 +966,15 @@ TEST_F(FreezeFrameCapturePersistenceTest, AReloadedFrameIsNotServedBeforeItIsJud
 /// @verifies REQ_INTEROP_088
 TEST_F(FreezeFrameCapturePersistenceTest, AFaultDetailReadDoesNotWaitForTheStoreDeletesOfTheJudgement) {
   // In process: the store delete is held open to order a fault-detail read inside it.
-  auto store = std::make_shared<EraseLatchStore>();
-  ASSERT_TRUE(store->replace_frames(
-      "PLC_ORPHAN", {make_stored_row("PLC_ORPHAN", "route_stored_app", kStoredAtNs, 10.0, kFirstOccurrence)}));
+  auto store = std::make_shared<LatchStore>(LatchStore::Held::kErase);
+  store->seed("PLC_ORPHAN", {make_stored_row("PLC_ORPHAN", "route_stored_app", kStoredAtNs, 10.0, kFirstOccurrence)});
   Plant plant(99.0);
   auto capture = make_capture(256, plant, store, listed({standing_fault("PLC_OTHER", {}, kFirstOccurrence)}));
   // Opens the latch before the capture joins its thread, also when an assertion returns early.
   const std::shared_ptr<void> open_on_exit(nullptr, [&store](void *) {
     store->open();
   });
-  ASSERT_TRUE(store->wait_until_erasing(15s));
+  ASSERT_TRUE(store->wait_until_held(15s));
 
   auto read = std::async(std::launch::async, [&capture] {
     return capture->frames_for("ANY").size();
@@ -968,6 +986,35 @@ TEST_F(FreezeFrameCapturePersistenceTest, AFaultDetailReadDoesNotWaitForTheStore
   ASSERT_TRUE(wait_for_catch_up(plant));
   EXPECT_TRUE(capture->frames_for("PLC_ORPHAN").empty());
   EXPECT_TRUE(stored_codes(*store).empty());
+}
+
+/// @verifies REQ_INTEROP_088
+TEST_F(FreezeFrameCapturePersistenceTest, AFaultDetailReadDoesNotWaitForTheStoreWriteOfACapture) {
+  // In process: the store write is held open to order a fault-detail read inside it.
+  auto store = std::make_shared<LatchStore>(LatchStore::Held::kReplace);
+  FakePlcDataProvider provider("plc_app");
+  Plant plant(0.0);
+  auto capture = make_capture(256, plant, store, nullptr, &provider);
+  // Opens the latch before the capture joins its thread, also when an assertion returns early.
+  const std::shared_ptr<void> open_on_exit(nullptr, [&store](void *) {
+    store->open();
+  });
+  events_.deliver(confirmed("PLC_WRITTEN", {"plc_app"}));
+  ASSERT_TRUE(store->wait_until_held(15s));
+
+  auto read = std::async(std::launch::async, [&capture] {
+    return capture->frames_for("ANY").size();
+  });
+  const bool answered = read.wait_for(5s) == std::future_status::ready;
+  store->open();
+  EXPECT_TRUE(answered) << "frames_for waited for the store write of a capture";
+  EXPECT_EQ(read.get(), 0u);
+  ASSERT_TRUE(wait_for_frames(*capture, "PLC_WRITTEN"));
+  const auto deadline = std::chrono::steady_clock::now() + 15s;
+  while (stored_codes(*store).empty() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(5ms);
+  }
+  EXPECT_EQ(stored_codes(*store), (std::vector<std::string>{"PLC_WRITTEN"}));
 }
 
 /// @verifies REQ_INTEROP_088
