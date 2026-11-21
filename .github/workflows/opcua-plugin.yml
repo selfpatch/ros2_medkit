@@ -415,11 +415,14 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get update
-          apt-get install -y ros-jazzy-test-msgs libyaml-cpp-dev libssl-dev
+          apt-get install -y ros-jazzy-test-msgs libyaml-cpp-dev libssl-dev python3-pip
           source /opt/ros/jazzy/setup.bash
           rosdep update
           rosdep install --from-paths src --ignore-src -y \
             --skip-keys='nav2_msgs ament_cmake_clang_format ament_cmake_clang_tidy'
+          # asyncua: the server of test_opcua_browse_path and the client of
+          # test_alarm_server_smoke. --user leaves the apt cryptography alone.
+          pip3 install --break-system-packages --user asyncua
 
       - name: Build ros2_medkit_opcua write-capable
         env:
@@ -444,6 +447,9 @@ jobs:
 
       - name: Run tests
         timeout-minutes: 20
+        env:
+          # The asyncua tests must run here, not skip.
+          ROS2_MEDKIT_OPCUA_SMOKE_REQUIRE: '1'
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
