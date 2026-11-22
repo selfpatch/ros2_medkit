@@ -792,6 +792,10 @@ class OpcuaPlugin : public ros2_medkit_gateway::GatewayPlugin,
 
   // Build JSON response for data endpoint
   nlohmann::json build_data_response(const std::string & entity_id) const;
+  /// The cached value of ``entry``, or ``snap.values.end()`` when there is
+  /// none or the entry's NodeId is not resolved on the live session.
+  std::unordered_map<std::string, OpcuaValue>::const_iterator find_current_value(const PollSnapshot & snap,
+                                                                                 const NodeMapEntry & entry) const;
 
   std::atomic<bool> shutdown_requested_{false};
   ros2_medkit_gateway::RosPluginContext * ctx_{nullptr};

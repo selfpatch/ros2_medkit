@@ -296,6 +296,25 @@ PollSnapshot OpcuaPoller::snapshot() const {
   return snapshot_;
 }
 
+std::vector<const NodeMapEntry *> OpcuaPoller::readable_entries() const {
+  const uint64_t session = client_.connection_generation();
+  std::vector<const NodeMapEntry *> out;
+  out.reserve(node_map_.entries().size());
+  for (const auto & entry : node_map_.entries()) {
+    if (entry.resolved_on(session)) {
+      out.push_back(&entry);
+    }
+  }
+  return out;
+}
+
+void OpcuaPoller::forget_values(const std::vector<std::string> & node_ids) {
+  std::lock_guard<std::mutex> lock(snapshot_mutex_);
+  for (const auto & node_id : node_ids) {
+    snapshot_.values.erase(node_id);
+  }
+}
+
 std::optional<OpcuaValue> OpcuaPoller::get_value(const std::string & node_id_str) const {
   std::lock_guard<std::mutex> lock(snapshot_mutex_);
   auto it = snapshot_.values.find(node_id_str);
@@ -348,8 +367,8 @@ void OpcuaPoller::setup_subscriptions() {
   }
 
   bool all_ok = true;
-  for (const auto & entry : node_map_.entries()) {
-    if (!client_.add_monitored_item(sub_id, entry.node_id)) {
+  for (const auto * entry : readable_entries()) {
+    if (!client_.add_monitored_item(sub_id, entry->node_id)) {
       all_ok = false;
       break;
     }
@@ -1480,9 +1499,8 @@ void OpcuaPoller::poll_loop() {
 
 void OpcuaPoller::do_poll() {
   std::vector<opcua::NodeId> node_ids;
-  node_ids.reserve(node_map_.entries().size());
-  for (const auto & entry : node_map_.entries()) {
-    node_ids.push_back(entry.node_id);
+  for (const auto * entry : readable_entries()) {
+    node_ids.push_back(entry->node_id);
   }
 
   auto results = client_.read_values(node_ids);

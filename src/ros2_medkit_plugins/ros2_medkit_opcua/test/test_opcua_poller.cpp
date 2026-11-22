@@ -323,6 +323,71 @@ nodes:
   EXPECT_TRUE(sent[0]);
 }
 
+TEST(BrowseResolveStateTest, AnEntryNotResolvedOnTheLiveSessionIsNotReadAndItsFaultRests) {
+  const auto path = std::filesystem::temp_directory_path() / "test_opcua_poller_resolve_state.yaml";
+  std::ofstream(path) << R"(
+area_id: test
+component_id: test
+nodes:
+  - browse_path: "2:Stop"
+    entity_id: robot
+    data_name: stop
+    data_type: bool
+    alarm: {fault_code: ROBOT_STOP, threshold: 0.5, above_threshold: true}
+  - node_id: "ns=1;s=Plain"
+    entity_id: robot
+    data_name: plain
+    data_type: int
+)";
+  NodeMap node_map;
+  const bool loaded = node_map.load(path.string());
+  std::remove(path.string().c_str());
+  ASSERT_TRUE(loaded);
+  const std::string stop_id = NodeMap::parse_node_id("ns=3;i=6001").toString();
+  auto resolve_on = [&](uint64_t session) {
+    node_map.resolve_browse_entries(
+        [](const NodeMapEntry &) {
+          return std::optional<opcua::NodeId>(NodeMap::parse_node_id("ns=3;i=6001"));
+        },
+        session);
+  };
+
+  OpcuaClient client;  // never connected: its session count stays 0
+  OpcuaPoller poller(client, node_map);
+  std::vector<bool> sent;
+  poller.set_alarm_callback([&sent](const std::string &, const ros2_medkit::fault_detection::FaultSignal & s) {
+    sent.push_back(s.active);
+  });
+  auto readable = [&] {
+    std::vector<std::string> names;
+    for (const auto * entry : poller.readable_entries()) {
+      names.push_back(entry->data_name);
+    }
+    return names;
+  };
+
+  resolve_on(0);
+  EXPECT_EQ(readable(), (std::vector<std::string>{"plain", "stop"}));
+  poller.publish_response_for_test({{stop_id, OpcuaValue{true}}});
+  ASSERT_EQ(sent, (std::vector<bool>{true}));
+
+  // The NodeId is now one another session resolved, not the live one.
+  resolve_on(5);
+  EXPECT_EQ(readable(), (std::vector<std::string>{"plain"}));
+  poller.forget_values({stop_id});
+  EXPECT_EQ(poller.snapshot().values.count(stop_id), 0u);
+  poller.publish_response_for_test({{"ns=1;s=Plain", OpcuaValue{int32_t{1}}}});
+  poller.evaluate_alarms_for_test(DetectionPipeline::Pass::kRecheck);
+  EXPECT_EQ(sent, (std::vector<bool>{true})) << "the raised fault neither clears nor raises again";
+  EXPECT_TRUE(poller.snapshot().alarms.at("ROBOT_STOP"));
+
+  // Resolved on the live session again and read: the value decides.
+  resolve_on(0);
+  EXPECT_EQ(readable(), (std::vector<std::string>{"plain", "stop"}));
+  poller.publish_response_for_test({{stop_id, OpcuaValue{false}}});
+  EXPECT_EQ(sent, (std::vector<bool>{true, false}));
+}
+
 TEST(AlarmRoutingTest, ARepinMovesConditionsAlreadyPinnedToTheNewEntity) {
   // apply_condition_state pins a fault's entity at the first sighting of its
   // ConditionId, so a config-less rename has to reach the conditions the poller

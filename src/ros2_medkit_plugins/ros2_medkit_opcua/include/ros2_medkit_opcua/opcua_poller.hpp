@@ -197,6 +197,17 @@ class OpcuaPoller {
   /// Get current snapshot (thread-safe copy)
   PollSnapshot snapshot() const;
 
+  /// The entries the live session may read or subscribe: every ``node_id``
+  /// entry, and the ``browse_path`` entries resolved on this session. A
+  /// ``browse_path`` entry that kept the NodeId of an earlier session is left
+  /// out, because that NodeId may name another node now.
+  std::vector<const NodeMapEntry *> readable_entries() const;
+
+  /// Drop the cached values of ``node_ids``. For NodeIds whose entry moved or
+  /// is not resolved on the live session: the value was read from a node the
+  /// NodeId may no longer name. Detection state is kept, so nothing clears.
+  void forget_values(const std::vector<std::string> & node_ids);
+
   /// Get value for a specific node (thread-safe)
   std::optional<OpcuaValue> get_value(const std::string & node_id_str) const;
 

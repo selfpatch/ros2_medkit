@@ -19,7 +19,7 @@ browse_path entries against a real server, through restarts that move nodes.
 A gateway and fault manager run against robot_server.py (asyncua), which has
 the namespaces and BrowseNames of OPC UA DI and OPC 40010 Robotics. The node
 map addresses the robot's EmergencyStop and SpeedOverride by browse path, and
-auto_browse is on. The server is restarted four times:
+auto_browse is on. The server is restarted six times:
 
   1. The gateway starts before the server: the first connect fails, and the
      entries resolve once the server is up.
@@ -30,8 +30,12 @@ auto_browse is on. The server is restarted four times:
   3. The server restarts unchanged: the link is lost and restored, and the
      fault stays.
   4. The server restarts in the first order with no robot yet. The paths are
-     not found, which is logged, and the entries keep NodeIds that now name
-     the spare variables.
+     not found, which is logged and shown by x-plc-status, and the entries
+     keep NodeIds that now name the spare variables. Nothing is read from
+     them: the entry has no value and its raised fault stays.
+  5. The robot is back: the paths resolve and the fault clears from the value.
+  6. Swapped order with no robot, and the spare variable under the kept NodeId
+     set: the fault is not raised from it.
 
 In a write-capable build the test also writes SpeedOverride. During restart 2
 the server answers Browse slowly and the test writes all the time: no write
@@ -188,7 +192,7 @@ def main():
     try:
         import asyncua  # noqa: F401
     except ImportError:
-        if os.environ.get('ROS2_MEDKIT_OPCUA_SMOKE_REQUIRE'):
+        if os.environ.get('ROS2_MEDKIT_OPCUA_SMOKE_REQUIRE', '0') not in ('', '0'):
             print('FAIL: asyncua is not installed and ROS2_MEDKIT_OPCUA_SMOKE_REQUIRE is set',
                   file=sys.stderr)
             return 1
@@ -361,6 +365,8 @@ def main():
               f'{ESTOP} stays raised across the lost link')
 
         # --- 4. Restart in the first order, the robot not there yet ------------
+        # The NodeId the EmergencyStop entry keeps names the spare variable now,
+        # and the spare reads false: read from it, the fault would clear.
         if not check(server.start('--layout', 'first', '--no-robot'),
                      'the server restarts with no robot'):
             print(server.log(), file=sys.stderr)
@@ -370,12 +376,54 @@ def main():
             check(helpers.wait_log(gateway_log, needle, 60 * scale, period=0.1),
                   f'the log names the path that is not found and the NodeId it keeps: {path}')
         polled()
+        status = plc_status() or {}
+        unresolved = sorted(status.get('unresolved_browse_paths', []))
+        check(unresolved == sorted([ESTOP_PATH, SPEED_PATH]),
+              f'x-plc-status lists both paths as unresolved (got {status!r})')
+        item = point('emergency_stop')
+        check(item.get('node_id') == SWAPPED['estop'] and item.get('value') is None,
+              f'the unresolved entry is served with no value (got {item!r})')
+        check(estop_status() == 'CONFIRMED' and ESTOP in status.get('active_alarms', [])
+              and log_count(f'Alarm cleared: {ESTOP}') == cleared_before,
+              f'{ESTOP} stays raised: nothing is read from the NodeId the entry kept')
         if write_capable:
             # ns=5;i=6002 is SpareSetpoint on this session.
             status = put(speed_url, 77.0)
             check(status == 503, f'a write to the entry whose path is not found is 503 '
                                  f'(got {status})')
             check(server.get('setpoint') == '0.0', 'SpareSetpoint was not written')
+
+        # --- 5. The robot is back, EmergencyStop released -----------------------
+        if not check(server.start('--layout', 'first'), 'the server restarts with the robot'):
+            print(server.log(), file=sys.stderr)
+            return 1
+        got, ok = entries_at(FIRST, 60 * scale)
+        check(ok, f'both paths resolve again (got {got!r})')
+        got, ok = wait_for(estop_status, lambda s: s == 'CLEARED', 15 * scale, period=0.1)
+        check(ok, f'{ESTOP} clears once EmergencyStop is read again (got {got!r})')
+        check((plc_status() or {}).get('unresolved_browse_paths') == [],
+              'x-plc-status lists no unresolved path')
+
+        # --- 6. Swapped order, no robot, and the spare variable set ------------
+        # The NodeId the entry keeps names the spare, which now reads true: read
+        # from it, the fault would be raised.
+        raised_before = log_count(f'Alarm activated: {ESTOP}')
+        if not check(server.start('--layout', 'swapped', '--no-robot'),
+                     'the server restarts swapped with no robot'):
+            print(server.log(), file=sys.stderr)
+            return 1
+        needle = (f"browse_path '{ESTOP_PATH}' is not found on this session - "
+                  f"keeping {FIRST['estop']}")
+        check(helpers.wait_log(gateway_log, needle, 60 * scale, period=0.1),
+              'the log names the path that is not found again')
+        check(server.write('spare', 1), 'the spare variable set')
+        polled()
+        status = plc_status() or {}
+        check(estop_status() == 'CLEARED' and ESTOP not in status.get('active_alarms', [ESTOP])
+              and log_count(f'Alarm activated: {ESTOP}') == raised_before,
+              f'{ESTOP} is not raised from the spare variable (got {status!r})')
+        check(point('emergency_stop').get('value') is None,
+              'the unresolved entry is served with no value')
         check(gateway.poll() is None, 'the gateway is still running')
 
         if helpers.failures:

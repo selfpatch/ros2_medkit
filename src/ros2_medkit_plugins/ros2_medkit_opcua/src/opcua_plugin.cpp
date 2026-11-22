@@ -1185,7 +1185,7 @@ void OpcuaPlugin::handle_plc_data_single(const PluginRequest & req, PluginRespon
   }
 
   auto snap = poller_->snapshot();
-  auto it = snap.values.find(entry->node_id_str);
+  auto it = find_current_value(snap, *entry);
 
   nlohmann::json j;
   j["name"] = entry->data_name;
@@ -1328,6 +1328,19 @@ void OpcuaPlugin::handle_plc_status(const PluginRequest & req, PluginResponse & 
   j["error_count"] = snap.error_count;
   j["last_error"] = client_->last_error();
   j["node_count"] = node_map_.entries().size();
+  // browse_path entries with no NodeId on the live session: never resolved, or
+  // kept from an earlier session. They are not read until a session has them.
+  nlohmann::json unresolved = nlohmann::json::array();
+  const uint64_t session = client_->connection_generation();
+  for (const auto & entry : node_map_.entries()) {
+    if (!entry.resolved_on(session)) {
+      unresolved.push_back(entry.browse_path_str);
+    }
+  }
+  for (const auto & entry : node_map_.unresolved_browse_entries()) {
+    unresolved.push_back(entry.browse_path_str);
+  }
+  j["unresolved_browse_paths"] = unresolved;
   j["entity_count"] = node_map_.entity_defs().size();
 
   auto ts = std::chrono::system_clock::to_time_t(snap.timestamp);
@@ -2030,6 +2043,22 @@ void OpcuaPlugin::resolve_browse_paths() {
   }
   if (resolution.joined > 0) {
     create_value_publishers();
+  }
+  // A cached value belongs to the node its NodeId named when it was read.
+  // After a move, and for an entry this session did not resolve, that may be
+  // another node: the value goes, the state of the entry's faults stays.
+  if (poller_) {
+    std::vector<std::string> stale;
+    for (const auto & [old_id, new_id] : resolution.moved) {
+      stale.push_back(old_id);
+      stale.push_back(new_id);
+    }
+    for (const auto & entry : node_map_.entries()) {
+      if (!entry.resolved_on(session)) {
+        stale.push_back(entry.node_id_str);
+      }
+    }
+    poller_->forget_values(stale);
   }
 }
 
@@ -2883,6 +2912,16 @@ std::optional<std::string> OpcuaPlugin::rescan_endpoint_for_reconnect() {
   return chosen;
 }
 
+std::unordered_map<std::string, OpcuaValue>::const_iterator
+OpcuaPlugin::find_current_value(const PollSnapshot & snap, const NodeMapEntry & entry) const {
+  // The session is read live: while the paths are walked after a reconnect the
+  // cache still holds values read under the NodeIds of the session before.
+  if (!entry.resolved_on(client_->connection_generation())) {
+    return snap.values.end();
+  }
+  return snap.values.find(entry.node_id_str);
+}
+
 nlohmann::json OpcuaPlugin::build_data_response(const std::string & entity_id) const {
   auto entries = node_map_.entries_for_entity(entity_id);
   auto snap = poller_->snapshot();
@@ -2895,7 +2934,7 @@ nlohmann::json OpcuaPlugin::build_data_response(const std::string & entity_id) c
     item["display_name"] = entry->display_name;
     item["node_id"] = entry->node_id_str;
 
-    auto it = snap.values.find(entry->node_id_str);
+    auto it = find_current_value(snap, *entry);
     if (it != snap.values.end()) {
       std::visit(
           [&item](auto && v) {
@@ -2950,7 +2989,7 @@ tl::expected<dto::DataListResult, DataProviderErrorInfo> OpcuaPlugin::list_data(
     item["name"] = entry->display_name;
     item["category"] = "currentData";
 
-    auto it = snap.values.find(entry->node_id_str);
+    auto it = find_current_value(snap, *entry);
     if (it != snap.values.end()) {
       std::visit(
           [&item](auto && v) {
@@ -2987,7 +3026,7 @@ tl::expected<dto::DataValue, DataProviderErrorInfo> OpcuaPlugin::read_data(const
   }
 
   auto snap = poller_->snapshot();
-  auto it = snap.values.find(entry->node_id_str);
+  auto it = find_current_value(snap, *entry);
 
   nlohmann::json result;
   result["id"] = entry->data_name;
