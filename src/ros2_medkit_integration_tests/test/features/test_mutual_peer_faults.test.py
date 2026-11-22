@@ -293,10 +293,11 @@ class TestMutualPeerFaults(GatewayTestCase):
 
     def test_status_filter_reaches_every_peer(self):
         """The query string goes to the peers, so they filter too."""
-        r = requests.get(f'{A_URL}/faults', params={'status': 'cleared'}, timeout=30)
-        self._assert_complete(r, [])
-        r = requests.get(f'{A_URL}/faults', params={'status': 'all'}, timeout=30)
-        self._assert_complete(r, [A_URL, B_URL, C_URL])
+        for status, gateways in (('cleared', []), ('all', [A_URL, B_URL, C_URL])):
+            (r,) = self._send_until_no_health_mark(
+                lambda: [requests.get(f'{A_URL}/faults', params={'status': status}, timeout=30)])
+            self._assert_no_peer_timeout(r)
+            self._assert_complete(r, gateways)
 
     def test_concurrent_requests_do_not_exhaust_workers(self):
         """As many concurrent requests as A has workers all answer complete.
