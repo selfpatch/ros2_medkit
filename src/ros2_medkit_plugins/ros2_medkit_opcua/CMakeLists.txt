@@ -738,12 +738,12 @@ if(BUILD_TESTING)
       LABELS "integration"
       TIMEOUT 600)
     # browse_path entries against an asyncua server with the DI and Robotics
-    # namespaces, through four server restarts: a failed first connect, the
-    # namespaces in another order, a lost link, and a session without the
-    # paths. In the write-capable build it also proves that no write reaches a
-    # NodeId the live session did not resolve. Skips with CTest exit 77 when
-    # asyncua is not installed, unless ROS2_MEDKIT_OPCUA_SMOKE_REQUIRE is set.
-    # The waits add up to about 800 s.
+    # namespaces, through six server restarts: a failed first connect, the
+    # namespaces in another order, a lost link, and sessions without the
+    # paths, where nothing may be read from or written to a NodeId the live
+    # session did not resolve. Skips with CTest exit 77 when asyncua is not
+    # installed, unless ROS2_MEDKIT_OPCUA_SMOKE_REQUIRE is set. The waits add
+    # up to about 1050 s.
     medkit_add_wrapped_test(test_opcua_browse_path
       COMMAND "${Python3_EXECUTABLE}"
               "${CMAKE_CURRENT_SOURCE_DIR}/test/integration/test_opcua_browse_path.test.py"
@@ -752,7 +752,7 @@ if(BUILD_TESTING)
     set_tests_properties(test_opcua_browse_path PROPERTIES
       LABELS "integration"
       SKIP_RETURN_CODE 77
-      TIMEOUT 900)
+      TIMEOUT 1200)
     # ReportFault and ClearFault of one code against a stub that answers a
     # report late and never answers another: the clear must leave after the
     # answer, or after the report went stale. Waits: fixture 25 s, stub 30 s,

@@ -247,9 +247,14 @@ GET /api/v1/components/openplc_runtime/x-plc-status
   "error_count": 0,
   "last_error": "",
   "node_count": 5,
+  "unresolved_browse_paths": [],
   "active_alarms": []
 }
 ```
+
+`unresolved_browse_paths` lists the `browse_path` entries that have no NodeId on
+the live session: never resolved, or resolved on an earlier session only. They
+are not read until a session has them (see "Addressing nodes by browse path").
 
 `last_error` says why the link last failed, as the OPC UA status name: a failed
 connect (`BadCertificateUntrusted` when the server's certificate is not in the
@@ -597,11 +602,14 @@ nodes:
   `*`. The walk looks at no more than 2000 children per path.
 - A `browse_path` entry wins over an `auto_browse` entry for the same node.
 - A path that an entry already in the map no longer finds on a new session is
-  logged, and the entry keeps the NodeId of the session before.
-- Write-capable build only: a write to a `browse_path` entry is refused with
-  503 until its path has been resolved on the live session. That covers the
-  walk after a reconnect and a session that does not have the path, where the
-  old NodeId may name another node.
+  logged and listed in `unresolved_browse_paths` on `x-plc-status`. The entry
+  keeps the NodeId of the session before, but that NodeId may name another
+  node now, so the entry rests until a session resolves its path again: it is
+  not read or subscribed, `x-plc-data` shows it with `value: null`, nothing is
+  published on its topic, and its detection rule neither raises nor clears. A
+  fault it raised before stays as it is until the path resolves and the node
+  is read again. The same holds while the paths are walked after a reconnect.
+- Write-capable build only: a write to such an entry is refused with 503.
 - Read-only: resolving uses Browse and reads the server's NamespaceArray,
   nothing else.
 

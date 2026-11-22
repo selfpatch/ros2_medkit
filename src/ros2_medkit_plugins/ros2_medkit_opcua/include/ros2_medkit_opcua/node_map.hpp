@@ -230,7 +230,8 @@ struct NodeMapEntry {
   std::string browse_path_str;
   // The session (``OpcuaClient::connection_generation``) on which the path
   // last led to ``node_id``. On any other session the NodeId is not known to
-  // name this node, so nothing is written to it.
+  // name this node: it is not read, subscribed, written or served, and the
+  // detection rule of the entry rests, so a fault it raised stays as it is.
   uint64_t browse_session{0};
 
   // Shared fault-detection rule for this point: threshold, status-word bit
@@ -250,6 +251,12 @@ struct NodeMapEntry {
   // on the first active sample. Under a subscription the samples become a wait
   // in time (see ``DetectionPipeline``).
   ros2_medkit::fault_detection::RaiseQualifier raise_qualifier;
+
+  /// Whether ``node_id`` names this entry's node on ``session``. Always true
+  /// for a ``node_id`` entry.
+  bool resolved_on(uint64_t session) const {
+    return browse_path.empty() || browse_session == session;
+  }
 
   bool has_range() const {
     return min_value.has_value() && max_value.has_value();
