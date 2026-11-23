@@ -635,7 +635,7 @@ def scenario_reconnect_interval_setting(run):
                              (250.5, 5000)):
         name = 'interval_' + str(value).replace('.', '_')
         gateway = run.start_gateway(name, endpoint=endpoint, reconnect_ms=value)
-        started = f'OPC-UA poller started (mode: poll, first reconnect wait {effective} ms)'
+        started = f'OPC-UA poller started (mode: poll), first reconnect wait {effective} ms'
         if not wait_log(gateway.log, started, 30):
             raise AssertionError(f'reconnect_interval_ms={value}: the poller did not start with '
                                  f'a {effective} ms wait:\n' + tail(gateway))

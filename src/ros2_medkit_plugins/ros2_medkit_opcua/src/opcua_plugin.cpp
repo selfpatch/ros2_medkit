@@ -921,8 +921,9 @@ void OpcuaPlugin::set_context(PluginContext & context) {
         poller_config_.reconnect_interval, poller_config_.max_reconnect_interval, rescan_interval_s);
   }
   poller_->start(poller_config_);
+  // Scripts wait for "OPC-UA poller started (mode: <mode>)", so the wait follows it.
   log_info("OPC-UA poller started (mode: " + std::string(poller_->using_subscriptions() ? "subscription" : "poll") +
-           ", first reconnect wait " + std::to_string(poller_config_.reconnect_interval.count()) + " ms)");
+           "), first reconnect wait " + std::to_string(poller_config_.reconnect_interval.count()) + " ms");
 }
 
 std::vector<GatewayPlugin::PluginRoute> OpcuaPlugin::get_routes() {
