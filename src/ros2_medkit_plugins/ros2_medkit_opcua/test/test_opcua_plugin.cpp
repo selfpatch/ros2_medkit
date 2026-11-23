@@ -258,20 +258,19 @@ nodes:
 
 // -- DataProvider tests --
 
-// The provider's list envelope carries link state, the same shape the plugin's
-// own data route serves. Without it a reader cannot tell a live value from the
-// frozen last-known one the poller keeps across an outage, and the fault-trigger
-// engine's link-down guard (content_reports_disconnected) never fires for a
-// provider-served entity: a threshold rule then evaluates on a stale number for
-// the whole outage. The fixture endpoint never connects, so the poller reports
-// disconnected here.
+// The provider's list envelope carries link state in its x-medkit block. Without it
+// the fault-trigger engine's link-down guard (content_reports_disconnected) never
+// fires for a provider-served entity, and a threshold rule evaluates on a stale
+// number for the whole outage. The fixture endpoint never connects.
 TEST_F(OpcuaPluginTest, ListDataEnvelopeCarriesLinkState) {
   auto result = plugin_.list_data("tank");
 
   ASSERT_TRUE(result.has_value());
-  ASSERT_TRUE(result->content.contains("connected")) << "the list envelope must report link state";
-  EXPECT_FALSE(result->content["connected"].get<bool>()) << "the fixture endpoint never connects";
-  ASSERT_TRUE(result->content.contains("timestamp")) << "the list envelope must date its values";
+  ASSERT_TRUE(result->content.contains("x-medkit")) << "the list envelope must report link state";
+  const auto & x_medkit = result->content["x-medkit"];
+  ASSERT_TRUE(x_medkit.contains("connected")) << "the list envelope must report link state";
+  EXPECT_FALSE(x_medkit["connected"].get<bool>()) << "the fixture endpoint never connects";
+  ASSERT_TRUE(x_medkit.contains("timestamp")) << "the list envelope must date its values";
 }
 
 TEST_F(OpcuaPluginTest, ListDataReturnsItems) {

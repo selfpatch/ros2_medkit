@@ -196,7 +196,8 @@ class ProviderAndRoutePlugin : public GatewayPlugin, public DataProvider {
 
   tl::expected<dto::DataListResult, DataProviderErrorInfo> list_data(const std::string & /*entity_id*/) override {
     ++provider_calls;
-    return dto::DataListResult{json{{"connected", provider_connected},
+    // A provider envelope carries the link state in its x-medkit block.
+    return dto::DataListResult{json{{"x-medkit", {{"connected", provider_connected}}},
                                     {"items", json::array({{{"id", "level"}, {"value", kProviderLevel}}})}}};
   }
   tl::expected<dto::DataValue, DataProviderErrorInfo> read_data(const std::string & /*entity_id*/,
@@ -329,10 +330,9 @@ TEST(PluginEntityDataContent, TheVendorRouteAnswersWhenTheProviderThrows) {
   EXPECT_EQ(raw->route_calls, 1) << "the route is the fallback and must have been dispatched";
 }
 
-// The trigger fetcher's link-down guard reads `connected` off this content. A
-// provider envelope without it left the guard unable to fire for every
-// provider-served entity, so a rule evaluated on frozen last-known values for a
-// whole outage.
+// The trigger fetcher's link-down guard reads `x-medkit.connected` off a provider
+// envelope. Without it the guard cannot fire for a provider-served entity, and a
+// rule evaluates on frozen last-known values for a whole outage.
 TEST(PluginEntityDataContent, ADisconnectedProviderEnvelopeReportsDisconnected) {
   PluginManager mgr;
   auto plugin = std::make_unique<ProviderAndRoutePlugin>();

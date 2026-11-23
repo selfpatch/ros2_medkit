@@ -240,7 +240,8 @@ GET /api/v1/apps/tank_process/data
 While the link is down the poller keeps the last values and does not touch the
 snapshot time, so `connected` is `false` and `timestamp` is the time of the last
 poll or data change before the poller saw the link down. A freeze frame of a loss-of-comms fault carries both as
-`connected` and `source_timestamp`.
+`connected` and `source_timestamp`, and a fault-trigger rule on these values holds its state while `connected` is
+`false`.
 
 **Write to PLC:**
 ```json
