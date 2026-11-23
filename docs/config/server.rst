@@ -406,7 +406,9 @@ Configure how the gateway connects to the fault manager services and event topic
        frames stay in memory. A row belongs to one fault record, the fault code
        and its owner (the reporting source of a ``per_source`` record, ``*`` for
        a shared one), and stores that record's ``occurrence_count`` and
-       ``first_occurred``. At startup one fault list judges the reloaded
+       ``first_occurred``. A file written before rows named their record keeps
+       its rows: at open each becomes a row of the shared record of its code,
+       and the gateway logs how many it moved. At startup one fault list judges the reloaded
        frames, and none is served before that. While the fault manager does not
        answer, the list is retried every 5 s, and the first failure is logged
        as a warning. A frame of

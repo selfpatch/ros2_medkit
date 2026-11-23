@@ -112,10 +112,11 @@ SqliteEntityFreezeFrameStore::~SqliteEntityFreezeFrameStore() {
   }
 }
 
-void SqliteEntityFreezeFrameStore::initialize_schema() {
-  // One row per entity of a record. A record is a fault code and the reporting source
-  // that owns the frames, so two records of one code keep their frames apart.
-  const char * create_table = R"(
+namespace {
+
+// One row per entity of a record. A record is a fault code and its owner: the reporting
+// source of a per-source record, "*" for a shared one.
+constexpr const char * kCreateTable = R"(
     CREATE TABLE IF NOT EXISTS entity_freeze_frames (
       fault_code     TEXT NOT NULL,
       owner          TEXT NOT NULL,
@@ -129,10 +130,56 @@ void SqliteEntityFreezeFrameStore::initialize_schema() {
       PRIMARY KEY (fault_code, owner, entity_id)
     );
   )";
+
+}  // namespace
+
+void SqliteEntityFreezeFrameStore::initialize_schema() {
+  migrate_earlier_schema();
   char * err_msg = nullptr;
-  if (sqlite3_exec(db_, create_table, nullptr, nullptr, &err_msg) != SQLITE_OK) {
+  if (sqlite3_exec(db_, kCreateTable, nullptr, nullptr, &err_msg) != SQLITE_OK) {
     throw std::runtime_error("Failed to create entity_freeze_frames table: " + take_error(err_msg));
   }
+}
+
+void SqliteEntityFreezeFrameStore::migrate_earlier_schema() {
+  bool table = false;
+  bool owner = false;
+  {
+    SqliteStatement columns(db_, "PRAGMA table_info(entity_freeze_frames)");
+    while (columns.step() == SQLITE_ROW) {
+      table = true;
+      owner = owner || columns.column_text(1) == "owner";
+    }
+  }
+  if (!table || owner) {
+    return;
+  }
+  // Every record of the earlier schema was shared, so "*" names each row's record.
+  char * err_msg = nullptr;
+  if (sqlite3_exec(db_, "BEGIN IMMEDIATE", nullptr, nullptr, &err_msg) != SQLITE_OK) {
+    throw std::runtime_error("Failed to migrate entity_freeze_frames: BEGIN failed: " + take_error(err_msg));
+  }
+  const auto run = [this](const char * sql) {
+    char * error = nullptr;
+    if (sqlite3_exec(db_, sql, nullptr, nullptr, &error) != SQLITE_OK) {
+      const std::string message = take_error(error);
+      sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+      throw std::runtime_error("Failed to migrate entity_freeze_frames: " + message);
+    }
+  };
+  run("ALTER TABLE entity_freeze_frames RENAME TO entity_freeze_frames_earlier");
+  run(kCreateTable);
+  run("INSERT INTO entity_freeze_frames (fault_code, owner, entity_id, frame, captured_at_ns, source, "
+      "capture_origin, occurrence_count, first_occurred_ns) "
+      "SELECT fault_code, '*', entity_id, frame, captured_at_ns, source, capture_origin, occurrence_count, "
+      "first_occurred_ns FROM entity_freeze_frames_earlier");
+  const int moved = sqlite3_changes(db_);
+  run("DROP TABLE entity_freeze_frames_earlier");
+  run("COMMIT");
+  MEDKIT_LOG_INFO(logger_,
+                  "Entity freeze-frame store: moved %d row(s) of the earlier schema to the shared record ('*') of "
+                  "their code",
+                  moved);
 }
 
 tl::expected<void, std::string> SqliteEntityFreezeFrameStore::delete_record_locked(const std::string & fault_code,
