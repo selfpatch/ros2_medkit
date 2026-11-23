@@ -394,7 +394,9 @@ Rosbag Black-Box Recording
 one post-fault window per fault manager. Everything below follows from that.
 
 Subscriptions feed a ``std::deque`` of serialised messages, pruned to ``duration_sec`` of
-history and to ``max_buffer_mb`` of RAM. Pruning is driven by message arrival, not by a
+history on the monotonic clock and to ``max_buffer_mb`` of RAM. Each message carries a
+monotonic receipt stamp for that age and a wall-clock one for the bag, so a wall-clock step
+neither empties the buffer nor keeps a message past the window. Pruning is driven by message arrival, not by a
 timer, and each arrival prunes the whole deque by age - so a single topic going quiet is
 pruned like anything else, while a system where *everything* goes quiet keeps its last
 window buffered rather than silently losing the final messages before it died.
@@ -551,11 +553,9 @@ pre-fault window.
 
 The span is measured on the **monotonic** clock, not the wall clock that timestamps
 messages: a wall clock that steps backwards mid-window turns an elapsed time negative,
-and the duration is then reported as zero. Message ages necessarily start out as wall-clock
-differences, so a flush converts the history it found into a monotonic origin once and
-measures forward from there. That conversion is capped at how long the capture has been
-running - no bag can hold more history than that - because a clock step between buffering a
-message and flushing it would otherwise land in the figure in full.
+and the duration is then reported as zero. A flush takes the origin from the monotonic
+receipt stamp of the oldest message it wrote, so a wall-clock step between buffering and
+flushing cannot move it.
 
 Measurement stops when the writer leaves ``message_callback``'s reach, inside the handover
 critical section. Closing the bag flushes it and writes ``metadata.yaml``, and the size

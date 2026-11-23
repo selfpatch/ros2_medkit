@@ -651,7 +651,9 @@ Capture continuous rosbag recordings around fault events.
      - Enable rosbag recording for snapshots.
    * - ``rosbag.duration_sec``
      - ``5.0``
-     - Duration of pre-fault circular buffer.
+     - Duration of pre-fault circular buffer, measured on the steady clock: a
+       wall-clock step neither empties it nor keeps a message past it. The bag
+       records each message's wall-clock receipt time.
    * - ``rosbag.duration_after_sec``
      - ``1.0``
      - How long to record after fault. A fault confirming while this window is

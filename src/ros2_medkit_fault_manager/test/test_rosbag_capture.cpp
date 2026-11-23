@@ -25,7 +25,6 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -36,17 +35,23 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <rclcpp/serialization.hpp>
+#include <rosbag2_cpp/converter_options.hpp>
+#include <rosbag2_cpp/reader.hpp>
 #include <rosbag2_storage/bag_metadata.hpp>
 #include <rosbag2_storage/metadata_io.hpp>
+#include <rosbag2_storage/storage_options.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <yaml-cpp/yaml.h>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rcutils/logging.h"
 #include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
+#include "ros2_medkit_fault_manager/core/fault_manager_core.hpp"
 #include "ros2_medkit_fault_manager/core/recording_manifest.hpp"
 #include "ros2_medkit_fault_manager/core/rosbag_served_size.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/ros2/system_wall_clock.hpp"
 #include "ros2_medkit_fault_manager/rosbag_capture.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
@@ -187,6 +192,28 @@ std::chrono::milliseconds scaled(std::chrono::milliseconds base) {
 int scaled(int base) {
   return static_cast<int>(static_cast<double>(base) * test_time_scale());
 }
+
+/// System wall clock plus an offset the test moves at run time. Counts its reads.
+class SteppedWallClock : public ros2_medkit_fault_manager::core::WallClock {
+ public:
+  int64_t now_ns() const override {
+    reads_.fetch_add(1);
+    return system_.now_ns() + offset_ns_.load();
+  }
+
+  void step(std::chrono::nanoseconds delta) {
+    offset_ns_.fetch_add(delta.count());
+  }
+
+  uint64_t reads() const {
+    return reads_.load();
+  }
+
+ private:
+  ros2_medkit_fault_manager::ros2::SystemWallClock system_;
+  std::atomic<int64_t> offset_ns_{0};
+  mutable std::atomic<uint64_t> reads_{0};
+};
 
 }  // namespace
 
@@ -1206,53 +1233,6 @@ TEST(RosbagConfigValidationTest, WarnsWhenOneStorageFileMayExceedTheWholeQuota) 
   EXPECT_FALSE(warns_about_the_quota(50, 500));
 }
 
-// Clock arithmetic behind the recording's monotonic origin. Driven directly because
-// nothing acting on a RosbagCapture can produce a wall-clock step, and without one the
-// bound never engages: a buffered message is always younger than the capture itself.
-
-TEST_F(RosbagCaptureTest, BufferedHistoryIsTheAgeOfTheOldestMessage) {
-  const int64_t started = 1'000'000'000;
-  const int64_t now_steady = started + 10'000'000'000;  // capture alive for 10s
-  const int64_t now_wall = 5'000'000'000'000;
-  const int64_t oldest = now_wall - 2'000'000'000;  // 2s of history, well inside 10s
-
-  EXPECT_EQ(RosbagCapture::bounded_history_ns(now_wall, oldest, now_steady, started), 2'000'000'000);
-}
-
-TEST_F(RosbagCaptureTest, AForwardClockStepCannotBuyMoreHistoryThanTheCaptureHasLived) {
-  // NTP or a resumed VM moves the wall clock an hour forward between buffering a
-  // message and flushing it. The message is seconds old; only the step says otherwise.
-  const int64_t started = 1'000'000'000;
-  const int64_t now_steady = started + 5'000'000'000;  // capture alive for 5s
-  const int64_t oldest = 5'000'000'000'000;
-  const int64_t now_wall = oldest + 3'600'000'000'000;  // +1h
-
-  EXPECT_EQ(RosbagCapture::bounded_history_ns(now_wall, oldest, now_steady, started), 5'000'000'000);
-}
-
-TEST_F(RosbagCaptureTest, ABackwardClockStepReportsNoHistoryRatherThanNegative) {
-  const int64_t started = 1'000'000'000;
-  const int64_t now_steady = started + 5'000'000'000;
-  const int64_t oldest = 5'000'000'000'000;
-  const int64_t now_wall = oldest - 220'000'000;  // the 220ms backwards step seen here
-
-  EXPECT_EQ(RosbagCapture::bounded_history_ns(now_wall, oldest, now_steady, started), 0);
-}
-
-TEST_F(RosbagCaptureTest, TheDerivedOriginStaysPositiveOnALowUptimeMachine) {
-  // The failure this bound exists for: on a target whose clock is set by NTP shortly
-  // after boot, an unbounded history exceeds the monotonic clock's own value and the
-  // origin goes non-positive - which span_sec_since() reads as "never started" and
-  // reports as a duration of zero, for a bag holding a full pre-roll.
-  const int64_t started = 2'000'000'000;             // 2s after boot
-  const int64_t now_steady = started + 500'000'000;  // 2.5s of uptime
-  const int64_t oldest = 100'000'000'000;
-  const int64_t now_wall = oldest + 86'400'000'000'000;  // a day forward
-
-  const int64_t history = RosbagCapture::bounded_history_ns(now_wall, oldest, now_steady, started);
-  EXPECT_GT(now_steady - history, 0) << "the recording's origin is non-positive, so its duration reports as zero";
-}
-
 TEST_F(RosbagCaptureTest, ABatchStoreUnlinksASharedReplacedBagExactlyOnce) {
   // The in-memory backend now publishes a batch in one step rather than row by row,
   // because the caller reads a throw as "nothing was stored" and removes the
@@ -1302,33 +1282,6 @@ TEST_F(RosbagCaptureTest, ABatchStoreUnlinksASharedReplacedBagExactlyOnce) {
   ASSERT_TRUE(row_b.has_value());
   EXPECT_EQ(row_a->file_path, new_bag.string());
   EXPECT_EQ(row_b->file_path, new_bag.string());
-}
-
-TEST_F(RosbagCaptureTest, TheHistoryBoundHoldsForClockValuesFarApart) {
-  // A public entry point taking two clocks it does not control. The pair below would
-  // overflow a signed subtraction, which is undefined - the result has to stay inside
-  // the bound rather than becoming whatever the compiler makes of it.
-  const int64_t started = 1'000'000'000;
-  const int64_t now_steady = started + 5'000'000'000;
-
-  EXPECT_EQ(RosbagCapture::bounded_history_ns(std::numeric_limits<int64_t>::max(), std::numeric_limits<int64_t>::min(),
-                                              now_steady, started),
-            5'000'000'000);
-  EXPECT_EQ(RosbagCapture::bounded_history_ns(std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max(),
-                                              now_steady, started),
-            0);
-  // An uptime that would itself overflow must not turn into a negative upper bound.
-  EXPECT_GE(RosbagCapture::bounded_history_ns(5'000'000'000, 0, std::numeric_limits<int64_t>::max(),
-                                              std::numeric_limits<int64_t>::min()),
-            0);
-}
-
-TEST_F(RosbagCaptureTest, NoStartTimeYieldsNoClaimedHistory) {
-  // capture_started_at_ns_ is zero until start() runs. Unreachable through the class,
-  // because a message cannot be buffered before then, but the static says nothing
-  // about its callers, so the answer has to be the conservative one.
-  const int64_t now_steady = 5'000'000'000;
-  EXPECT_EQ(RosbagCapture::bounded_history_ns(9'000'000'000, 1'000'000'000, now_steady, 0), now_steady);
 }
 
 // Integration tests (simplified without actual message publishing)
@@ -1573,6 +1526,57 @@ class RosbagCaptureIntegrationTest : public RosbagCaptureTest {
     }
     return count;
   }
+
+  /// Spin until @p pub has a matched subscription.
+  bool wait_for_subscription(const rclcpp::Publisher<std_msgs::msg::String>::SharedPtr & pub,
+                             std::chrono::milliseconds timeout) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (pub->get_subscription_count() > 0) {
+        return true;
+      }
+      spin_for(std::chrono::milliseconds(20));
+    }
+    return false;
+  }
+
+  /// Publish @p data once and spin until the capture has stamped it. Before a
+  /// confirmation only the message callback reads @p clock.
+  bool deliver(const rclcpp::Publisher<std_msgs::msg::String>::SharedPtr & pub, const SteppedWallClock & clock,
+               const std::string & data, std::chrono::milliseconds timeout) {
+    const uint64_t reads_before = clock.reads();
+    std_msgs::msg::String msg;
+    msg.data = data;
+    pub->publish(msg);
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      spin_some_once(node_);
+      if (clock.reads() > reads_before) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
+  }
+
+  /// Every std_msgs/String payload in the bag of @p row, in bag order.
+  static std::vector<std::string> bag_strings(const ros2_medkit_fault_manager::RosbagFileInfo & row) {
+    rosbag2_storage::StorageOptions options;
+    options.uri = row.file_path;
+    options.storage_id = row.format;
+    rosbag2_cpp::Reader reader;
+    reader.open(options, rosbag2_cpp::ConverterOptions{});
+    rclcpp::Serialization<std_msgs::msg::String> serialization;
+    std::vector<std::string> payloads;
+    while (reader.has_next()) {
+      const auto bag_msg = reader.read_next();
+      const rclcpp::SerializedMessage serialized(*bag_msg->serialized_data);
+      std_msgs::msg::String msg;
+      serialization.deserialize_message(&serialized, &msg);
+      payloads.push_back(msg.data);
+    }
+    return payloads;
+  }
 };
 
 TEST_F(RosbagCaptureIntegrationTest, FullFaultLifecycleWithNoMessages) {
@@ -1722,6 +1726,88 @@ TEST_F(RosbagCaptureIntegrationTest, MultipleFaultsHandled) {
   spin_for(std::chrono::milliseconds(200));
 
   capture.stop();
+}
+
+TEST_F(RosbagCaptureIntegrationTest, AForwardWallClockStepKeepsTheBufferedHistory) {
+  // A forward wall step of ten windows between buffering and the fault.
+  const std::string topic = "/wall_step_forward";
+  const auto window = scaled(std::chrono::milliseconds(3000));
+  auto pub = node_->create_publisher<std_msgs::msg::String>(topic, 10);
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.topics = "explicit";
+  rosbag_config.include_topics = {topic};
+  rosbag_config.duration_sec = static_cast<double>(window.count()) / 1000.0;
+  rosbag_config.duration_after_sec = 0.0;
+  SteppedWallClock clock;
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, create_snapshot_config(), {}, &clock);
+  ASSERT_TRUE(wait_for_subscription(pub, scaled(std::chrono::milliseconds(10000))));
+
+  std::vector<std::string> sent;
+  for (int i = 0; i < 5; ++i) {
+    sent.push_back("before_step_" + std::to_string(i));
+    ASSERT_TRUE(deliver(pub, clock, sent.back(), scaled(std::chrono::milliseconds(5000))));
+  }
+  clock.step(window * 10);
+  sent.emplace_back("after_step");
+  ASSERT_TRUE(deliver(pub, clock, sent.back(), scaled(std::chrono::milliseconds(5000))));
+
+  const FaultId id = rec("WALL_STEP_FORWARD");
+  capture.on_fault_confirmed(id);
+  ASSERT_TRUE(wait_for_row(id, scaled(std::chrono::milliseconds(10000))));
+  const auto row = storage_->get_rosbag_file(id);
+  capture.stop();
+  ASSERT_TRUE(row.has_value());
+
+  EXPECT_EQ(bag_strings(*row), sent) << "the pre-fault history did not survive a forward wall-clock step";
+  EXPECT_LT(row->duration_sec, rosbag_config.duration_sec) << "the wall-clock step was counted as history";
+}
+
+TEST_F(RosbagCaptureIntegrationTest, ABackwardWallClockStepStillPrunesByTheSteadyClock) {
+  // Steady timeline, window W: "stale" at 0, "held_*" until 0.6 W, wall step back
+  // 60 s, "after_*" until 1.3 W. At the flush "stale" is older than W and the
+  // oldest held message, buffered before the step, is 0.7 to 1.0 W old.
+  const std::string topic = "/wall_step_backward";
+  const auto window = scaled(std::chrono::milliseconds(1000));
+  auto pub = node_->create_publisher<std_msgs::msg::String>(topic, 10);
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.topics = "explicit";
+  rosbag_config.include_topics = {topic};
+  rosbag_config.duration_sec = static_cast<double>(window.count()) / 1000.0;
+  rosbag_config.duration_after_sec = 0.0;
+  SteppedWallClock clock;
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, create_snapshot_config(), {}, &clock);
+  ASSERT_TRUE(wait_for_subscription(pub, scaled(std::chrono::milliseconds(10000))));
+  const auto timeout = scaled(std::chrono::milliseconds(5000));
+
+  ASSERT_TRUE(deliver(pub, clock, "stale", timeout));
+  const auto stale_at = std::chrono::steady_clock::now();
+  int held = 0;
+  while (std::chrono::steady_clock::now() - stale_at < window * 6 / 10) {
+    ASSERT_TRUE(deliver(pub, clock, "held_" + std::to_string(held++), timeout));
+  }
+  clock.step(-std::chrono::seconds(60));
+  int after = 0;
+  while (std::chrono::steady_clock::now() - stale_at < window * 13 / 10) {
+    ASSERT_TRUE(deliver(pub, clock, "after_" + std::to_string(after++), timeout));
+  }
+
+  const FaultId id = rec("WALL_STEP_BACKWARD");
+  capture.on_fault_confirmed(id);
+  ASSERT_TRUE(wait_for_row(id, scaled(std::chrono::milliseconds(10000))));
+  const auto row = storage_->get_rosbag_file(id);
+  capture.stop();
+  ASSERT_TRUE(row.has_value());
+
+  const auto payloads = bag_strings(*row);
+  EXPECT_EQ(std::count(payloads.begin(), payloads.end(), "stale"), 0)
+      << "a message older than the window survived a backward wall-clock step";
+  EXPECT_TRUE(std::any_of(payloads.begin(), payloads.end(), [](const std::string & p) {
+    return p.rfind("held_", 0) == 0;
+  })) << "the history buffered before the step is missing";
+  EXPECT_EQ(std::count(payloads.begin(), payloads.end(), "after_" + std::to_string(after - 1)), 1);
+  // The recording starts at its oldest message on the steady clock, not at the
+  // negative wall-clock difference across the step.
+  EXPECT_GE(row->duration_sec, 0.5 * rosbag_config.duration_sec);
 }
 
 // @verifies REQ_INTEROP_088

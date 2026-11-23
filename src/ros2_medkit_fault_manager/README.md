@@ -204,7 +204,10 @@ whichever is configured, if its plugin is unavailable at startup the FaultManage
 logs a warning naming the missing package and falls back to the other one
 automatically, disabling capture only if neither loads. Both `rosbag2_storage_mcap`
 and `rosbag2_storage_default_plugins` (which carries the sqlite3 plugin) are runtime
-dependencies of this package, so a normal install pulls in both backends. See
+dependencies of this package, so a normal install pulls in both backends. The ring
+buffer keeps `duration_sec` of history measured on the steady clock, so a wall-clock
+step (NTP, a VM host sync) neither empties it nor keeps a message past the window; the
+bag still records each message's wall-clock receipt time. See
 `docs/config/fault-manager.rst` and `docs/tutorials/snapshots.rst` for the full
 parameter list and recording lifecycle.
 

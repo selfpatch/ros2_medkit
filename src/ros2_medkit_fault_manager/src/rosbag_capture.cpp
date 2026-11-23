@@ -25,7 +25,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -37,7 +36,6 @@
 #include <utility>
 
 #include "ros2_medkit_fault_manager/core/recording_manifest.hpp"
-#include "ros2_medkit_fault_manager/time_utils.hpp"
 
 namespace ros2_medkit_fault_manager {
 
@@ -228,8 +226,13 @@ std::shared_ptr<rosbag2_storage::SerializedBagMessage> create_bag_message(const 
 }  // namespace
 
 RosbagCapture::RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const RosbagConfig & config,
-                             const SnapshotConfig & snapshot_config, StorageProbeFn storage_probe)
-  : node_(node), storage_(storage), config_(config), snapshot_config_(snapshot_config) {
+                             const SnapshotConfig & snapshot_config, StorageProbeFn storage_probe,
+                             const core::WallClock * wall_clock)
+  : node_(node)
+  , storage_(storage)
+  , wall_clock_(wall_clock != nullptr ? wall_clock : &system_wall_clock_)
+  , config_(config)
+  , snapshot_config_(snapshot_config) {
   if (!node_) {
     throw std::invalid_argument("RosbagCapture requires a valid node pointer");
   }
@@ -331,7 +334,6 @@ void RosbagCapture::start() {
   }
 
   init_subscriptions();
-  capture_started_at_ns_.store(steady_now_ns());
   running_.store(true);
 
   RCLCPP_INFO(node_->get_logger(), "RosbagCapture started with %zu topic subscriptions", subscriptions_.size());
@@ -614,7 +616,7 @@ void RosbagCapture::on_fault_confirmed(const FaultId & id) {
     // The size is measured after the close: metadata.yaml exists only once the
     // writer is gone, and nothing here still needs either lock.
 
-    const int64_t created_at_ns = get_wall_clock_ns();
+    const int64_t created_at_ns = wall_clock_->now_ns();
     write_manifest(bag_path, created_at_ns);
     size_t bag_size = calculate_bag_size(bag_path);
 
@@ -817,8 +819,8 @@ void RosbagCapture::message_callback(const std::string & topic, const std::strin
     return;
   }
 
-  // Use wall clock time, not sim time, for proper timestamps
-  int64_t timestamp_ns = get_wall_clock_ns();
+  // Wall clock, not sim time: the bag records when each message arrived.
+  const int64_t timestamp_ns = wall_clock_->now_ns();
 
   // During post-fault recording, write directly to bag (no buffering)
   if (recording_post_fault_.load()) {
@@ -858,6 +860,7 @@ void RosbagCapture::message_callback(const std::string & topic, const std::strin
   buffered.message_type = msg_type;
   buffered.serialized_data = std::make_shared<rclcpp::SerializedMessage>(*msg);
   buffered.timestamp_ns = timestamp_ns;
+  buffered.steady_ns = steady_now_ns();
   const size_t msg_bytes = buffered.serialized_data->size();
 
   {
@@ -882,13 +885,11 @@ void RosbagCapture::prune_buffer() {
     return;
   }
 
-  // Use wall clock time, not sim time, for consistent buffer pruning
-  int64_t now_ns = get_wall_clock_ns();
-  int64_t duration_ns = static_cast<int64_t>(config_.duration_sec * 1e9);
-  int64_t cutoff_ns = now_ns - duration_ns;
+  // Steady clock: a wall-clock step neither empties the buffer nor keeps a message past the window.
+  const int64_t duration_ns = static_cast<int64_t>(config_.duration_sec * 1e9);
+  const int64_t cutoff_ns = steady_now_ns() - duration_ns;
 
-  // Remove messages older than cutoff
-  while (!message_buffer_.empty() && message_buffer_.front().timestamp_ns < cutoff_ns) {
+  while (!message_buffer_.empty() && message_buffer_.front().steady_ns < cutoff_ns) {
     buffer_bytes_ -= message_buffer_.front().serialized_data->size();
     message_buffer_.pop_front();
   }
@@ -1246,7 +1247,7 @@ RosbagCapture::FlushResult RosbagCapture::flush_to_bag(const std::string & fault
 
     // Write messages (no buffer_mutex_ held, writer_mutex_ only for brief access)
     size_t msg_count = 0;
-    int64_t first_written_ns = 0;
+    int64_t first_written_steady_ns = 0;
     for (const auto & msg : messages_to_write) {
       // Entity mode: write only the faulting node's topics (+ /tf). No-op otherwise.
       if (entity_filtered && capture_filter.count(msg.topic) == 0) {
@@ -1273,31 +1274,17 @@ RosbagCapture::FlushResult RosbagCapture::flush_to_bag(const std::string & fault
       if (bag_msg) {
         active_writer_->write(bag_msg);
         if (msg_count == 0) {
-          first_written_ns = msg.timestamp_ns;
+          first_written_steady_ns = msg.steady_ns;
         }
         ++msg_count;
       }
       // Memory is automatically cleaned up by RAII when bag_msg goes out of scope
     }
 
-    // The recording starts at its oldest written message, not at "now minus the
-    // configured pre-fault window": a buffer that never filled, or an entity filter
-    // that matched nothing, must not make the stored row claim history it lacks.
-    // That start is a wall-clock instant (message timestamps are wall-clock), so
-    // convert the history it represents into a monotonic start once, here, and
-    // measure forward from that - a later clock step cannot corrupt an offset
-    // already taken.
-    //
-    // An EARLIER step still can, though: the wall clock can move between the moment
-    // a message was buffered and this subtraction, and the whole step then shows up
-    // as history. bounded_history_ns() caps it; see the header for the bound and why
-    // it is where the clock arithmetic is tested.
-    const int64_t now_steady = steady_now_ns();
-    int64_t history_ns = 0;
-    if (msg_count > 0) {
-      history_ns = bounded_history_ns(get_wall_clock_ns(), first_written_ns, now_steady, capture_started_at_ns_.load());
-    }
-    recording_started_at_ns_.store(now_steady - history_ns);
+    // The recording starts at the steady receipt time of its oldest written message, so
+    // a buffer that never filled or an entity filter that matched nothing claims no
+    // history it lacks, and a wall-clock step cannot move the start.
+    recording_started_at_ns_.store(msg_count > 0 ? first_written_steady_ns : steady_now_ns());
 
     RCLCPP_DEBUG(node_->get_logger(), "Flushed %zu messages to bag: %s", msg_count, bag_path.c_str());
 
@@ -1414,8 +1401,7 @@ std::optional<std::string> RosbagCapture::generate_bag_path(const std::string & 
     base_path = config_.storage_path;
   }
 
-  auto now = std::chrono::system_clock::now();
-  auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+  const int64_t timestamp = wall_clock_->now_ns() / 1'000'000;
 
   return claim_bag_path(base_path, fault_code, timestamp);
 }
@@ -1491,29 +1477,6 @@ std::vector<std::string> RosbagCapture::evict_bags_over_quota(FaultStorage * sto
   }
 
   return evicted;
-}
-
-int64_t RosbagCapture::bounded_history_ns(int64_t now_wall_ns, int64_t oldest_msg_wall_ns, int64_t now_steady_ns,
-                                          int64_t capture_started_steady_ns) {
-  // Saturating, not wrapping. Signed overflow is undefined, and this is a public
-  // entry point whose arguments are two clocks nothing here controls, so a pair far
-  // enough apart has to be handled rather than assumed away. Wrapping would be
-  // defined but wrong in the direction that matters: the largest possible forward
-  // step would come out as -1 and be read as no history at all, when the whole point
-  // of the bound is to treat it as more history than the capture can have had.
-  const auto difference = [](int64_t lhs, int64_t rhs) -> int64_t {
-    constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
-    constexpr int64_t kMin = std::numeric_limits<int64_t>::min();
-    if (rhs < 0 && lhs > kMax + rhs) {
-      return kMax;
-    }
-    if (rhs > 0 && lhs < kMin + rhs) {
-      return kMin;
-    }
-    return lhs - rhs;
-  };
-  const int64_t uptime_ns = std::max<int64_t>(0, difference(now_steady_ns, capture_started_steady_ns));
-  return std::clamp<int64_t>(difference(now_wall_ns, oldest_msg_wall_ns), 0, uptime_ns);
 }
 
 void RosbagCapture::enforce_storage_limits(const std::string & keep_recording_id) {
@@ -1769,7 +1732,7 @@ void RosbagCapture::finalize_post_fault_recording() {
   recording.fault_id = std::move(fault_id);
   recording.attached_ids = std::move(attached);
   recording.duration_sec = recording_span_sec;
-  recording.created_at_ns = get_wall_clock_ns();
+  recording.created_at_ns = wall_clock_->now_ns();
   enqueue_closed_recording(std::move(recording));
 }
 

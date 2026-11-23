@@ -31,7 +31,9 @@
 #include <rclcpp/serialized_message.hpp>
 #include <rosbag2_cpp/writer.hpp>
 
+#include "ros2_medkit_fault_manager/core/fault_manager_core.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/ros2/system_wall_clock.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
 
 namespace ros2_medkit_fault_manager {
@@ -41,7 +43,10 @@ struct BufferedMessage {
   std::string topic;
   std::string message_type;
   std::shared_ptr<rclcpp::SerializedMessage> serialized_data;
+  /// Wall-clock receipt time. Written to the bag.
   int64_t timestamp_ns{0};
+  /// Steady-clock receipt time. Ages the message in the ring buffer.
+  int64_t steady_ns{0};
 };
 
 /// Manages rosbag recording with ring buffer for time-window capture
@@ -81,8 +86,11 @@ class RosbagCapture {
   /// @param config Rosbag configuration
   /// @param snapshot_config Snapshot configuration (for topic resolution when topics="config")
   /// @param storage_probe Optional storage-backend probe override (default: real probe)
+  /// @param wall_clock Optional wall clock for message stamps and recording times (default: system clock).
+  ///        Must outlive the capture.
   RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const RosbagConfig & config,
-                const SnapshotConfig & snapshot_config, StorageProbeFn storage_probe = {});
+                const SnapshotConfig & snapshot_config, StorageProbeFn storage_probe = {},
+                const core::WallClock * wall_clock = nullptr);
 
   ~RosbagCapture();
 
@@ -169,22 +177,6 @@ class RosbagCapture {
   /// Drop the reservation claim_bag_path() made for @p bag_path.
   static void release_bag_path_claim(const std::string & bag_path);
 
-  /// Buffered history a flush may claim, in nanoseconds: the age of the oldest message
-  /// it wrote, bounded by how long the capture has been running.
-  ///
-  /// The age is a wall-clock difference, because message timestamps are wall-clock, and
-  /// it is applied to a monotonic origin. A clock step between buffering a message and
-  /// flushing it therefore lands in the figure in full. No recording can hold more
-  /// history than the capture has been alive, so that is the bound; it also keeps the
-  /// derived origin above zero, which span_sec_since() reserves for "never started" and
-  /// reports as a duration of 0.
-  ///
-  /// Static + public for the same reason as the quota arithmetic above: a wall-clock
-  /// step cannot be produced through this class's own API, and in ordinary operation the
-  /// oldest buffered message is always younger than the capture, so the bound never
-  /// engages and nothing driving the capture can exercise it.
-  static int64_t bounded_history_ns(int64_t now_wall_ns, int64_t oldest_msg_wall_ns, int64_t now_steady_ns,
-                                    int64_t capture_started_steady_ns);
   /// Build the single path component naming a fault's bag directory.
   ///
   /// `NAME_MAX` caps one path component at 255 bytes, and rosbag2 writes the
@@ -425,6 +417,10 @@ class RosbagCapture {
 
   rclcpp::Node * node_;
   FaultStorage * storage_;
+  /// Wall clock read when no other is given.
+  ros2::SystemWallClock system_wall_clock_;
+  /// Wall clock for message stamps, bag names and recording times.
+  const core::WallClock * wall_clock_;
   RosbagConfig config_;
   SnapshotConfig snapshot_config_;
 
@@ -494,14 +490,6 @@ class RosbagCapture {
   /// confirmation racing the finalise cannot have its own start time attributed to
   /// the bag being closed.
   std::atomic<int64_t> recording_started_at_ns_{0};
-
-  /// When start() ran, on the monotonic clock. Bounds the buffered history a flush
-  /// may claim: that history is measured on the wall clock (message timestamps are),
-  /// so an NTP step or a VM resync between buffering a message and flushing it lands
-  /// straight in the figure. No recording can hold more history than this capture has
-  /// been running, and the cap also keeps the derived monotonic origin above zero,
-  /// which span_sec_since() reserves for "never started".
-  std::atomic<int64_t> capture_started_at_ns_{0};
 
   /// Active writer for current bag (kept open during post-fault recording)
   std::unique_ptr<rosbag2_cpp::Writer> active_writer_;
