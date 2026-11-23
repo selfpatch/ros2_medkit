@@ -142,7 +142,8 @@ class ObservedCapture {
                                     },
                                     [this](const std::function<bool()> & should_abort) {
                                       events_.wait_for_publisher(should_abort);
-                                    }}))
+                                    },
+                                    /*store=*/nullptr, /*hosted=*/nullptr}))
     , probe_(events_.subscribe([this](const ros2_medkit::fault_detection::FaultEventRecord & event) {
       if (event.event_type != ros2_medkit::fault_detection::fault_event_type::kConfirmed) {
         return;

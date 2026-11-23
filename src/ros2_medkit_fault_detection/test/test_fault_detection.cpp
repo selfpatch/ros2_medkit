@@ -241,13 +241,24 @@ TEST(EnumMapRule, OkValuesAreHealthyStates) {
 
   for (std::int64_t healthy : {2, 4, 6}) {
     auto out = fd::evaluate(fd::Value{healthy}, r);
-    EXPECT_FALSE(find(out, "ABORTED")->active) << healthy;
-    EXPECT_FALSE(find(out, "STATE_UNMAPPED")->active) << healthy;
+    const auto * aborted = find(out, "ABORTED");
+    const auto * unmapped = find(out, "STATE_UNMAPPED");
+    ASSERT_NE(aborted, nullptr) << healthy;
+    ASSERT_NE(unmapped, nullptr) << healthy;
+    EXPECT_FALSE(aborted->active) << healthy;
+    EXPECT_FALSE(unmapped->active) << healthy;
   }
-  EXPECT_TRUE(find(fd::evaluate(fd::Value{static_cast<std::int64_t>(9)}, r), "ABORTED")->active);
+  const auto bad = fd::evaluate(fd::Value{static_cast<std::int64_t>(9)}, r);
+  const auto * bad_aborted = find(bad, "ABORTED");
+  ASSERT_NE(bad_aborted, nullptr);
+  EXPECT_TRUE(bad_aborted->active);
   auto other = fd::evaluate(fd::Value{static_cast<std::int64_t>(11)}, r);
-  EXPECT_FALSE(find(other, "ABORTED")->active);
-  EXPECT_TRUE(find(other, "STATE_UNMAPPED")->active);
+  const auto * other_aborted = find(other, "ABORTED");
+  const auto * other_unmapped = find(other, "STATE_UNMAPPED");
+  ASSERT_NE(other_aborted, nullptr);
+  ASSERT_NE(other_unmapped, nullptr);
+  EXPECT_FALSE(other_aborted->active);
+  EXPECT_TRUE(other_unmapped->active);
 }
 
 TEST(EnumMapRule, UnmappedNonOkRaisesCatchAll) {
