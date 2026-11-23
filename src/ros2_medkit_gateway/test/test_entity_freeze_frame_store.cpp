@@ -32,12 +32,15 @@ using ros2_medkit_gateway::StoredEntityFreezeFrame;
 
 namespace {
 
+/// A row of the record (fault_code, owner). The owner is the entity unless a test names another.
 StoredEntityFreezeFrame make_row(const std::string & fault_code, const std::string & entity_id, int64_t captured_at_ns,
                                  json frame = json{{"values", {{"temperature", 42.5}, {"pressure", 3.2}}},
                                                    {"connected", false},
-                                                   {"source_timestamp", "2026-09-08T17:51:40.387Z"}}) {
+                                                   {"source_timestamp", "2026-09-08T17:51:40.387Z"}},
+                                 const std::string & owner = "") {
   StoredEntityFreezeFrame row;
   row.fault_code = fault_code;
+  row.owner = owner.empty() ? entity_id : owner;
   row.entity_id = entity_id;
   row.frame = std::move(frame);
   row.captured_at_ns = captured_at_ns;
@@ -81,13 +84,14 @@ TEST_P(EntityFreezeFrameStoreTest, RoundTripsEveryFieldOfARow) {
   row.capture_origin = "startup";
   row.occurrence_count = 7;
   row.first_occurred_ns = 1757353800123456789;  // above 2^32: needs the full 64 bits
-  ASSERT_TRUE(store_->replace_frames("JAM_INFEED", {row}).has_value());
+  ASSERT_TRUE(store_->replace_frames("JAM_INFEED", "plc_app", {row}).has_value());
 
   auto loaded = store_->load_all();
   ASSERT_TRUE(loaded.has_value());
   ASSERT_EQ(loaded->size(), 1u);
   const auto & got = (*loaded)[0];
   EXPECT_EQ(got.fault_code, "JAM_INFEED");
+  EXPECT_EQ(got.owner, "plc_app");
   EXPECT_EQ(got.entity_id, "plc_app");
   EXPECT_EQ(got.frame, row.frame);
   EXPECT_EQ(got.captured_at_ns, 1757353900387000000);  // nanoseconds need the full 64 bits
@@ -98,12 +102,15 @@ TEST_P(EntityFreezeFrameStoreTest, RoundTripsEveryFieldOfARow) {
 }
 
 TEST_P(EntityFreezeFrameStoreTest, ReplaceDropsEntitiesTheNewCaptureNoLongerReports) {
+  const json values = json{{"values", {{"level", 1}}}};
   ASSERT_TRUE(store_
-                  ->replace_frames("JAM_INFEED",
-                                   {make_row("JAM_INFEED", "plc_app", 10), make_row("JAM_INFEED", "second_app", 20)})
+                  ->replace_frames("JAM_INFEED", "line_1",
+                                   {make_row("JAM_INFEED", "plc_app", 10, values, "line_1"),
+                                    make_row("JAM_INFEED", "second_app", 20, values, "line_1")})
                   .has_value());
   // A re-confirm that frames one entity leaves no row for the other.
-  ASSERT_TRUE(store_->replace_frames("JAM_INFEED", {make_row("JAM_INFEED", "plc_app", 30)}).has_value());
+  ASSERT_TRUE(store_->replace_frames("JAM_INFEED", "line_1", {make_row("JAM_INFEED", "plc_app", 30, values, "line_1")})
+                  .has_value());
 
   auto loaded = store_->load_all();
   ASSERT_TRUE(loaded.has_value());
@@ -112,23 +119,28 @@ TEST_P(EntityFreezeFrameStoreTest, ReplaceDropsEntitiesTheNewCaptureNoLongerRepo
   EXPECT_EQ((*loaded)[0].captured_at_ns, 30);
 }
 
-TEST_P(EntityFreezeFrameStoreTest, ErasingOneCodeKeepsTheOthers) {
-  ASSERT_TRUE(store_->replace_frames("JAM_INFEED", {make_row("JAM_INFEED", "plc_app", 10)}).has_value());
-  ASSERT_TRUE(store_->replace_frames("SAFETY_CURTAIN", {make_row("SAFETY_CURTAIN", "plc_app", 20)}).has_value());
+TEST_P(EntityFreezeFrameStoreTest, ErasingOneRecordKeepsTheOthers) {
+  ASSERT_TRUE(store_->replace_frames("JAM_INFEED", "plc_app", {make_row("JAM_INFEED", "plc_app", 10)}).has_value());
+  ASSERT_TRUE(
+      store_->replace_frames("JAM_INFEED", "second_app", {make_row("JAM_INFEED", "second_app", 15)}).has_value());
+  ASSERT_TRUE(
+      store_->replace_frames("SAFETY_CURTAIN", "plc_app", {make_row("SAFETY_CURTAIN", "plc_app", 20)}).has_value());
 
-  ASSERT_TRUE(store_->erase_frames("JAM_INFEED").has_value());
+  ASSERT_TRUE(store_->erase_frames("JAM_INFEED", "plc_app").has_value());
 
   auto loaded = store_->load_all();
   ASSERT_TRUE(loaded.has_value());
-  ASSERT_EQ(loaded->size(), 1u);
-  EXPECT_EQ((*loaded)[0].fault_code, "SAFETY_CURTAIN");
+  ASSERT_EQ(loaded->size(), 2u);
+  EXPECT_EQ((*loaded)[0].fault_code, "JAM_INFEED");
+  EXPECT_EQ((*loaded)[0].owner, "second_app");
+  EXPECT_EQ((*loaded)[1].fault_code, "SAFETY_CURTAIN");
 }
 
 TEST_P(EntityFreezeFrameStoreTest, LoadAllServesOldestCaptureFirst) {
   // The order the store contract promises.
-  ASSERT_TRUE(store_->replace_frames("NEWEST", {make_row("NEWEST", "plc_app", 300)}).has_value());
-  ASSERT_TRUE(store_->replace_frames("OLDEST", {make_row("OLDEST", "plc_app", 100)}).has_value());
-  ASSERT_TRUE(store_->replace_frames("MIDDLE", {make_row("MIDDLE", "plc_app", 200)}).has_value());
+  ASSERT_TRUE(store_->replace_frames("NEWEST", "plc_app", {make_row("NEWEST", "plc_app", 300)}).has_value());
+  ASSERT_TRUE(store_->replace_frames("OLDEST", "plc_app", {make_row("OLDEST", "plc_app", 100)}).has_value());
+  ASSERT_TRUE(store_->replace_frames("MIDDLE", "plc_app", {make_row("MIDDLE", "plc_app", 200)}).has_value());
 
   auto loaded = store_->load_all();
   ASSERT_TRUE(loaded.has_value());
@@ -138,14 +150,14 @@ TEST_P(EntityFreezeFrameStoreTest, LoadAllServesOldestCaptureFirst) {
   EXPECT_EQ((*loaded)[2].fault_code, "NEWEST");
 }
 
-TEST_P(EntityFreezeFrameStoreTest, ErasingACodeWithNoRowsIsNotAnError) {
+TEST_P(EntityFreezeFrameStoreTest, ErasingARecordWithNoRowsIsNotAnError) {
   // The caller evicts by fault code and does not track what reached the file.
-  EXPECT_TRUE(store_->erase_frames("NEVER_STORED").has_value());
+  EXPECT_TRUE(store_->erase_frames("NEVER_STORED", "plc_app").has_value());
 }
 
 TEST_P(EntityFreezeFrameStoreTest, AnEmptyReplaceLeavesNoRows) {
-  ASSERT_TRUE(store_->replace_frames("JAM_INFEED", {make_row("JAM_INFEED", "plc_app", 10)}).has_value());
-  ASSERT_TRUE(store_->replace_frames("JAM_INFEED", {}).has_value());
+  ASSERT_TRUE(store_->replace_frames("JAM_INFEED", "plc_app", {make_row("JAM_INFEED", "plc_app", 10)}).has_value());
+  ASSERT_TRUE(store_->replace_frames("JAM_INFEED", "plc_app", {}).has_value());
 
   auto loaded = store_->load_all();
   ASSERT_TRUE(loaded.has_value());
@@ -166,8 +178,8 @@ TEST(SqliteEntityFreezeFrameStoreFile, RowsSurviveReopen) {
 
   {
     SqliteEntityFreezeFrameStore store(path.string());
-    ASSERT_TRUE(
-        store.replace_frames("JAM_INFEED", {make_row("JAM_INFEED", "plc_app", 1757353900387000000)}).has_value());
+    ASSERT_TRUE(store.replace_frames("JAM_INFEED", "plc_app", {make_row("JAM_INFEED", "plc_app", 1757353900387000000)})
+                    .has_value());
   }
 
   SqliteEntityFreezeFrameStore reopened(path.string());
@@ -189,7 +201,7 @@ TEST(SqliteEntityFreezeFrameStoreFile, AnUnreadableRowCostsOnlyItself) {
 
   {
     SqliteEntityFreezeFrameStore store(path.string());
-    ASSERT_TRUE(store.replace_frames("GOOD", {make_row("GOOD", "plc_app", 20)}).has_value());
+    ASSERT_TRUE(store.replace_frames("GOOD", "plc_app", {make_row("GOOD", "plc_app", 20)}).has_value());
   }
   // One blob that is not JSON, as a hand-edited file holds.
   {
@@ -197,8 +209,8 @@ TEST(SqliteEntityFreezeFrameStoreFile, AnUnreadableRowCostsOnlyItself) {
     ASSERT_EQ(sqlite3_open(path.c_str(), &db), SQLITE_OK);
     ASSERT_EQ(sqlite3_exec(db,
                            "INSERT INTO entity_freeze_frames "
-                           "(fault_code, entity_id, frame, captured_at_ns, source, capture_origin) "
-                           "VALUES ('BROKEN','plc_app','{not json',10,'','')",
+                           "(fault_code, owner, entity_id, frame, captured_at_ns, source, capture_origin) "
+                           "VALUES ('BROKEN','plc_app','plc_app','{not json',10,'','')",
                            nullptr, nullptr, nullptr),
               SQLITE_OK);
     sqlite3_close(db);

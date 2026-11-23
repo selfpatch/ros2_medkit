@@ -58,17 +58,18 @@ store from it:
   of each reporting source through ``plugin_data_readers()``
   (``core/data/data_item_reader.hpp``, the path of ``GET /{entity}/data``: the
   plugin's ``DataProvider``, else its ``x-plc-data`` route) on a thread of its
-  own, keeps the frames up to ``FreezeFrameCaptureConfig::max_faults`` (the
-  fault captured longest ago evicted first), and serves them as
-  ``FreezeFrameSource``. A frame set stays after ``fault_cleared``. The next
+  own, keeps the frames up to ``FreezeFrameCaptureConfig::max_faults`` records
+  (the record captured longest ago evicted first), and serves them as
+  ``FreezeFrameSource``. A record is the fault code and the reporting source
+  the frames were captured for. A frame set stays after ``fault_cleared``. The next
   confirmation replaces it, or drops it with a warning when the read gets no
   values and the occurrence is another one. With an
   ``EntityFreezeFrameStore`` (``core/faults/entity_freeze_frame_store.hpp``)
-  each capture is written through with the fault's occurrence
+  each capture is written through with the record's occurrence
   (``occurrence_count`` and ``first_occurred``), and the stored frames load
   before the first capture. With a lister, no reloaded frame is served before
   a fault list of every status has succeeded. That list drops a frame of
-  another occurrence, or of a fault the list does not hold, and an empty list
+  another occurrence of its record, or of a record the list does not hold, and an empty list
   keeps every frame. A list that could not be read is retried every
   ``FreezeFrameCaptureConfig::list_retry_interval``, and live confirms are
   captured in between. With no lister, every frame is kept and served at once.
