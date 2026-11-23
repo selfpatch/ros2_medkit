@@ -1697,15 +1697,15 @@ void OpcuaPlugin::send_clear_fault(const std::string & fault_code, const std::st
 
   send_or_buffer({PendingFaultDispatch::Kind::Clear, fault_code, clear_is_link_state(origin),
                   [this, request, on_reply = std::move(on_reply)]() {
-                    fault_lanes_.submit(request->fault_code, [this, request, on_reply](
-                                                                 const std::function<void()> & done) {
-                      // on_reply catches every exception, so done() always runs.
-                      // NOLINTNEXTLINE(performance-unnecessary-value-param)
-                      fault_clients_->clear->async_send_request(request, [on_reply, done](ClearFuture future) {
-                        on_reply(future);
-                        done();
-                      });
-                    });
+                    fault_lanes_.submit(
+                        request->fault_code, [this, request, on_reply](const std::function<void()> & done) {
+                          // on_reply catches every exception, so done() always runs.
+                          // NOLINTNEXTLINE(performance-unnecessary-value-param)
+                          fault_clients_->clear->async_send_request(request, [on_reply, done](ClearFuture future) {
+                            on_reply(future);
+                            done();
+                          });
+                        });
                   }});
 }
 
