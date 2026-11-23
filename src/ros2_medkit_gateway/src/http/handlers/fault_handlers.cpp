@@ -328,9 +328,8 @@ tl::expected<dto::FaultDetailResult, FaultResult> FaultHandlers::fault_detail(co
                                         : faults::entry_item(records, app_of);
   json env_data_json = result.data.value("environment_data", json::object());
   if (auto * capture = ctx_.services().freeze_frames()) {
-    // Entity frames are kept per reporting source, not per stored owner.
-    env_data_json = merge_entity_freeze_frames(std::move(env_data_json),
-                                               capture->frames_for(fault_code, faults::record_owner(representative)));
+    // The frames of the record this detail presents, named by its owner.
+    env_data_json = merge_entity_freeze_frames(std::move(env_data_json), capture->frames_for(fault_code, owner));
   }
   return wrap_detail_result(
       dto::JsonWriter<dto::FaultDetail>::write(build_sovd_fault_response(item, env_data_json, entity_path)));

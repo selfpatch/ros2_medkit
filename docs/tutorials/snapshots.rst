@@ -265,10 +265,11 @@ them. The file belongs to one gateway. Do not share
 it between gateways: at start, each gateway drops the frames of faults its own
 fault manager does not hold.
 
-Frames belong to a fault record: the fault code and the reporting source they
-were captured for. A ``per_source`` code reported by two entities has two
-records, and each keeps its own frame, occurrence and stored rows. Everything
-below works per record. Each stored frame carries the fault manager's
+Frames belong to a fault record: the fault code and its owner, the reporting
+source of a ``per_source`` record or ``*`` for a shared one. A record's frame
+holds the values of each of its reporting sources. A ``per_source`` code
+reported by two entities has two records, and each keeps its own frame,
+occurrence, muting and stored rows. Everything below works per record. Each stored frame carries the fault manager's
 occurrence of its record at capture: the record's ``occurrence_count`` and
 ``first_occurred``. The fault manager changes both only when a cleared record
 fails again. At startup the

@@ -31,7 +31,8 @@ namespace ros2_medkit_gateway {
 /// `frame` holds what has no column of its own, so a reload reproduces the frame exactly.
 struct StoredEntityFreezeFrame {
   std::string fault_code;
-  /// The reporting source whose record the frame belongs to: `frames_for` asks with it.
+  /// Owner of the record the frame belongs to: the reporting source of a per_source
+  /// record, "*" for a shared one.
   std::string owner;
   std::string entity_id;
   nlohmann::json frame;  ///< {"values": {...}, "connected"?: bool, "source_timestamp"?: any}

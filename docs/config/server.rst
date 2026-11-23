@@ -404,8 +404,9 @@ Configure how the gateway connects to the fault manager services and event topic
        ``:memory:``, the frames stay in memory and a restart loses them (logged
        at startup). A file that cannot be opened is logged as an error, and the
        frames stay in memory. A row belongs to one fault record, the fault code
-       and the reporting source it was captured for, and stores that record's
-       ``occurrence_count`` and ``first_occurred``. At startup one fault list judges the reloaded
+       and its owner (the reporting source of a ``per_source`` record, ``*`` for
+       a shared one), and stores that record's ``occurrence_count`` and
+       ``first_occurred``. At startup one fault list judges the reloaded
        frames, and none is served before that. While the fault manager does not
        answer, the list is retried every 5 s, and the first failure is logged
        as a warning. A frame of

@@ -183,14 +183,27 @@ class ObservedCapture {
   ros2_medkit_gateway::FaultEventSubscription probe_;
 };
 
-FaultEvent make_confirmed_event(const std::string & fault_code, const std::vector<std::string> & sources) {
+/// A confirm of the record (fault_code, owner). The default owner is the shared record's.
+FaultEvent make_confirmed_event(const std::string & fault_code, const std::vector<std::string> & sources,
+                                const std::string & owner = "*") {
   FaultEvent event;
   event.event_type = FaultEvent::EVENT_CONFIRMED;
   event.fault.fault_code = fault_code;
   event.fault.severity = Fault::SEVERITY_ERROR;
   event.fault.status = Fault::STATUS_CONFIRMED;
   event.fault.reporting_sources = sources;
+  event.fault.owner = owner;
   return event;
+}
+
+/// The standing per-source record of @p source.
+EntityFreezeFrameCapture::StandingFault per_source_standing(const std::string & fault_code,
+                                                            const std::string & source) {
+  EntityFreezeFrameCapture::StandingFault fault;
+  fault.fault_code = fault_code;
+  fault.reporting_sources = {source};
+  fault.owner = source;
+  return fault;
 }
 
 class EntityFreezeFrameCaptureTest : public ::testing::Test {
@@ -254,7 +267,7 @@ class EntityFreezeFrameCaptureTest : public ::testing::Test {
     const auto deadline = std::chrono::steady_clock::now() + 5s;
     while (std::chrono::steady_clock::now() < deadline) {
       publisher_->publish(event);
-      if (!capture.frames_for(event.fault.fault_code, event.fault.reporting_sources.front()).empty()) {
+      if (!capture.frames_for(event.fault.fault_code, event.fault.owner).empty()) {
         return true;
       }
       std::this_thread::sleep_for(20ms);
@@ -281,7 +294,7 @@ TEST_F(EntityFreezeFrameCaptureTest, ConfirmedPluginFaultCapturesEntityValues) {
 
   ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_OVERPRESSURE", {"plc_app"})));
 
-  auto frames = capture.frames_for("PLC_OVERPRESSURE", "plc_app");
+  auto frames = capture.frames_for("PLC_OVERPRESSURE", "*");
   ASSERT_EQ(frames.size(), 1u);
   EXPECT_EQ(frames[0].entity_id, "plc_app");
   EXPECT_DOUBLE_EQ(frames[0].values.value("temperature", 0.0), 42.5);
@@ -303,7 +316,7 @@ TEST_F(EntityFreezeFrameCaptureTest, NonPluginSourceCapturesNothing) {
     publisher_->publish(event);
     std::this_thread::sleep_for(10ms);
   }
-  EXPECT_TRUE(capture.frames_for("ROS_FAULT", "/powertrain/engine/temp_sensor").empty());
+  EXPECT_TRUE(capture.frames_for("ROS_FAULT", "*").empty());
 }
 
 /// @verifies REQ_INTEROP_088
@@ -319,7 +332,7 @@ TEST_F(EntityFreezeFrameCaptureTest, NonConfirmedEventsAreIgnored) {
     publisher_->publish(event);
     std::this_thread::sleep_for(10ms);
   }
-  EXPECT_TRUE(capture.frames_for("PLC_UPDATED_ONLY", "plc_app").empty());
+  EXPECT_TRUE(capture.frames_for("PLC_UPDATED_ONLY", "*").empty());
 }
 
 /// @verifies REQ_INTEROP_088
@@ -341,10 +354,10 @@ TEST_F(EntityFreezeFrameCaptureTest, StandingFaultsAreFramedWithoutAnyEvent) {
 
   // No publish at all - the frame must appear from the catch-up alone.
   const auto deadline = std::chrono::steady_clock::now() + 15s;
-  while (capture.frames_for("PLC_STANDING", "route_plc_app").empty() && std::chrono::steady_clock::now() < deadline) {
+  while (capture.frames_for("PLC_STANDING", "*").empty() && std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(20ms);
   }
-  const auto frames = capture.frames_for("PLC_STANDING", "route_plc_app");
+  const auto frames = capture.frames_for("PLC_STANDING", "*");
   ASSERT_EQ(frames.size(), 1u);
   EXPECT_EQ(frames[0].entity_id, "route_plc_app");
   EXPECT_DOUBLE_EQ(frames[0].values.value("level", 0.0), 7.0);
@@ -377,7 +390,7 @@ TEST_F(EntityFreezeFrameCaptureTest, QueuedLiveConfirmDedupesTheSameStandingReco
   const auto deadline = std::chrono::steady_clock::now() + 10s;
   std::vector<EntityFreezeFrameCapture::Frame> frames;
   while (std::chrono::steady_clock::now() < deadline) {
-    frames = capture.frames_for("PLC_BOTH_PATHS", "route_live_app");
+    frames = capture.frames_for("PLC_BOTH_PATHS", "*");
     if (!frames.empty() && !frames[0].startup_catchup) {
       break;
     }
@@ -409,10 +422,10 @@ TEST_F(EntityFreezeFrameCaptureTest, QueuedConfirmDoesNotDedupeAnotherOwnerOfThe
                             return std::optional<json>{json{
                                 {"connected", true}, {"items", json::array({{{"name", "level"}, {"value", level}}})}}};
                           },
-                          "PLC_TWO_OWNERS", {{"PLC_TWO_OWNERS", {"route_standing_app"}}});
+                          "PLC_TWO_OWNERS", {per_source_standing("PLC_TWO_OWNERS", "route_standing_app")});
 
   ASSERT_TRUE(wait_for_match());
-  publisher_->publish(make_confirmed_event("PLC_TWO_OWNERS", {"route_live_app"}));
+  publisher_->publish(make_confirmed_event("PLC_TWO_OWNERS", {"route_live_app"}, "route_live_app"));
 
   const auto deadline = std::chrono::steady_clock::now() + 10s;
   std::vector<EntityFreezeFrameCapture::Frame> live_frames;
@@ -456,8 +469,8 @@ TEST_F(EntityFreezeFrameCaptureTest, TwoOwnersOfOneCodeKeepSeparateFrames) {
             json{{"connected", true}, {"items", json::array({{{"name", "level"}, {"value", level}}})}}};
       });
 
-  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("SHARED_CODE", {"line_a"})));
-  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("SHARED_CODE", {"line_b"})));
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("SHARED_CODE", {"line_a"}, "line_a")));
+  ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("SHARED_CODE", {"line_b"}, "line_b")));
 
   const auto a = capture.frames_for("SHARED_CODE", "line_a");
   const auto b = capture.frames_for("SHARED_CODE", "line_b");
@@ -486,7 +499,7 @@ TEST_F(EntityFreezeFrameCaptureTest, ThrowingListerDoesNotKillCaptureThread) {
       });
 
   ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_AFTER_THROW", {"plc_app"})));
-  EXPECT_FALSE(capture.frames_for("PLC_AFTER_THROW", "plc_app").empty());
+  EXPECT_FALSE(capture.frames_for("PLC_AFTER_THROW", "*").empty());
 }
 
 /// @verifies REQ_INTEROP_088
@@ -583,14 +596,14 @@ TEST_F(EntityFreezeFrameCaptureTest, CatchUpCapsStoredFramesAtMaxFaults) {
       });
 
   const auto deadline = std::chrono::steady_clock::now() + 15s;
-  while (capture.frames_for("PLC_CAP_B", "route_b").empty() && std::chrono::steady_clock::now() < deadline) {
+  while (capture.frames_for("PLC_CAP_B", "*").empty() && std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(20ms);
   }
   std::this_thread::sleep_for(300ms);  // would be enough for an uncapped C capture
-  EXPECT_TRUE(capture.frames_for("PLC_CAP_NO_DATA", "route_no_data_app").empty());
-  EXPECT_FALSE(capture.frames_for("PLC_CAP_A", "route_a").empty());  // not evicted by C
-  EXPECT_FALSE(capture.frames_for("PLC_CAP_B", "route_b").empty());
-  EXPECT_TRUE(capture.frames_for("PLC_CAP_C", "route_c").empty());  // past the cap
+  EXPECT_TRUE(capture.frames_for("PLC_CAP_NO_DATA", "*").empty());
+  EXPECT_FALSE(capture.frames_for("PLC_CAP_A", "*").empty());  // not evicted by C
+  EXPECT_FALSE(capture.frames_for("PLC_CAP_B", "*").empty());
+  EXPECT_TRUE(capture.frames_for("PLC_CAP_C", "*").empty());  // past the cap
 }
 
 /// @verifies REQ_INTEROP_088
@@ -600,7 +613,7 @@ TEST_F(EntityFreezeFrameCaptureTest, FramesRetainedAcrossClearAndOverwrittenOnRe
   });
 
   ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_CYCLING", {"plc_app"})));
-  ASSERT_DOUBLE_EQ(capture.frames_for("PLC_CYCLING", "plc_app")[0].values.value("temperature", 0.0), 42.5);
+  ASSERT_DOUBLE_EQ(capture.frames_for("PLC_CYCLING", "*")[0].values.value("temperature", 0.0), 42.5);
 
   // Clearing retains the confirmed-state record, mirroring the fault_manager's
   // freeze-frame retention across clear_fault.
@@ -610,7 +623,7 @@ TEST_F(EntityFreezeFrameCaptureTest, FramesRetainedAcrossClearAndOverwrittenOnRe
     publisher_->publish(cleared);
     std::this_thread::sleep_for(10ms);
   }
-  auto retained = capture.frames_for("PLC_CYCLING", "plc_app");
+  auto retained = capture.frames_for("PLC_CYCLING", "*");
   ASSERT_EQ(retained.size(), 1u);
   EXPECT_DOUBLE_EQ(retained[0].values.value("temperature", 0.0), 42.5);
 
@@ -623,7 +636,7 @@ TEST_F(EntityFreezeFrameCaptureTest, FramesRetainedAcrossClearAndOverwrittenOnRe
   while (std::chrono::steady_clock::now() < deadline && !overwritten) {
     publisher_->publish(reconfirm);
     std::this_thread::sleep_for(20ms);
-    auto latest = capture.frames_for("PLC_CYCLING", "plc_app");
+    auto latest = capture.frames_for("PLC_CYCLING", "*");
     overwritten = !latest.empty() && std::abs(latest[0].values.value("temperature", 0.0) - 99.0) < 1e-9;
   }
   EXPECT_TRUE(overwritten);
@@ -649,7 +662,7 @@ TEST_F(EntityFreezeFrameCaptureTest, RouteFallbackCapturesWhenPluginHasNoDataPro
 
   ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_ROUTE_LEVEL_HIGH", {"route_plc_app"})));
 
-  auto frames = capture.frames_for("PLC_ROUTE_LEVEL_HIGH", "route_plc_app");
+  auto frames = capture.frames_for("PLC_ROUTE_LEVEL_HIGH", "*");
   ASSERT_EQ(frames.size(), 1u);
   EXPECT_EQ(frames[0].entity_id, "route_plc_app");
   EXPECT_DOUBLE_EQ(frames[0].values.value("level", 0.0), 87.5);
@@ -677,7 +690,7 @@ TEST_F(EntityFreezeFrameCaptureTest, RouteFallbackSkipsDisconnectedPlcWithNoValu
     publisher_->publish(event);
     std::this_thread::sleep_for(10ms);
   }
-  EXPECT_TRUE(capture.frames_for("PLC_DISCONNECTED", "route_plc_app").empty());
+  EXPECT_TRUE(capture.frames_for("PLC_DISCONNECTED", "*").empty());
 }
 
 /// @verifies REQ_INTEROP_088
@@ -698,7 +711,7 @@ TEST_F(EntityFreezeFrameCaptureTest, DisconnectedEntityWithLastKnownValuesIsCapt
 
   ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_COMMS_LOST", {"route_plc_app"})));
 
-  const auto frames = capture.frames_for("PLC_COMMS_LOST", "route_plc_app");
+  const auto frames = capture.frames_for("PLC_COMMS_LOST", "*");
   ASSERT_EQ(frames.size(), 1u);
   EXPECT_EQ(frames[0].values["level"], 42.0);
   ASSERT_TRUE(frames[0].connected.has_value());
@@ -730,7 +743,7 @@ TEST_F(EntityFreezeFrameCaptureTest, DataProviderWinsOverRouteFallback) {
 
   ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_PROVIDER_FIRST", {"plc_app"})));
 
-  auto frames = capture.frames_for("PLC_PROVIDER_FIRST", "plc_app");
+  auto frames = capture.frames_for("PLC_PROVIDER_FIRST", "*");
   ASSERT_EQ(frames.size(), 1u);
   EXPECT_DOUBLE_EQ(frames[0].values.value("temperature", 0.0), 42.5);  // provider values, not route
   EXPECT_FALSE(fetcher_called.load());
@@ -760,7 +773,7 @@ TEST_F(EntityFreezeFrameCaptureTest, DataProviderWithoutLiveValuesCapturesNothin
     publisher_->publish(event);
     std::this_thread::sleep_for(10ms);
   }
-  EXPECT_TRUE(capture.frames_for("PLC_NO_LIVE_DATA", "cold_app").empty());
+  EXPECT_TRUE(capture.frames_for("PLC_NO_LIVE_DATA", "*").empty());
 }
 
 /// @verifies REQ_INTEROP_088
@@ -776,7 +789,7 @@ TEST_F(EntityFreezeFrameCaptureTest, DisconnectedDataProviderWithLastKnownValues
 
   ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_PROVIDER_COMMS_LOST", {"down_app"})));
 
-  const auto frames = capture.frames_for("PLC_PROVIDER_COMMS_LOST", "down_app");
+  const auto frames = capture.frames_for("PLC_PROVIDER_COMMS_LOST", "*");
   ASSERT_EQ(frames.size(), 1u);
   EXPECT_EQ(frames[0].values["level"], 5.5);
   ASSERT_TRUE(frames[0].connected.has_value());
@@ -802,9 +815,9 @@ TEST_F(EntityFreezeFrameCaptureTest, OldestFaultEvictedPastMaxFaults) {
   ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_EVICT_B", {"plc_app"})));
   ASSERT_TRUE(publish_and_wait(capture, make_confirmed_event("PLC_EVICT_C", {"plc_app"})));
 
-  EXPECT_TRUE(capture.frames_for("PLC_EVICT_A", "plc_app").empty());  // FIFO-evicted
-  EXPECT_FALSE(capture.frames_for("PLC_EVICT_B", "plc_app").empty());
-  EXPECT_FALSE(capture.frames_for("PLC_EVICT_C", "plc_app").empty());
+  EXPECT_TRUE(capture.frames_for("PLC_EVICT_A", "*").empty());  // FIFO-evicted
+  EXPECT_FALSE(capture.frames_for("PLC_EVICT_B", "*").empty());
+  EXPECT_FALSE(capture.frames_for("PLC_EVICT_C", "*").empty());
 }
 
 TEST(ContentHasLiveData, GatesOnItemsNotOnTheLinkFlag) {

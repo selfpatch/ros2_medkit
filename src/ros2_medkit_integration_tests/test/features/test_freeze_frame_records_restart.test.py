@@ -33,24 +33,28 @@ capture_origin; a frame read again at start has capture_origin "startup".
 import os
 import signal
 import tempfile
-import time
 import unittest
 
-from ament_index_python.packages import get_package_prefix
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, RegisterEventHandler
+from launch.actions import RegisterEventHandler
 from launch.event_handlers import OnProcessExit
 import launch_testing
 import launch_testing.actions
 import rclpy
 from rclpy.node import Node
-import requests
-from ros2_medkit_msgs.msg import Fault
-from ros2_medkit_msgs.srv import ClearFault, ReportFault
 
-from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, API_BASE_PATH, get_test_port
-from ros2_medkit_test_utils.launch_helpers import create_fault_manager_node, create_gateway_node
-from ros2_medkit_test_utils.service_round_trip import answer_once_each, call_until_answered
+from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES, get_test_port
+from ros2_medkit_test_utils.freeze_frames import (
+    capture_origin,
+    captured_at,
+    FaultManagerCalls,
+    gate_process,
+    open_gate,
+    route_plugin_gateway,
+    TIMEOUT_SEC,
+    wait_frames,
+)
+from ros2_medkit_test_utils.launch_helpers import create_fault_manager_node
 
 APP_A = 'test_route_plc_app'
 APP_B = 'test_route_plc_down_app'
@@ -73,32 +77,6 @@ PER_SOURCE_FILE.write(
     f'{PER_SOURCE_CODE}:\n  per_source: true\n{APP_OWN_CODE}:\n  per_source: true\n')
 PER_SOURCE_FILE.close()
 
-TIMEOUT_SEC = 60.0
-
-
-def _plugin_path(so_name):
-    prefix = get_package_prefix('ros2_medkit_gateway')
-    return os.path.join(prefix, 'lib', 'ros2_medkit_gateway', so_name)
-
-
-def _gate(name, path):
-    """Return a process that exits once ``path`` exists."""
-    return ExecuteProcess(
-        cmd=['sh', '-c', f'while [ ! -e "{path}" ]; do sleep 0.2; done'],
-        name=name, output='screen')
-
-
-def _gateway(life):
-    return create_gateway_node(
-        name=f'freeze_frame_records_gateway_{life}',
-        port=PORTS[life],
-        extra_params={
-            'plugins': ['test_route_data'],
-            'plugins.test_route_data.path': _plugin_path('libtest_route_data_plugin.so'),
-            'entity_freeze_frame.storage.path': STORE_PATH,
-        },
-    )
-
 
 def generate_test_description():
     for path in GATES + [STORE_PATH]:
@@ -112,55 +90,16 @@ def generate_test_description():
             'fault_thresholds.config_file': PER_SOURCE_FILE.name,
         },
     )
-    gateways = [_gateway(life) for life in range(LIVES)]
+    gateways = [route_plugin_gateway(f'freeze_frame_records_gateway_{life}', PORTS[life],
+                                     STORE_PATH)
+                for life in range(LIVES)]
     actions = [fault_manager, gateways[0]]
     for life in range(1, LIVES):
-        gate = _gate(f'gate_{life}', GATES[life])
+        gate = gate_process(f'gate_{life}', GATES[life])
         start = OnProcessExit(target_action=gate, on_exit=[gateways[life]])
         actions += [gate, RegisterEventHandler(start)]
     actions.append(launch_testing.actions.ReadyToTest())
     return LaunchDescription(actions), {f'gateway_{life}': gateways[life] for life in range(LIVES)}
-
-
-def _base(life):
-    return f'http://localhost:{PORTS[life]}{API_BASE_PATH}'
-
-
-def _frames(life, entity_path, code):
-    """Return the freeze frames of a fault detail by entity id, or None when it is not served."""
-    try:
-        response = requests.get(f'{_base(life)}/{entity_path}/faults/{code}', timeout=5)
-    except requests.exceptions.RequestException:
-        return None
-    if response.status_code != 200:
-        return None
-    body = response.json()
-    snapshots = body.get('environment_data', {}).get('snapshots', [])
-    return {
-        'frames': {s.get('name'): s for s in snapshots if s.get('type') == 'freeze_frame'},
-        'occurrence': body.get('x-medkit', {}).get('occurrence_count'),
-    }
-
-
-def _wait_frames(life, entity_path, code, entities, *, ready=lambda frame: True):
-    """Poll until the detail serves a frame of each of ``entities`` that is ``ready``."""
-    deadline = time.monotonic() + TIMEOUT_SEC
-    last = None
-    while time.monotonic() < deadline:
-        last = _frames(life, entity_path, code)
-        if last and all(e in last['frames'] and ready(last['frames'][e]) for e in entities):
-            return last
-        time.sleep(0.2)
-    raise AssertionError(
-        f'{entity_path}/faults/{code} on life {life}: no frames of {entities}; last {last}')
-
-
-def _captured_at(frame):
-    return frame.get('x-medkit', {}).get('captured_at')
-
-
-def _origin(frame):
-    return frame.get('x-medkit', {}).get('capture_origin')
 
 
 class TestFreezeFrameRecordsRestart(unittest.TestCase):
@@ -172,12 +111,8 @@ class TestFreezeFrameRecordsRestart(unittest.TestCase):
     def setUpClass(cls):
         rclpy.init()
         cls.node = Node('freeze_frame_records_client')
-        cls.report = cls.node.create_client(ReportFault, '/fault_manager/report_fault')
-        cls.clear = cls.node.create_client(ClearFault, '/fault_manager/clear_fault')
-        assert cls.report.wait_for_service(timeout_sec=TIMEOUT_SEC), 'report_fault not available'
-        assert cls.clear.wait_for_service(timeout_sec=TIMEOUT_SEC), 'clear_fault not available'
-        answer_once_each(cls.node, (cls.report, cls.clear), TIMEOUT_SEC)
-        cls.sentinels = 0
+        cls.fm = FaultManagerCalls(cls.node)
+        cls.fm.ready()
 
     @classmethod
     def tearDownClass(cls):
@@ -187,69 +122,31 @@ class TestFreezeFrameRecordsRestart(unittest.TestCase):
             if os.path.exists(path):
                 os.unlink(path)
 
-    def _report(self, code, source):
-        request = ReportFault.Request()
-        request.fault_code = code
-        request.event_type = ReportFault.Request.EVENT_FAILED
-        request.severity = Fault.SEVERITY_ERROR
-        request.description = 'freeze frame records restart test'
-        request.source_id = source
-        self.assertTrue(call_until_answered(self.node, self.report, request, TIMEOUT_SEC).accepted)
-
-    def _clear(self, code, source):
-        request = ClearFault.Request()
-        request.fault_code = code
-        request.source_id = source
-        response = call_until_answered(self.node, self.clear, request, TIMEOUT_SEC)
-        self.assertTrue(response.success, response.message)
-
-    def _sentinel_framed(self, life):
-        """
-        Report fresh sentinel codes until one is framed on ``life``.
-
-        A frame of a code confirmed after the start shows that the gateway receives
-        confirm events and that its startup catch-up has returned.
-        """
-        deadline = time.monotonic() + TIMEOUT_SEC
-        while time.monotonic() < deadline:
-            type(self).sentinels += 1
-            code = f'FF_REC_SENTINEL_{life}_{self.sentinels}'
-            self._report(code, APP_A)
-            wait_until = time.monotonic() + 5.0
-            while time.monotonic() < wait_until:
-                found = _frames(life, f'apps/{APP_A}', code)
-                if found and APP_A in found['frames']:
-                    return
-                time.sleep(0.2)
-        self.fail(f'no sentinel was framed on gateway life {life}')
-
-    def _restart(self, life, proc_info, gateway):
-        """Stop gateway life ``life - 1`` and start life ``life``."""
+    def _stop(self, proc_info, gateway):
         os.kill(gateway.process_details['pid'], signal.SIGINT)
         proc_info.assertWaitForShutdown(process=gateway, timeout=TIMEOUT_SEC)
-        with open(GATES[life], 'w', encoding='utf-8') as gate:
-            gate.write('open')
 
     def test_1_life_one_frames_every_record(self):
         """Each record gets its own frames in life 1."""
-        self._sentinel_framed(0)
-        self._report(PER_SOURCE_CODE, APP_A)
-        self._report(PER_SOURCE_CODE, APP_B)
-        self._report(COMPONENT_CODE, COMPONENT)
-        self._report(APP_OWN_CODE, APP_A)
+        self.fm.wait_event_route(PORTS[0], APP_A, 'FF_REC_SENTINEL_0')
+        self.fm.report(PER_SOURCE_CODE, APP_A)
+        self.fm.report(PER_SOURCE_CODE, APP_B)
+        self.fm.report(COMPONENT_CODE, COMPONENT)
+        self.fm.report(APP_OWN_CODE, APP_A)
 
-        a = _wait_frames(0, f'apps/{APP_A}', PER_SOURCE_CODE, [APP_A])
-        b = _wait_frames(0, f'apps/{APP_B}', PER_SOURCE_CODE, [APP_B])
-        component = _wait_frames(0, f'components/{COMPONENT}', COMPONENT_CODE, [APP_A, APP_B])
-        own = _wait_frames(0, f'apps/{APP_A}', APP_OWN_CODE, [APP_A])
+        a = wait_frames(PORTS[0], f'apps/{APP_A}', PER_SOURCE_CODE, [APP_A])
+        b = wait_frames(PORTS[0], f'apps/{APP_B}', PER_SOURCE_CODE, [APP_B])
+        component = wait_frames(PORTS[0], f'components/{COMPONENT}', COMPONENT_CODE,
+                                [APP_A, APP_B])
+        own = wait_frames(PORTS[0], f'apps/{APP_A}', APP_OWN_CODE, [APP_A])
         self.assertEqual(set(a['frames']), {APP_A})
         self.assertEqual(set(b['frames']), {APP_B})
         self.assertEqual(set(own['frames']), {APP_A})
         type(self).life1 = {
-            'a': _captured_at(a['frames'][APP_A]),
-            'b': _captured_at(b['frames'][APP_B]),
-            'component': {e: _captured_at(component['frames'][e]) for e in (APP_A, APP_B)},
-            'own': _captured_at(own['frames'][APP_A]),
+            'a': captured_at(a['frames'][APP_A]),
+            'b': captured_at(b['frames'][APP_B]),
+            'component': {e: captured_at(component['frames'][e]) for e in (APP_A, APP_B)},
+            'own': captured_at(own['frames'][APP_A]),
             'occurrence_a': a['occurrence'],
             'occurrence_b': b['occurrence'],
         }
@@ -257,61 +154,61 @@ class TestFreezeFrameRecordsRestart(unittest.TestCase):
     def test_2_every_record_comes_back_after_a_restart(self, proc_info, gateway_0):
         """P1 and P2: after a restart each record serves its own stored frame."""
         self.assertTrue(self.life1, 'life 1 did not run')
-        self._restart(1, proc_info, gateway_0)
-        self._sentinel_framed(1)
+        self._stop(proc_info, gateway_0)
+        open_gate(GATES[1])
+        self.fm.wait_event_route(PORTS[1], APP_A, 'FF_REC_SENTINEL_1')
 
         # P1: the two records of one per_source code keep their own frame and occurrence.
-        a = _wait_frames(1, f'apps/{APP_A}', PER_SOURCE_CODE, [APP_A])
-        b = _wait_frames(1, f'apps/{APP_B}', PER_SOURCE_CODE, [APP_B])
+        a = wait_frames(PORTS[1], f'apps/{APP_A}', PER_SOURCE_CODE, [APP_A])
+        b = wait_frames(PORTS[1], f'apps/{APP_B}', PER_SOURCE_CODE, [APP_B])
         self.assertEqual(set(a['frames']), {APP_A})
         self.assertEqual(set(b['frames']), {APP_B})
-        self.assertEqual(_captured_at(a['frames'][APP_A]), self.life1['a'],
+        self.assertEqual(captured_at(a['frames'][APP_A]), self.life1['a'],
                          'A was not served from the store')
-        self.assertEqual(_captured_at(b['frames'][APP_B]), self.life1['b'],
+        self.assertEqual(captured_at(b['frames'][APP_B]), self.life1['b'],
                          'B was not served from the store')
-        self.assertIsNone(_origin(a['frames'][APP_A]))
-        self.assertIsNone(_origin(b['frames'][APP_B]))
+        self.assertIsNone(capture_origin(a['frames'][APP_A]))
+        self.assertIsNone(capture_origin(b['frames'][APP_B]))
         self.assertEqual(a['occurrence'], self.life1['occurrence_a'])
         self.assertEqual(b['occurrence'], self.life1['occurrence_b'])
 
         # P2: the Component's record and the App's own record of another code both come back.
-        component = _wait_frames(1, f'components/{COMPONENT}', COMPONENT_CODE, [APP_A, APP_B])
-        own = _wait_frames(1, f'apps/{APP_A}', APP_OWN_CODE, [APP_A])
+        component = wait_frames(PORTS[1], f'components/{COMPONENT}', COMPONENT_CODE,
+                                [APP_A, APP_B])
+        own = wait_frames(PORTS[1], f'apps/{APP_A}', APP_OWN_CODE, [APP_A])
         for entity in (APP_A, APP_B):
-            self.assertEqual(_captured_at(component['frames'][entity]),
+            self.assertEqual(captured_at(component['frames'][entity]),
                              self.life1['component'][entity],
                              f'the Component record lost its stored frame of {entity}')
-            self.assertIsNone(_origin(component['frames'][entity]))
-        self.assertEqual(_captured_at(own['frames'][APP_A]), self.life1['own'],
+            self.assertIsNone(capture_origin(component['frames'][entity]))
+        self.assertEqual(captured_at(own['frames'][APP_A]), self.life1['own'],
                          'the App record lost its stored frame')
-        self.assertIsNone(_origin(own['frames'][APP_A]))
+        self.assertIsNone(capture_origin(own['frames'][APP_A]))
 
     def test_3_a_record_raised_again_while_down_drops_only_its_frame(
             self, proc_info, proc_output, gateway_1, gateway_2):
         """P3: per-record judging drops only the frame of the record that occurred again."""
         self.assertTrue(self.life1, 'life 1 did not run')
-        os.kill(gateway_1.process_details['pid'], signal.SIGINT)
-        proc_info.assertWaitForShutdown(process=gateway_1, timeout=TIMEOUT_SEC)
-        self._clear(PER_SOURCE_CODE, APP_A)
-        self._report(PER_SOURCE_CODE, APP_A)
-        with open(GATES[2], 'w', encoding='utf-8') as gate:
-            gate.write('open')
+        self._stop(proc_info, gateway_1)
+        self.fm.clear(PER_SOURCE_CODE, APP_A)
+        self.fm.report(PER_SOURCE_CODE, APP_A)
+        open_gate(GATES[2])
 
         proc_output.assertWaitFor(
             f"Entity freeze-frame for fault '{PER_SOURCE_CODE}': the stored frame of entity "
             f"'{APP_A}' is from an earlier occurrence and was discarded (stored occurrence 1, "
             'the fault manager lists occurrence 2, CONFIRMED)',
             process=gateway_2, timeout=TIMEOUT_SEC)
-        self._sentinel_framed(2)
+        self.fm.wait_event_route(PORTS[2], APP_A, 'FF_REC_SENTINEL_2')
 
-        a = _wait_frames(2, f'apps/{APP_A}', PER_SOURCE_CODE, [APP_A],
-                         ready=lambda frame: _origin(frame) == 'startup')
-        self.assertGreater(_captured_at(a['frames'][APP_A]), self.life1['a'])
+        a = wait_frames(PORTS[2], f'apps/{APP_A}', PER_SOURCE_CODE, [APP_A],
+                        ready=lambda frame: capture_origin(frame) == 'startup')
+        self.assertGreater(captured_at(a['frames'][APP_A]), self.life1['a'])
         self.assertEqual(a['occurrence'], 2)
-        b = _wait_frames(2, f'apps/{APP_B}', PER_SOURCE_CODE, [APP_B])
-        self.assertEqual(_captured_at(b['frames'][APP_B]), self.life1['b'],
+        b = wait_frames(PORTS[2], f'apps/{APP_B}', PER_SOURCE_CODE, [APP_B])
+        self.assertEqual(captured_at(b['frames'][APP_B]), self.life1['b'],
                          "B's frame was dropped with A's")
-        self.assertIsNone(_origin(b['frames'][APP_B]))
+        self.assertIsNone(capture_origin(b['frames'][APP_B]))
         self.assertEqual(b['occurrence'], 1)
 
 

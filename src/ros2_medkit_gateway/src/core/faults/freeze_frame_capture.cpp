@@ -71,6 +71,13 @@ std::string record_key(const std::string & fault_code, const std::string & owner
   return fault_code + '\0' + owner;
 }
 
+/// The owner of a shared record, and of a record that names none.
+constexpr const char * kSharedOwner = "*";
+
+std::string owner_of(const fd::FaultRecord & record) {
+  return record.owner.empty() ? kSharedOwner : record.owner;
+}
+
 /// The fault code and the owner of a `record_key`.
 std::pair<std::string, std::string> split_record_key(const std::string & key) {
   const auto at = key.find('\0');
@@ -147,12 +154,17 @@ FreezeFrameCapture::standing_faults_from_list_reply(const nlohmann::json & data)
   if (faults == data.end() || !faults->is_array()) {
     return std::nullopt;
   }
+  // Muting is per record: a muted entry names its record by fault_code and source_id.
   std::unordered_set<std::string> muted;
   const auto muted_faults = data.find("muted_faults");
   if (muted_faults != data.end() && muted_faults->is_array()) {
     for (const auto & item : *muted_faults) {
       if (item.is_object() && item.contains("fault_code") && item["fault_code"].is_string()) {
-        muted.insert(item["fault_code"].get<std::string>());
+        const auto source = item.find("source_id");
+        const std::string owner = source != item.end() && source->is_string() && !source->get<std::string>().empty()
+                                      ? source->get<std::string>()
+                                      : kSharedOwner;
+        muted.insert(record_key(item["fault_code"].get<std::string>(), owner));
       }
     }
   }
@@ -177,8 +189,12 @@ FreezeFrameCapture::standing_faults_from_list_reply(const nlohmann::json & data)
     if (status != item.end() && status->is_string()) {
       fault.status = status->get<std::string>();
     }
+    const auto owner = item.find("owner");
+    if (owner != item.end() && owner->is_string() && !owner->get<std::string>().empty()) {
+      fault.owner = owner->get<std::string>();
+    }
     fault.occurrence = occurrence_from_item(item);
-    fault.muted = muted.count(fault.fault_code) != 0;
+    fault.muted = muted.count(record_key(fault.fault_code, fault.owner)) != 0;
     standing.push_back(std::move(fault));
   }
   return standing;
@@ -354,12 +370,9 @@ void FreezeFrameCapture::load_persisted_frames() {
 }
 
 void FreezeFrameCapture::judge_reloaded_frames(const std::vector<StandingFault> & listed) {
-  // A listed fault holds the record of each of its reporting sources.
   std::unordered_map<std::string, const StandingFault *> by_record;
   for (const auto & fault : listed) {
-    for (const auto & source : fault.reporting_sources) {
-      by_record.emplace(record_key(fault.fault_code, source), &fault);
-    }
+    by_record.emplace(record_key(fault.fault_code, fault.owner), &fault);
   }
   struct Superseded {
     std::string key;
@@ -659,9 +672,7 @@ void FreezeFrameCapture::capture_standing_faults(const std::vector<StandingFault
       return;
     }
     for (const auto & queued : queue_) {
-      for (const auto & source : queued.fault.reporting_sources) {
-        queued_records.insert(record_key(queued.fault.fault_code, source));
-      }
+      queued_records.insert(record_key(queued.fault.fault_code, owner_of(queued.fault)));
     }
   }
 
@@ -690,33 +701,27 @@ void FreezeFrameCapture::capture_standing_faults(const std::vector<StandingFault
     if (fault.fault_code.empty() || fault.reporting_sources.empty()) {
       continue;
     }
-    std::vector<std::string> pending_sources;
-    for (const auto & source : fault.reporting_sources) {
-      const auto key = record_key(fault.fault_code, source);
-      // A queued confirm frames the record, and a reloaded frame from this occurrence is the one to serve.
-      if (queued_records.count(key) != 0 || already_framed.count(key) != 0) {
-        continue;
-      }
-      if (framed + pending_sources.size() >= max_faults_) {
-        ++over_cap;  // storing more would FIFO-evict a frame that is still wanted
-        if (over_cap_codes.size() < kMaxNamedOverCapCodes &&
-            (over_cap_codes.empty() || over_cap_codes.back() != fault.fault_code)) {
-          over_cap_codes.push_back(fault.fault_code);
-        }
-        continue;
-      }
-      pending_sources.push_back(source);
+    const auto key = record_key(fault.fault_code, fault.owner);
+    // A queued confirm frames the record, and a reloaded frame from this occurrence is the one to serve.
+    if (queued_records.count(key) != 0 || already_framed.count(key) != 0) {
+      continue;
     }
-    if (pending_sources.empty()) {
+    if (framed >= max_faults_) {
+      ++over_cap;  // storing more would FIFO-evict a frame that is still wanted
+      if (over_cap_codes.size() < kMaxNamedOverCapCodes) {
+        over_cap_codes.push_back(fault.fault_code);
+      }
       continue;
     }
     fd::FaultEventRecord event;
     event.event_type = fd::fault_event_type::kConfirmed;
     event.fault.fault_code = fault.fault_code;
-    event.fault.reporting_sources = std::move(pending_sources);
-    const size_t records = capture_for_event(event, fault.occurrence, /*startup_catchup=*/true);
-    framed += records;
-    captured += records;
+    event.fault.owner = fault.owner;
+    event.fault.reporting_sources = fault.reporting_sources;
+    if (capture_for_event(event, fault.occurrence, /*startup_catchup=*/true)) {
+      ++framed;
+      ++captured;
+    }
   }
   if (over_cap > 0) {
     MEDKIT_LOG_WARN(logger_,
@@ -760,57 +765,46 @@ void FreezeFrameCapture::capture_worker() {
   }
 }
 
-size_t FreezeFrameCapture::capture_for_event(const fd::FaultEventRecord & event, const Occurrence & occurrence,
-                                             bool startup_catchup) {
-  size_t framed_records = 0;
-  // An entity is read once per confirm, also when two records of it need its frame.
-  EntityReads reads;
-  std::unordered_set<std::string> seen;
-  for (const auto & source : event.fault.reporting_sources) {
-    if (seen.insert(source).second &&
-        capture_record(event.fault.fault_code, source, occurrence, startup_catchup, reads)) {
-      ++framed_records;
-    }
-  }
-  return framed_records;
-}
+bool FreezeFrameCapture::capture_for_event(const fd::FaultEventRecord & event, const Occurrence & occurrence,
+                                           bool startup_catchup) {
+  const std::string & fault_code = event.fault.fault_code;
+  const std::string owner = owner_of(event.fault);
 
-std::optional<FreezeFrameCapture::Frame>
-FreezeFrameCapture::read_once(const std::string & entity_id, const std::string & fault_code, EntityReads & reads) {
-  auto it = reads.find(entity_id);
-  if (it == reads.end()) {
-    it = reads.emplace(entity_id, capture_from_entity(entity_id, fault_code)).first;
-  }
-  return it->second;
-}
-
-bool FreezeFrameCapture::capture_record(const std::string & fault_code, const std::string & source,
-                                        const Occurrence & occurrence, bool startup_catchup, EntityReads & reads) {
   std::vector<Frame> frames;
-  if (auto frame = read_once(source, fault_code, reads)) {
-    frames.push_back(std::move(*frame));
-  } else if (hosted_) {
+  // At most one frame per entity: the store keys a record's rows by entity id.
+  std::unordered_set<std::string> framed;
+  for (const auto & source : event.fault.reporting_sources) {
+    if (framed.count(source) != 0) {
+      continue;
+    }
+    if (auto frame = capture_from_entity(source, fault_code)) {
+      framed.insert(source);
+      frames.push_back(std::move(*frame));
+      continue;
+    }
+    if (!hosted_) {
+      continue;
+    }
     // The source reads nothing of its own: frame the entities it hosts instead.
     std::vector<std::string> hosted;
     try {
       hosted = hosted_(source);
     } catch (const std::exception & e) {
       log_fallback_failure_once(fault_code, "hosted-entity lookup threw for '" + source + "': " + e.what());
+      continue;
     }
-    // At most one frame per entity: the store keys a record's rows by entity id.
-    std::unordered_set<std::string> framed;
     for (const auto & hosted_id : hosted) {
       if (hosted_id == source || framed.count(hosted_id) != 0) {
         continue;
       }
-      if (auto hosted_frame = read_once(hosted_id, fault_code, reads)) {
+      if (auto frame = capture_from_entity(hosted_id, fault_code)) {
         framed.insert(hosted_id);
-        frames.push_back(std::move(*hosted_frame));
+        frames.push_back(std::move(*frame));
       }
     }
   }
 
-  const auto key = record_key(fault_code, source);
+  const auto key = record_key(fault_code, owner);
   if (frames.empty()) {
     uint32_t dropped_count = 0;
     std::vector<std::string> dropped_entities;
@@ -872,16 +866,16 @@ bool FreezeFrameCapture::capture_record(const std::string & fault_code, const st
     if (store_) {
       rows.reserve(stored.size());
       for (const auto & frame : stored) {
-        rows.push_back(to_stored(fault_code, source, frame, occurrence));
+        rows.push_back(to_stored(fault_code, owner, frame, occurrence));
       }
     }
   }
   // Outside mutex_, so a fault-detail request does not wait for the store.
   erase_persisted(evicted);
-  write_persisted(fault_code, source, rows);
+  write_persisted(fault_code, owner, rows);
 
   MEDKIT_LOG_DEBUG(logger_, "Captured entity freeze-frame(s) for fault '%s' of '%s'", fault_code.c_str(),
-                   source.c_str());
+                   owner.c_str());
   return true;
 }
 

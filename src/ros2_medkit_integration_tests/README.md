@@ -29,6 +29,7 @@ ros2_medkit_integration_tests/
     gateway_test_case.py  # GatewayTestCase base class
     launch_helpers.py   # create_test_launch(), DEMO_NODE_REGISTRY
     service_round_trip.py  # answer_once_each(): one answer per client before a test acts
+    freeze_frames.py    # entity freeze frames over HTTP, and the fault manager calls
   test/
     features/           # Focused API feature tests
     scenarios/          # End-to-end workflow tests

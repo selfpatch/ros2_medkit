@@ -67,9 +67,10 @@ struct FreezeFrameCaptureConfig {
 /// next confirmation replaces it, or drops it with a warning when the read gets no values
 /// and the occurrence is another one.
 ///
-/// Frames belong to a record: a fault code and the reporting source they were captured
-/// for. `frames_for` answers for one record, and two records of one code keep their
-/// frames, occurrences and stored rows apart.
+/// Frames belong to a fault record: its code and its owner, the reporting source of a
+/// per_source record or "*" for a shared one. A record's frames are read from each of
+/// its reporting sources. `frames_for` answers for one record, and two records of one
+/// code keep their frames, occurrences, muting and stored rows apart.
 ///
 /// With an `EntityFreezeFrameStore`, each capture is written through with the record's
 /// occurrence, and the stored frames load on construction. With a lister, no reloaded
@@ -113,8 +114,8 @@ class FreezeFrameCapture : public FreezeFrameSource {
     }
   };
 
-  /// One fault of a ListFaults reply: its code, the entities that reported it, its
-  /// status, its occurrence and whether correlation mutes it.
+  /// One fault record of a ListFaults reply: its code and owner, the entities that
+  /// reported it, its status, its occurrence and whether correlation mutes it.
   struct StandingFault {
     std::string fault_code;
     std::vector<std::string> reporting_sources;
@@ -123,6 +124,8 @@ class FreezeFrameCapture : public FreezeFrameSource {
     Occurrence occurrence{};
     /// A muted fault publishes no confirm event, so it is not framed at start either.
     bool muted{false};
+    /// "*" for a shared record, and for a reply that names no owner.
+    std::string owner{"*"};
   };
 
   /// Every fault the fault manager holds when the capture starts, in any status and
@@ -169,8 +172,8 @@ class FreezeFrameCapture : public FreezeFrameSource {
 
   /// Parses a ListFaults reply body into standing faults. Nullopt when the body has no
   /// "faults" array. Items that lack a string "fault_code" or an array "reporting_sources"
-  /// are skipped, and non-string source entries are dropped. A fault named in
-  /// "muted_faults" is marked muted. A "first_occurred" that is
+  /// are skipped, and non-string source entries are dropped. A record that "muted_faults"
+  /// names by its fault_code and source_id is marked muted. A "first_occurred" that is
   /// not a positive number of seconds within int64 nanoseconds, or an "occurrence_count"
   /// that is not a positive uint32, leaves that part of `occurrence` at 0. Never throws.
   static std::optional<std::vector<StandingFault>> standing_faults_from_list_reply(const nlohmann::json & data);
@@ -184,16 +187,10 @@ class FreezeFrameCapture : public FreezeFrameSource {
   /// Captures the confirms that arrive until @p deadline. False when the capture stops.
   bool capture_confirms_until(std::chrono::steady_clock::time_point deadline);
   void capture_standing_faults(const std::vector<StandingFault> & listed);
-  /// Captures the record of each reporting source of @p event. Returns how many got frames.
-  size_t capture_for_event(const ros2_medkit::fault_detection::FaultEventRecord & event, const Occurrence & occurrence,
-                           bool startup_catchup = false);
-  /// The reads of one confirm, by entity id. Nullopt is a read that served no frame.
-  using EntityReads = std::unordered_map<std::string, std::optional<Frame>>;
-  /// Captures the record (@p fault_code, @p source). False when it got no frame.
-  bool capture_record(const std::string & fault_code, const std::string & source, const Occurrence & occurrence,
-                      bool startup_catchup, EntityReads & reads);
-  /// `capture_from_entity`, once per entity in @p reads.
-  std::optional<Frame> read_once(const std::string & entity_id, const std::string & fault_code, EntityReads & reads);
+  /// Captures the record @p event names, from each of its reporting sources. False when
+  /// it got no frame.
+  bool capture_for_event(const ros2_medkit::fault_detection::FaultEventRecord & event, const Occurrence & occurrence,
+                         bool startup_catchup = false);
   /// The occurrence of @p record, through the ListFaults reply's encoding.
   static Occurrence occurrence_of(const ros2_medkit::fault_detection::FaultRecord & record);
   std::optional<Frame> frame_from_content(const std::string & entity_id, const std::string & fault_code,

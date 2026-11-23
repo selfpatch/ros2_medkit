@@ -60,8 +60,8 @@ store from it:
   plugin's ``DataProvider``, else its ``x-plc-data`` route) on a thread of its
   own, keeps the frames up to ``FreezeFrameCaptureConfig::max_faults`` records
   (the record captured longest ago evicted first), and serves them as
-  ``FreezeFrameSource``. A record is the fault code and the reporting source
-  the frames were captured for. A frame set stays after ``fault_cleared``. The next
+  ``FreezeFrameSource``. A record is the fault code and its owner: the
+  reporting source of a per_source record, ``*`` for a shared one. A frame set stays after ``fault_cleared``. The next
   confirmation replaces it, or drops it with a warning when the read gets no
   values and the occurrence is another one. With an
   ``EntityFreezeFrameStore`` (``core/faults/entity_freeze_frame_store.hpp``)
