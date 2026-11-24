@@ -79,8 +79,9 @@ jobs:
           apt-get update
           apt-get install -y ccache
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
           path: /root/.cache/ccache
           key: ccache-opcua-${{ matrix.ros_distro }}-${{ github.sha }}
@@ -143,6 +144,13 @@ jobs:
       - name: Show test results
         if: always()
         run: colcon test-result --verbose
+
+      - name: Save ccache
+        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-opcua-${{ matrix.ros_distro }}-${{ github.sha }}
 
   integration:
     name: Integration (OpenPLC, ${{ matrix.variant }})
@@ -499,8 +507,9 @@ jobs:
           apt-get update
           apt-get install -y ccache
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
           path: /root/.cache/ccache
           key: ccache-opcua-secured-${{ github.sha }}
@@ -549,6 +558,13 @@ jobs:
         if: always()
         run: colcon test-result --verbose
 
+      - name: Save ccache
+        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-opcua-secured-${{ github.sha }}
+
   write-capable-build:
     # The shipped plugin is read-only; MEDKIT_OPCUA_READ_ONLY=OFF is the
     # development variant. Nothing else in CI configures it, so without this job
@@ -574,8 +590,9 @@ jobs:
           apt-get update
           apt-get install -y ccache
 
-      - name: Cache ccache
-        uses: actions/cache@v4
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
           path: /root/.cache/ccache
           key: ccache-opcua-write-capable-${{ github.sha }}
@@ -631,3 +648,10 @@ jobs:
       - name: Show test results
         if: always()
         run: colcon test-result --verbose
+
+      - name: Save ccache
+        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-opcua-write-capable-${{ github.sha }}
