@@ -221,9 +221,8 @@ ErrorInfo fault_not_in_scope(const std::string & id_field, const std::string & e
                              const std::string & fault_code) {
   return make_error(404, ERR_RESOURCE_NOT_FOUND, "Fault not found",
                     json{{"details",
-                          "Fault is not in scope for this entity: every reporting source must be one of the entity's "
-                          "owned apps, and a mixed-source fault that includes any out-of-entity reporter is rejected "
-                          "to prevent cross-entity disclosure"},
+                          "Fault is not in scope for this entity: none of its reporting sources is one of the "
+                          "entity's owned sources"},
                          {id_field, entity_id},
                          {"fault_code", fault_code}});
 }
@@ -1294,8 +1293,8 @@ FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
 
     // Owned source -> owning entities, for lock checking: every app's source
     // and every external component's bare id. A record belongs to an entity
-    // when its owner is that source or a path child of it, the rule the
-    // per-entity routes scope records by.
+    // when one of its reporting sources is that source or a path child of it,
+    // the rule the per-entity routes scope records by.
     auto * lock_mgr = ctx_.services().lock_manager();
     std::unordered_map<std::string, std::set<std::string>> source_to_entities;
     if (lock_mgr) {
@@ -1313,18 +1312,23 @@ FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
         }
 
         const std::string owner = faults::stored_owner(fault);
-        const std::string source = faults::record_owner(fault);
-        // Skipped when any entity whose scope holds the record's first source is
-        // locked by another client. check_access adds that entity's parent chain.
+        // Skipped when an entity whose scope holds one of the record's reporting
+        // sources is locked by another client: the record is that entity's too.
+        // check_access adds the entity's parent chain.
         bool blocked = false;
         if (lock_mgr) {
           const auto denied = [&](const std::string & entity_id) {
             return !lock_mgr->check_access(entity_id, client_id, "faults").allowed;
           };
-          blocked = std::any_of(source_to_entities.begin(), source_to_entities.end(), [&](const auto & entry) {
-            return faults::source_in_scope(source, entry.first) &&
-                   std::any_of(entry.second.begin(), entry.second.end(), denied);
-          });
+          const auto source_locked = [&](const json & source) {
+            return source.is_string() &&
+                   std::any_of(source_to_entities.begin(), source_to_entities.end(), [&](const auto & entry) {
+                     return faults::source_in_scope(source.get<std::string>(), entry.first) &&
+                            std::any_of(entry.second.begin(), entry.second.end(), denied);
+                   });
+          };
+          const auto sources = fault.value("reporting_sources", json::array());
+          blocked = sources.is_array() && std::any_of(sources.begin(), sources.end(), source_locked);
         }
 
         if (blocked) {

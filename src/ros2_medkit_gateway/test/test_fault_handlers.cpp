@@ -578,13 +578,10 @@ TEST(FaultInSourceScopeTest, MultiSourceAllInScopeIsInScope) {
       make_fault({"/perception/lidar/lidar_sensor", "/perception/rgb/rgb_camera"}), scope));
 }
 
-TEST(FaultInSourceScopeTest, MultiSourcePartiallyInScopeIsOutOfScope) {
-  // The all-sources semantic blocks a cross-entity DELETE escalation: an
-  // entity that owns only `/perception/lidar/lidar_sensor` must not be able
-  // to clear (or read in detail) a fault that another entity in
-  // `/telemetry/...` also reported.
+TEST(FaultInSourceScopeTest, MultiSourcePartiallyInScopeIsInScope) {
+  // A shared record belongs to every entity one of its reporters belongs to.
   std::set<std::string> scope{"/perception/lidar/lidar_sensor"};
-  EXPECT_FALSE(FaultHandlers::fault_in_source_scope(
+  EXPECT_TRUE(FaultHandlers::fault_in_source_scope(
       make_fault({"/perception/lidar/lidar_sensor", "/telemetry/telemetry_node"}), scope));
 }
 
@@ -602,13 +599,14 @@ TEST(FaultInSourceScopeTest, MissingReportingSourcesFieldIsOutOfScope) {
   EXPECT_FALSE(FaultHandlers::fault_in_source_scope(fault, {"/perception/lidar/lidar_sensor"}));
 }
 
-TEST(FaultInSourceScopeTest, NonStringSourceEntryIsOutOfScope) {
+TEST(FaultInSourceScopeTest, NonStringSourceEntryIsSkipped) {
   json fault;
   fault["fault_code"] = "F1";
   fault["reporting_sources"] = json::array();
-  fault["reporting_sources"].push_back("/perception/lidar/lidar_sensor");
   fault["reporting_sources"].push_back(42);  // Malformed entry
   EXPECT_FALSE(FaultHandlers::fault_in_source_scope(fault, {"/perception/lidar/lidar_sensor"}));
+  fault["reporting_sources"].push_back("/perception/lidar/lidar_sensor");
+  EXPECT_TRUE(FaultHandlers::fault_in_source_scope(fault, {"/perception/lidar/lidar_sensor"}));
 }
 
 TEST(FaultInSourceScopeTest, RootFqnEdgeCase) {
@@ -645,12 +643,9 @@ TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsOtherEntityFault) {
   EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({"s7_status"}), {"process"}));
 }
 
-TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsMixedSourceFault) {
-  // Cross-entity clear/disclosure stays blocked under the all-sources rule. A
-  // record names one source, but one relayed from a peer or read from an older
-  // store may carry two, and one that names "process" and another entity is
-  // out of scope for "process" alone.
-  EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({"process", "s7_status"}), {"process"}));
+TEST(FaultInSourceScopeTest, BareEntityIdScopeHoldsAMixedSourceFault) {
+  // A shared record that "process" and another entity reported is the record of both.
+  EXPECT_TRUE(FaultHandlers::fault_in_source_scope(make_fault({"process", "s7_status"}), {"process"}));
 }
 
 TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsPrefixCollision) {

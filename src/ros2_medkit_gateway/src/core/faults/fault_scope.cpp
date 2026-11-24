@@ -213,22 +213,13 @@ bool fault_in_source_scope(const nlohmann::json & fault, const std::set<std::str
   if (source_fqns.empty()) {
     return false;
   }
-  if (!fault.contains("reporting_sources") || !fault["reporting_sources"].is_array()) {
+  const auto sources = fault.find("reporting_sources");
+  if (sources == fault.end() || !sources->is_array()) {
     return false;
   }
-  const auto & sources = fault["reporting_sources"];
-  if (sources.empty()) {
-    return false;
-  }
-  for (const auto & src : sources) {
-    if (!src.is_string()) {
-      return false;
-    }
-    if (!source_matches_scope(src.get<std::string>(), source_fqns)) {
-      return false;
-    }
-  }
-  return true;
+  return std::any_of(sources->begin(), sources->end(), [&source_fqns](const nlohmann::json & src) {
+    return src.is_string() && source_matches_scope(src.get<std::string>(), source_fqns);
+  });
 }
 
 nlohmann::json filter_faults_by_sources(const nlohmann::json & faults_array,

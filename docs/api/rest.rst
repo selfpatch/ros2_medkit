@@ -1391,9 +1391,12 @@ Query and manage faults.
    so two apps reporting one such ``fault_code`` are two records, each with its
    own status, occurrence count and timestamps, and each cleared on its own. Any
    other code has one shared record that every source reports into. A record is
-   in scope for an entity when each of its reporting sources equals one of the
-   entity's owned sources or is a path child of one (``<owned>/...``). The owned
-   sources are:
+   in scope for an entity when one of its reporting sources equals one of the
+   entity's owned sources or is a path child of one (``<owned>/...``). A shared
+   record that apps A and B both reported is therefore in the scope of A, of B
+   and of every entity above either, and it is still one record:
+   ``DELETE /apps/A/faults/{fault_code}`` clears it for B too. The owned sources
+   are:
 
    - an app: its node FQN, or its own id when the app is external
    - a component: the owned sources of its hosted apps, plus its own id when the
@@ -1403,11 +1406,13 @@ Query and manage faults.
    - a function: the owned sources of its host apps and host components
 
    The same rule, applied to the record whatever its status, decides which
-   ``/{entity-path}/faults`` triggers see the record's events, which entity
-   ``x-medkit`` names in ``GET /api/v1/faults/stream``, which locks the global
-   ``DELETE /api/v1/faults`` honours, and which recordings an entity lists (with
-   one fallback, see List Bulk Data Items). The last path segment of an owner is
-   never read as an entity id.
+   ``/{entity-path}/faults`` triggers see the record's events, which locks the
+   global ``DELETE /api/v1/faults`` honours (a record is skipped while any entity
+   holding it is locked by another client), and which recordings an entity lists
+   and serves (with one fallback, see List Bulk Data Items).
+   ``GET /api/v1/faults/stream`` names one entity per event, the one whose scope
+   holds the record's first reporting source. The last path segment of an owner
+   is never read as an entity id.
 
    An entity shows each ``fault_code`` once. The entry of a code covers every
    record of it in the entity's scope: on an app, the record of its own source
@@ -2761,8 +2766,8 @@ against each change and only fire when the condition is met.
    hierarchy-scoped monitoring. Area-level triggers catch changes from all
    descendant entities within the area.
 
-A fault event reaches a trigger on ``/{entity-path}/faults`` when the record's
-owner is in the entity's fault scope (see Faults Endpoints) - the rule by which
+A fault event reaches a trigger on ``/{entity-path}/faults`` when the record is
+in the entity's fault scope (see Faults Endpoints) - the rule by which
 ``GET /{entity-path}/faults?status=all`` lists the record. Status does not
 matter: confirm, update, clear and heal events are all scoped this way, and the
 payload's ``status`` tells a clear (``CLEARED``) from a heal (``HEALED``). The

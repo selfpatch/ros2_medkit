@@ -15,14 +15,14 @@
 
 """Fault notifications reach exactly the entities whose source scope holds the record.
 
-A fault record has one owner, the reporting source that raised it. The record
-belongs to an entity when that owner equals one of the entity's owned sources
-or is a path child of one. ``GET /{entity}/faults`` uses that rule. This file
-checks that the two notification paths use it too, on the record as the event
-carries it and whatever its status (what ``GET /{entity}/faults?status=all``
-lists after the event): a trigger on ``/{entity}/faults`` gets the event iff
-the entity's scope holds the record, and ``x-medkit`` in ``GET /faults/stream``
-names the app whose scope holds it, never a namesake.
+A fault record belongs to an entity when one of its reporting sources equals
+one of the entity's owned sources or is a path child of one.
+``GET /{entity}/faults`` uses that rule. This file checks that the two
+notification paths use it too, on the record as the event carries it and
+whatever its status (what ``GET /{entity}/faults?status=all`` lists after the
+event): a trigger on ``/{entity}/faults`` gets the event iff the entity's scope
+holds the record, and ``x-medkit`` in ``GET /faults/stream`` names the app whose
+scope holds it, never a namesake.
 
 One fault manager feeds three gateways, one per discovery mode, so every report
 is judged in hybrid, runtime_only and manifest_only at once. The ROS nodes are

@@ -15,9 +15,9 @@
 
 """Integration test: global DELETE /faults honours the lock of every entity that owns a record.
 
-A record belongs to an entity when its owner equals one of the entity's owned
-sources or is a path child of one: an app's node FQN, an external app's bare
-id, an external component's bare id. The global clear skips the record when
+A record belongs to an entity when one of its reporting sources equals one of
+the entity's owned sources or is a path child of one: an app's node FQN, an
+external app's bare id, an external component's bare id. The global clear skips the record when
 any such entity is locked by another client. A name that only starts with an
 owned source is not a path child, so its record is cleared.
 

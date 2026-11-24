@@ -65,9 +65,10 @@ std::set<std::string> resolve_entity_source_fqns(const ThreadSafeEntityCache & c
 /// Ids of the apps that component `source_id` hosts. Empty when `source_id` is not a component.
 std::vector<std::string> hosted_entities_of(const ThreadSafeEntityCache & cache, const std::string & source_id);
 
-/// True when `fault` has at least one reporting source and *every* reporting
-/// source is within `source_fqns` (exact match or a path-boundary prefix).
-/// An empty scope set or an empty/absent source list returns false.
+/// True when at least one reporting source of `fault` is within `source_fqns`
+/// (exact match or a path-boundary prefix). A shared record therefore belongs to
+/// every entity whose scope holds one of its reporters. An empty scope set or an
+/// empty/absent source list returns false.
 bool fault_in_source_scope(const nlohmann::json & fault, const std::set<std::string> & source_fqns);
 
 /// Subset of `faults_array` whose faults satisfy `fault_in_source_scope`.

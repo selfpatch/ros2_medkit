@@ -257,9 +257,12 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
         self._assert_detail_of_shared(
             self.get_json(f'/components/{HOST_COMPONENT}/faults/{pair}'), [OWNER_A, OWNER_B])
 
-        # An App holds a shared record only when every source is its own.
-        self.assertEqual(self._entries(f'apps/{OWNER_A}', pair), [])
-        self.get_json(f'/apps/{OWNER_A}/faults/{pair}', expected_status=404)
+        # A shared record is in the scope of every App that reported it.
+        entries = self._entries(f'apps/{OWNER_A}', pair)
+        self.assertEqual(len(entries), 1, entries)
+        self._assert_record_view_of_shared(entries[0], [OWNER_A, OWNER_B])
+        self._assert_detail_of_shared(
+            self.get_json(f'/apps/{OWNER_A}/faults/{pair}'), [OWNER_A, OWNER_B])
         entries = self._entries(f'apps/{OWNER_A}', solo)
         self.assertEqual(len(entries), 1, entries)
         self._assert_record_view_of_shared(entries[0], [OWNER_A])
