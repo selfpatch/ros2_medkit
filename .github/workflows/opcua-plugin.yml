@@ -59,6 +59,8 @@ jobs:
         include:
           - ros_distro: humble
             os_image: ros:humble-ros-base
+            # GCC 11 writes a different .gch on every build, so ccache misses every file compiled with the precompiled header.
+            cmake_flags: -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
           - ros_distro: jazzy
             os_image: ros:jazzy-ros-base
           - ros_distro: lyrical
@@ -125,7 +127,7 @@ jobs:
           # the dependency chain of ros2_medkit_opcua.
           colcon build --symlink-install \
             --packages-up-to ros2_medkit_opcua \
-            --cmake-args -DCMAKE_BUILD_TYPE=Release \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_flags }} \
             --event-handlers console_direct+
           ccache -s
 

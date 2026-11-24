@@ -38,6 +38,8 @@ jobs:
         include:
           - ros_distro: humble
             os_image: ros:humble-ros-base
+            # GCC 11 writes a different .gch on every build, so ccache misses every file compiled with the precompiled header.
+            cmake_flags: -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
           - ros_distro: lyrical
             os_image: ros:lyrical-ros-base
     container:
@@ -109,7 +111,7 @@ jobs:
           ccache -z
           colcon build --symlink-install \
             --packages-skip ros2_medkit_opcua \
-            --cmake-args -DCMAKE_BUILD_TYPE=Release \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_flags }} \
             --event-handlers console_direct+
           ccache -s
           ./scripts/ccache_report.sh "${{ matrix.ros_distro }}"
@@ -197,6 +199,8 @@ jobs:
             # build-and-test compiles the same sources with the same flags on this
             # distro, so its cache is the superset this job restores from.
             ccache_prefix: ccache-humble-
+            # GCC 11 writes a different .gch on every build, so ccache misses every file compiled with the precompiled header.
+            cmake_flags: -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
           - ros_distro: lyrical
             os_image: ros:lyrical-ros-base
             ccache_prefix: ccache-lyrical-
@@ -272,7 +276,7 @@ jobs:
           # that chain, so it needs no explicit skip here.
           colcon build --symlink-install \
             --packages-up-to ros2_medkit_graph_watchdog \
-            --cmake-args -DCMAKE_BUILD_TYPE=Release \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_flags }} \
             --event-handlers console_direct+
           ccache -s
           ./scripts/ccache_report.sh "${{ matrix.ros_distro }}-graph-watchdog"
@@ -329,6 +333,8 @@ jobs:
           - ros_distro: humble
             os_image: ros:humble-ros-base
             ccache_prefix: ccache-humble-
+            # GCC 11 writes a different .gch on every build, so ccache misses every file compiled with the precompiled header.
+            cmake_flags: -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON
           - ros_distro: jazzy
             os_image: ros:jazzy-ros-base
             # Not ccache-jazzy-: see the note in graph-watchdog.
@@ -401,7 +407,7 @@ jobs:
           ccache -z
           colcon build --symlink-install \
             --packages-up-to ros2_medkit_fault_manager \
-            --cmake-args -DCMAKE_BUILD_TYPE=Release -DPOSTGRES_SUPPORT=ON \
+            --cmake-args -DCMAKE_BUILD_TYPE=Release ${{ matrix.cmake_flags }} -DPOSTGRES_SUPPORT=ON \
             --event-handlers console_direct+
           ccache -s
           ./scripts/ccache_report.sh "${{ matrix.ros_distro }}-postgres"
