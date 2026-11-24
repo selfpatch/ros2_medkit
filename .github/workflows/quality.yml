@@ -5,8 +5,8 @@ on:
     branches: [main]
   push:
     branches: [main]
-  # Caches are restored on merge_group and never saved: no other run can read the
-  # queue ref they would be saved under.
+  # Only runs on main save caches. A cache saved by a pull request or merge queue run
+  # is readable only by that run's ref, and a save can evict the entries of main.
   merge_group:
     types: [checks_requested]
 
@@ -113,7 +113,7 @@ jobs:
         run: colcon test-result --verbose
 
       - name: Save ccache
-        if: github.event_name != 'merge_group' && steps.ccache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: /root/.cache/ccache
@@ -254,14 +254,14 @@ jobs:
           fi
 
       - name: Save ccache
-        if: github.event_name != 'merge_group' && steps.ccache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: /root/.cache/ccache
           key: ccache-jazzy-tidy-${{ github.sha }}
 
       - name: Save ctcache results
-        if: github.event_name != 'merge_group' && steps.ctcache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.ctcache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: /root/.ctcache
@@ -422,7 +422,7 @@ jobs:
           done
 
       - name: Save ccache
-        if: github.event_name != 'merge_group' && steps.ccache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: /root/.cache/ccache
@@ -556,7 +556,7 @@ jobs:
           done
 
       - name: Save ccache
-        if: github.event_name != 'merge_group' && steps.ccache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: /root/.cache/ccache
