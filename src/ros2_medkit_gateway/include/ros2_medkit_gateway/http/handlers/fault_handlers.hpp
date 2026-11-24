@@ -15,6 +15,7 @@
 #pragma once
 
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -217,17 +218,29 @@ class FaultHandlers {
                                                    const std::vector<FreezeFrameSource::Frame> & frames);
 
   /**
-   * @brief Map every owned source to every entity that owns it, for the global
-   * clear's lock check: each app's source (an external app's bare id) and each
-   * external component's bare id. Two apps can bind one node path. The clear
-   * matches a record's owner against each key and its path children.
+   * @brief Map every owned source to every entity that owns it, for the clears'
+   * lock check: each app's source (an external app's bare id) and each external
+   * component's bare id. Two apps can bind one node path. A clear matches each
+   * reporting source of a record against each key and its path children.
    *
-   * Public static for direct unit testing. Called by `clear_all_faults_global`.
+   * Public static for direct unit testing. Called by `record_lock_refusal`'s callers.
    */
   static std::unordered_map<std::string, std::set<std::string>>
   build_source_entity_map(const ThreadSafeEntityCache & cache);
 
  private:
+  /**
+   * @brief The lock refusal for clearing `fault`, or nullopt when there is none.
+   *
+   * Every entity of `source_to_entities` that holds the record by the scope rule
+   * (one of its reporting sources is the entity's source or a path child of it)
+   * is checked as `validate_lock_access` checks a route's entity, its parent
+   * chain included. The refusal is the first denial, in entity id order.
+   */
+  std::optional<ErrorInfo>
+  record_lock_refusal(const http::TypedRequest & req, const nlohmann::json & fault,
+                      const std::unordered_map<std::string, std::set<std::string>> & source_to_entities);
+
   /**
    * @brief Every record of `fault_code` in `entity`'s scope, ordered by owner.
    *

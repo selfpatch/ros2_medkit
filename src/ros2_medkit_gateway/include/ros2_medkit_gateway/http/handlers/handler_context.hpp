@@ -245,6 +245,10 @@ class HandlerContext {
   tl::expected<void, ErrorInfo> validate_lock_access(const http::TypedRequest & req, const EntityInfo & entity,
                                                      const std::string & collection);
 
+  /// validate_lock_access() for the entity with id @p entity_id.
+  tl::expected<void, ErrorInfo> validate_lock_access(const http::TypedRequest & req, const std::string & entity_id,
+                                                     const std::string & collection);
+
   /**
    * @brief Validate entity exists and matches expected route type (typed variant).
    *

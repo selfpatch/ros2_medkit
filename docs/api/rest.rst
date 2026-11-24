@@ -1395,8 +1395,8 @@ Query and manage faults.
    entity's owned sources or is a path child of one (``<owned>/...``). A shared
    record that apps A and B both reported is therefore in the scope of A, of B
    and of every entity above either, and it is still one record:
-   ``DELETE /apps/A/faults/{fault_code}`` clears it for B too. The owned sources
-   are:
+   ``DELETE /apps/A/faults/{fault_code}`` clears it for B too, and is refused
+   while another client locks B's faults. The owned sources are:
 
    - an app: its node FQN, or its own id when the app is external
    - a component: the owned sources of its hosted apps, plus its own id when the
@@ -1406,10 +1406,11 @@ Query and manage faults.
    - a function: the owned sources of its host apps and host components
 
    The same rule, applied to the record whatever its status, decides which
-   ``/{entity-path}/faults`` triggers see the record's events, which locks the
-   global ``DELETE /api/v1/faults`` honours (a record is skipped while any entity
-   holding it is locked by another client), and which recordings an entity lists
-   and serves (with one fallback, see List Bulk Data Items).
+   ``/{entity-path}/faults`` triggers see the record's events, which locks a
+   clear honours (while another client locks any entity holding the record, the
+   per-code ``DELETE`` refuses it and the bulk and global ``DELETE`` skip it, see
+   :doc:`locking`), and which recordings an entity lists and serves (with one
+   fallback, see List Bulk Data Items).
    ``GET /api/v1/faults/stream`` names one entity per event, the one whose scope
    holds the record's first reporting source. The last path segment of an owner
    is never read as an entity id.
@@ -1642,7 +1643,9 @@ Query and manage faults.
    - **400:** ``fault_code`` empty or longer than 256 characters
    - **404:** Fault not found, reported by an app outside this entity's scope,
      or declined by the fault manager
-   - **409:** The entity is locked by another client
+   - **409:** The entity, or another entity holding one of the code's records,
+     is locked by another client. ``parameters.entity_id`` names the locked
+     entity, and no record is cleared
    - **500:** The code covers several records and the fault manager refused to
      clear at least one; ``parameters.failed_codes`` names the code
    - **503:** Fault manager unavailable. This holds for an entity whose faults a
@@ -1670,7 +1673,8 @@ Query and manage faults.
    Accepts the optional ``?status=`` query parameter (same values as ``GET /faults``).
    Without it, clears pending and confirmed faults. Muted records are not cleared,
    because the entity's fault list does not show them. Clear one with its per-code
-   ``DELETE``.
+   ``DELETE``. A record that another entity holding it has locked for another
+   client is skipped, as the global ``DELETE /api/v1/faults`` skips it.
 
    - **204:** Faults cleared (or none to clear)
    - **400:** Invalid status parameter

@@ -272,6 +272,32 @@ FaultHandlers::build_source_entity_map(const ThreadSafeEntityCache & cache) {
   return source_to_entities;
 }
 
+std::optional<ErrorInfo>
+FaultHandlers::record_lock_refusal(const http::TypedRequest & req, const json & fault,
+                                   const std::unordered_map<std::string, std::set<std::string>> & source_to_entities) {
+  const auto sources = fault.value("reporting_sources", json::array());
+  if (!sources.is_array()) {
+    return std::nullopt;
+  }
+  std::set<std::string> holders;
+  for (const auto & source : sources) {
+    if (!source.is_string()) {
+      continue;
+    }
+    for (const auto & [owned, entities] : source_to_entities) {
+      if (faults::source_in_scope(source.get<std::string>(), owned)) {
+        holders.insert(entities.begin(), entities.end());
+      }
+    }
+  }
+  for (const auto & entity_id : holders) {
+    if (auto access = ctx_.validate_lock_access(req, entity_id, "faults"); !access) {
+      return access.error();
+    }
+  }
+  return std::nullopt;
+}
+
 tl::expected<std::vector<json>, ErrorInfo> FaultHandlers::records_of_code(const EntityInfo & entity_info,
                                                                           const std::string & fault_code,
                                                                           const std::string & failure_summary) {
@@ -1050,9 +1076,15 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
         if (store_holds_code) {
           const auto & cache = ctx_.services().entity_cache();
           const auto source_fqns = HandlerContext::resolve_entity_source_fqns(cache, entity_info);
+          const auto source_to_entities = ctx_.services().lock_manager() != nullptr
+                                              ? build_source_entity_map(cache)
+                                              : std::unordered_map<std::string, std::set<std::string>>{};
           for (const auto & fault : all) {
             if (fault.is_object() && fault.value("fault_code", std::string{}) == fault_code &&
                 faults::fault_in_source_scope(fault, source_fqns)) {
+              if (auto refusal = record_lock_refusal(req, fault, source_to_entities)) {
+                return tl::make_unexpected(std::move(*refusal));
+              }
               owners.push_back(faults::stored_owner(fault));
             }
           }
@@ -1106,6 +1138,16 @@ FaultHandlers::clear_fault(const http::TypedRequest & req) {
     }
     if (records->empty()) {
       return tl::make_unexpected(fault_not_in_scope(entity_info.id_field, entity_id, fault_code));
+    }
+    // A record is the record of every entity holding it, so a lock any of them
+    // holds for another client refuses the clear before any record is cleared.
+    if (ctx_.services().lock_manager() != nullptr) {
+      const auto source_to_entities = build_source_entity_map(ctx_.services().entity_cache());
+      for (const auto & record : *records) {
+        if (auto refusal = record_lock_refusal(req, record, source_to_entities)) {
+          return tl::make_unexpected(std::move(*refusal));
+        }
+      }
     }
     // Every record of the code under this entity, each with its own owner. The
     // correlation cascade stays off so this clear cannot reach other entities.
@@ -1236,10 +1278,15 @@ http::Result<http::NoContent> FaultHandlers::clear_all_faults(const http::TypedR
     json faults_to_clear = faults::filter_faults_by_sources(result.data["faults"], entity_fqns);
 
     // Each in-scope record with its own owner. The correlation cascade stays off,
-    // as on the per-code DELETE, so this clear cannot reach other entities.
+    // as on the per-code DELETE, so this clear cannot reach other entities. A
+    // record that another entity holding it has locked for another client is
+    // skipped, as the global clear skips it.
+    const auto source_to_entities = ctx_.services().lock_manager() != nullptr
+                                        ? build_source_entity_map(cache)
+                                        : std::unordered_map<std::string, std::set<std::string>>{};
     std::set<std::string> failed_codes;
     for (const auto & fault : faults_to_clear) {
-      if (!fault.contains("fault_code")) {
+      if (!fault.contains("fault_code") || record_lock_refusal(req, fault, source_to_entities)) {
         continue;
       }
       const std::string code = fault["fault_code"].get<std::string>();
@@ -1301,8 +1348,6 @@ FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
       source_to_entities = build_source_entity_map(ctx_.services().entity_cache());
     }
 
-    auto client_id = req.header("X-Client-Id").value_or(std::string{});
-
     // Clear each RECORD, each with its owner, skipping records whose owning
     // entity is locked by another client.
     if (faults_result.data.contains("faults") && faults_result.data["faults"].is_array()) {
@@ -1314,24 +1359,7 @@ FaultHandlers::clear_all_faults_global(const http::TypedRequest & req) {
         const std::string owner = faults::stored_owner(fault);
         // Skipped when an entity whose scope holds one of the record's reporting
         // sources is locked by another client: the record is that entity's too.
-        // check_access adds the entity's parent chain.
-        bool blocked = false;
-        if (lock_mgr) {
-          const auto denied = [&](const std::string & entity_id) {
-            return !lock_mgr->check_access(entity_id, client_id, "faults").allowed;
-          };
-          const auto source_locked = [&](const json & source) {
-            return source.is_string() &&
-                   std::any_of(source_to_entities.begin(), source_to_entities.end(), [&](const auto & entry) {
-                     return faults::source_in_scope(source.get<std::string>(), entry.first) &&
-                            std::any_of(entry.second.begin(), entry.second.end(), denied);
-                   });
-          };
-          const auto sources = fault.value("reporting_sources", json::array());
-          blocked = sources.is_array() && std::any_of(sources.begin(), sources.end(), source_locked);
-        }
-
-        if (blocked) {
+        if (lock_mgr && record_lock_refusal(req, fault, source_to_entities)) {
           continue;
         }
 

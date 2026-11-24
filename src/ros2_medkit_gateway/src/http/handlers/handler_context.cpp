@@ -209,6 +209,12 @@ tl::expected<void, ErrorInfo> HandlerContext::validate_collection_access_typed(c
 tl::expected<void, ErrorInfo> HandlerContext::validate_lock_access(const http::TypedRequest & req,
                                                                    const EntityInfo & entity,
                                                                    const std::string & collection) {
+  return validate_lock_access(req, entity.id, collection);
+}
+
+tl::expected<void, ErrorInfo> HandlerContext::validate_lock_access(const http::TypedRequest & req,
+                                                                   const std::string & entity_id,
+                                                                   const std::string & collection) {
   // Phase 1: If locking disabled, allow all access.
   auto * lock_mgr = services_.lock_manager();
   if (!lock_mgr) {
@@ -222,7 +228,7 @@ tl::expected<void, ErrorInfo> HandlerContext::validate_lock_access(const http::T
   std::string client_id = client_id_opt.value_or(std::string{});
 
   // Phase 3: Check lock access.
-  auto result = lock_mgr->check_access(entity.id, client_id, collection);
+  auto result = lock_mgr->check_access(entity_id, client_id, collection);
   if (result.allowed) {
     return {};
   }
@@ -233,11 +239,11 @@ tl::expected<void, ErrorInfo> HandlerContext::validate_lock_access(const http::T
   if (result.denied_code == "lock-required") {
     err.code = ERR_INVALID_REQUEST;
     err.params = json{{"details", "A lock must be held to modify this resource collection"},
-                      {"entity_id", entity.id},
+                      {"entity_id", entity_id},
                       {"collection", collection}};
   } else {
     err.code = ERR_LOCK_BROKEN;
-    err.params = json{{"entity_id", entity.id}, {"collection", collection}};
+    err.params = json{{"entity_id", entity_id}, {"collection", collection}};
     if (!result.denied_by_lock_id.empty()) {
       err.params["lock_id"] = result.denied_by_lock_id;
     }
