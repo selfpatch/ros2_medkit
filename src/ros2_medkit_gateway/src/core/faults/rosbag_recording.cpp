@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/core/faults/rosbag_recording.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -118,6 +119,49 @@ std::optional<std::string> recording_file_path(const std::string & recording_pat
   return file_path.string();
 }
 
+std::vector<AttachedRecord> attached_records(const nlohmann::json & rosbag) {
+  std::vector<AttachedRecord> records;
+  const auto codes = rosbag.find("fault_codes");
+  if (codes == rosbag.end() || !codes->is_array()) {
+    return records;
+  }
+  const auto owners = rosbag.find("owners");
+  const bool has_owners = owners != rosbag.end() && owners->is_array() && owners->size() == codes->size();
+  records.reserve(codes->size());
+  for (std::size_t i = 0; i < codes->size(); ++i) {
+    const auto & code = (*codes)[i];
+    if (!code.is_string()) {
+      continue;
+    }
+    std::string owner;
+    if (has_owners && (*owners)[i].is_string()) {
+      owner = (*owners)[i].get<std::string>();
+    }
+    records.push_back(AttachedRecord{code.get<std::string>(), std::move(owner)});
+  }
+  return records;
+}
+
+bool attached_record_in_scope(const std::vector<AttachedRecord> & records, const nlohmann::json & faults,
+                              const std::set<std::string> & scope) {
+  if (!faults.is_array()) {
+    return false;
+  }
+  for (const auto & fault : faults) {
+    if (!fault.is_object() || !fault_in_source_scope(fault, scope)) {
+      continue;
+    }
+    const std::string code = fault.value("fault_code", std::string{});
+    const std::string owner = stored_owner(fault);
+    if (std::any_of(records.begin(), records.end(), [&](const AttachedRecord & record) {
+          return record.fault_code == code && (record.owner.empty() || record.owner == owner);
+        })) {
+      return true;
+    }
+  }
+  return false;
+}
+
 RecordingLookup find_recording(FaultManager & fault_manager, const std::string & recording_id,
                                const std::vector<std::string> & source_filters) {
   RecordingLookup lookup;
@@ -140,24 +184,17 @@ RecordingLookup find_recording(FaultManager & fault_manager, const std::string &
       return lookup;
     }
 
+    // The recording is the entity's when one of the records it is attached to is in scope.
+    // Every status and muted records: a recording outlives its record's active state.
     const std::set<std::string> scope(source_filters.begin(), source_filters.end());
-    bool in_scope = false;
-    if (rosbag.data.contains("fault_codes") && rosbag.data["fault_codes"].is_array()) {
-      for (const auto & code : rosbag.data["fault_codes"]) {
-        if (!code.is_string()) {
-          continue;
-        }
-        const auto fault = fault_manager.get_fault(code.get<std::string>(), "");
-        if (!fault.success && fault.failure == FaultFailure::Unavailable) {
-          return lookup;
-        }
-        if (fault.success && fault_in_source_scope(fault.data, scope)) {
-          in_scope = true;
-          break;
-        }
-      }
+    const auto held = fault_manager.list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
+                                                /*include_cleared=*/true, /*include_healed=*/true,
+                                                /*include_muted=*/true);
+    if (!held.success) {
+      return lookup;
     }
-    if (!in_scope) {
+    if (!attached_record_in_scope(attached_records(rosbag.data), held.data.value("faults", nlohmann::json::array()),
+                                  scope)) {
       lookup.status = RecordingLookupStatus::kNotInEntity;
       return lookup;
     }

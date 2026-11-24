@@ -459,11 +459,8 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
                 f'the per-entity fault {method} never answers 409 for a code',
             )
 
-    def test_076_every_recording_download_declares_its_409(self):
-        """The download routes answer 409 on an ambiguous code and say so.
-
-        A GET carries no lock marker, so a 409 on these operations is there
-        only because the route declares the ambiguous-fault refusal.
+    def test_076_no_recording_download_declares_a_409(self):
+        """A download never refuses a fault code as ambiguous, and the document says so.
 
         @verifies REQ_INTEROP_072
         """
@@ -477,46 +474,23 @@ class TestFaultsOwnerIdentity(GatewayTestCase):
         # pass by matching nothing.
         self.assertEqual(len(downloads), 6, sorted(downloads))
         for path, operation in sorted(downloads.items()):
-            self.assertIn(
-                '409', operation['responses'],
-                f'GET {path} answers 409 x-medkit-ambiguous-fault and has to declare it',
-            )
+            self.assertNotIn('409', operation['responses'], f'GET {path}')
 
-    def test_077_a_bare_code_bag_url_refuses_to_pick_an_owner(self):
-        """A recording URL carrying a bare fault code names no single record.
+    def test_077_a_bare_code_bag_url_serves_only_a_listed_recording(self):
+        """A recording URL carrying a fault code serves a recording the entity lists.
 
-        Two owners of one code in the component's scope means the compatibility
-        URL (the pre-recording-id form, which carries a fault code) addresses
-        neither record, and each owner keeps its own recordings. Serving the
-        lowest-sorting owner's bytes under that URL would never say whose they
-        were, so it answers the same 409 the fault routes do. Rosbag capture is
-        off in this launch, so the assertion is on the refusal the resolution
-        makes before any bag is looked up.
+        Two owners of one code are in the component's scope. The URL serves the
+        newest recording among the entity's records of the code, and rosbag
+        capture is off in this launch, so the component and each App answer 404.
 
         @verifies REQ_INTEROP_072
         """
         self._raise_both()
 
-        response = requests.get(
-            f'{self.BASE_URL}/components/{HOST_COMPONENT}/bulk-data/rosbags/{SHARED_CODE}',
-            timeout=10,
-        )
-
-        self.assertEqual(response.status_code, 409, response.text)
-        body = response.json()
-        self.assertEqual(body.get('vendor_code'), 'x-medkit-ambiguous-fault', body)
-        self.assertEqual(
-            sorted(body['parameters']['owners']), [OWNER_A, OWNER_B], body)
-
-        # One owner in scope is one record, so that entity's own URL is not
-        # ambiguous - it 404s only because no bag was captured.
-        single = requests.get(
-            f'{self.BASE_URL}/apps/{OWNER_A}/bulk-data/rosbags/{SHARED_CODE}', timeout=10
-        )
-        self.assertNotEqual(
-            single.status_code, 409,
-            'one owner in scope must not read as ambiguous',
-        )
+        for entity in (f'components/{HOST_COMPONENT}', f'apps/{OWNER_A}', f'apps/{OWNER_B}'):
+            response = requests.get(
+                f'{self.BASE_URL}/{entity}/bulk-data/rosbags/{SHARED_CODE}', timeout=10)
+            self.assertEqual(response.status_code, 404, f'{entity}: {response.text}')
 
     def test_08_stream_frames_name_the_record_they_describe(self):
         """Each frame carries the entity hint of its own record's owner."""

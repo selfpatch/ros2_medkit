@@ -515,29 +515,31 @@ class TestBulkDataApi(GatewayTestCase):
                 response = requests.get(f'{self.BASE_URL}{endpoint}', timeout=10)
                 self.assertEqual(response.status_code, status, response.text[:200])
 
-    def test_bulk_data_code_url_names_no_record_when_two_owners_sit_below_one_app(self):
-        """Two path children of one node own records of one code: the code URL answers 409.
+    def test_bulk_data_code_url_serves_the_newer_recording_of_two_owners_below_one_app(self):
+        """Two path children of one node own records of one code: the code URL serves the newer.
 
-        The recording-id form from the listing still reaches the recording.
+        Every recording the listing shows downloads by its id.
 
         @verifies REQ_INTEROP_073
         """
-        owners = [f'{LIDAR_FQN}/diag', f'{LIDAR_FQN}/diag/deep']
-        for owner in owners:
-            self._report('BULK_TWICE', owner)
         endpoint = '/apps/lidar_sensor/bulk-data/rosbags'
-        self._bag_fault_codes(endpoint, {'BULK_TWICE'})
 
-        response = requests.get(f'{self.BASE_URL}{endpoint}/BULK_TWICE', timeout=10)
-        self.assertEqual(response.status_code, 409, response.text[:300])
-        body = response.json()
-        self.assertEqual(body.get('vendor_code', body.get('error_code')),
-                         'x-medkit-ambiguous-fault', body)
-        self.assertEqual(sorted(body.get('parameters', body).get('owners', [])), owners, body)
+        def twice(listing):
+            return [item['id'] for item in listing.get('items', [])
+                    if 'BULK_TWICE' in item.get('x-medkit', {}).get('fault_codes', [])]
 
-        ids = [item['id'] for item in self.get_json(endpoint).get('items', [])
-               if 'BULK_TWICE' in item.get('x-medkit', {}).get('fault_codes', [])]
-        self.assertTrue(ids, 'no descriptor carries BULK_TWICE')
+        self._report('BULK_TWICE', f'{LIDAR_FQN}/diag')
+        [older] = self.poll_endpoint_until(endpoint, lambda d: twice(d), timeout=ROSBAG_TIMEOUT)
+        # Listed means its window has closed, so the next confirmation gets its own recording.
+        self._report('BULK_TWICE', f'{LIDAR_FQN}/diag/deep')
+        ids = self.poll_endpoint_until(
+            endpoint, lambda d: twice(d) if len(twice(d)) == 2 else None, timeout=ROSBAG_TIMEOUT)
+        newer = next(i for i in ids if i != older)
+
+        response = requests.get(f'{self.BASE_URL}{endpoint}/BULK_TWICE', timeout=30)
+        self.assertEqual(response.status_code, 200, response.text[:300])
+        self.assertIn(newer, response.headers.get('Content-Disposition', ''))
+
         for recording_id in ids:
             with self.subTest(recording_id=recording_id):
                 download = requests.get(f'{self.BASE_URL}{endpoint}/{recording_id}', timeout=30)

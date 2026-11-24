@@ -1370,12 +1370,8 @@ void RESTServer::setup_routes() {
         .requires_role(UserRole::VIEWER)
         .summary(std::string("Download bulk-data file for ") + et.singular)
         .description("Downloads a bulk-data file (binary content).")
-        // 409 x-medkit-ambiguous-fault: a rosbag URL carrying a fault code
-        // (the form that predates recording ids) resolves that code to one
-        // record the way the fault routes do, and several candidate records
-        // in this entity's scope name none of them. 503: a rosbag when the
-        // fault manager does not answer the ownership check.
-        .errors({409, 503})
+        // 503: a rosbag when the fault manager does not answer the ownership check.
+        .errors({503})
         .operation_id(std::string("download") + capitalize(et.singular) + "BulkData");
 
     register_recording_routes(entity_path, et.singular);
@@ -2165,8 +2161,8 @@ void RESTServer::setup_routes() {
       .requires_role(UserRole::VIEWER)
       .summary("Download bulk-data file for subarea")
       .description("Downloads a bulk-data file for a subarea.")
-      // 409 x-medkit-ambiguous-fault and 503, as on the four top-level download routes.
-      .errors({409, 503})
+      // 503, as on the four top-level download routes.
+      .errors({503})
       .operation_id("downloadSubareaBulkData");
 
   register_recording_routes("/areas/{area_id}/subareas/{subarea_id}", "subarea");
@@ -2204,8 +2200,8 @@ void RESTServer::setup_routes() {
       .requires_role(UserRole::VIEWER)
       .summary("Download bulk-data file for subcomponent")
       .description("Downloads a bulk-data file for a subcomponent.")
-      // 409 x-medkit-ambiguous-fault and 503, as on the four top-level download routes.
-      .errors({409, 503})
+      // 503, as on the four top-level download routes.
+      .errors({503})
       .operation_id("downloadSubcomponentBulkData");
 
   register_recording_routes("/components/{component_id}/subcomponents/{subcomponent_id}", "subcomponent");

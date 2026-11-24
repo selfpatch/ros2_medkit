@@ -1900,14 +1900,14 @@ entity attached to it. A recording therefore reports its size once. One fault
 code can appear on several descriptors, one per occurrence it kept, told apart
 by ``creation_date``, which is the time that recording was made.
 
-An entity lists a recording when the owner of a record it was captured for is
-in the entity's fault scope (see Faults Endpoints), whatever the record's status
-and including a muted record. An entity whose scope resolves no reporting
-source at all, for example a manifest component that hosts no app, matches
-owners against its own node FQN, or its namespace when it has no FQN, instead.
+An entity lists a recording when a record it was captured for is in the
+entity's fault scope (see Faults Endpoints), whatever the record's status and
+including a muted record. An entity whose scope resolves no reporting source at
+all, for example a manifest component that hosts no app, matches reporting
+sources against its own node FQN, or its namespace when it has no FQN, instead.
 A function that hosts nothing lists no recording. The listing reads the fault
-list first, then the recordings of each owner in scope. When either read fails,
-it answers ``503`` rather than an empty or partial list.
+list first, then the recordings of each source the entity owns. When either
+read fails, it answers ``503`` rather than an empty or partial list.
 
 ``x-medkit.storage_files`` is how many storage files the recording is held in,
 read from the recording's own metadata. A ``1`` is the normal case and says the
@@ -2019,12 +2019,19 @@ schema-free media type entry is the accurate description.
 
 **Which recordings an entity serves.** A recording belongs to the fault records
 it is attached to, each a (``fault_code``, owner) pair, and a burst attaches
-several. An entity serves a recording when the owner of one of those records is
-in the entity's fault scope, the scope its fault list uses. A fault code the
-entity also owns a record of is not enough:
-two apps reporting one ``per_source`` code each download their own recording and get ``404`` on
+several. An entity serves a recording when one of those records is in the
+entity's fault scope, the scope its fault list uses, so every recording an
+entity lists downloads through it, here and on the manifest and file routes. The
+recording of a shared record follows the record to every app that reported it.
+A fault code the entity also owns a record of is not enough: two apps reporting
+one ``per_source`` code each download their own recording and get ``404`` on
 the other's, whether or not either record has been cleared, while the component
 hosting both serves both.
+
+A ``rosbags`` URL whose last segment is a fault code rather than a recording id,
+the form that predates recording ids, serves the newest recording among this
+entity's records of that code: the newest of the recordings its listing shows
+for the code. ``404`` when the listing shows none.
 
 **Range requests.** A request carrying a ``Range`` header is answered with
 **206 Partial Content** and a ``Content-Range: bytes <first>-<last>/<total>``
@@ -2060,25 +2067,14 @@ ranged request carries the whole error document.
 - **206 Partial Content**: The byte range requested via ``Range``, with ``Content-Range``
 - **404 Not Found**: Entity, category, or bulk-data ID not found, or a
   recording none of this entity's records is attached to
-- **409 Conflict**: ``x-medkit-ambiguous-fault``. A ``rosbags`` URL whose last
-  segment is a fault code rather than a recording id resolves that code to one
-  record in the entity's scope. The candidates come in three tiers, and the
-  first tier holding any record of the code decides: the ``PREFAILED`` and
-  ``CONFIRMED`` records that are not muted, then the muted ones of those
-  statuses, then the ``CLEARED``, ``HEALED`` and ``PREPASSED`` ones. Several
-  candidates in that tier name none of them, and ``parameters.owners`` names
-  their owners. Address the recording by
-  its own id instead: the ``rosbags`` listing of this entity carries it as each
-  descriptor's ``id``, and a fault detail links it as
-  ``environment_data.snapshots[].bulk_data_uri``.
 - **416 Range Not Satisfiable**: No range of the ``Range`` header starts inside
   the file, with ``Content-Range: bytes */<total>``. Also sent when the header
   could not be parsed, which is not specific to this endpoint - see
   :ref:`rest-range-rejection`.
 - **503 Service Unavailable**: ``rosbags`` only. The fault manager did not
-  answer a call the download needs: the record list, the recording lookup, or
-  the rosbag list of an owner that could hold the recording while no other
-  owner in scope does. A ``404`` would say the recording does not exist.
+  answer a call the download needs: the record list, the recording lookup, or,
+  for a URL that names a fault code, the rosbag list of a source the entity
+  owns. A ``404`` would say the recording does not exist.
 
 Upload Bulk Data
 ~~~~~~~~~~~~~~~~
@@ -3801,12 +3797,6 @@ Vendor-specific ``x-medkit-*`` codes are enveloped: the response carries
    * - ``vendor-error``
      - varies
      - A vendor-specific failure; read ``vendor_code`` for the real code
-   * - ``x-medkit-ambiguous-fault``
-     - 409
-     - The fault code in a ``rosbags`` URL addresses several fault records
-       inside the addressed entity, because several of its reporting sources
-       report that code and each is its own record. ``parameters.owners`` names
-       them. Address the recording by its own id.
    * - ``x-medkit-plugin-error``
      - 400-599
      - Plugin provider returned an error. Status varies by plugin. Message truncated to 512 chars.
@@ -4252,10 +4242,9 @@ Other extensions beyond SOVD:
   tie goes to the smallest id. Consumers can hit
   ``/{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}`` directly without enumerating
   entities - that address serves the fault's newest recording. To reach an older one, list
-  ``/bulk-data/rosbags`` and use the descriptor ``id``. The named entity can hold several records
-  of the code, for example records owned by two paths below one app's node. That address then
-  answers ``409`` ``x-medkit-ambiguous-fault``, and the recording is reached by its ``id`` from
-  the entity's ``/bulk-data/rosbags`` listing. Resolution is snapshotted at event
+  ``/bulk-data/rosbags`` and use the descriptor ``id``. When the named entity holds several
+  records of the code, for example records owned by two paths below one app's node, that address
+  serves the newest recording among them. Resolution is snapshotted at event
   arrival, so an event replayed from the buffer after discovery removed that entity still names
   it. The entire ``x-medkit`` object is omitted when no entity owns the record.
 - ``/health`` - Health check with discovery pipeline diagnostics

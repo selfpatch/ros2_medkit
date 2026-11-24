@@ -94,16 +94,6 @@ void collect_function_app_fqns(const ThreadSafeEntityCache & cache, const std::s
   }
 }
 
-/// True when the entity's fault list shows `fault` when no `status` is asked
-/// for. That list reads the fault manager with parse_fault_status_param's
-/// defaults, pending and confirmed, which the transport sends as PREFAILED and
-/// CONFIRMED. CLEARED, HEALED and PREPASSED appear only under status=cleared,
-/// status=healed or status=all.
-bool shown_by_default_list(const nlohmann::json & fault) {
-  const auto status = fault.value("status", std::string{});
-  return status == "PREFAILED" || status == "CONFIRMED";
-}
-
 bool source_matches_scope(const std::string & src, const std::set<std::string> & scope_fqns) {
   return std::any_of(scope_fqns.begin(), scope_fqns.end(), [&src](const std::string & fqn) {
     return source_in_scope(src, fqn);
@@ -242,77 +232,6 @@ std::string record_owner(const nlohmann::json & fault) {
     return {};
   }
   return sources.front().get<std::string>();
-}
-
-std::vector<ScopedFault> records_of_code_in_scope(const nlohmann::json & faults_array, const std::string & fault_code,
-                                                  const std::set<std::string> & source_fqns) {
-  std::vector<ScopedFault> records;
-  if (!faults_array.is_array()) {
-    return records;
-  }
-  for (const auto & fault : faults_array) {
-    if (!fault.is_object() || fault.value("fault_code", std::string{}) != fault_code) {
-      continue;
-    }
-    // The scope predicate the list routes filter with. It decides which entity
-    // a record belongs to, not whether that entity's list shows it.
-    if (!fault_in_source_scope(fault, source_fqns)) {
-      continue;
-    }
-    records.push_back(ScopedFault{fault, record_owner(fault)});
-  }
-  std::sort(records.begin(), records.end(), [](const ScopedFault & a, const ScopedFault & b) {
-    return a.owner < b.owner;
-  });
-  return records;
-}
-
-std::vector<ScopedFault> addressable_records(const nlohmann::json & listing, const std::string & fault_code,
-                                             const std::set<std::string> & source_fqns) {
-  if (!listing.is_object()) {
-    return {};
-  }
-  auto records = records_of_code_in_scope(listing.value("faults", nlohmann::json::array()), fault_code, source_fqns);
-
-  // Owners whose record of this code is muted. An entry is one muted record,
-  // so the owner has to match as well as the code: muting one owner's record
-  // never hides another owner's record of the same code.
-  std::set<std::string> muted_owners;
-  const auto muted_it = listing.find("muted_faults");
-  if (muted_it != listing.end() && muted_it->is_array()) {
-    for (const auto & entry : *muted_it) {
-      if (entry.is_object() && entry.value("fault_code", std::string{}) == fault_code) {
-        muted_owners.insert(entry.value("source_id", std::string{}));
-      }
-    }
-  }
-
-  // Three tiers, and the first one holding any record decides. The records the
-  // entity's default fault list shows come first. Then the muted ones, which
-  // that list would show but for the correlation engine. Then everything the
-  // list hides for its status: CLEARED, HEALED and PREPASSED, muted or not.
-  // Without the last split a record one source cleared long ago stayed a
-  // candidate beside the record the list shows, and the code answered 409 for
-  // as long as the cleared record was kept.
-  std::vector<ScopedFault> shown;
-  std::vector<ScopedFault> muted;
-  std::vector<ScopedFault> inactive;
-  for (auto & record : records) {
-    if (!shown_by_default_list(record.fault)) {
-      inactive.push_back(std::move(record));
-    } else if (muted_owners.count(record.owner) > 0) {
-      muted.push_back(std::move(record));
-    } else {
-      shown.push_back(std::move(record));
-    }
-  }
-  if (!shown.empty()) {
-    return shown;
-  }
-  if (!muted.empty()) {
-    return muted;
-  }
-  return inactive;
 }
 
 std::string stored_owner(const nlohmann::json & fault) {

@@ -654,179 +654,19 @@ TEST(FaultInSourceScopeTest, BareEntityIdScopeRejectsPrefixCollision) {
   EXPECT_FALSE(FaultHandlers::fault_in_source_scope(make_fault({"process_2"}), {"process"}));
 }
 
+TEST(RecordOwnerTest, RecordOwnerIsTheFirstReportingSource) {
+  EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(
+                json{{"fault_code", "C"}, {"reporting_sources", json::array({"app_a", "app_b"})}}),
+            "app_a");
+  EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(json{{"fault_code", "C"}}), "");
+  EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(json{{"reporting_sources", json::array()}}), "");
+}
+
 // The per-entity detail for an external plugin entity must carry the
 // freeze-frame the fault_manager holds, mirroring the non-plugin detail path.
 // This pins the shape build_sovd_fault_response produces for the PLC case:
 // reporting_sources=[bare id] + a freeze-frame snapshot under a plugin entity
 // path.
-// =============================================================================
-// records_of_code_in_scope / addressable_records - which record a recording
-// URL carrying a fault code resolves to
-// =============================================================================
-namespace {
-
-json record(const std::string & code, const std::string & owner) {
-  return json{{"fault_code", code}, {"status", "CONFIRMED"}, {"reporting_sources", json::array({owner})}};
-}
-
-std::vector<ros2_medkit_gateway::faults::ScopedFault> in_scope(const json & faults, const std::string & code,
-                                                               const std::set<std::string> & scope) {
-  return ros2_medkit_gateway::faults::records_of_code_in_scope(faults, code, scope);
-}
-
-}  // namespace
-
-// The records of ONE code only: a second code the entity also owns is a
-// different resource and must not make its sibling ambiguous.
-TEST(RecordsOfCodeInScopeTest, OtherCodesAreNotCollected) {
-  const json faults = json::array({record("SHARED_CODE", "app_a"), record("OTHER_CODE", "app_b")});
-
-  const auto records = in_scope(faults, "SHARED_CODE", {"app_a", "app_b"});
-
-  ASSERT_EQ(records.size(), 1u);
-  EXPECT_EQ(records[0].owner, "app_a");
-}
-
-// The rosbag download reads the same records to find the owners it asks
-// whether they hold the recording, and a code addressing several of them is not
-// an ambiguity there: every owner in scope is asked. Reading the code unscoped
-// instead answered "ambiguous" and the entity was refused a recording it owns.
-TEST(RecordsOfCodeInScopeTest, EveryOwnerInScopeIsARecordingDownloadCandidate) {
-  const json faults = json::array({record("SHARED_CODE", "app_a"), record("SHARED_CODE", "app_b")});
-
-  EXPECT_FALSE(in_scope(faults, "SHARED_CODE", {"app_a"}).empty()) << "app_a owns a record of this code";
-  EXPECT_EQ(in_scope(faults, "SHARED_CODE", {"app_a", "app_b"}).size(), 2u)
-      << "a component hosting both owners asks both of them";
-  EXPECT_TRUE(in_scope(faults, "SHARED_CODE", {"unrelated_app"}).empty())
-      << "an entity owning no record of this code has no owner to ask";
-}
-
-// The rosbag download resolves the SAME way the fault routes do when the URL
-// carries a bare fault code: exactly one record in scope names a recording, and
-// several name none of them. Serving the lowest-sorting owner's bag would hand a
-// caller another owner's bytes under a URL that never said whose they were. The
-// recording-id form addresses the bag directly and is unaffected.
-TEST(RecordsOfCodeInScopeTest, SeveralOwnersMakeABareCodeUrlAmbiguous) {
-  const json faults = json::array({record("SHARED_CODE", "app_b"), record("SHARED_CODE", "app_a")});
-
-  const auto both = in_scope(faults, "SHARED_CODE", {"app_a", "app_b"});
-  ASSERT_EQ(both.size(), 2u) << "a component hosting both owners resolves two records";
-  EXPECT_EQ(both[0].owner, "app_a");
-  EXPECT_EQ(both[1].owner, "app_b");
-
-  // One owner in scope is still one record, so that URL keeps working.
-  const auto single = in_scope(faults, "SHARED_CODE", {"app_a"});
-  ASSERT_EQ(single.size(), 1u);
-  EXPECT_EQ(single[0].owner, "app_a");
-}
-
-// A muted_faults entry names one record by its code AND its owner. An entry for
-// another owner of the same code, or for the same owner under another code,
-// hides nothing here, so the one record the entity's list shows is the only
-// candidate and the code is not ambiguous.
-TEST(AddressableRecordsTest, AMutedEntryHidesOnlyTheRecordItNames) {
-  const json listing{
-      {"faults", json::array({record("SHARED_CODE", "tank"), record("SHARED_CODE", "pump")})},
-      {"muted_faults", json::array({json{{"fault_code", "SHARED_CODE"}, {"source_id", "pump"}},
-                                    json{{"fault_code", "OTHER_CODE"}, {"source_id", "tank"}}})},
-  };
-
-  const auto records = ros2_medkit_gateway::faults::addressable_records(listing, "SHARED_CODE", {"tank", "pump"});
-
-  ASSERT_EQ(records.size(), 1u) << "only pump's record of this code is muted";
-  EXPECT_EQ(records[0].owner, "tank");
-}
-
-// With no shown record of the code the muted ones are the candidates, every one
-// of them, so two of them still make the code ambiguous rather than picking one.
-TEST(AddressableRecordsTest, MutedRecordsAnswerOnlyWhenNoneIsShown) {
-  const json listing{
-      {"faults", json::array({record("SHARED_CODE", "tank"), record("SHARED_CODE", "pump")})},
-      {"muted_faults", json::array({json{{"fault_code", "SHARED_CODE"}, {"source_id", "pump"}},
-                                    json{{"fault_code", "SHARED_CODE"}, {"source_id", "tank"}}})},
-  };
-
-  const auto records = ros2_medkit_gateway::faults::addressable_records(listing, "SHARED_CODE", {"tank", "pump"});
-
-  ASSERT_EQ(records.size(), 2u);
-  EXPECT_EQ(records[0].owner, "pump");
-  EXPECT_EQ(records[1].owner, "tank");
-}
-
-namespace {
-
-json record_in(const std::string & status, const std::string & code, const std::string & owner) {
-  json r = record(code, owner);
-  r["status"] = status;
-  return r;
-}
-
-}  // namespace
-
-// The entity's default fault list shows PREFAILED and CONFIRMED records. A
-// record the list only shows under status=cleared or status=healed (CLEARED,
-// HEALED, PREPASSED) yields to one it shows by default, so once one of two
-// sources has cleared its record the code names the other one again instead of
-// answering 409 for good.
-TEST(AddressableRecordsTest, ARecordTheListShowsOutranksOneItShowsOnlyOnRequest) {
-  for (const std::string inactive : {"CLEARED", "HEALED", "PREPASSED"}) {
-    for (const std::string active : {"CONFIRMED", "PREFAILED"}) {
-      const json listing{
-          {"faults",
-           json::array({record_in(inactive, "SHARED_CODE", "tank"), record_in(active, "SHARED_CODE", "pump")})},
-      };
-
-      const auto records = ros2_medkit_gateway::faults::addressable_records(listing, "SHARED_CODE", {"tank", "pump"});
-
-      ASSERT_EQ(records.size(), 1u) << inactive << " beside " << active;
-      EXPECT_EQ(records[0].owner, "pump") << inactive << " beside " << active;
-    }
-  }
-}
-
-// A muted record is hidden from the list only because a root cause muted it.
-// It still outranks a record the list hides for its status.
-TEST(AddressableRecordsTest, AMutedActiveRecordOutranksAClearedOne) {
-  const json listing{
-      {"faults",
-       json::array({record_in("CONFIRMED", "SHARED_CODE", "tank"), record_in("CLEARED", "SHARED_CODE", "pump")})},
-      {"muted_faults", json::array({json{{"fault_code", "SHARED_CODE"}, {"source_id", "tank"}}})},
-  };
-
-  const auto records = ros2_medkit_gateway::faults::addressable_records(listing, "SHARED_CODE", {"tank", "pump"});
-
-  ASSERT_EQ(records.size(), 1u);
-  EXPECT_EQ(records[0].owner, "tank");
-}
-
-// Nothing the list shows and nothing muted: the cleared and healed records are
-// the candidates, all of them. One alone is addressable, two make the code
-// ambiguous. A muted record the list would not show anyway (here HEALED) is in
-// that last tier too, because its status hides it from the list whether it is
-// muted or not.
-TEST(AddressableRecordsTest, ClearedAndHealedRecordsAnswerOnlyWhenNothingElseDoes) {
-  const json one{{"faults", json::array({record_in("CLEARED", "SHARED_CODE", "tank")})}};
-  const auto single = ros2_medkit_gateway::faults::addressable_records(one, "SHARED_CODE", {"tank", "pump"});
-  ASSERT_EQ(single.size(), 1u) << "one cleared record alone is still the record the code names";
-  EXPECT_EQ(single[0].owner, "tank");
-
-  const json two{
-      {"faults",
-       json::array({record_in("CLEARED", "SHARED_CODE", "tank"), record_in("HEALED", "SHARED_CODE", "pump")})},
-      {"muted_faults", json::array({json{{"fault_code", "SHARED_CODE"}, {"source_id", "pump"}}})},
-  };
-  const auto both = ros2_medkit_gateway::faults::addressable_records(two, "SHARED_CODE", {"tank", "pump"});
-  ASSERT_EQ(both.size(), 2u) << "two inactive records name neither";
-  EXPECT_EQ(both[0].owner, "pump");
-  EXPECT_EQ(both[1].owner, "tank");
-}
-
-TEST(RecordsOfCodeInScopeTest, RecordOwnerIsTheSingleReportingSource) {
-  EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(record("C", "app_a")), "app_a");
-  EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(json{{"fault_code", "C"}}), "");
-  EXPECT_EQ(ros2_medkit_gateway::faults::record_owner(json{{"reporting_sources", json::array()}}), "");
-}
-
 TEST_F(FaultHandlersTest, BuildSovdFaultResponseExternalEntityFreezeFrame) {
   ros2_medkit_msgs::msg::Fault fault;
   fault.fault_code = "PLC_LEVEL_HIGH";

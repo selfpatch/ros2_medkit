@@ -436,9 +436,10 @@ FaultResult Ros2FaultServiceTransport::get_rosbag(const std::string & id, const 
   result.success = response->success;
 
   if (response->success) {
-    result.data = {{"file_path", response->file_path},       {"recording_id", response->recording_id},
-                   {"fault_codes", response->fault_codes},   {"format", response->format},
-                   {"duration_sec", response->duration_sec}, {"size_bytes", response->size_bytes}};
+    result.data = {{"file_path", response->file_path},     {"recording_id", response->recording_id},
+                   {"fault_codes", response->fault_codes}, {"owners", response->owners},
+                   {"format", response->format},           {"duration_sec", response->duration_sec},
+                   {"size_bytes", response->size_bytes}};
   } else {
     result.error_message = response->error_message;
   }

@@ -60,7 +60,6 @@ class FakeFaultTransport : public FaultServiceTransport {
   bool get_rosbag_unavailable{false};
   /// Stands for a store that could not be read: an answer, but not about the recording.
   bool get_rosbag_declines_everything{false};
-  bool get_fault_unavailable{false};
   bool list_faults_fails{false};
   bool list_rosbags_fails{false};
   /// Filters whose listing fails while the others answer.
@@ -124,10 +123,6 @@ class FakeFaultTransport : public FaultServiceTransport {
   FaultResult get_fault(const std::string & fault_code, const std::string & /*source_id*/) override {
     FaultResult r;
     r.success = false;
-    if (get_fault_unavailable) {
-      r.failure = FaultFailure::Unavailable;
-      return r;
-    }
     const auto found = faults.find(fault_code);
     if (found == faults.end()) {
       return r;
@@ -261,8 +256,8 @@ TEST_F(FindRecordingTest, ADeclinedLookupOfAnEntityWithNoSourceProvesNoAbsence) 
 }
 
 // @verifies REQ_INTEROP_073
-TEST_F(FindRecordingTest, AnUnansweredFaultReadIsNotARefusal) {
-  transport_->get_fault_unavailable = true;
+TEST_F(FindRecordingTest, AnUnansweredFaultListIsNotARefusal) {
+  transport_->list_faults_fails = true;
   EXPECT_EQ(find("fault_LIDAR_1000").status, RecordingLookupStatus::kUnavailable);
 }
 

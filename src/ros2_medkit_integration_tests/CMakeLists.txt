@@ -363,7 +363,12 @@ if(BUILD_TESTING)
   # does - and it costs three startups plus several hundred requests, two of
   # which wait out a fault-service timeout. It does not fit the 120s the
   # feature glob assigns.
+  #
+  # test_fault_recording_ownership waits for six real recordings, each with a
+  # 2 s post-fault window and its finalize, one after another, so that no
+  # confirmation joins another scenario's recording.
   set(_MEDKIT_TEST_TIMEOUT_OVERRIDES
+    test_fault_recording_ownership 240
     test_aggregation_time_budgets 300
     test_peer_failure_reasons 300
     test_relay_peer_credential 300

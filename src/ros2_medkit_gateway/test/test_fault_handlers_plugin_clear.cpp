@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -98,6 +99,8 @@ constexpr const char * kCode = "SHARED_CODE";
 constexpr const char * kComponent = "device_hub";
 constexpr const char * kHostedApp = "tank";
 constexpr const char * kOtherApp = "pump";
+/// The capture time of a stored recording unless the test sets one.
+constexpr int64_t kCapturedAtNs = 1'700'000'000'000'000'000;
 
 /// Records the (entity_id, fault_code, owner) triple of every clear it is asked
 /// for, which is the whole point of the fixture.
@@ -216,6 +219,7 @@ class PluginClearOwnerTest : public ::testing::Test {
     std::string fault_code;
     std::string owner;
     std::string path;
+    int64_t created_at_ns;
   };
 
   static void SetUpTestSuite() {
@@ -310,7 +314,6 @@ class PluginClearOwnerTest : public ::testing::Test {
         base + "get_rosbag",
         [this](const std::shared_ptr<GetRosbag::Request> & req, const std::shared_ptr<GetRosbag::Response> & res) {
           std::lock_guard<std::mutex> lock(store_mutex_);
-          rosbag_requests_.push_back(req->source_id);
           const Recording * found = nullptr;
           for (const auto & rec : recordings_) {
             if (rec.id == req->recording_id) {
@@ -337,6 +340,7 @@ class PluginClearOwnerTest : public ::testing::Test {
           res->file_path = found->path;
           res->recording_id = found->id;
           res->fault_codes = {found->fault_code};
+          res->owners = {found->owner};
           res->format = "mcap";
           res->size_bytes = std::filesystem::file_size(found->path);
         });
@@ -345,8 +349,9 @@ class PluginClearOwnerTest : public ::testing::Test {
         [this](const std::shared_ptr<ListRosbags::Request> & req, const std::shared_ptr<ListRosbags::Response> & res) {
           std::lock_guard<std::mutex> lock(store_mutex_);
           res->success = true;
+          // A reporting source equal to the one asked for, or below it on path segments.
           for (const auto & rec : recordings_) {
-            if (rec.owner != req->entity_fqn) {
+            if (rec.owner != req->entity_fqn && rec.owner.rfind(req->entity_fqn + "/", 0) != 0) {
               continue;
             }
             res->fault_codes.push_back(rec.fault_code);
@@ -355,7 +360,7 @@ class PluginClearOwnerTest : public ::testing::Test {
             res->formats.push_back("mcap");
             res->durations_sec.push_back(1.0);
             res->sizes_bytes.push_back(std::filesystem::file_size(rec.path));
-            res->created_at_ns.push_back(1'700'000'000'000'000'000);
+            res->created_at_ns.push_back(rec.created_at_ns);
           }
         });
     executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
@@ -435,14 +440,15 @@ class PluginClearOwnerTest : public ::testing::Test {
   }
 
   /// A recording of the record (code, owner), with real bytes behind it.
-  void store_recording(const std::string & id, const std::string & code, const std::string & owner) {
+  void store_recording(const std::string & id, const std::string & code, const std::string & owner,
+                       int64_t created_at_ns = kCapturedAtNs) {
     const auto path = bag_dir_ / (id + ".mcap");
     {
       std::ofstream out(path, std::ios::binary);
       out << "bag of " << owner;
     }
     std::lock_guard<std::mutex> lock(store_mutex_);
-    recordings_.push_back(Recording{id, code, owner, path.string()});
+    recordings_.push_back(Recording{id, code, owner, path.string(), created_at_ns});
   }
 
   /// A component hosting two external apps, all three owned by the plugin, so
@@ -505,11 +511,6 @@ class PluginClearOwnerTest : public ::testing::Test {
     return get_requests_;
   }
 
-  std::vector<std::string> rosbag_requests_snapshot() {
-    std::lock_guard<std::mutex> lock(store_mutex_);
-    return rosbag_requests_;
-  }
-
   static std::string component_fault_path() {
     return std::string("/api/v1/components/") + kComponent + "/faults/" + kCode;
   }
@@ -538,7 +539,6 @@ class PluginClearOwnerTest : public ::testing::Test {
   std::vector<ros2_medkit_msgs::msg::Fault> muted_faults_;
   std::vector<Recording> recordings_;
   std::vector<std::pair<std::string, std::string>> get_requests_;
-  std::vector<std::string> rosbag_requests_;
   std::atomic<bool> last_include_muted_{false};
 
   std::mutex cleared_mutex_;
@@ -909,21 +909,17 @@ TEST_F(PluginClearOwnerTest, AMutedRecordAloneServesItsRecordingByCode) {
 
   ASSERT_TRUE(result.has_value()) << "a muted record's recording must stay reachable: " << result.error().message;
   EXPECT_EQ(result->filename.value_or(""), "rec_pump.mcap");
-  const auto asked = rosbag_requests_snapshot();
-  ASSERT_EQ(asked.size(), 1u);
-  EXPECT_EQ(asked[0], kOtherApp) << "the recording must be asked for under the muted record's owner";
 }
 
-// The recording route resolves a code the way the fault routes do: tank's
-// record is the one the component's list shows, so the code names tank's
-// recording and pump's muted record does not make it ambiguous.
+// A recording URL carrying a fault code serves the newest recording among the
+// entity's records of the code, shown or muted.
 // @verifies REQ_INTEROP_072
-TEST_F(PluginClearOwnerTest, ARecordingCodeTakesTheShownRecordOverAMutedOne) {
+TEST_F(PluginClearOwnerTest, ARecordingCodeServesTheNewestRecordingShownOrMuted) {
   seed_native_topology();
   store_record(kCode, kHostedApp);
   store_muted_record(kCode, kOtherApp);
   store_recording("rec_tank", kCode, kHostedApp);
-  store_recording("rec_pump", kCode, kOtherApp);
+  store_recording("rec_pump", kCode, kOtherApp, kCapturedAtNs + 1);
   ASSERT_TRUE(wait_for_store());
 
   RoutedRequest req(std::string("/api/v1/components/") + kComponent + "/bulk-data/rosbags/" + kCode,
@@ -933,11 +929,8 @@ TEST_F(PluginClearOwnerTest, ARecordingCodeTakesTheShownRecordOverAMutedOne) {
 
   auto result = bulk_handlers_->download(typed);
 
-  ASSERT_TRUE(result.has_value()) << "the shown record is the one the code names: " << result.error().message;
-  EXPECT_EQ(result->filename.value_or(""), "rec_tank.mcap");
-  const auto asked = rosbag_requests_snapshot();
-  ASSERT_EQ(asked.size(), 1u);
-  EXPECT_EQ(asked[0], kHostedApp);
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  EXPECT_EQ(result->filename.value_or(""), "rec_pump.mcap") << "the muted record's recording is the newer one";
 }
 
 // Two muted records and no shown one: the per-code DELETE clears both.
@@ -959,12 +952,12 @@ TEST_F(PluginClearOwnerTest, TwoMutedRecordsAloneAreBothCleared) {
 }
 
 // @verifies REQ_INTEROP_072
-TEST_F(PluginClearOwnerTest, TwoMutedRecordsAloneMakeTheRecordingCodeAmbiguous) {
+TEST_F(PluginClearOwnerTest, TwoMutedRecordsAloneServeTheNewerRecordingByCode) {
   seed_native_topology();
   store_muted_record(kCode, kHostedApp);
   store_muted_record(kCode, kOtherApp);
   store_recording("rec_tank", kCode, kHostedApp);
-  store_recording("rec_pump", kCode, kOtherApp);
+  store_recording("rec_pump", kCode, kOtherApp, kCapturedAtNs + 1);
   ASSERT_TRUE(wait_for_store());
 
   RoutedRequest req(std::string("/api/v1/components/") + kComponent + "/bulk-data/rosbags/" + kCode,
@@ -974,10 +967,8 @@ TEST_F(PluginClearOwnerTest, TwoMutedRecordsAloneMakeTheRecordingCodeAmbiguous) 
 
   auto result = bulk_handlers_->download(typed);
 
-  ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().http_status, 409);
-  EXPECT_EQ(result.error().params["owners"], json::array({kOtherApp, kHostedApp}));
-  EXPECT_TRUE(rosbag_requests_snapshot().empty()) << "no recording is looked up for an ambiguous code";
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  EXPECT_EQ(result->filename.value_or(""), "rec_pump.mcap");
 }
 
 // The bulk clear walks the entity's fault list, which leaves muted records out,
@@ -1008,33 +999,24 @@ TEST_F(PluginClearOwnerTest, BulkClearLeavesAMutedRecordToItsPerCodeClear) {
   EXPECT_EQ(status_of(kCode, kOtherApp), "CLEARED") << "the muted record's own per-code DELETE must clear it";
 }
 
-// The recording route's 409 has to send the client somewhere that works. It
-// names the rosbags listing and the fault detail's bulk_data_uri, and following
-// it does work: the listing carries one descriptor per recording, and each
-// descriptor id downloads that owner's bytes.
+// Two records of one code under the component: the code serves the newer
+// recording, and each descriptor id of the listing downloads that owner's bytes.
 // @verifies REQ_INTEROP_072
-TEST_F(PluginClearOwnerTest, TheAmbiguousRecordingCodeNamesWhereEachRecordingIsListed) {
+TEST_F(PluginClearOwnerTest, TheCodeServesTheNewestAndEachListedRecordingDownloadsById) {
   seed_native_topology();
   store_record(kCode, kHostedApp);
   store_record(kCode, kOtherApp);
   store_recording("rec_tank", kCode, kHostedApp);
-  store_recording("rec_pump", kCode, kOtherApp);
+  store_recording("rec_pump", kCode, kOtherApp, kCapturedAtNs + 1);
   ASSERT_TRUE(wait_for_store());
   const std::string rosbags = std::string("/api/v1/components/") + kComponent + "/bulk-data/rosbags";
 
   RoutedRequest by_code(rosbags + "/" + kCode, kComponentBagPattern, "GET");
   ASSERT_TRUE(by_code.matched());
-  auto refused = bulk_handlers_->download(ros2_medkit_gateway::http::TypedRequest(by_code.raw()));
-  ASSERT_FALSE(refused.has_value());
-  ASSERT_EQ(refused.error().http_status, 409);
-  const std::string details = refused.error().params.value("details", "");
-  EXPECT_NE(details.find("GET .../bulk-data/rosbags"), std::string::npos) << details;
-  EXPECT_NE(details.find("descriptor's id"), std::string::npos) << details;
-  EXPECT_NE(details.find("environment_data.snapshots[].bulk_data_uri"), std::string::npos) << details;
-  EXPECT_EQ(details.find("x-medkit.recording_id"), std::string::npos)
-      << "the fault listing carries no recording id, so the message must not send the client there: " << details;
+  auto newest = bulk_handlers_->download(ros2_medkit_gateway::http::TypedRequest(by_code.raw()));
+  ASSERT_TRUE(newest.has_value()) << newest.error().message;
+  EXPECT_EQ(newest->filename.value_or(""), "rec_pump.mcap");
 
-  // Follow the message: list the category, then download each descriptor id.
   RoutedRequest listing(rosbags, R"(/api/v1/components/([^/]+)/bulk-data/([^/]+))", "GET");
   ASSERT_TRUE(listing.matched());
   auto listed = bulk_handlers_->list_descriptors(ros2_medkit_gateway::http::TypedRequest(listing.raw()));
@@ -1057,15 +1039,15 @@ TEST_F(PluginClearOwnerTest, TheAmbiguousRecordingCodeNamesWhereEachRecordingIsL
 
 // Two sources report one code and one of them clears its record. The
 // component's detail merges both, the active one deciding the status and the
-// environment data, its DELETE clears both, and the bag URL by code resolves to
-// the active record's recording.
+// environment data, its DELETE clears both, and the bag URL by code serves the
+// newer recording of the two records, the cleared one's here.
 // @verifies REQ_INTEROP_013
 TEST_F(PluginClearOwnerTest, AClearedRecordLeavesTheComponentRoutesToTheActiveOne) {
   seed_native_topology();
   store_record(kCode, kHostedApp);
   store_record(kCode, kOtherApp);
   store_recording("rec_tank", kCode, kHostedApp);
-  store_recording("rec_pump", kCode, kOtherApp);
+  store_recording("rec_pump", kCode, kOtherApp, kCapturedAtNs + 1);
   set_status(kCode, kOtherApp, ros2_medkit_msgs::msg::Fault::STATUS_CLEARED);
   ASSERT_TRUE(wait_for_store());
 
@@ -1086,10 +1068,9 @@ TEST_F(PluginClearOwnerTest, AClearedRecordLeavesTheComponentRoutesToTheActiveOn
   RoutedRequest bag_req(component_bag_path(kCode), kComponentBagPattern, "GET");
   ASSERT_TRUE(bag_req.matched());
   auto served = bulk_handlers_->download(ros2_medkit_gateway::http::TypedRequest(bag_req.raw()));
-  EXPECT_TRUE(served.has_value()) << "bag URL: the active record's recording is the one the code names: "
-                                  << served.error().message;
+  EXPECT_TRUE(served.has_value()) << "bag URL: " << served.error().message;
   if (served.has_value()) {
-    EXPECT_EQ(served->filename.value_or(""), "rec_tank.mcap");
+    EXPECT_EQ(served->filename.value_or(""), "rec_pump.mcap");
   }
 
   RoutedRequest del_req(component_fault_path(), kComponentFaultPattern);
