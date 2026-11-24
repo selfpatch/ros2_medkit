@@ -68,7 +68,9 @@ struct FreezeFrameCaptureConfig {
 /// and the occurrence is another one.
 ///
 /// Frames belong to a fault record: its code and its owner, the reporting source of a
-/// per_source record or "*" for a shared one. A record's frames are read from each of
+/// per_source record or "*" for a shared one. A record that names no owner belongs to its
+/// first reporting source, the owner the fault routes address it by
+/// (`faults::stored_owner`). A record's frames are read from each of
 /// its reporting sources. `frames_for` answers for one record, and two records of one
 /// code keep their frames, occurrences, muting and stored rows apart.
 ///
@@ -124,7 +126,8 @@ class FreezeFrameCapture : public FreezeFrameSource {
     Occurrence occurrence{};
     /// A muted fault publishes no confirm event, so it is not framed at start either.
     bool muted{false};
-    /// "*" for a shared record, and for a reply that names no owner.
+    /// "*" for a shared record. A reply that names no owner is addressed as the fault
+    /// routes address it: by its first reporting source.
     std::string owner{"*"};
   };
 

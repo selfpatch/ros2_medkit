@@ -23,6 +23,7 @@
 #include <utility>
 
 #include "ros2_medkit_gateway/core/faults/fault_json.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 
 namespace ros2_medkit_gateway {
@@ -71,11 +72,17 @@ std::string record_key(const std::string & fault_code, const std::string & owner
   return fault_code + '\0' + owner;
 }
 
-/// The owner of a shared record, and of a record that names none.
+/// The owner of a shared record, and of a record that names neither an owner nor a source.
 constexpr const char * kSharedOwner = "*";
 
+/// The owner the fault routes address a record by (faults::stored_owner), "*" when it names none.
+std::string addressed_owner(const nlohmann::json & fault) {
+  auto owner = faults::stored_owner(fault);
+  return owner.empty() ? kSharedOwner : owner;
+}
+
 std::string owner_of(const fd::FaultRecord & record) {
-  return record.owner.empty() ? kSharedOwner : record.owner;
+  return addressed_owner({{"owner", record.owner}, {"reporting_sources", record.reporting_sources}});
 }
 
 /// The fault code and the owner of a `record_key`.
@@ -155,16 +162,20 @@ FreezeFrameCapture::standing_faults_from_list_reply(const nlohmann::json & data)
     return std::nullopt;
   }
   // Muting is per record: a muted entry names its record by fault_code and source_id.
+  // An entry that names no source mutes every record of its code.
   std::unordered_set<std::string> muted;
+  std::unordered_set<std::string> muted_codes;
   const auto muted_faults = data.find("muted_faults");
   if (muted_faults != data.end() && muted_faults->is_array()) {
     for (const auto & item : *muted_faults) {
       if (item.is_object() && item.contains("fault_code") && item["fault_code"].is_string()) {
+        const auto code = item["fault_code"].get<std::string>();
         const auto source = item.find("source_id");
-        const std::string owner = source != item.end() && source->is_string() && !source->get<std::string>().empty()
-                                      ? source->get<std::string>()
-                                      : kSharedOwner;
-        muted.insert(record_key(item["fault_code"].get<std::string>(), owner));
+        if (source != item.end() && source->is_string() && !source->get<std::string>().empty()) {
+          muted.insert(record_key(code, source->get<std::string>()));
+        } else {
+          muted_codes.insert(code);
+        }
       }
     }
   }
@@ -189,12 +200,10 @@ FreezeFrameCapture::standing_faults_from_list_reply(const nlohmann::json & data)
     if (status != item.end() && status->is_string()) {
       fault.status = status->get<std::string>();
     }
-    const auto owner = item.find("owner");
-    if (owner != item.end() && owner->is_string() && !owner->get<std::string>().empty()) {
-      fault.owner = owner->get<std::string>();
-    }
+    fault.owner = addressed_owner(item);
     fault.occurrence = occurrence_from_item(item);
-    fault.muted = muted.count(record_key(fault.fault_code, fault.owner)) != 0;
+    fault.muted =
+        muted.count(record_key(fault.fault_code, fault.owner)) != 0 || muted_codes.count(fault.fault_code) != 0;
     standing.push_back(std::move(fault));
   }
   return standing;

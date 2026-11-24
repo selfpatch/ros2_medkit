@@ -152,10 +152,12 @@ class FakeFaultEvents : public FaultEventSource {
   Callback callback_;
 };
 
+/// A confirm of the shared record of @p fault_code, owner "*" as the fault manager names it.
 fd::FaultEventRecord confirmed(const std::string & fault_code, const std::vector<std::string> & sources) {
   fd::FaultEventRecord event;
   event.event_type = fd::fault_event_type::kConfirmed;
   event.fault.fault_code = fault_code;
+  event.fault.owner = "*";
   event.fault.reporting_sources = sources;
   return event;
 }
