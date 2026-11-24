@@ -48,12 +48,15 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rcutils/logging.h"
 #include "ros2_medkit_fault_manager/postgres_fault_storage.hpp"
+#include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 #include "test_log_sink.hpp"
 
 using ros2_medkit_fault_manager::DebounceConfig;
 using ros2_medkit_fault_manager::FaultId;
+using ros2_medkit_fault_manager::FaultStorage;
+using ros2_medkit_fault_manager::InMemoryFaultStorage;
 using ros2_medkit_fault_manager::PgFaultStorage;
 using ros2_medkit_fault_manager::RosbagFileInfo;
 using ros2_medkit_msgs::msg::Fault;
@@ -313,6 +316,69 @@ TEST_F(PgFaultStorageTest, DebounceCountersAreIndependentPerOwner) {
                                clock.now().nanoseconds(), config);
   EXPECT_EQ(storage_->get_fault(a)->status, Fault::STATUS_CONFIRMED);
   EXPECT_EQ(storage_->get_fault(b)->status, Fault::STATUS_PREFAILED);
+}
+
+// ListRosbags(entity_fqn) lists a recording when a reporting source of its record equals entity_fqn or lies
+// below it on path segments. PostgreSQL answers as SQLite and the in-memory store do.
+TEST_F(PgFaultStorageTest, ListRosbagsMatchesSourcesOnPathSegmentsAsTheOtherStores) {
+  ros2_medkit_fault_manager::SqliteFaultStorage sqlite((temp_root_ / "parity.db").string(), test_log_sink());
+  InMemoryFaultStorage memory;
+  const std::vector<std::pair<std::string, FaultStorage *>> stores{
+      {"postgres", storage_.get()}, {"sqlite", &sqlite}, {"memory", &memory}};
+
+  struct Report {
+    FaultId id;
+    std::string source;
+  };
+  // Two per_source records below owner-a, a shared record with two sources below owner-a and one
+  // elsewhere, the near-miss neighbour owner-a2, and a source a LIKE 'owner_a/%' would match.
+  const std::vector<std::pair<std::vector<Report>, int64_t>> recordings{
+      {{{FaultId{"PATH_C", "owner-a/x"}, "owner-a/x"}}, 1000},
+      {{{FaultId{"PATH_C", "owner-a/y"}, "owner-a/y"}}, 2000},
+      {{{FaultId{"NEAR", "*"}, "owner-a2"}}, 3000},
+      {{{FaultId{"SHARED", "*"}, "owner-a/z"},
+        {FaultId{"SHARED", "*"}, "owner-a/w"},
+        {FaultId{"SHARED", "*"}, "owner-b"}},
+       4000},
+      {{{FaultId{"WILD", "*"}, "ownerXa/q"}}, 5000},
+  };
+  for (const auto & [name, store] : stores) {
+    for (const auto & [reports, created_at] : recordings) {
+      for (const auto & report : reports) {
+        store->report_fault_event(report.id, fd::ReportKind::kFailed, Fault::SEVERITY_ERROR, "d", report.source,
+                                  created_at, default_config());
+      }
+      RosbagFileInfo bag;
+      bag.fault_code = reports.front().id.fault_code;
+      bag.owner = reports.front().id.owner;
+      bag.recording_id = "rec_" + std::to_string(created_at);
+      bag.file_path = (temp_root_ / (name + "_" + bag.recording_id)).string();
+      bag.format = "mcap";
+      bag.created_at_ns = created_at;
+      store->store_rosbag_files({bag});
+    }
+  }
+
+  const std::vector<std::pair<std::string, std::vector<std::string>>> expected{
+      {"owner-a", {"rec_4000", "rec_2000", "rec_1000"}},
+      {"owner-a/x", {"rec_1000"}},
+      {"owner-a2", {"rec_3000"}},
+      {"owner-b", {"rec_4000"}},
+      {"owner", {}},
+      {"owner-a/", {}},
+      {"owner_a", {}},
+      {"owner-a/x/deeper", {}},
+      {"", {}},
+  };
+  for (const auto & [entity_fqn, ids] : expected) {
+    for (const auto & [name, store] : stores) {
+      std::vector<std::string> listed;
+      for (const auto & row : store->list_rosbags_for_entity(entity_fqn)) {
+        listed.push_back(row.recording_id);
+      }
+      EXPECT_EQ(listed, ids) << name << " ListRosbags('" << entity_fqn << "')";
+    }
+  }
 }
 
 TEST_F(PgFaultStorageTest, EvidenceAttachesToOneOwnerAndIsInvisibleUnderAnother) {

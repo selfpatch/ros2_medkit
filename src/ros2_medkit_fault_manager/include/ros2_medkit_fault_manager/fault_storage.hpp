@@ -528,9 +528,8 @@ class FaultStorage {
   /// @return Vector of rosbag file info
   virtual std::vector<RosbagFileInfo> get_all_rosbag_files() const = 0;
 
-  /// Get rosbags of every record owned by an entity
-  /// @param entity_fqn The entity's fully qualified name to filter by
-  /// @return Vector of rosbag file info for records this entity owns
+  /// Get the rosbags of every record with a reporting source equal to @p entity_fqn or below it on
+  /// path segments (`<entity_fqn>/...`), newest first. An empty @p entity_fqn matches nothing.
   virtual std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const = 0;
 
   /// Get all stored fault records regardless of status (for filtering)

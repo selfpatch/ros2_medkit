@@ -2065,16 +2065,20 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::list_rosbags_for_entity(const st
   std::lock_guard<std::mutex> lock(mutex_);
 
   std::vector<RosbagFileInfo> result;
+  if (entity_fqn.empty()) {
+    return result;
+  }
 
-  // Join rosbag_files with the row's record and keep the rows whose record lists the entity among its
-  // reporting sources. json_each() rather than LIKE, which treats '_' as a single-char wildcard and
-  // would produce false positives on ROS names.
+  // The rows whose record has a reporting source equal to the entity or below it on path segments.
+  // substr() rather than LIKE, which reads '_' and '%' in ROS names as wildcards. EXISTS keeps a row
+  // once when several of its record's sources match.
   SqliteStatement stmt(db_,
                        "SELECT r.fault_code, r.owner, r.recording_id, r.file_path, r.format, r.duration_sec, "
                        "r.size_bytes, r.created_at_ns "
                        "FROM rosbag_files r "
                        "JOIN faults f ON r.fault_code = f.fault_code AND r.owner = f.owner "
-                       "JOIN json_each(f.reporting_sources) j ON j.value = ? "
+                       "WHERE EXISTS (SELECT 1 FROM json_each(f.reporting_sources) j "
+                       "WHERE j.value = ?1 OR substr(j.value, 1, length(?1) + 1) = ?1 || '/') "
                        "ORDER BY r.created_at_ns DESC, r.id DESC");
 
   stmt.bind_text(1, entity_fqn);

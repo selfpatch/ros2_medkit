@@ -830,15 +830,23 @@ std::vector<RosbagFileInfo> InMemoryFaultStorage::get_all_rosbag_files() const {
 std::vector<RosbagFileInfo> InMemoryFaultStorage::list_rosbags_for_entity(const std::string & entity_fqn) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  if (entity_fqn.empty()) {
+    return {};
+  }
+  // A source of the entity: equal to it or below it on path segments.
+  const auto of_entity = [&entity_fqn](const std::string & source) {
+    return source == entity_fqn ||
+           (source.size() > entity_fqn.size() && source.compare(0, entity_fqn.size(), entity_fqn) == 0 &&
+            source[entity_fqn.size()] == '/');
+  };
   std::vector<const RosbagRow *> rows;
   for (const auto & row : rosbag_files_) {
-    // The entity owns the row when it is among the reporting sources of the row's record.
     auto fault_it = faults_.find(FaultId{row.info.fault_code, row.info.owner});
     if (fault_it == faults_.end()) {
       continue;
     }
     const auto & sources = fault_it->second.reporting_sources;
-    if (sources.find(entity_fqn) != sources.end()) {
+    if (std::any_of(sources.begin(), sources.end(), of_entity)) {
       rows.push_back(&row);
     }
   }

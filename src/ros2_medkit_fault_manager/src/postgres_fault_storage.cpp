@@ -1546,15 +1546,21 @@ std::vector<RosbagFileInfo> PgFaultStorage::get_all_rosbag_files() const {
 std::vector<RosbagFileInfo> PgFaultStorage::list_rosbags_for_entity(const std::string & entity_fqn) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
+  if (entity_fqn.empty()) {
+    return {};
+  }
   return run_in_transaction("list_rosbags_for_entity", [&](pqxx::work & tx) {
-    // The rows whose record lists the entity among its reporting sources.
+    // The rows whose record has a reporting source equal to the entity or below it on path segments.
+    // left() rather than LIKE, which reads '_' and '%' in ROS names as wildcards. EXISTS keeps a row
+    // once when several of its record's sources match.
     auto res =
         execute(tx,
                 "SELECT r.fault_code, r.owner, r.recording_id, r.file_path, r.format, r.duration_sec, r.size_bytes, "
                 "r.created_at_ns "
                 "FROM rosbag_files r "
                 "JOIN faults f ON r.fault_code = f.fault_code AND r.owner = f.owner "
-                "JOIN jsonb_array_elements_text(f.reporting_sources::jsonb) AS j(value) ON j.value = $1 "
+                "WHERE EXISTS (SELECT 1 FROM jsonb_array_elements_text(f.reporting_sources::jsonb) AS j(value) "
+                "WHERE j.value = $1 OR left(j.value, length($1) + 1) = $1 || '/') "
                 "ORDER BY r.created_at_ns DESC, r.id DESC",
                 entity_fqn);
 
