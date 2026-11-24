@@ -201,8 +201,10 @@ opcua::ByteString read_file_bytes(const std::string & path) {
   if (!f) {
     return opcua::ByteString{};
   }
-  std::string data((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-  return opcua::ByteString(std::string_view(data));
+  std::ostringstream data;
+  data << f.rdbuf();
+  const std::string bytes = data.str();
+  return opcua::ByteString(std::string_view(bytes));
 }
 
 #if !MEDKIT_OPCUA_READ_ONLY
