@@ -22,7 +22,7 @@
 # Entity FQN (fully qualified name) to filter rosbags by. A recording is listed when a
 # reporting source of a record it is attached to equals entity_fqn or lies below it on path
 # segments: "/robot/arm" matches "/robot/arm" and "/robot/arm/joint", not "/robot/arm2".
-# An empty entity_fqn matches nothing.
+# An empty entity_fqn is refused: success is false.
 string entity_fqn
 ---
 # Response fields
