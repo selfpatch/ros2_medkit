@@ -379,6 +379,10 @@ tl::expected<std::vector<nlohmann::json>, ErrorInfo> list_scoped_rosbag_rows(Fau
   std::vector<nlohmann::json> rows;
   std::set<std::string> seen;
   for (const auto & source : scope) {
+    // The fault manager refuses an empty entity_fqn, and an empty source holds no record.
+    if (source.empty()) {
+      continue;
+    }
     auto listed = fault_mgr.list_rosbags(source);
     if (!listed.success) {
       return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "Recordings could not be listed",
@@ -523,7 +527,7 @@ std::vector<std::string> compute_bulkdata_source_filters(const ThreadSafeEntityC
   // One rule for every entity type: the same fault-scope resolution that drives
   // GET /{entity}/faults (external app -> bare id, external component also owns
   // its own id, AREA recurses subareas, FUNCTION follows component hosts).
-  // Rosbags are keyed by exact reporting source, so any private variant here
+  // Rosbags are listed by reporting source, so any private variant here
   // makes a fault the entity lists advertise a bag that 404s - e.g. an
   // area-scoped bulk_data_uri resolved through the area namespace never
   // matched a bag stored under a hosted app's bare id.

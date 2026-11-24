@@ -1189,7 +1189,7 @@
                 "SENSOR_OVERTEMP"
               ]
             },
-            "description": "Get one fault record of this component by fault_code (REQ_INTEROP_013). Returns the SOVD detail whose x-medkit names the record's owner (x-medkit.owner) beside reporting_sources, occurrence_count and severity_label. The detail is the code's entry over every record of it in this component's scope, whatever its status and muted or not."
+            "description": "Get one fault record of this component by fault_code (REQ_INTEROP_013). Returns the SOVD detail of the code's entry over every record of it in this component's scope, whatever its status and muted or not. x-medkit.records names each record the entry covers (app_id and source_id for a per_source record, reporting_sources for a shared one, and its status), beside reporting_sources, occurrence_count and severity_label. x-medkit.owner appears only when the entry is one per_source record."
           },
           "response": []
         },

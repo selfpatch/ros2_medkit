@@ -4241,8 +4241,8 @@ Other extensions beyond SOVD:
 - ``DELETE /faults`` - Clear all faults globally
 - ``GET /faults/stream`` - SSE real-time fault notifications. Each event payload carries an
   optional ``x-medkit`` SOVD payload-extension object with ``entity_type`` and ``entity_id``
-  fields naming the entity whose fault scope holds the record's owner: the app, or else the
-  external component. With nested node paths the app owning the longest source is named, and a
+  fields naming the entity whose fault scope holds the record's first reporting source: the app,
+  or else the external component. With nested node paths the app owning the longest source is named, and a
   tie goes to the smallest id. Consumers can hit
   ``/{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}`` directly without enumerating
   entities - that address serves the fault's newest recording. To reach an older one, list

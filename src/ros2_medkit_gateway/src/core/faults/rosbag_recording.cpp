@@ -125,6 +125,8 @@ std::vector<AttachedRecord> attached_records(const nlohmann::json & rosbag) {
   if (codes == rosbag.end() || !codes->is_array()) {
     return records;
   }
+  // `owners` runs parallel to `fault_codes`. A fault manager that predates owners
+  // sends none, and every record it holds is shared, so the code alone names it.
   const auto owners = rosbag.find("owners");
   const bool has_owners = owners != rosbag.end() && owners->is_array() && owners->size() == codes->size();
   records.reserve(codes->size());
