@@ -59,12 +59,16 @@ def generate_test_description():
 class DemoNode:
     """A demo node process in one ROS domain."""
 
-    def __init__(self, key, domain):
+    def __init__(self, key, domain, *, targeted_from=None):
         executable, name, namespace = DEMO_NODE_REGISTRY[key]
         path = os.path.join(get_package_prefix('ros2_medkit_integration_tests'),
                             'lib', 'ros2_medkit_integration_tests', executable)
+        # targeted_from is the node name the executable sets in code. A remap aimed at it
+        # renames the node with no plain __node:= argument, so no PID lookup can match it.
+        prefix = f'{targeted_from}:' if targeted_from else ''
         self.proc = subprocess.Popen(
-            [path, '--ros-args', '-r', f'__node:={name}', '-r', f'__ns:={namespace}'],
+            [path, '--ros-args',
+             '-r', f'{prefix}__node:={name}', '-r', f'{prefix}__ns:={namespace}'],
             env=dict(os.environ, ROS_DOMAIN_ID=str(domain)),
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.pid = self.proc.pid
@@ -95,25 +99,35 @@ class TestProcfsDomainIsolation(GatewayTestCase):
             node.stop()
 
     @classmethod
-    def start(cls, key, domain):
-        node = DemoNode(key, domain)
+    def start(cls, key, domain, **kwargs):
+        node = DemoNode(key, domain, **kwargs)
         cls.nodes.append(node)
         return node
 
-    def procfs(self, app_id):
-        """Return (status, served PID) of the procfs route of an app."""
+    def procfs_answer(self, app_id):
+        """Return (status, served PID, vendor code) of the procfs route of an app."""
         try:
             r = requests.get(f'{self.BASE_URL}/apps/{app_id}/x-medkit-procfs', timeout=5)
         except requests.exceptions.RequestException as e:
-            return str(e), None
-        return r.status_code, r.json().get('pid') if r.status_code == 200 else None
+            return str(e), None, None
+        try:
+            body = r.json()
+        except ValueError:
+            body = {}
+        served = body.get('pid') if r.status_code == 200 else None
+        return r.status_code, served, body.get('vendor_code')
 
-    def wait_served(self, app_id, pid, *, own_pid=None):
+    def procfs(self, app_id):
+        """Return (status, served PID) of the procfs route of an app."""
+        return self.procfs_answer(app_id)[:2]
+
+    def wait_served(self, app_id, pid, *, own_pid=None, foreign_pid=None):
         """
         Poll until the procfs route of app_id serves pid.
 
         With own_pid, every answer for temp_sensor meanwhile must be that process
         or a 404 while it is looked up: never another process, never a 503.
+        With foreign_pid, no answer for temp_sensor meanwhile may serve that process.
         """
         deadline = time.monotonic() + SERVED_TIMEOUT
         last = None
@@ -123,6 +137,9 @@ class TestProcfsDomainIsolation(GatewayTestCase):
                 self.assertNotEqual(status, 503, 'temp_sensor answered 503 while its process runs')
                 if status == 200:
                     self.assertEqual(served, own_pid, 'temp_sensor served another process')
+            if foreign_pid is not None:
+                self.assertNotEqual(self.procfs('temp_sensor'), (200, foreign_pid),
+                                    'temp_sensor served the node of the second domain')
             last = self.procfs(app_id)
             if last == (200, pid):
                 return
@@ -140,14 +157,38 @@ class TestProcfsDomainIsolation(GatewayTestCase):
         self.wait_served('rpm_sensor', marker.pid, own_pid=self.own.pid)
         self.assertEqual(self.procfs('temp_sensor'), (200, self.own.pid))
 
-    def test_3_exit_of_the_other_node_changes_nothing(self):
+    def test_3_app_without_own_process_is_not_served_from_another_domain(self):
+        """With no process of its own domain to match, the second domain's node is not served."""
+        # The app stays, as the same node renamed by a targeted remap. The node of the
+        # second domain is then the only command line that names it, whatever the PIDs.
+        self.own.stop()
+        unmatched = self.start('temp_sensor', get_test_domain_id(),
+                               targeted_from='engine_temp_sensor')
+        marker = self.start('status_sensor', get_test_domain_id())
+        self.wait_served('status_sensor', marker.pid, foreign_pid=self.other.pid)
+        deadline = time.monotonic() + SERVED_TIMEOUT
+        last = None
+        while time.monotonic() < deadline:
+            last = self.procfs_answer('temp_sensor')
+            self.assertNotEqual(last[:2], (200, self.other.pid),
+                                'temp_sensor served the node of the second domain')
+            if last == (404, None, 'x-medkit-pid-lookup-failed'):
+                break
+            time.sleep(0.2)
+        else:
+            self.fail(f'temp_sensor did not answer 404 pid-lookup-failed; last {last}')
+        unmatched.stop()
+        type(self).own = self.start('temp_sensor', get_test_domain_id())
+        self.wait_served('temp_sensor', self.own.pid, foreign_pid=self.other.pid)
+
+    def test_4_exit_of_the_other_node_changes_nothing(self):
         """When the node of the second domain exits, the route still serves its own process."""
         self.other.stop()
         marker = self.start('pressure_sensor', get_test_domain_id())
         self.wait_served('pressure_sensor', marker.pid, own_pid=self.own.pid)
         self.assertEqual(self.procfs('temp_sensor'), (200, self.own.pid))
 
-    def test_4_restarted_node_is_served_without_503(self):
+    def test_5_restarted_node_is_served_without_503(self):
         """After the node restarts, its new process is served at once: no 503 on the old PID."""
         self.own.stop()
         type(self).own = self.start('temp_sensor', get_test_domain_id())
