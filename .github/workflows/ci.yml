@@ -155,10 +155,18 @@ jobs:
           # ros2_medkit_graph_watchdog is tested in graph-watchdog below. Its end-to-end suite
           # is long, and this step is capped rather than the job, so a package that overruns
           # takes every package still running down and reports no test name doing it.
+          # ros2_medkit_cmake's allocator tests hold ports across the whole domain band, so they
+          # run alone, before every other package. A failure of the first run does not skip the second.
+          rc=0
           colcon test --return-code-on-test-failure \
-            --packages-skip ros2_medkit_opcua ros2_medkit_graph_watchdog \
+            --packages-select ros2_medkit_cmake \
             --ctest-args -LE linter \
-            --event-handlers console_direct+
+            --event-handlers console_direct+ || rc=$?
+          colcon test --return-code-on-test-failure \
+            --packages-skip ros2_medkit_opcua ros2_medkit_graph_watchdog ros2_medkit_cmake \
+            --ctest-args -LE linter \
+            --event-handlers console_direct+ || rc=$?
+          exit "$rc"
 
       - name: Check the run completed, and record the environment
         if: always()
@@ -562,10 +570,18 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           # ros2_medkit_graph_watchdog is tested in graph-watchdog, on this distro too.
           # Its end-to-end suite is long, so it has a job of its own.
+          # ros2_medkit_cmake's allocator tests hold ports across the whole domain band, so they
+          # run alone, before every other package. A failure of the first run does not skip the second.
+          rc=0
           colcon test --return-code-on-test-failure \
-            --packages-skip ros2_medkit_opcua ros2_medkit_graph_watchdog \
+            --packages-select ros2_medkit_cmake \
             --ctest-args -LE linter \
-            --event-handlers console_direct+
+            --event-handlers console_direct+ || rc=$?
+          colcon test --return-code-on-test-failure \
+            --packages-skip ros2_medkit_opcua ros2_medkit_graph_watchdog ros2_medkit_cmake \
+            --ctest-args -LE linter \
+            --event-handlers console_direct+ || rc=$?
+          exit "$rc"
 
       - name: Check the run completed, and record the environment
         if: always()
