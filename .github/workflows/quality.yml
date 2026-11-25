@@ -645,8 +645,9 @@ jobs:
         run: |
           # Same reasoning as the workspace sanitizer jobs, and the same need:
           # the chain built here still includes the gateway.
-          mkdir -p /mnt/gw/build /mnt/gw/tmp
-          ln -sfn /mnt/gw/build build
+          # The path must match the sanitizer job whose ccache this job restores, so ccache can hit.
+          mkdir -p /mnt/${{ matrix.sanitizer }}/build /mnt/${{ matrix.sanitizer }}/tmp
+          ln -sfn /mnt/${{ matrix.sanitizer }}/build build
           df -h / /mnt
 
       - name: Build with ${{ matrix.name }}
@@ -654,7 +655,7 @@ jobs:
           CCACHE_DIR: /root/.cache/ccache
           CCACHE_MAXSIZE: ${{ matrix.ccache_size }}
           CCACHE_SLOPPINESS: pch_defines,time_macros
-          TMPDIR: /mnt/gw/tmp
+          TMPDIR: /mnt/${{ matrix.sanitizer }}/tmp
         run: |
           source /opt/ros/jazzy/setup.bash
           ccache -z
