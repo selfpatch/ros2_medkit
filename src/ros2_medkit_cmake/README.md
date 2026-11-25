@@ -189,6 +189,13 @@ than shut down, and leaves every file a live process still holds. A line startin
 `[medkit-domain] reclaimed shared memory` in the test output says it removed something. A line
 with `shm clean failed (rc=N)` says the tool failed, and carries the last line of its stderr.
 
+Every sweep holds a shared `flock` on `/dev/shm/medkit_shm_sweep.lock`, so sweeps run side by
+side. A test that kills a participant and checks its own wrapper's sweep sets
+`MEDKIT_TEST_SHM_EXCLUSIVE=1`: its wrapper holds the lock exclusively from the start of the
+command to the end of its own sweep. A wrapper whose test ends meanwhile prints
+`the sweep waits until it ends` and sweeps once the holder lets go. The kernel releases the lock
+when the holder exits or is killed.
+
 A test that needs several domains at once - a multi-gateway test running a second and a third
 gateway - asks for them with `DOMAINS <n>`. The first arrives as `ROS_DOMAIN_ID` and the rest
 as `MEDKIT_SECONDARY_DOMAINS`, which `ros2_medkit_test_utils.constants.get_test_domain_id`

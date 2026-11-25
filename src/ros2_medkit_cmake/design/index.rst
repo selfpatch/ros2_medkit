@@ -211,6 +211,21 @@ moment has a short window before it takes its lock; that window is accepted, bec
 alternative, sweeping only when no ROS process runs on the machine, never sweeps on a shared
 development box. ``scripts/sweep_shm.sh`` keeps that stricter rule for a manual sweep.
 
+Every sweep takes a lock, an ``flock`` on ``/dev/shm/medkit_shm_sweep.lock``. An ordinary
+wrapper takes it shared, so sweeps still run side by side. A test that kills a participant and
+checks that its own wrapper reclaimed the memory sets ``MEDKIT_TEST_SHM_EXCLUSIVE=1``: its
+wrapper takes the lock exclusively before the command starts and keeps it until its own sweep
+ends. Without that, a sweep of another test can remove the killed participant's memory first,
+and the test's own wrapper then finds nothing to report. A wrapper whose test ends in that time
+prints that its sweep waits, and sweeps as soon as the holder lets go. The holder asks for the
+lock once, so its own sweep never waits for itself. A command run under the exclusive lock must
+not start a wrapped command of its own: that wrapper's sweep would wait for the holder.
+
+The kernel drops the lock when the holder exits or dies, a ``SIGKILL`` or a CTest timeout
+included, so the file left on disk never blocks a later run. It lives in ``/dev/shm`` because
+the lock must reach exactly the processes whose segments a sweep can remove: every process that
+shares that directory, across ``ctest`` runs, packages and worktrees.
+
 The Constraint Is Checked, Not Documented
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

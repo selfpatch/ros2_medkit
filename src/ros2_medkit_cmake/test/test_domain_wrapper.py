@@ -22,6 +22,7 @@ wraps - which no in-process assertion can show.
 import fcntl
 import json
 import os
+import select
 import signal
 import socket
 import subprocess
@@ -102,7 +103,11 @@ def fast_dds_locks(names):
 
 
 def killed_participant_env():
-    return dict(os.environ, RMW_IMPLEMENTATION='rmw_fastrtps_cpp')
+    # The wrapper holds the sweep lock exclusively, so no other wrapper's sweep
+    # removes the killed participant's memory before its own sweep runs.
+    return dict(
+        os.environ, RMW_IMPLEMENTATION='rmw_fastrtps_cpp',
+        **{medkit_domain.SHM_EXCLUSIVE_ENV: '1'})
 
 
 def lock_is_dead(name):
@@ -621,6 +626,148 @@ def test_a_failing_shm_clean_is_reported_and_keeps_the_exit_code(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert f'{fake} shm clean failed (rc=3): RuntimeError: shm broke' in result.stderr, \
         result.stderr
+
+
+# The line an ordinary wrapper prints when a test holds the sweep lock exclusively.
+SWEEP_WAITS = 'the sweep waits'
+
+
+def recording_fastdds(tmp_path, name):
+    """Put a fake fastdds first on a PATH; it records the sweep lock state when it runs.
+
+    The record is 'held' when some process held the sweep lock exclusively at that
+    moment, 'free' when not. Returns (PATH value, record file).
+    """
+    bin_dir = tmp_path / name
+    bin_dir.mkdir()
+    record = tmp_path / f'{name}.swept'
+    fake = bin_dir / 'fastdds'
+    fake.write_text(
+        f'#!{sys.executable}\n'
+        'import fcntl, os, pathlib\n'
+        'try:\n'
+        f'    fd = os.open({medkit_domain.SHM_SWEEP_LOCK!r}, os.O_RDONLY)\n'
+        '    fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)\n'
+        "    state = 'free'\n"
+        'except FileNotFoundError:\n'
+        "    state = 'no lock file'\n"
+        'except BlockingIOError:\n'
+        "    state = 'held'\n"
+        f'pathlib.Path({str(record)!r}).write_text(state)\n'
+    )
+    fake.chmod(0o755)
+    return f'{bin_dir}{os.pathsep}{os.environ["PATH"]}', record
+
+
+def holds_until_stdin_closes(marker):
+    """Child code that publishes its domain to *marker*, then blocks until stdin closes."""
+    return f'import os, pathlib, sys; {publish_domain(marker)}sys.stdin.read()'
+
+
+def runner_command(result_file, command):
+    return [
+        sys.executable, '-u', RUNNER, str(result_file),
+        '--package-name', 'ros2_medkit_cmake',
+        '--generate-result-on-success',
+        '--command',
+    ] + command
+
+
+def read_until(stream, text, timeout):
+    """Read a binary pipe until *text* appears, it closes, or *timeout* passes."""
+    deadline = time.monotonic() + timeout
+    seen = b''
+    while text.encode() not in seen:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([stream], [], [], remaining)[0]:
+            break
+        chunk = os.read(stream.fileno(), 4096)
+        if not chunk:
+            break
+        seen += chunk
+    return seen.decode(errors='replace')
+
+
+def reap(*procs):
+    """Close each holder's stdin, so its command ends, and wait for every process."""
+    for proc in procs:
+        if proc is None:
+            continue
+        if proc.stdin is not None and not proc.stdin.closed:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=30)
+
+
+def test_a_sweep_waits_while_a_test_holds_the_shared_memory_to_itself(tmp_path):
+    holder_path, holder_swept = recording_fastdds(tmp_path, 'holder')
+    waiter_path, waiter_swept = recording_fastdds(tmp_path, 'waiter')
+    started = tmp_path / 'started'
+    holder = subprocess.Popen(
+        [sys.executable, EXEC_WRAPPER, '--',
+         sys.executable, '-c', holds_until_stdin_closes(started)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        env=dict(os.environ, PATH=holder_path, **{medkit_domain.SHM_EXCLUSIVE_ENV: '1'}),
+    )
+    waiter = None
+    try:
+        assert wait_until(started.exists, 60), 'the holder never started its command'
+        waiter = subprocess.Popen(
+            runner_command(tmp_path / 'waiter.xml', [sys.executable, '-c', 'pass']),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env=dict(os.environ, PATH=waiter_path),
+        )
+        seen = read_until(waiter.stderr, SWEEP_WAITS, 60)
+        assert SWEEP_WAITS in seen, f'the sweep did not wait for the holder: {seen}'
+        assert not waiter_swept.exists(), 'a sweep ran while a test held the lock exclusively'
+        assert waiter.poll() is None, 'the waiting wrapper ended while the holder held the lock'
+
+        holder.stdin.close()
+        assert holder.wait(timeout=60) == 0, holder.stderr.read().decode()
+        assert waiter.wait(timeout=60) == 0, waiter.stderr.read().decode()
+    finally:
+        reap(holder, waiter)
+    assert holder_swept.read_text() == 'held', 'the holder did not sweep inside its own hold'
+    assert waiter_swept.read_text() == 'free', 'the waiting sweep ran before the holder let go'
+
+
+def test_a_holder_killed_with_sigkill_lets_a_waiting_sweep_run(tmp_path):
+    holder_path, _ = recording_fastdds(tmp_path, 'holder')
+    waiter_path, waiter_swept = recording_fastdds(tmp_path, 'waiter')
+    started = tmp_path / 'started'
+    holder = subprocess.Popen(
+        runner_command(
+            tmp_path / 'holder.xml',
+            [sys.executable, '-c', holds_until_stdin_closes(started)]),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        env=dict(os.environ, PATH=holder_path, **{medkit_domain.SHM_EXCLUSIVE_ENV: '1'}),
+    )
+    waiter = None
+    try:
+        assert wait_until(started.exists, 60), 'the holder never started its command'
+        waiter = subprocess.Popen(
+            [sys.executable, EXEC_WRAPPER, '--', sys.executable, '-c', 'pass'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            env=dict(os.environ, PATH=waiter_path),
+        )
+        seen = read_until(waiter.stderr, SWEEP_WAITS, 60)
+        assert SWEEP_WAITS in seen, f'the sweep did not wait for the holder: {seen}'
+
+        # Only the holder dies; its command lives on, so the lock must go with the holder.
+        os.kill(holder.pid, signal.SIGKILL)
+        assert waiter.wait(timeout=60) == 0, waiter.stderr.read().decode()
+    finally:
+        reap(holder, waiter)
+    assert waiter_swept.read_text() == 'free'
 
 
 @pytest.mark.parametrize('count', [1, 2, 3, 4])

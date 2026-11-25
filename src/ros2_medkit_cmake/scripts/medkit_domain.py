@@ -123,6 +123,7 @@ one, since that assumption is exactly the thing the check exists to stop making.
 
 import contextlib
 import errno
+import fcntl
 import os
 import random
 import re
@@ -202,6 +203,15 @@ NO_DOMAIN_LABEL = 'no_ros_domain'
 
 #: Where the extra domains of a multi-domain test are published.
 SECONDARY_ENV = 'MEDKIT_SECONDARY_DOMAINS'
+
+#: Every shared-memory sweep takes this lock. It lives in /dev/shm, so it reaches
+#: exactly the processes whose segments a sweep can remove.
+SHM_SWEEP_LOCK = '/dev/shm/medkit_shm_sweep.lock'
+
+#: Set to 1 for a test that kills a Fast DDS participant and checks that its own
+#: wrapper reclaims the memory. That wrapper holds SHM_SWEEP_LOCK exclusively from
+#: the start of the command to the end of its own sweep.
+SHM_EXCLUSIVE_ENV = 'MEDKIT_TEST_SHM_EXCLUSIVE'
 
 _RETRY_INTERVAL = 0.05
 
@@ -657,6 +667,79 @@ def report_reclaimed_shared_memory(reclaimed):
             file=sys.stderr,
             flush=True,
         )
+
+
+def _open_sweep_lock(path):
+    """Open the sweep lock file read-only, creating it readable for every user."""
+    while True:
+        try:
+            return os.open(path, os.O_RDONLY)
+        except FileNotFoundError:
+            pass
+        # O_CREAT only to create: on another user's file in a sticky directory it
+        # fails under fs.protected_regular.
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            continue
+        os.fchmod(fd, 0o644)
+        return fd
+
+
+@contextlib.contextmanager
+def _sweep_lock(operation, waiting):
+    """Hold SHM_SWEEP_LOCK with *operation*, fcntl.LOCK_SH or fcntl.LOCK_EX.
+
+    Prints *waiting* when another process holds the lock first. The kernel drops
+    the lock when this process dies. A lock file that cannot be opened is reported
+    and the body runs without the lock, so no sweep is skipped.
+    """
+    try:
+        fd = _open_sweep_lock(SHM_SWEEP_LOCK)
+    except OSError as error:
+        print(f'[medkit-domain] could not open {SHM_SWEEP_LOCK} ({error.strerror}); '
+              'the shared-memory sweep runs without its lock', file=sys.stderr, flush=True)
+        yield
+        return
+    try:
+        try:
+            fcntl.flock(fd, operation | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f'[medkit-domain] {waiting}', file=sys.stderr, flush=True)
+            fcntl.flock(fd, operation)
+        yield
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
+def reclaim_shared_memory_after(env=None):
+    """Run the body, then reclaim Fast DDS shared memory and report it.
+
+    An ordinary sweep holds SHM_SWEEP_LOCK shared: sweeps run side by side, and
+    wait while a test holds the lock exclusively. With SHM_EXCLUSIVE_ENV=1 this
+    process holds the lock exclusively across the body and its own sweep, so no
+    other sweep removes what the body leaves. It never asks for the lock twice,
+    so its own sweep cannot wait for itself. The variable is removed from *env*,
+    so the command does not inherit it.
+    """
+    if env is None:
+        env = os.environ
+    if env.pop(SHM_EXCLUSIVE_ENV, None) == '1':
+        waiting = ('waiting for running shared-memory sweeps to end, this test needs the '
+                   'shared memory to itself')
+        with _sweep_lock(fcntl.LOCK_EX, waiting):
+            try:
+                yield
+            finally:
+                report_reclaimed_shared_memory(reclaim_shared_memory())
+        return
+    try:
+        yield
+    finally:
+        waiting = 'a test holds the shared memory to itself, the sweep waits until it ends'
+        with _sweep_lock(fcntl.LOCK_SH, waiting):
+            report_reclaimed_shared_memory(reclaim_shared_memory())
 
 
 def apply_to_environ(domains, env=None):
