@@ -15,7 +15,9 @@
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cinttypes>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
@@ -120,6 +122,77 @@ static bool parse_ros_args(const std::string & cmdline_path, std::string & node_
   return !node_name.empty();
 }
 
+// FQN as the PID cache keys it: "/ns/name", or "/name" in the root namespace.
+static std::string make_fqn(const std::string & node_name, const std::string & node_ns) {
+  std::string fqn;
+  if (node_ns != "/" && !node_ns.empty()) {
+    fqn = node_ns;
+  }
+  fqn += "/";
+  fqn += node_name;
+  return fqn;
+}
+
+namespace {
+
+enum class DomainMatch { kSame, kOther, kUnreadable };
+
+DomainMatch match_domain(pid_t pid, const std::string & root, size_t domain_id) {
+  auto env_block = read_environ(pid, root);
+  if (!env_block) {
+    return DomainMatch::kUnreadable;
+  }
+  auto process_domain = ros_domain_id_from_environ(*env_block);
+  return process_domain && *process_domain == domain_id ? DomainMatch::kSame : DomainMatch::kOther;
+}
+
+}  // namespace
+
+tl::expected<std::string, std::string> read_environ(pid_t pid, const std::string & root) {
+  auto path = root + "/proc/" + std::to_string(pid) + "/environ";
+  std::ifstream f(path, std::ios::binary);
+  if (!f.is_open()) {
+    return tl::make_unexpected("Cannot read " + path);
+  }
+  std::ostringstream contents;
+  contents << f.rdbuf();
+  return contents.str();
+}
+
+std::optional<size_t> ros_domain_id_from_environ(const std::string & env_block) {
+  static const std::string kPrefix = "ROS_DOMAIN_ID=";
+  std::string value;
+  size_t start = 0;
+  while (start < env_block.size()) {
+    auto end = env_block.find('\0', start);
+    if (end == std::string::npos) {
+      end = env_block.size();
+    }
+    // The first entry wins, as for getenv().
+    if (env_block.compare(start, kPrefix.size(), kPrefix) == 0) {
+      value = env_block.substr(start + kPrefix.size(), end - start - kPrefix.size());
+      break;
+    }
+    start = end + 1;
+  }
+  if (value.empty()) {
+    return 0;
+  }
+  // The checks of rcl_get_default_domain_id(): strtoul with base 0, so "0x1A" is 26 and
+  // trailing text after a non-zero number is accepted.
+  static_assert(sizeof(unsigned long) <= sizeof(size_t), "a domain ID must fit size_t");  // NOLINT(runtime/int)
+  errno = 0;
+  char * end = nullptr;
+  unsigned long number = std::strtoul(value.c_str(), &end, 0);  // NOLINT(runtime/int)
+  if (number == 0UL && *end != '\0') {
+    return std::nullopt;
+  }
+  if (number == ULONG_MAX && errno == ERANGE) {
+    return std::nullopt;
+  }
+  return static_cast<size_t>(number);
+}
+
 tl::expected<ProcessInfo, std::string> read_process_info(pid_t pid, const std::string & root) {
   auto proc_dir = root + "/proc/" + std::to_string(pid);
 
@@ -216,7 +289,7 @@ tl::expected<ProcessInfo, std::string> read_process_info(pid_t pid, const std::s
 }
 
 tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name, const std::string & node_namespace,
-                                                   const std::string & root) {
+                                                   const std::string & root, std::optional<size_t> domain_id) {
   auto proc_dir = root + "/proc";
   UniqueDir dir(opendir(proc_dir.c_str()));
   if (!dir) {
@@ -256,7 +329,11 @@ tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name
         if (end == entry->d_name || *end != '\0' || pid_val <= 0) {
           continue;
         }
-        return static_cast<pid_t>(pid_val);
+        auto pid = static_cast<pid_t>(pid_val);
+        if (domain_id && match_domain(pid, root, *domain_id) == DomainMatch::kOther) {
+          continue;
+        }
+        return pid;
       }
     }
   }
@@ -282,11 +359,30 @@ tl::expected<double, std::string> read_system_uptime(const std::string & root) {
 PidCache::PidCache(std::chrono::steady_clock::duration ttl) : ttl_(ttl) {
 }
 
+void PidCache::set_domain_filter(size_t domain_id, UnverifiedCallback on_unverified) {
+  std::unique_lock lock(mutex_);
+  domain_id_ = domain_id;
+  on_unverified_ = std::move(on_unverified);
+  stale_ = true;
+}
+
+void PidCache::invalidate() {
+  std::unique_lock lock(mutex_);
+  stale_ = true;
+}
+
+bool PidCache::runs_as(pid_t pid, const std::string & fqn, const std::string & root) {
+  std::string node_name;
+  std::string node_ns;
+  return parse_ros_args(root + "/proc/" + std::to_string(pid) + "/cmdline", node_name, node_ns) &&
+         make_fqn(node_name, node_ns) == fqn;
+}
+
 std::optional<pid_t> PidCache::lookup(const std::string & node_fqn, const std::string & root) {
   {
     std::shared_lock lock(mutex_);
     auto now = std::chrono::steady_clock::now();
-    if (now - last_refresh_ < ttl_) {
+    if (!stale_ && now - last_refresh_ < ttl_) {
       auto it = node_to_pid_.find(node_fqn);
       if (it != node_to_pid_.end()) {
         return it->second;
@@ -294,7 +390,7 @@ std::optional<pid_t> PidCache::lookup(const std::string & node_fqn, const std::s
       return std::nullopt;
     }
   }
-  // TTL expired - refresh
+  // TTL expired or invalidated - refresh
   refresh(root);
 
   std::shared_lock lock(mutex_);
@@ -308,11 +404,12 @@ std::optional<pid_t> PidCache::lookup(const std::string & node_fqn, const std::s
 void PidCache::refresh(const std::string & root) {
   std::unique_lock lock(mutex_);
 
-  // Double-check TTL under exclusive lock to avoid redundant scans
+  // Double-check under exclusive lock to avoid redundant scans
   auto now = std::chrono::steady_clock::now();
-  if (now - last_refresh_ < ttl_) {
+  if (!stale_ && now - last_refresh_ < ttl_) {
     return;
   }
+  stale_ = false;
 
   node_to_pid_.clear();
   auto proc_dir = root + "/proc";
@@ -322,6 +419,7 @@ void PidCache::refresh(const std::string & root) {
     return;
   }
 
+  std::unordered_set<pid_t> unverified;
   struct dirent * entry = nullptr;
   while ((entry = readdir(dir.get())) != nullptr) {
     if (entry->d_type != DT_DIR && entry->d_type != DT_UNKNOWN) {
@@ -349,19 +447,30 @@ void PidCache::refresh(const std::string & root) {
     std::string node_name;
     std::string node_ns;
     if (parse_ros_args(cmdline_path, node_name, node_ns)) {
-      std::string fqn;
-      if (node_ns != "/" && !node_ns.empty()) {
-        fqn = node_ns;
-      }
-      fqn += "/";
-      fqn += node_name;
+      auto fqn = make_fqn(node_name, node_ns);
       char * end = nullptr;
       long pid_val = std::strtol(entry->d_name, &end, 10);
-      if (end != entry->d_name && *end == '\0' && pid_val > 0) {
-        node_to_pid_[fqn] = static_cast<pid_t>(pid_val);
+      if (end == entry->d_name || *end != '\0' || pid_val <= 0) {
+        continue;
       }
+      auto pid = static_cast<pid_t>(pid_val);
+      if (domain_id_) {
+        auto match = match_domain(pid, root, *domain_id_);
+        if (match == DomainMatch::kOther) {
+          continue;
+        }
+        if (match == DomainMatch::kUnreadable) {
+          unverified.insert(pid);
+          if (on_unverified_ && unverified_reported_.count(pid) == 0) {
+            on_unverified_(pid, fqn);
+          }
+        }
+      }
+      node_to_pid_[fqn] = pid;
     }
   }
+  // Only PIDs still unverified stay reported, so the set does not grow with exited processes.
+  unverified_reported_.swap(unverified);
   last_refresh_ = std::chrono::steady_clock::now();
 }
 

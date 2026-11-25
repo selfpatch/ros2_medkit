@@ -17,6 +17,7 @@
 #include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
+#include "ros2_medkit_linux_introspection/gateway_domain.hpp"
 #include "ros2_medkit_linux_introspection/plugin_config.hpp"
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
 #include "ros2_medkit_linux_introspection/systemd_utils.hpp"
@@ -132,6 +133,7 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
 
   void set_context(PluginContext & ctx) override {
     ctx_ = &ctx;
+    ros2_medkit_linux_introspection::match_gateway_domain(ctx, *pid_cache_, name());
     ctx.register_capability(SovdEntityType::APP, "x-medkit-systemd");
     ctx.register_capability(SovdEntityType::COMPONENT, "x-medkit-systemd");
   }
@@ -165,19 +167,12 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
         continue;
       }
 
-      auto pid_opt = pid_cache_->lookup(fqn, proc_root_);
-      if (!pid_opt) {
+      auto read = lookup_unit(fqn);
+      if (!read || !read->second) {
         continue;
       }
 
-      char * unit_cstr = nullptr;
-      if (sd_pid_get_unit(*pid_opt, &unit_cstr) < 0 || !unit_cstr) {
-        continue;
-      }
-      std::string unit_name(unit_cstr);
-      free(unit_cstr);  // NOLINT(cppcoreguidelines-no-malloc)
-
-      auto unit_info = query_unit_info(unit_name, request_bus.get());
+      auto unit_info = query_unit_info(*read->second, request_bus.get());
       if (!unit_info) {
         continue;
       }
@@ -193,6 +188,25 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
       std::make_unique<ros2_medkit_linux_introspection::PidCache>();
   std::string proc_root_{"/"};
 
+  /// The systemd unit of a PID, or nullopt when the process is in none.
+  static std::optional<std::string> unit_of(pid_t pid) {
+    char * unit_cstr = nullptr;
+    if (sd_pid_get_unit(pid, &unit_cstr) < 0 || !unit_cstr) {
+      return std::nullopt;
+    }
+    std::string unit_name(unit_cstr);
+    free(unit_cstr);  // NOLINT(cppcoreguidelines-no-malloc)
+    return unit_name;
+  }
+
+  /// PID and systemd unit of a node, read again after a rescan when the cached PID is stale.
+  ros2_medkit_linux_introspection::PidCache::ReadResult<std::optional<std::string>>
+  lookup_unit(const std::string & fqn) {
+    return pid_cache_->lookup_and_read(fqn, proc_root_, [](pid_t pid) {
+      return unit_of(pid);
+    });
+  }
+
   static nlohmann::json unit_info_to_json(const UnitInfo & info) {
     return {
         {"unit", info.unit},           {"unit_type", info.unit_type},         {"active_state", info.active_state},
@@ -206,21 +220,18 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
       return;
     }
 
-    auto pid_opt = pid_cache_->lookup(entity->fqn, proc_root_);
-    if (!pid_opt) {
+    auto read = lookup_unit(entity->fqn);
+    if (!read) {
       res.send_error(404, "x-medkit-pid-lookup-failed", "Process not found for entity " + entity_id);
       return;
     }
 
-    char * unit_cstr = nullptr;
-    if (sd_pid_get_unit(*pid_opt, &unit_cstr) < 0 || !unit_cstr) {
+    if (!read->second) {
       res.send_error(404, "x-medkit-not-in-systemd-unit", "Entity " + entity_id + " is not managed by a systemd unit");
       return;
     }
-    std::string unit_name(unit_cstr);
-    free(unit_cstr);  // NOLINT(cppcoreguidelines-no-malloc)
 
-    auto unit_info = query_unit_info(unit_name);
+    auto unit_info = query_unit_info(*read->second);
     if (!unit_info) {
       res.send_error(503, "x-medkit-systemd-query-failed",
                      "Failed to query systemd properties for entity " + entity_id);
@@ -247,17 +258,11 @@ class SystemdPlugin : public GatewayPlugin, public IntrospectionProvider {
     }
 
     for (const auto & app : child_apps) {
-      auto pid_opt = pid_cache_->lookup(app.fqn, proc_root_);
-      if (!pid_opt) {
+      auto read = lookup_unit(app.fqn);
+      if (!read || !read->second) {
         continue;
       }
-
-      char * unit_cstr = nullptr;
-      if (sd_pid_get_unit(*pid_opt, &unit_cstr) < 0 || !unit_cstr) {
-        continue;
-      }
-      std::string unit_name(unit_cstr);
-      free(unit_cstr);  // NOLINT(cppcoreguidelines-no-malloc)
+      const auto & unit_name = *read->second;
 
       if (units.find(unit_name) == units.end()) {
         auto unit_info = query_unit_info(unit_name, request_bus.get());

@@ -13,6 +13,7 @@
 
   <depend>ros2_medkit_gateway</depend>
   <depend>nlohmann-json-dev</depend>
+  <depend>rclcpp</depend>
   <depend>libsystemd-dev</depend>
 
   <test_depend>ament_lint_auto</test_depend>

@@ -17,6 +17,7 @@
 #include "ros2_medkit_gateway/core/plugins/plugin_types.hpp"
 #include "ros2_medkit_gateway/core/providers/introspection_provider.hpp"
 #include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
+#include "ros2_medkit_linux_introspection/gateway_domain.hpp"
 #include "ros2_medkit_linux_introspection/plugin_config.hpp"
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
 #include "ros2_medkit_linux_introspection/procfs_utils.hpp"
@@ -43,6 +44,7 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
 
   void set_context(PluginContext & ctx) override {
     ctx_ = &ctx;
+    ros2_medkit_linux_introspection::match_gateway_domain(ctx, *pid_cache_, name());
     ctx.register_capability(SovdEntityType::APP, "x-medkit-procfs");
     ctx.register_capability(SovdEntityType::COMPONENT, "x-medkit-procfs");
   }
@@ -73,17 +75,12 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
         continue;
       }
 
-      auto pid_opt = pid_cache_->lookup(fqn, proc_root_);
-      if (!pid_opt) {
+      auto read = lookup_process(fqn);
+      if (!read || !read->second) {
         continue;
       }
 
-      auto proc_info = ros2_medkit_linux_introspection::read_process_info(*pid_opt, proc_root_);
-      if (!proc_info) {
-        continue;
-      }
-
-      result.metadata[app.id] = ros2_medkit_linux_introspection::process_info_to_json(*proc_info, uptime_val);
+      result.metadata[app.id] = ros2_medkit_linux_introspection::process_info_to_json(*read->second, uptime_val);
     }
     return result;
   }
@@ -94,6 +91,15 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
       std::make_unique<ros2_medkit_linux_introspection::PidCache>();
   std::string proc_root_{"/"};
 
+  /// PID and process info of a node, read again after a rescan when the cached PID is stale.
+  ros2_medkit_linux_introspection::PidCache::ReadResult<
+      tl::expected<ros2_medkit_linux_introspection::ProcessInfo, std::string>>
+  lookup_process(const std::string & fqn) {
+    return pid_cache_->lookup_and_read(fqn, proc_root_, [this](pid_t pid) {
+      return ros2_medkit_linux_introspection::read_process_info(pid, proc_root_);
+    });
+  }
+
   void handle_app_request(const PluginRequest & req, PluginResponse & res) {
     auto entity_id = req.path_param(1);
     auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
@@ -101,13 +107,13 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
       return;
     }
 
-    auto pid_opt = pid_cache_->lookup(entity->fqn, proc_root_);
-    if (!pid_opt) {
+    auto read = lookup_process(entity->fqn);
+    if (!read) {
       res.send_error(404, "x-medkit-pid-lookup-failed", "Process not found for entity " + entity_id);
       return;
     }
 
-    auto proc_info = ros2_medkit_linux_introspection::read_process_info(*pid_opt, proc_root_);
+    const auto & proc_info = read->second;
     if (!proc_info) {
       res.send_error(503, "x-medkit-proc-read-failed", "Failed to read process information for entity " + entity_id);
       return;
@@ -131,21 +137,18 @@ class ProcfsPlugin : public GatewayPlugin, public IntrospectionProvider {
     double uptime_val = sys_uptime ? *sys_uptime : 0.0;
 
     for (const auto & app : child_apps) {
-      auto pid_opt = pid_cache_->lookup(app.fqn, proc_root_);
-      if (!pid_opt) {
+      auto read = lookup_process(app.fqn);
+      if (!read || !read->second) {
         continue;
       }
 
-      if (processes.find(*pid_opt) == processes.end()) {
-        auto proc_info = ros2_medkit_linux_introspection::read_process_info(*pid_opt, proc_root_);
-        if (!proc_info) {
-          continue;
-        }
-        auto j = ros2_medkit_linux_introspection::process_info_to_json(*proc_info, uptime_val);
+      const auto pid = read->first;
+      if (processes.find(pid) == processes.end()) {
+        auto j = ros2_medkit_linux_introspection::process_info_to_json(*read->second, uptime_val);
         j["node_ids"] = nlohmann::json::array();
-        processes[*pid_opt] = std::move(j);
+        processes[pid] = std::move(j);
       }
-      processes[*pid_opt]["node_ids"].push_back(app.id);
+      processes[pid]["node_ids"].push_back(app.id);
     }
 
     nlohmann::json result;
