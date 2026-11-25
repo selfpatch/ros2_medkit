@@ -618,6 +618,9 @@ jobs:
     container:
       image: ubuntu:20.04
     timeout-minutes: 30
+    env:
+      CCACHE_DIR: /root/.cache/ccache
+      CCACHE_MAXSIZE: 500M
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -625,20 +628,42 @@ jobs:
       - name: Install toolchain
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends g++-9 cmake make \
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends g++-9 cmake make ccache \
             libsqlite3-dev libssl-dev nlohmann-json3-dev libyaml-cpp-dev
 
+      - name: Restore ccache
+        id: ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-cores-without-ros-${{ github.sha }}
+          restore-keys: |
+            ccache-cores-without-ros-
+
+      # CMake 3.16 does not read the launcher from the environment, so both builds pass it as an argument.
       - name: Build the ROS-free cores
-        run: CXX=g++-9 cmake -S scripts/check_cores_without_ros -B /tmp/b && cmake --build /tmp/b --parallel "$(nproc)"
+        run: |
+          ccache -z
+          CXX=g++-9 cmake -S scripts/check_cores_without_ros -B /tmp/b -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build /tmp/b --parallel "$(nproc)"
 
       - name: Build the core in hosts with their own httplib, at C++14
-        run: CXX=g++-9 scripts/check_cores_without_ros/hosts/run.sh
+        run: |
+          CXX=g++-9 CMAKE_CXX_COMPILER_LAUNCHER=ccache scripts/check_cores_without_ros/hosts/run.sh
+          ccache -s
 
       - name: Run the check program and verify it links no ROS library
         run: |
           ldd /tmp/b/check_cores_without_ros | tee /tmp/ldd.txt
           if grep -q rclcpp /tmp/ldd.txt; then echo 'links rclcpp'; exit 1; fi
           /tmp/b/check_cores_without_ros
+
+      - name: Save ccache
+        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-cores-without-ros-${{ github.sha }}
 
   # The one check branch rules require from this workflow. A matrix job skipped by
   # its `if` does not report its per-entry checks, so the rules cannot require them.
