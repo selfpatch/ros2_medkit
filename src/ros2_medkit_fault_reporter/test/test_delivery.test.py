@@ -32,7 +32,7 @@ import launch_ros.actions
 import launch_testing.actions
 from rcl_interfaces.srv import SetParameters
 import rclpy
-from rclpy.node import Node
+from rclpy.node import Node, NodeNameNonExistentError
 from rclpy.parameter import Parameter
 from ros2_medkit_msgs.msg import Fault
 from ros2_medkit_msgs.srv import ListFaults
@@ -70,11 +70,27 @@ class Output:
             args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         self.lines = queue.Queue()
         self.seen = []
+        self.ended = threading.Event()  # set once stdout reaches EOF
         threading.Thread(target=self._read, daemon=True).start()
 
     def _read(self):
         for line in self.proc.stdout:
             self.lines.put(line.rstrip())
+        self.ended.set()
+
+    def _drain(self):
+        while True:
+            try:
+                self.seen.append(self.lines.get_nowait())
+            except queue.Empty:
+                return
+
+    def exit_message(self):
+        """Name the exit code and the last output lines of the ended process."""
+        self.ended.wait(timeout=5.0)  # the last lines are queued at EOF, just after the exit
+        self._drain()
+        name = os.path.basename(self.proc.args[0])
+        return f'{name} exited with code {self.proc.poll()}; last output: {self.seen[-10:]}'
 
     def wait_for(self, predicate, timeout=60.0):
         """Return the first output line (new or already seen) for which predicate is true."""
@@ -88,15 +104,13 @@ class Output:
             try:
                 self.seen.append(self.lines.get(timeout=0.2))
             except queue.Empty:
-                pass
+                # Every line is read and none matched: the wait can only time out.
+                if self.ended.is_set() and self.lines.empty() and self.proc.poll() is not None:
+                    raise AssertionError(self.exit_message()) from None
         raise AssertionError(f'no matching output; saw {self.seen[-10:]}')
 
     def count(self, text):
-        while True:
-            try:
-                self.seen.append(self.lines.get_nowait())
-            except queue.Empty:
-                break
+        self._drain()
         return sum(1 for line in self.seen if text in line)
 
 
@@ -226,16 +240,43 @@ class TestDelivery(unittest.TestCase):
             time.sleep(0.2)
         return found
 
-    def wait_clients_gone(self, service, timeout=30.0):
-        """Poll the graph until the probe node has no client of service; return what is left."""
+    def assert_probe_running(self, probe):
+        """Fail with the exit code and last output of the probe if its process has ended."""
+        if probe.proc.poll() is not None:
+            self.fail(probe.exit_message())
+
+    def wait_clients_gone(self, service, probe, timeout=30.0):
+        """
+        Wait until this node sees the probe node, then until it has no client of service.
+
+        Return the clients still listed at the deadline. A node not seen yet has unknown
+        clients, so it never counts as a node without clients.
+        """
+        node_name = 'delivery_probe'
         deadline = time.time() + timeout
+        seen = False
         left = []
         while time.time() < deadline:
-            clients = self.node.get_client_names_and_types_by_node('delivery_probe', '/')
-            left = [n for n, _ in clients if n == service]
-            if not left:
-                break
+            self.assert_probe_running(probe)
+            try:
+                clients = self.node.get_client_names_and_types_by_node(node_name, '/')
+            except NodeNameNonExistentError:
+                if seen:
+                    # The node left the graph: name the probe's exit once its process ends.
+                    try:
+                        probe.proc.wait(timeout=max(0.0, deadline - time.time()))
+                    except subprocess.TimeoutExpired:
+                        self.fail(f'{node_name} left the graph while its process runs')
+                    self.fail(probe.exit_message())
+                clients = None
+            if clients is not None:
+                seen = True
+                left = [n for n, _ in clients if n == service]
+                if not left:
+                    return left
             time.sleep(0.2)
+        if not seen:
+            self.fail(f'{node_name} never seen in the graph within {timeout} s')
         return left
 
     def restart_case(self, prefix, name, count, **params):
@@ -263,14 +304,17 @@ class TestDelivery(unittest.TestCase):
             second = Manager(name)
             found = self.wait_faults(prefix + '_', lambda f: len(f) == count,
                                      timeout=60.0, lister=lister)
+            # The probe sends the reports, so its exit is named before the missing faults.
+            self.assert_probe_running(probe)
             self.assertEqual(sorted(found), sorted(f'{prefix}_{i}' for i in range(count)))
             if params.get('destroy') == 'true':
                 # Once confirmed, the reports of destroyed reporters free their clients.
-                self.assertEqual(self.wait_clients_gone(f'/{name}/report_fault'), [])
+                self.assertEqual(self.wait_clients_gone(f'/{name}/report_fault', probe), [])
             else:
                 probe.wait_for(lambda line: line == 'PENDING 0')
             self.assertEqual(probe.count('dropping the report'), 0,
                              [line for line in probe.seen if 'dropping' in line])
+            self.assert_probe_running(probe)
         finally:
             if probe is not None:
                 probe.stop()
