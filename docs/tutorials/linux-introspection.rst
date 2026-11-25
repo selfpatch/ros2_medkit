@@ -281,8 +281,11 @@ validation errors (404 for unknown entities) are handled automatically by
 | 404 | ``x-medkit-pid-lookup-failed``        | PID not found for node. The node may not be   |
 |     |                                       | running, or the PID cache has not refreshed.  |
 +-----+---------------------------------------+-----------------------------------------------+
-| 503 | ``x-medkit-proc-read-failed``         | Failed to read ``/proc/{pid}`` info. Process  |
-|     |                                       | may have exited between PID lookup and read.  |
+| 503 | ``x-medkit-proc-read-failed``         | The node's process was found, but             |
+|     |                                       | ``/proc/{pid}/stat`` could not be read or     |
+|     |                                       | parsed. A process that has exited is looked   |
+|     |                                       | up again first and gives 404; 503 is left for |
+|     |                                       | one that exits during that second read.       |
 +-----+---------------------------------------+-----------------------------------------------+
 | 404 | ``x-medkit-not-in-systemd-unit``      | Node's process is not managed by a systemd    |
 |     |                                       | unit. It may have been started manually.      |
@@ -351,8 +354,9 @@ started, the cache may not have picked it up yet. Causes:
   the same name in another domain on the same host is not served.
 - Environment not readable. When the gateway runs as another user than the node and
   cannot read its ``/proc/{pid}/environ``, it matches that process by name only and logs
-  ``Cannot read the environment of PID ...`` once. The domain check then does not apply
-  to it; run the gateway as the same user as the nodes to keep it.
+  ``Cannot read the environment of PID ...`` once in each plugin that looks the process
+  up, since each plugin has its own PID cache. The domain check then does not apply to
+  it; run the gateway as the same user as the nodes to keep it.
 
 Composable nodes
 ~~~~~~~~~~~~~~~~

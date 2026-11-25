@@ -22,7 +22,8 @@ Maps ROS 2 nodes to OS processes and reports CPU, memory, systemd unit status, a
 - **SystemdUtils** - Queries systemd via D-Bus for service metadata
 - **PidCache** - TTL-based cache mapping ROS 2 node names to Linux PIDs. It keeps only
   processes of the gateway's ROS domain (`ROS_DOMAIN_ID` in `/proc/<pid>/environ`); a process
-  whose environment cannot be read is matched by name only, with one warning per PID
+  whose environment cannot be read is matched by name only, with one warning per PID in
+  each plugin that looks it up (each plugin has its own cache)
 
 ## Configuration
 
