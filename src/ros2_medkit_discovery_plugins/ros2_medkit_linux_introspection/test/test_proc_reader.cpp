@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <string>
 #include <unistd.h>
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
 
@@ -206,4 +207,26 @@ TEST_F(SyntheticProcTest, TruncatedStatAfterComm) {
   auto result = read_process_info(42, tmpdir_.string());
   ASSERT_FALSE(result.has_value());
   EXPECT_NE(result.error().find("Truncated"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// ROS domain from /proc/{pid}/environ
+// ---------------------------------------------------------------------------
+
+TEST(EnvironParser, DomainAmongNulSeparatedEntries) {
+  using namespace std::string_literals;
+  // XROS_DOMAIN_ID only ends with the name and must not match.
+  EXPECT_EQ(ros_domain_id_from_environ("XROS_DOMAIN_ID=7\0PATH=/bin\0ROS_DOMAIN_ID=42\0HOME=/tmp\0"s), 42u);
+}
+
+TEST(EnvironParser, MissingVariableIsDomainZero) {
+  using namespace std::string_literals;
+  EXPECT_EQ(ros_domain_id_from_environ("PATH=/bin\0HOME=/tmp\0"s), 0u);
+}
+
+TEST_F(SyntheticProcTest, UnreadableEnvironIsAnError) {
+  fs::create_directories(tmpdir_ / "proc" / "42");
+  auto result = read_environ(42, tmpdir_.string());
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().find("environ"), std::string::npos);
 }

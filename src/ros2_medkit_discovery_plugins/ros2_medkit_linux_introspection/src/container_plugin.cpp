@@ -19,6 +19,7 @@
 #include "ros2_medkit_gateway/plugins/ros_plugin_context.hpp"
 #include "ros2_medkit_linux_introspection/cgroup_reader.hpp"
 #include "ros2_medkit_linux_introspection/container_utils.hpp"
+#include "ros2_medkit_linux_introspection/gateway_domain.hpp"
 #include "ros2_medkit_linux_introspection/plugin_config.hpp"
 #include "ros2_medkit_linux_introspection/proc_reader.hpp"
 
@@ -46,6 +47,7 @@ class ContainerPlugin : public GatewayPlugin, public IntrospectionProvider {
 
   void set_context(PluginContext & ctx) override {
     ctx_ = &ctx;
+    ros2_medkit_linux_introspection::match_gateway_domain(ctx, *pid_cache_, name());
     ctx.register_capability(SovdEntityType::APP, "x-medkit-container");
     ctx.register_capability(SovdEntityType::COMPONENT, "x-medkit-container");
   }
@@ -73,17 +75,12 @@ class ContainerPlugin : public GatewayPlugin, public IntrospectionProvider {
         continue;
       }
 
-      auto pid_opt = pid_cache_->lookup(fqn, proc_root_);
-      if (!pid_opt) {
+      auto read = lookup_cgroup(fqn);
+      if (!read || !read->second || !read->second->containerized) {
         continue;
       }
 
-      auto cgroup_info = ros2_medkit_linux_introspection::read_cgroup_info(*pid_opt, proc_root_);
-      if (!cgroup_info || !cgroup_info->containerized) {
-        continue;
-      }
-
-      result.metadata[app.id] = ros2_medkit_linux_introspection::cgroup_info_to_json(*cgroup_info);
+      result.metadata[app.id] = ros2_medkit_linux_introspection::cgroup_info_to_json(*read->second);
     }
     return result;
   }
@@ -107,6 +104,15 @@ class ContainerPlugin : public GatewayPlugin, public IntrospectionProvider {
       std::make_unique<ros2_medkit_linux_introspection::PidCache>();
   std::string proc_root_{"/"};
 
+  /// PID and cgroup info of a node, read again after a rescan when the cached PID is stale.
+  ros2_medkit_linux_introspection::PidCache::ReadResult<
+      tl::expected<ros2_medkit_linux_introspection::CgroupInfo, std::string>>
+  lookup_cgroup(const std::string & fqn) {
+    return pid_cache_->lookup_and_read(fqn, proc_root_, [this](pid_t pid) {
+      return ros2_medkit_linux_introspection::read_cgroup_info(pid, proc_root_);
+    });
+  }
+
   void handle_app_request(const PluginRequest & req, PluginResponse & res) {
     auto entity_id = req.path_param(1);
     auto entity = ctx_->validate_entity_for_route(req, res, entity_id);
@@ -114,13 +120,13 @@ class ContainerPlugin : public GatewayPlugin, public IntrospectionProvider {
       return;
     }
 
-    auto pid_opt = pid_cache_->lookup(entity->fqn, proc_root_);
-    if (!pid_opt) {
+    auto read = lookup_cgroup(entity->fqn);
+    if (!read) {
       res.send_error(404, "x-medkit-pid-lookup-failed", "Process not found for entity " + entity_id);
       return;
     }
 
-    auto cgroup_info = ros2_medkit_linux_introspection::read_cgroup_info(*pid_opt, proc_root_);
+    const auto & cgroup_info = read->second;
     if (!cgroup_info) {
       res.send_error(503, "x-medkit-cgroup-read-failed", "Failed to read cgroup information for entity " + entity_id);
       return;
@@ -150,15 +156,12 @@ class ContainerPlugin : public GatewayPlugin, public IntrospectionProvider {
     size_t unidentified = 0;
 
     for (const auto & app : child_apps) {
-      auto pid_opt = pid_cache_->lookup(app.fqn, proc_root_);
-      if (!pid_opt) {
+      auto read = lookup_cgroup(app.fqn);
+      if (!read || !read->second || !read->second->containerized) {
         continue;
       }
-
-      auto cgroup_info = ros2_medkit_linux_introspection::read_cgroup_info(*pid_opt, proc_root_);
-      if (!cgroup_info || !cgroup_info->containerized) {
-        continue;
-      }
+      const auto pid = read->first;
+      const auto & cgroup_info = read->second;
 
       auto cid = cgroup_info->container_id;
       if (cid.empty()) {
@@ -166,7 +169,7 @@ class ContainerPlugin : public GatewayPlugin, public IntrospectionProvider {
         // apps in one container share it, apps in different ones do not. When
         // it cannot be read, a unique key keeps them apart rather than merging
         // on no evidence.
-        auto ns = mount_namespace_of(*pid_opt);
+        auto ns = mount_namespace_of(pid);
         cid = ns.empty() ? "unidentified-" + std::to_string(unidentified++) : "mnt-" + ns;
       }
       if (containers.find(cid) == containers.end()) {

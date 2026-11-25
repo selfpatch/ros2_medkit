@@ -15,13 +15,18 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <shared_mutex>
 #include <string>
 #include <sys/types.h>
 #include <tl/expected.hpp>
+#include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 
 namespace ros2_medkit_linux_introspection {
 
@@ -42,9 +47,20 @@ struct ProcessInfo {
 /// Read process info from /proc/{pid}
 tl::expected<ProcessInfo, std::string> read_process_info(pid_t pid, const std::string & root = "/");
 
-/// Scan /proc for ROS 2 node processes, return PID for matching node
+/// Read /proc/{pid}/environ: the NUL-separated NAME=value entries the process started with.
+/// Error when the file cannot be read, e.g. for another user's process.
+tl::expected<std::string, std::string> read_environ(pid_t pid, const std::string & root = "/");
+
+/// ROS domain ID in an environ image, parsed the way rcl parses ROS_DOMAIN_ID: 0 when the
+/// variable is unset or empty, nullopt when its value is not a domain ID.
+std::optional<size_t> ros_domain_id_from_environ(const std::string & env_block);
+
+/// Scan /proc for ROS 2 node processes, return PID for matching node.
+/// With domain_id, a process of another ROS domain is skipped; a process whose environ
+/// cannot be read is matched on its name alone.
 tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name, const std::string & node_namespace,
-                                                   const std::string & root = "/");
+                                                   const std::string & root = "/",
+                                                   std::optional<size_t> domain_id = std::nullopt);
 
 /// Read system uptime in seconds from /proc/uptime
 tl::expected<double, std::string> read_system_uptime(const std::string & root = "/");
@@ -52,21 +68,64 @@ tl::expected<double, std::string> read_system_uptime(const std::string & root = 
 /// Cache for node-to-PID mappings with TTL-based refresh
 class PidCache {
  public:
+  /// Called with the PID and FQN of a process matched on its name alone.
+  using UnverifiedCallback = std::function<void(pid_t, const std::string &)>;
+
+  /// What lookup_and_read returns: the PID and the result of reading it.
+  template <typename T>
+  using ReadResult = std::optional<std::pair<pid_t, T>>;
+
   explicit PidCache(std::chrono::steady_clock::duration ttl = std::chrono::seconds{10});
+
+  /// Keep only node processes of ROS domain domain_id. A process whose environ cannot be
+  /// read is kept on its name alone and passed to on_unverified once.
+  void set_domain_filter(size_t domain_id, UnverifiedCallback on_unverified = {});
 
   /// Lookup PID for a node FQN (e.g. "/namespace/node_name"). Refreshes if TTL expired.
   std::optional<pid_t> lookup(const std::string & node_fqn, const std::string & root = "/");
 
-  /// Force refresh the cache by rescanning /proc
+  /// Look up the PID of a node and call read(pid). When the read fails and the PID no longer
+  /// runs as that node, rescan /proc once and read again. Returns the PID and the read result,
+  /// or nullopt when no process matches.
+  template <typename Read>
+  ReadResult<std::invoke_result_t<Read &, pid_t>> lookup_and_read(const std::string & node_fqn,
+                                                                  const std::string & root, Read && read) {
+    auto pid = lookup(node_fqn, root);
+    if (!pid) {
+      return std::nullopt;
+    }
+    auto result = read(*pid);
+    if (!result && !runs_as(*pid, node_fqn, root)) {
+      invalidate();
+      pid = lookup(node_fqn, root);
+      if (!pid) {
+        return std::nullopt;
+      }
+      result = read(*pid);
+    }
+    return std::make_pair(*pid, std::move(result));
+  }
+
+  /// Rescan /proc on the next lookup or refresh, whatever the TTL.
+  void invalidate();
+
+  /// Rescan /proc when the TTL has expired or the cache was invalidated.
   void refresh(const std::string & root = "/");
 
   /// Number of cached entries
   size_t size() const;
 
  private:
+  /// True when the process pid still carries the node FQN on its command line.
+  static bool runs_as(pid_t pid, const std::string & node_fqn, const std::string & root);
+
   std::unordered_map<std::string, pid_t> node_to_pid_;
   std::chrono::steady_clock::time_point last_refresh_;
   std::chrono::steady_clock::duration ttl_;
+  bool stale_{true};
+  std::optional<size_t> domain_id_;
+  UnverifiedCallback on_unverified_;
+  std::unordered_set<pid_t> unverified_reported_;
   mutable std::shared_mutex mutex_;
 };
 

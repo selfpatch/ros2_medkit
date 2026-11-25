@@ -20,7 +20,9 @@ Maps ROS 2 nodes to OS processes and reports CPU, memory, systemd unit status, a
   distinguishable. A container whose ID the cgroup namespace hides is recognised from the
   markers its runtime leaves behind
 - **SystemdUtils** - Queries systemd via D-Bus for service metadata
-- **PidCache** - TTL-based cache mapping ROS 2 node names to Linux PIDs
+- **PidCache** - TTL-based cache mapping ROS 2 node names to Linux PIDs. It keeps only
+  processes of the gateway's ROS domain (`ROS_DOMAIN_ID` in `/proc/<pid>/environ`); a process
+  whose environment cannot be read is matched by name only, with one warning per PID
 
 ## Configuration
 

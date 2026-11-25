@@ -84,16 +84,22 @@ The following diagram shows the three plugins and their shared infrastructure.
        class PidCache {
            - node_to_pid_: map
            - ttl_: duration
+           - domain_id_: optional<size_t>
            - mutex_: shared_mutex
            --
+           + set_domain_filter(domain_id, on_unverified): void
            + lookup(fqn, root): optional<pid_t>
+           + lookup_and_read(fqn, root, read): optional<pair>
+           + invalidate(): void
            + refresh(root): void
            + size(): size_t
        }
 
        class "proc_reader" as PR <<utility>> {
            + read_process_info(pid): ProcessInfo
-           + find_pid_for_node(name, ns): pid_t
+           + find_pid_for_node(name, ns, root, domain_id): pid_t
+           + read_environ(pid): string
+           + ros_domain_id_from_environ(env_block): optional<size_t>
            + read_system_uptime(): double
        }
 
@@ -172,6 +178,14 @@ All three plugins share the ``PidCache`` class for mapping ROS 2 node fully-qual
 names to Linux PIDs. The cache:
 
 - Scans ``/proc`` for processes whose command line matches ROS 2 node naming patterns
+- Keeps only processes of the gateway's ROS domain. The domain of a process is
+  ``ROS_DOMAIN_ID`` in ``/proc/{pid}/environ``, read as rcl reads it (unset or empty is 0);
+  the gateway's domain comes from its own ROS context. A node with the same name in
+  another domain is never served.
+- Matches a process whose ``environ`` cannot be read (another user's process) by name
+  only, and logs a warning once per PID. Without a ROS node there is no domain to compare.
+- When reading a cached PID fails and that PID no longer runs as the node, rescans
+  ``/proc`` once and reads again before the route answers
 - Uses TTL-based refresh (default 10 seconds, configurable via ``pid_cache_ttl_seconds``)
 - Is thread-safe via ``std::shared_mutex`` (concurrent reads, exclusive writes)
 - Each plugin instance owns its own ``PidCache`` (no cross-plugin sharing, avoids lock contention)

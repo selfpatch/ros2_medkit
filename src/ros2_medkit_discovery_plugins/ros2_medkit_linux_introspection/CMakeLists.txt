@@ -17,6 +17,7 @@ include(ROS2MedkitWarnings)
 find_package(ament_cmake REQUIRED)
 find_package(ros2_medkit_gateway REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(rclcpp REQUIRED)
 
 # --- Static utility library ---
 add_library(medkit_linux_utils STATIC
@@ -35,7 +36,7 @@ add_library(procfs_introspection MODULE
 )
 target_link_libraries(procfs_introspection medkit_linux_utils)
 target_include_directories(procfs_introspection PRIVATE ${ros2_medkit_gateway_INCLUDE_DIRS})
-medkit_target_dependencies(procfs_introspection nlohmann_json)
+medkit_target_dependencies(procfs_introspection nlohmann_json rclcpp)
 install(TARGETS procfs_introspection LIBRARY DESTINATION lib/${PROJECT_NAME})
 
 # --- systemd plugin ---
@@ -48,7 +49,7 @@ if(SYSTEMD_FOUND)
   )
   target_link_libraries(systemd_introspection medkit_linux_utils ${SYSTEMD_LIBRARIES})
   target_include_directories(systemd_introspection PRIVATE ${SYSTEMD_INCLUDE_DIRS} ${ros2_medkit_gateway_INCLUDE_DIRS})
-  medkit_target_dependencies(systemd_introspection nlohmann_json)
+  medkit_target_dependencies(systemd_introspection nlohmann_json rclcpp)
   install(TARGETS systemd_introspection LIBRARY DESTINATION lib/${PROJECT_NAME})
 else()
   message(WARNING "libsystemd not found - systemd_introspection plugin will not be built")
@@ -60,7 +61,7 @@ add_library(container_introspection MODULE
 )
 target_link_libraries(container_introspection medkit_linux_utils)
 target_include_directories(container_introspection PRIVATE ${ros2_medkit_gateway_INCLUDE_DIRS})
-medkit_target_dependencies(container_introspection nlohmann_json)
+medkit_target_dependencies(container_introspection nlohmann_json rclcpp)
 install(TARGETS container_introspection LIBRARY DESTINATION lib/${PROJECT_NAME})
 
 # --- Tests ---

@@ -343,8 +343,16 @@ started, the cache may not have picked it up yet. Causes:
 - Node name mismatch. The PID cache matches ROS 2 node FQNs (e.g., ``/sensors/temp``)
   against ``/proc/{pid}/cmdline`` entries. Ensure the node's ``--ros-args -r __node:=``
   and ``-r __ns:=`` match expectations.
-- Node exited. The process may have crashed between the cache refresh and the REST
-  request.
+- Node exited. A cached PID whose process has exited is found when it is read: the
+  plugin rescans ``/proc`` before it answers, so the route returns 404 until the node
+  runs again.
+- Node in another ROS domain. The cache only returns a process whose ``ROS_DOMAIN_ID``
+  (from ``/proc/{pid}/environ``, unset means 0) equals the gateway's domain. A node with
+  the same name in another domain on the same host is not served.
+- Environment not readable. When the gateway runs as another user than the node and
+  cannot read its ``/proc/{pid}/environ``, it matches that process by name only and logs
+  ``Cannot read the environment of PID ...`` once. The domain check then does not apply
+  to it; run the gateway as the same user as the nodes to keep it.
 
 Composable nodes
 ~~~~~~~~~~~~~~~~

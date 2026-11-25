@@ -39,6 +39,7 @@ from ros2_medkit_test_utils.cgroup_fixtures import HOST_MOUNTINFO, v2_cgroup, wr
 from ros2_medkit_test_utils.constants import ALLOWED_EXIT_CODES
 from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
 from ros2_medkit_test_utils.launch_helpers import create_test_launch
+from ros2_medkit_test_utils.processes import node_pids
 
 HOST_PROC_ROOT = tempfile.mkdtemp(prefix='medkit_combined_host_')
 atexit.register(shutil.rmtree, HOST_PROC_ROOT, True)
@@ -192,7 +193,11 @@ class TestCombinedIntrospection(GatewayTestCase):
 
         # Procfs should still return 200 with valid data
         procfs_data = self._poll_procfs_app(app_id)
-        self.assertGreater(procfs_data['pid'], 0)
+        # The launch of this test started the node, so its process is a child of this one.
+        own = node_pids('temp_sensor', '/powertrain/engine', parent=os.getpid())
+        self.assertEqual(len(own), 1, f'temp_sensor processes of this test: {own}')
+        self.assertEqual(procfs_data['pid'], own[0],
+                         'procfs served a process this test did not start')
 
 
 @launch_testing.post_shutdown_test()

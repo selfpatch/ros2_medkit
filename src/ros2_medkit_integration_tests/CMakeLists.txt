@@ -298,6 +298,10 @@ if(BUILD_TESTING)
     test_aggregated_colliding_node_names)
   set(_TWO_GATEWAY_DOMAINS 2)
 
+  # One gateway, plus a node of the same name in a second domain of the test's own.
+  set(_SECOND_DOMAIN_TESTS
+    test_procfs_domain_isolation)
+
   # Tests whose polling budgets do not fit the glob's default timeout. Keyed by
   # test name; anything not listed takes the default for its glob.
   #
@@ -405,6 +409,8 @@ if(BUILD_TESTING)
       set(_test_domains ${_MULTI_GATEWAY_DOMAINS})
     elseif(test_name IN_LIST _TWO_GATEWAY_TESTS)
       set(_test_domains ${_TWO_GATEWAY_DOMAINS})
+    elseif(test_name IN_LIST _SECOND_DOMAIN_TESTS)
+      set(_test_domains 2)
     endif()
     set(_test_timeout 120)
     list(FIND _MEDKIT_TEST_TIMEOUT_OVERRIDES ${test_name} _test_timeout_idx)
