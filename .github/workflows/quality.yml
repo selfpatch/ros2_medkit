@@ -493,7 +493,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ["1/2", "2/2"]
+        shard: ["1/3", "2/3", "3/3"]
     container:
       image: ros:jazzy-ros-base
       # See sanitizer-asan: the instrumented RelWithDebInfo build tree does not
@@ -667,9 +667,9 @@ jobs:
             colcon test-result --test-result-base "$pkg_dir" --verbose 2>/dev/null || true
           done
 
-      # Both shards build the same objects, so one saves.
+      # The shards build the same objects, so the first saves.
       - name: Save ccache
-        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true' && matrix.shard == '1/2'
+        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true' && matrix.shard == '1/3'
         uses: actions/cache/save@v4
         with:
           path: /root/.cache/ccache
