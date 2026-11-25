@@ -212,6 +212,12 @@ SHM_SWEEP_LOCK = '/dev/shm/medkit_shm_sweep.lock'
 #: the start of the command to the end of its own sweep.
 SHM_EXCLUSIVE_ENV = 'MEDKIT_TEST_SHM_EXCLUSIVE'
 
+#: CycloneDDS fragment for Humble's localhost-only discovery: room for 121
+#: participants on one domain, above any test's process count.
+CYCLONEDDS_PARTICIPANT_INDEX = (
+    '<Discovery><MaxAutoParticipantIndex>120</MaxAutoParticipantIndex></Discovery>'
+)
+
 _RETRY_INTERVAL = 0.05
 
 #: Upper multiple of _RETRY_INTERVAL for the randomised backoff between
@@ -756,6 +762,12 @@ def apply_to_environ(domains, env=None):
     env['ROS_DOMAIN_ID'] = str(domains[0])
     if env.get('ROS_DISTRO') == 'humble':
         env['ROS_LOCALHOST_ONLY'] = '1'
+        # lo has no multicast, so CycloneDDS gives each participant an index
+        # and refuses a participant past MaxAutoParticipantIndex (default 9).
+        uri = env.get('CYCLONEDDS_URI', '')
+        if CYCLONEDDS_PARTICIPANT_INDEX not in uri:
+            parts = [uri, CYCLONEDDS_PARTICIPANT_INDEX] if uri else [CYCLONEDDS_PARTICIPANT_INDEX]
+            env['CYCLONEDDS_URI'] = ','.join(parts)
     else:
         env['ROS_AUTOMATIC_DISCOVERY_RANGE'] = 'LOCALHOST'
     if len(domains) > 1:

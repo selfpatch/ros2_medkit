@@ -250,7 +250,10 @@ true of upstream's ``ament_add_ros_isolated_gtest``, which uses the same lock. A
 therefore keeps the tests apart from each other only, and the wrappers also keep each test's
 DDS discovery on its own host: ``apply_to_environ`` sets
 ``ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST``, or ``ROS_LOCALHOST_ONLY=1`` on Humble, which
-reads only the older variable. Nothing a test starts needs discovery beyond its host. Without
+reads only the older variable. On Humble it also appends ``MaxAutoParticipantIndex`` 120 to
+``CYCLONEDDS_URI``: ``lo`` has no multicast, so CycloneDDS gives each participant of a domain an
+index and refuses one past the default limit of 9. Nothing a test starts needs discovery beyond
+its host. Without
 this, a demo stack in another container on the same bridge and domain answered a test's
 ``/fault_manager/report_fault`` calls in place of the test's own fault manager.
 
