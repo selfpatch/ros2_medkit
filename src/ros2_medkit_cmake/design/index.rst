@@ -211,7 +211,8 @@ moment has a short window before it takes its lock; that window is accepted, bec
 alternative, sweeping only when no ROS process runs on the machine, never sweeps on a shared
 development box. ``scripts/sweep_shm.sh`` keeps that stricter rule for a manual sweep.
 
-Every sweep takes a lock, an ``flock`` on ``/dev/shm/medkit_shm_sweep.lock``. An ordinary
+A sweep takes a lock, an ``flock`` on ``/dev/shm/medkit_shm_sweep.lock``, when it can open
+that file. When it cannot, the wrapper prints that and sweeps without the lock. An ordinary
 wrapper takes it shared, so sweeps still run side by side. A test that kills a participant and
 checks that its own wrapper reclaimed the memory sets ``MEDKIT_TEST_SHM_EXCLUSIVE=1``: its
 wrapper takes the lock exclusively before the command starts and keeps it until its own sweep
