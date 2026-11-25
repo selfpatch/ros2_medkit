@@ -29,6 +29,7 @@ jobs:
         run: ./scripts/ci_code_changed.sh >> "$GITHUB_OUTPUT"
 
   build-and-test:
+    name: build-and-test (${{ matrix.ros_distro }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
