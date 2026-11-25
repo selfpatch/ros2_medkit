@@ -90,12 +90,10 @@ if(BUILD_TESTING)
   cmake_language(DEFER CALL _medkit_register_domain_gate)
   cmake_language(DEFER CALL _medkit_set_domain_wait_budgets)
 
-  # These three drive the allocator directly: they hold coordination ports across
-  # the whole band to reach the degenerate cases (band exhausted, every domain
-  # busy), so they must not hold a domain of their own, and they must not run
-  # while a test in this package is holding one. The lock buys the second part;
-  # this package sits at the root of the dependency graph, so colcon tests it
-  # before any package that allocates domains.
+  # test_domain_band and test_domain_wrapper drive the allocator directly: they hold
+  # coordination ports across the whole band, so they hold no domain of their own
+  # and no other test may hold one while they run. The lock covers this package;
+  # CI tests the package alone, before every other one.
   ament_add_pytest_test(test_domain_band test/test_domain_band.py TIMEOUT 300)
   set_tests_properties(test_domain_band PROPERTIES LABELS "unit")
   medkit_test_needs_no_domain(test_domain_band)

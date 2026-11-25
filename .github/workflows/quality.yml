@@ -421,8 +421,12 @@ jobs:
           }
           # A step cancelled by its timeout still prints what ran so far.
           trap 'kill "${pids[@]}" 2>/dev/null; for p in "${pkgs[@]:$next}"; do print_block "$p"; done; exit 1' INT TERM
-          for pkg_dir in build/ros2_medkit_*/; do
+          # ros2_medkit_cmake's allocator tests hold ports across the whole domain
+          # band, so it runs first and alone: nothing else starts until it ends.
+          cmake_rc=0
+          for pkg_dir in build/ros2_medkit_cmake/ build/ros2_medkit_*/; do
             pkg=$(basename "$pkg_dir")
+            if [[ " ${pkgs[*]} " == *" $pkg "* ]]; then continue; fi
             # graph_watchdog is tested in sanitizer-graph-watchdog, in a job
             # of its own.
             if [ "$pkg" = "ros2_medkit_graph_watchdog" ]; then continue; fi
@@ -431,11 +435,12 @@ jobs:
               > "$log_dir/$pkg.log" 2>&1 &
             pkgs+=("$pkg")
             pids+=($!)
+            if [ "$pkg" = "ros2_medkit_cmake" ]; then wait "${pids[0]}" || cmake_rc=$?; fi
           done
           failed=0
           for i in "${!pkgs[@]}"; do
             rc=0
-            wait "${pids[$i]}" || rc=$?
+            if [ "$i" -eq 0 ]; then rc=$cmake_rc; else wait "${pids[$i]}" || rc=$?; fi
             next=$((i + 1))
             print_block "${pkgs[$i]}"
             if [ "$rc" -ne 0 ]; then
@@ -586,8 +591,12 @@ jobs:
           }
           # A step cancelled by its timeout still prints what ran so far.
           trap 'kill "${pids[@]}" 2>/dev/null; for p in "${pkgs[@]:$next}"; do print_block "$p"; done; exit 1' INT TERM
-          for pkg_dir in build/ros2_medkit_*/; do
+          # ros2_medkit_cmake's allocator tests hold ports across the whole domain
+          # band, so it runs first and alone: nothing else starts until it ends.
+          cmake_rc=0
+          for pkg_dir in build/ros2_medkit_cmake/ build/ros2_medkit_*/; do
             pkg=$(basename "$pkg_dir")
+            if [[ " ${pkgs[*]} " == *" $pkg "* ]]; then continue; fi
             # graph_watchdog is tested in sanitizer-graph-watchdog, in a job
             # of its own.
             if [ "$pkg" = "ros2_medkit_graph_watchdog" ]; then continue; fi
@@ -596,11 +605,12 @@ jobs:
               > "$log_dir/$pkg.log" 2>&1 &
             pkgs+=("$pkg")
             pids+=($!)
+            if [ "$pkg" = "ros2_medkit_cmake" ]; then wait "${pids[0]}" || cmake_rc=$?; fi
           done
           failed=0
           for i in "${!pkgs[@]}"; do
             rc=0
-            wait "${pids[$i]}" || rc=$?
+            if [ "$i" -eq 0 ]; then rc=$cmake_rc; else wait "${pids[$i]}" || rc=$?; fi
             next=$((i + 1))
             print_block "${pkgs[$i]}"
             if [ "$rc" -ne 0 ]; then
