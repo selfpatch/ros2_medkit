@@ -268,9 +268,14 @@ jobs:
           key: ctcache-jazzy-${{ hashFiles('src/ros2_medkit_cmake/cmake/.clang-tidy') }}-${{ github.sha }}
 
   sanitizer-asan:
+    name: sanitizer-asan (${{ matrix.shard }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/2", "2/2"]
     container:
       image: ros:jazzy-ros-base
       # Bind-mount the runner's large temp disk. The ASan+UBSan build tree
@@ -384,6 +389,7 @@ jobs:
       - name: Run unit + integration tests with ASan + UBSan
         timeout-minutes: 45
         env:
+          SHARD: ${{ matrix.shard }}
           # detect_leaks=0: FastDDS allocator leaks on shutdown (not our code)
           # new_delete_type_mismatch=0: ROS 2 DDS scalar/array new/delete mismatch
           ASAN_OPTIONS: halt_on_error=1:detect_leaks=0:new_delete_type_mismatch=0
@@ -408,6 +414,19 @@ jobs:
           # package starts as soon as a slot frees. Each one's output goes to a
           # file and is printed as one block, in package order, when the package
           # is done.
+          # This shard's tests are positions shard_index, shard_index + shard_count, ... of the
+          # non-linter list. Positions are listed out because ctest -I n,,k runs every test when
+          # n is past the last one. exec keeps the ctest process the one the trap kills.
+          shard_index=${SHARD%/*}
+          shard_count=${SHARD#*/}
+          run_shard() {
+            local total list="" i
+            total=$(ctest -N -LE "linter" | sed -n 's/^Total Tests: //p')
+            [ -n "$total" ] || { echo "::error::ctest -N printed no test count"; return 1; }
+            for ((i = shard_index; i <= total; i += shard_count)); do list+=",$i"; done
+            if [ -z "$list" ]; then echo "No test of this shard in this package."; return 0; fi
+            exec ctest -LE "linter" -I "0,0,0$list" --output-on-failure
+          }
           max_pkgs=$(( $(nproc) / CTEST_PARALLEL_LEVEL ))
           [ "$max_pkgs" -ge 1 ] || max_pkgs=1
           log_dir=$(mktemp -d)
@@ -431,7 +450,7 @@ jobs:
             # of its own.
             if [ "$pkg" = "ros2_medkit_graph_watchdog" ]; then continue; fi
             while [ "$(jobs -rp | wc -l)" -ge "$max_pkgs" ]; do wait -n || true; done
-            (cd "$pkg_dir" && exec ctest -LE "linter" --output-on-failure) \
+            (cd "$pkg_dir" && run_shard) \
               > "$log_dir/$pkg.log" 2>&1 &
             pkgs+=("$pkg")
             pids+=($!)
@@ -458,17 +477,23 @@ jobs:
             colcon test-result --test-result-base "$pkg_dir" --verbose 2>/dev/null || true
           done
 
+      # Both shards build the same objects, so one saves.
       - name: Save ccache
-        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true' && matrix.shard == '1/2'
         uses: actions/cache/save@v4
         with:
           path: /root/.cache/ccache
           key: ccache-jazzy-asan-${{ github.sha }}
 
   sanitizer-tsan:
+    name: sanitizer-tsan (${{ matrix.shard }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/2", "2/2"]
     container:
       image: ros:jazzy-ros-base
       # See sanitizer-asan: the instrumented RelWithDebInfo build tree does not
@@ -556,6 +581,7 @@ jobs:
       - name: Run unit + integration tests with TSan
         timeout-minutes: 60
         env:
+          SHARD: ${{ matrix.shard }}
           # Same factor as the ctest TIMEOUT rewrite above, for the wall-clock
           # budgets tests assert internally - ctest's clock cannot reach those.
           MEDKIT_TEST_TIME_SCALE: 3
@@ -578,6 +604,19 @@ jobs:
           # package starts as soon as a slot frees. Each one's output goes to a
           # file and is printed as one block, in package order, when the package
           # is done.
+          # This shard's tests are positions shard_index, shard_index + shard_count, ... of the
+          # non-linter list. Positions are listed out because ctest -I n,,k runs every test when
+          # n is past the last one. exec keeps the ctest process the one the trap kills.
+          shard_index=${SHARD%/*}
+          shard_count=${SHARD#*/}
+          run_shard() {
+            local total list="" i
+            total=$(ctest -N -LE "linter" | sed -n 's/^Total Tests: //p')
+            [ -n "$total" ] || { echo "::error::ctest -N printed no test count"; return 1; }
+            for ((i = shard_index; i <= total; i += shard_count)); do list+=",$i"; done
+            if [ -z "$list" ]; then echo "No test of this shard in this package."; return 0; fi
+            exec ctest -LE "linter" -I "0,0,0$list" --output-on-failure
+          }
           max_pkgs=$(( $(nproc) / CTEST_PARALLEL_LEVEL ))
           [ "$max_pkgs" -ge 1 ] || max_pkgs=1
           log_dir=$(mktemp -d)
@@ -601,7 +640,7 @@ jobs:
             # of its own.
             if [ "$pkg" = "ros2_medkit_graph_watchdog" ]; then continue; fi
             while [ "$(jobs -rp | wc -l)" -ge "$max_pkgs" ]; do wait -n || true; done
-            (cd "$pkg_dir" && exec ctest -LE "linter" --output-on-failure) \
+            (cd "$pkg_dir" && run_shard) \
               > "$log_dir/$pkg.log" 2>&1 &
             pkgs+=("$pkg")
             pids+=($!)
@@ -628,8 +667,9 @@ jobs:
             colcon test-result --test-result-base "$pkg_dir" --verbose 2>/dev/null || true
           done
 
+      # Both shards build the same objects, so one saves.
       - name: Save ccache
-        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.ccache.outputs.cache-hit != 'true' && matrix.shard == '1/2'
         uses: actions/cache/save@v4
         with:
           path: /root/.cache/ccache
@@ -642,13 +682,15 @@ jobs:
   # It is not path-filtered: the plugin drives the gateway, the fault manager and
   # discovery, so the changes most likely to break it are not in its own tree.
   sanitizer-graph-watchdog:
-    name: Sanitizer ${{ matrix.name }} (graph_watchdog)
+    name: Sanitizer ${{ matrix.name }} (graph_watchdog) (${{ matrix.shard }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        sanitizer: [asan, tsan]
+        shard: ["1/2", "2/2"]
         include:
           - sanitizer: asan
             name: ASan + UBSan
@@ -756,6 +798,7 @@ jobs:
       - name: Run graph_watchdog tests with ${{ matrix.name }}
         timeout-minutes: 45
         env:
+          SHARD: ${{ matrix.shard }}
           # Same factor as the ctest TIMEOUT rewrite above, for the wall-clock
           # budgets tests assert internally - ctest's clock cannot reach those.
           MEDKIT_TEST_TIME_SCALE: 3
@@ -776,8 +819,21 @@ jobs:
           fi
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
+          # This shard's tests are positions shard_index, shard_index + shard_count, ... of the
+          # non-linter list. Positions are listed out because ctest -I n,,k runs every test when
+          # n is past the last one.
+          shard_index=${SHARD%/*}
+          shard_count=${SHARD#*/}
+          run_shard() {
+            local total list="" i
+            total=$(ctest -N -LE "linter" | sed -n 's/^Total Tests: //p')
+            [ -n "$total" ] || { echo "::error::ctest -N printed no test count"; return 1; }
+            for ((i = shard_index; i <= total; i += shard_count)); do list+=",$i"; done
+            if [ -z "$list" ]; then echo "No test of this shard in this package."; return 0; fi
+            exec ctest -LE "linter" -I "0,0,0$list" --output-on-failure
+          }
           cd build/ros2_medkit_graph_watchdog
-          ctest -LE "linter" --output-on-failure
+          run_shard
 
       - name: Show test results
         if: always()
