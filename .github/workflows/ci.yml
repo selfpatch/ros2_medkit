@@ -143,11 +143,17 @@ jobs:
           # Lyrical we keep the default FastRTPS. (Jazzy still uses
           # CycloneDDS - see jazzy-test job below for its rationale.)
           RMW_IMPLEMENTATION: ${{ matrix.ros_distro == 'humble' && 'rmw_cyclonedds_cpp' || '' }}
+          # Start every package's tests at once. The "Starting >>>"
+          # lines in the log show when each package's tests began.
+          COLCON_FEATURE_FLAGS: drop_test_deps
+          # Tests each package's ctest runs at once. Packages run side by side, so the peak is
+          # this times the number of colcon workers.
+          CTEST_PARALLEL_LEVEL: 4
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           # ros2_medkit_graph_watchdog is tested in graph-watchdog below. Its end-to-end suite
-          # is 24 minutes on its own, and this step is capped rather than the job, so a package
-          # that overruns takes every package behind it down and reports no test name doing it.
+          # is long, and this step is capped rather than the job, so a package that overruns
+          # takes every package still running down and reports no test name doing it.
           colcon test --return-code-on-test-failure \
             --packages-skip ros2_medkit_opcua ros2_medkit_graph_watchdog \
             --ctest-args -LE linter \
@@ -181,9 +187,8 @@ jobs:
           key: ccache-${{ matrix.ros_distro }}-${{ github.sha }}
 
   # ros2_medkit_graph_watchdog on every distro, in a job of its own.
-  # Same reasoning as sanitizer-graph-watchdog in quality.yml: the package's end-to-end suite runs
-  # 24 minutes, the sweep it left had 3 minutes of headroom on humble and none at all on lyrical,
-  # and a suite that grows with every new detector should not decide whether the packages behind it
+  # Same reasoning as sanitizer-graph-watchdog in quality.yml: the package's end-to-end suite is
+  # long and grows with every new detector, so it should not decide whether the other packages
   # get to run. Not path-filtered: the plugin drives the gateway, the fault manager and discovery,
   # so the changes most likely to break it are outside its own tree.
   graph-watchdog:
@@ -293,6 +298,8 @@ jobs:
           # the note in jazzy-test for the FastRTPS discovery-teardown use-after-free that
           # puts jazzy on the same implementation.
           RMW_IMPLEMENTATION: ${{ (matrix.ros_distro == 'humble' || matrix.ros_distro == 'jazzy') && 'rmw_cyclonedds_cpp' || '' }}
+          # Tests the package's ctest runs at once.
+          CTEST_PARALLEL_LEVEL: 4
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           colcon test --return-code-on-test-failure \
@@ -423,6 +430,9 @@ jobs:
           RMW_IMPLEMENTATION: ${{ (matrix.ros_distro == 'humble' || matrix.ros_distro == 'jazzy') && 'rmw_cyclonedds_cpp' || '' }}
           # The job runs in a container, so the service name is the host name.
           ROS2_MEDKIT_TEST_PG_CONN: postgresql://medkit:medkit@postgres:5432/faults
+          # Tests the package's ctest runs at once. Each PostgreSQL test works in a schema of
+          # its own.
+          CTEST_PARALLEL_LEVEL: 4
         run: |
           source /opt/ros/${{ matrix.ros_distro }}/setup.bash
           colcon test --return-code-on-test-failure \
@@ -540,11 +550,16 @@ jobs:
           # can segfault peer nodes when another node (typically the gateway)
           # shuts down. CycloneDDS avoids it.
           RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+          # Start every package's tests at once. The "Starting >>>"
+          # lines in the log show when each package's tests began.
+          COLCON_FEATURE_FLAGS: drop_test_deps
+          # Tests each package's ctest runs at once. Packages run side by side, so the peak is
+          # this times the number of colcon workers.
+          CTEST_PARALLEL_LEVEL: 4
         run: |
           source /opt/ros/jazzy/setup.bash
           # ros2_medkit_graph_watchdog is tested in graph-watchdog, on this distro too.
-          # Its end-to-end suite is 24 minutes, which is most of what stood between this
-          # job and its cap.
+          # Its end-to-end suite is long, so it has a job of its own.
           colcon test --return-code-on-test-failure \
             --packages-skip ros2_medkit_opcua ros2_medkit_graph_watchdog \
             --ctest-args -LE linter \

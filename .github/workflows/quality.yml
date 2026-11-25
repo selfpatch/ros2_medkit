@@ -396,20 +396,52 @@ jobs:
           # period under instrumentation). Detection also falls back to the
           # sanitizer's own *SAN_OPTIONS, so this is belt and braces.
           MEDKIT_TEST_SANITIZED: 1
+          # Tests each package's ctest runs at once. The loop runs at most
+          # nproc / this many packages at once, so the peak is about nproc
+          # instrumented tests. Sanitizer builds use more CPU and memory per
+          # test than Release ones.
+          CTEST_PARALLEL_LEVEL: 2
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          failed=0
+          # At most nproc / CTEST_PARALLEL_LEVEL packages run at once, and a
+          # package starts as soon as a slot frees. Each one's output goes to a
+          # file and is printed as one block, in package order, when the package
+          # is done.
+          max_pkgs=$(( $(nproc) / CTEST_PARALLEL_LEVEL ))
+          [ "$max_pkgs" -ge 1 ] || max_pkgs=1
+          log_dir=$(mktemp -d)
+          pkgs=()
+          pids=()
+          next=0
+          print_block() {
+            echo "::group::Testing $1"
+            cat "$log_dir/$1.log"
+            echo "::endgroup::"
+          }
+          # A step cancelled by its timeout still prints what ran so far.
+          trap 'kill "${pids[@]}" 2>/dev/null; for p in "${pkgs[@]:$next}"; do print_block "$p"; done; exit 1' INT TERM
           for pkg_dir in build/ros2_medkit_*/; do
             pkg=$(basename "$pkg_dir")
-            # graph_watchdog is tested in sanitizer-graph-watchdog. Its
-            # end-to-end suite is 24 minutes under instrumentation, which is
-            # more than the headroom left here, and a package that overruns
-            # this step takes every package after it down with it.
+            # graph_watchdog is tested in sanitizer-graph-watchdog, in a job
+            # of its own.
             if [ "$pkg" = "ros2_medkit_graph_watchdog" ]; then continue; fi
-            echo "::group::Testing $pkg"
-            (cd "$pkg_dir" && ctest -LE "linter" --output-on-failure) || failed=1
-            echo "::endgroup::"
+            while [ "$(jobs -rp | wc -l)" -ge "$max_pkgs" ]; do wait -n || true; done
+            (cd "$pkg_dir" && exec ctest -LE "linter" --output-on-failure) \
+              > "$log_dir/$pkg.log" 2>&1 &
+            pkgs+=("$pkg")
+            pids+=($!)
+          done
+          failed=0
+          for i in "${!pkgs[@]}"; do
+            rc=0
+            wait "${pids[$i]}" || rc=$?
+            next=$((i + 1))
+            print_block "${pkgs[$i]}"
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::ctest failed in ${pkgs[$i]} (exit $rc)"
+              failed=1
+            fi
           done
           exit $failed
 
@@ -517,7 +549,6 @@ jobs:
             | grep -oE 'TIMEOUT "[0-9]+"' | sort -t'"' -k2 -n | uniq -c
 
       - name: Run unit + integration tests with TSan
-        # Runs on main take 40-45 min, so 45 failed on any slower runner.
         timeout-minutes: 60
         env:
           # Same factor as the ctest TIMEOUT rewrite above, for the wall-clock
@@ -528,22 +559,54 @@ jobs:
           # period under instrumentation). Detection also falls back to the
           # sanitizer's own *SAN_OPTIONS, so this is belt and braces.
           MEDKIT_TEST_SANITIZED: 1
+          # Tests each package's ctest runs at once. The loop runs at most
+          # nproc / this many packages at once, so the peak is about nproc
+          # instrumented tests. Sanitizer builds use more CPU and memory per
+          # test than Release ones.
+          CTEST_PARALLEL_LEVEL: 2
         run: |
           TSAN_OPTIONS="halt_on_error=0:history_size=4:suppressions=$(pwd)/tsan_suppressions.txt"
           export TSAN_OPTIONS
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          failed=0
+          # At most nproc / CTEST_PARALLEL_LEVEL packages run at once, and a
+          # package starts as soon as a slot frees. Each one's output goes to a
+          # file and is printed as one block, in package order, when the package
+          # is done.
+          max_pkgs=$(( $(nproc) / CTEST_PARALLEL_LEVEL ))
+          [ "$max_pkgs" -ge 1 ] || max_pkgs=1
+          log_dir=$(mktemp -d)
+          pkgs=()
+          pids=()
+          next=0
+          print_block() {
+            echo "::group::Testing $1"
+            cat "$log_dir/$1.log"
+            echo "::endgroup::"
+          }
+          # A step cancelled by its timeout still prints what ran so far.
+          trap 'kill "${pids[@]}" 2>/dev/null; for p in "${pkgs[@]:$next}"; do print_block "$p"; done; exit 1' INT TERM
           for pkg_dir in build/ros2_medkit_*/; do
             pkg=$(basename "$pkg_dir")
-            # graph_watchdog is tested in sanitizer-graph-watchdog. Its
-            # end-to-end suite is 24 minutes under instrumentation, which is
-            # more than the headroom left here, and a package that overruns
-            # this step takes every package after it down with it.
+            # graph_watchdog is tested in sanitizer-graph-watchdog, in a job
+            # of its own.
             if [ "$pkg" = "ros2_medkit_graph_watchdog" ]; then continue; fi
-            echo "::group::Testing $pkg"
-            (cd "$pkg_dir" && ctest -j1 -LE "linter" --output-on-failure) || failed=1
-            echo "::endgroup::"
+            while [ "$(jobs -rp | wc -l)" -ge "$max_pkgs" ]; do wait -n || true; done
+            (cd "$pkg_dir" && exec ctest -LE "linter" --output-on-failure) \
+              > "$log_dir/$pkg.log" 2>&1 &
+            pkgs+=("$pkg")
+            pids+=($!)
+          done
+          failed=0
+          for i in "${!pkgs[@]}"; do
+            rc=0
+            wait "${pids[$i]}" || rc=$?
+            next=$((i + 1))
+            print_block "${pkgs[$i]}"
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::ctest failed in ${pkgs[$i]} (exit $rc)"
+              failed=1
+            fi
           done
           exit $failed
 
@@ -562,11 +625,10 @@ jobs:
           path: /root/.cache/ccache
           key: ccache-jazzy-tsan-${{ github.sha }}
 
-  # ros2_medkit_graph_watchdog's end-to-end suite runs 24 minutes under
-  # instrumentation, against a 45-minute test budget the rest of the workspace
-  # already spends 22 to 38 of. Testing it here instead of in the workspace
-  # sweeps gives it a budget of its own, and stops a suite that grows with every
-  # new detector from deciding whether the packages behind it get to run at all.
+  # ros2_medkit_graph_watchdog's end-to-end suite is long under
+  # instrumentation. It is tested in its own job, so it has its own budget and a
+  # suite that grows with every new detector cannot decide whether the other
+  # packages run.
   # It is not path-filtered: the plugin drives the gateway, the fault manager and
   # discovery, so the changes most likely to break it are not in its own tree.
   sanitizer-graph-watchdog:
@@ -689,6 +751,9 @@ jobs:
           MEDKIT_TEST_TIME_SCALE: 3
           # Lets tests size instrumented-only-expensive resources down.
           MEDKIT_TEST_SANITIZED: 1
+          # Tests the package's ctest runs at once. Sanitizer builds use more
+          # CPU and memory per test than Release ones.
+          CTEST_PARALLEL_LEVEL: 2
         run: |
           if [ "${{ matrix.sanitizer }}" = "tsan" ]; then
             TSAN_OPTIONS="halt_on_error=0:history_size=4:suppressions=$(pwd)/tsan_suppressions.txt"
@@ -702,7 +767,7 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           cd build/ros2_medkit_graph_watchdog
-          ctest -j1 -LE "linter" --output-on-failure
+          ctest -LE "linter" --output-on-failure
 
       - name: Show test results
         if: always()
