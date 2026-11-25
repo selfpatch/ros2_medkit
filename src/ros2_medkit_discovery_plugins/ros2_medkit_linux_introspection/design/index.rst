@@ -183,7 +183,8 @@ names to Linux PIDs. The cache:
   the gateway's domain comes from its own ROS context. A node with the same name in
   another domain is never served.
 - Matches a process whose ``environ`` cannot be read (another user's process) by name
-  only, and logs a warning once per PID. Without a ROS node there is no domain to compare.
+  only, and logs a warning once per PID in each plugin that looks it up, since each plugin
+  owns its cache. Without a ROS node there is no domain to compare.
 - When reading a cached PID fails and that PID no longer runs as the node, rescans
   ``/proc`` once and reads again before the route answers
 - Uses TTL-based refresh (default 10 seconds, configurable via ``pid_cache_ttl_seconds``)
