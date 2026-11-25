@@ -143,8 +143,9 @@ jobs:
           # Lyrical we keep the default FastRTPS. (Jazzy still uses
           # CycloneDDS - see jazzy-test job below for its rationale.)
           RMW_IMPLEMENTATION: ${{ matrix.ros_distro == 'humble' && 'rmw_cyclonedds_cpp' || '' }}
-          # Start every package's tests at once. The "Starting >>>"
-          # lines in the log show when each package's tests began.
+          # No package waits for the tests of its dependencies. Colcon still runs at
+          # most --parallel-workers packages at once (default: the CPU count). The
+          # "Starting >>>" lines in the log show when each package's tests began.
           COLCON_FEATURE_FLAGS: drop_test_deps
           # Tests each package's ctest runs at once. Packages run side by side, so the peak is
           # this times the number of colcon workers.
@@ -550,8 +551,9 @@ jobs:
           # can segfault peer nodes when another node (typically the gateway)
           # shuts down. CycloneDDS avoids it.
           RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
-          # Start every package's tests at once. The "Starting >>>"
-          # lines in the log show when each package's tests began.
+          # No package waits for the tests of its dependencies. Colcon still runs at
+          # most --parallel-workers packages at once (default: the CPU count). The
+          # "Starting >>>" lines in the log show when each package's tests began.
           COLCON_FEATURE_FLAGS: drop_test_deps
           # Tests each package's ctest runs at once. Packages run side by side, so the peak is
           # this times the number of colcon workers.
