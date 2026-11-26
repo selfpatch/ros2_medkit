@@ -21,18 +21,19 @@ here="$(cd "$(dirname "$0")" && pwd)"
 vendored="$here/../../../src/ros2_medkit_gateway/src/vendored/cpp_httplib"
 empty="$(mktemp -d)"
 trap 'rm -rf "$empty"' EXIT
-# CMake 3.16 does not read this variable from the environment, so it goes on each configure line.
-launcher=()
-if [ -n "${CMAKE_CXX_COMPILER_LAUNCHER:-}" ]; then launcher=("-DCMAKE_CXX_COMPILER_LAUNCHER=$CMAKE_CXX_COMPILER_LAUNCHER"); fi
+# CMake 3.16 does not read the launcher variable from the environment, so it goes on each configure line.
+# Precompiled headers are off: GCC writes a different .gch on every build, so ccache cannot reuse a file built with one.
+cmake_extra=(-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON)
+if [ -n "${CMAKE_CXX_COMPILER_LAUNCHER:-}" ]; then cmake_extra+=("-DCMAKE_CXX_COMPILER_LAUNCHER=$CMAKE_CXX_COMPILER_LAUNCHER"); fi
 
 # Version 0.26 has no multipart API the handlers use: the target must be ignored. Its include
 # directory holds no httplib.h, so using it fails the build. GLOBAL so that CMake 3.16 accepts it.
-cmake -S "$here" -B /tmp/host_new -DHOST_HTTPLIB_VERSION=0.26.0 -DHOST_HTTPLIB_INCLUDE="$empty" -DHOST_HTTPLIB_GLOBAL=ON "${launcher[@]}"
+cmake -S "$here" -B /tmp/host_new -DHOST_HTTPLIB_VERSION=0.26.0 -DHOST_HTTPLIB_INCLUDE="$empty" -DHOST_HTTPLIB_GLOBAL=ON "${cmake_extra[@]}"
 cmake --build /tmp/host_new --parallel "$(nproc)"
 /tmp/host_new/check_gateway_core_host
 
 # An unversioned target from find_package() is not GLOBAL: CMake 3.16 and 3.17 cannot alias it.
-cmake -S "$here" -B /tmp/host_unversioned -DHOST_HTTPLIB_INCLUDE="$vendored" "${launcher[@]}"
+cmake -S "$here" -B /tmp/host_unversioned -DHOST_HTTPLIB_INCLUDE="$vendored" "${cmake_extra[@]}"
 cmake --build /tmp/host_unversioned --parallel "$(nproc)"
 /tmp/host_unversioned/check_gateway_core_host
 echo "Host variants OK."
