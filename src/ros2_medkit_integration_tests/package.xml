@@ -47,6 +47,9 @@
   <test_depend>ros2_medkit_param_beacon</test_depend>
   <test_depend>ros2_medkit_graph_provider</test_depend>
   <test_depend>greenwave_monitor</test_depend>
+  <!-- ros2_medkit_test_utils/ros_graph.py runs `ros2 param list`. -->
+  <test_depend>ros2cli</test_depend>
+  <test_depend>ros2param</test_depend>
 
   <!-- Configured for real, not linked against, by
        test/test_launch_test_guard_system_build.py, which is what actually
