@@ -85,11 +85,22 @@ class AuthManager {
                                                               const std::string & client_secret);
 
   /**
+   * @brief Check a client's credentials (RFC 6749 §2.3.1) without issuing tokens
+   * @param client_id Client identifier
+   * @param client_secret Client secret
+   * @return `invalid_client` for an unknown or disabled client or a wrong secret
+   */
+  tl::expected<void, AuthErrorResponse> authenticate_client(const std::string & client_id,
+                                                            const std::string & client_secret) const;
+
+  /**
    * @brief Refresh an access token using a refresh token
    * @param refresh_token The refresh token
+   * @param client_id The authenticated client. A token issued to another client is `invalid_grant`.
    * @return TokenResponse on success, AuthErrorResponse on failure
    */
-  tl::expected<TokenResponse, AuthErrorResponse> refresh_access_token(const std::string & refresh_token);
+  tl::expected<TokenResponse, AuthErrorResponse> refresh_access_token(const std::string & refresh_token,
+                                                                      const std::string & client_id);
 
   /**
    * @brief Validate a JWT access token
@@ -166,13 +177,17 @@ class AuthManager {
    * the token's `exp` plus the access token lifetime.
    *
    * @param refresh_token The refresh token to revoke
-   * @return true if a record is revoked, false if nothing is recorded. The client's pool being full is an error with
-   *         `retry_after_seconds` set: seconds until its oldest record expires.
+   * @param client_id The authenticated client (RFC 7009 §2.1)
+   * @return true if a record is revoked, false if nothing is recorded: the token does not verify, or its record names
+   *         another subject. Errors record nothing: `unsupported_token_type` for an access token, `invalid_grant` for
+   *         a token issued to another client, and `temporarily_unavailable` with `retry_after_seconds` (seconds until
+   *         the oldest record expires) when the client's pool is full.
    */
-  tl::expected<bool, AuthErrorResponse> try_revoke_refresh_token(const std::string & refresh_token);
+  tl::expected<bool, AuthErrorResponse> try_revoke_refresh_token(const std::string & refresh_token,
+                                                                 const std::string & client_id);
 
-  /// try_revoke_refresh_token(), with a full pool reported as false.
-  bool revoke_refresh_token(const std::string & refresh_token);
+  /// try_revoke_refresh_token(), with every error reported as false.
+  bool revoke_refresh_token(const std::string & refresh_token, const std::string & client_id);
 
   /**
    * @brief Drop refresh records whose horizon has passed (see try_revoke_refresh_token)
@@ -279,6 +294,10 @@ class AuthManager {
 
   /// Whole seconds of wall_clock_, the unit of every token and record time.
   int64_t now_seconds() const;
+
+  /// The client entry when the id is listed, enabled and the secret matches. The caller holds clients_mutex_.
+  tl::expected<const ClientCredentials *, AuthErrorResponse>
+  check_client_locked(const std::string & client_id, const std::string & client_secret) const;
 
   AuthConfig config_;
   WallClock wall_clock_;

@@ -152,25 +152,34 @@ AuthManager::AuthManager(const AuthConfig & config, WallClock wall_clock)
   auth_policy_ = AuthRequirementPolicyFactory::create(config_.require_auth_for);
 }
 
+tl::expected<const ClientCredentials *, AuthErrorResponse>
+AuthManager::check_client_locked(const std::string & client_id, const std::string & client_secret) const {
+  // One answer for an unknown client, a disabled one and a wrong secret.
+  auto it = clients_.find(client_id);
+  if (it == clients_.end() || !it->second.enabled || !secret_matches(it->second.client_secret, client_secret)) {
+    return tl::unexpected(AuthErrorResponse::client_authentication_failed());
+  }
+  return &it->second;
+}
+
+tl::expected<void, AuthErrorResponse> AuthManager::authenticate_client(const std::string & client_id,
+                                                                       const std::string & client_secret) const {
+  std::lock_guard<std::mutex> lock(clients_mutex_);
+  const auto checked = check_client_locked(client_id, client_secret);
+  if (!checked) {
+    return tl::unexpected(checked.error());
+  }
+  return {};
+}
+
 tl::expected<TokenResponse, AuthErrorResponse> AuthManager::authenticate(const std::string & client_id,
                                                                          const std::string & client_secret) {
-  // Find client
   std::lock_guard<std::mutex> lock(clients_mutex_);
-  auto it = clients_.find(client_id);
-  if (it == clients_.end()) {
-    return tl::unexpected(AuthErrorResponse::invalid_client("Unknown client_id"));
+  const auto checked = check_client_locked(client_id, client_secret);
+  if (!checked) {
+    return tl::unexpected(checked.error());
   }
-
-  const auto & client = it->second;
-
-  // Check if client is enabled
-  if (!client.enabled) {
-    return tl::unexpected(AuthErrorResponse::invalid_client("Client is disabled"));
-  }
-
-  if (!secret_matches(client.client_secret, client_secret)) {
-    return tl::unexpected(AuthErrorResponse::invalid_client("Invalid client_secret"));
-  }
+  const auto & client = **checked;
 
   // The record is stored first: its one clock reading, taken under the record lock, decides the sweep and the cap
   // and stamps both tokens.
@@ -220,7 +229,8 @@ tl::expected<TokenResponse, AuthErrorResponse> AuthManager::authenticate(const s
   return response;
 }
 
-tl::expected<TokenResponse, AuthErrorResponse> AuthManager::refresh_access_token(const std::string & refresh_token) {
+tl::expected<TokenResponse, AuthErrorResponse> AuthManager::refresh_access_token(const std::string & refresh_token,
+                                                                                 const std::string & client_id) {
   // Decode and validate refresh token
   auto decode_result = decode_jwt(refresh_token);
   if (!decode_result) {
@@ -235,6 +245,11 @@ tl::expected<TokenResponse, AuthErrorResponse> AuthManager::refresh_access_token
   // Verify this is actually a refresh token, not an access token
   if (claims.typ != TokenType::REFRESH) {
     return tl::unexpected(AuthErrorResponse::invalid_grant("Token is not a refresh token"));
+  }
+
+  // RFC 6749 §6: the refresh token is bound to the client it was issued to.
+  if (claims.sub != client_id) {
+    return tl::unexpected(AuthErrorResponse::invalid_grant("Refresh token was issued to another client"));
   }
 
   // Read before the record lock: authenticate() holds the client lock while it stores a record.
@@ -253,6 +268,11 @@ tl::expected<TokenResponse, AuthErrorResponse> AuthManager::refresh_access_token
       return tl::unexpected(AuthErrorResponse::invalid_grant("Refresh token not found"));
     }
     const RefreshTokenRecord & record = it->second.record;
+
+    // A jti names one record, and a token for another subject did not mint it.
+    if (record.client_id != client_id) {
+      return tl::unexpected(AuthErrorResponse::invalid_grant("Refresh token was issued to another client"));
+    }
 
     if (record.revoked) {
       return tl::unexpected(AuthErrorResponse::invalid_grant("Refresh token has been revoked"));
@@ -425,11 +445,12 @@ bool AuthManager::requires_authentication(const std::string & method, const std:
   return auth_policy_->requires_authentication(method, path);
 }
 
-bool AuthManager::revoke_refresh_token(const std::string & refresh_token) {
-  return try_revoke_refresh_token(refresh_token).value_or(false);
+bool AuthManager::revoke_refresh_token(const std::string & refresh_token, const std::string & client_id) {
+  return try_revoke_refresh_token(refresh_token, client_id).value_or(false);
 }
 
-tl::expected<bool, AuthErrorResponse> AuthManager::try_revoke_refresh_token(const std::string & refresh_token) {
+tl::expected<bool, AuthErrorResponse> AuthManager::try_revoke_refresh_token(const std::string & refresh_token,
+                                                                            const std::string & client_id) {
   // Times ignored: a refresh token past its expiry can have live access tokens, and an issuer's clock may run ahead.
   auto decode_result = decode_jwt(refresh_token, TimeChecks::IGNORE);
   if (!decode_result) {
@@ -440,7 +461,12 @@ tl::expected<bool, AuthErrorResponse> AuthManager::try_revoke_refresh_token(cons
 
   // Records are keyed by refresh jti. A record for an access token would be read by nothing.
   if (claims.typ != TokenType::REFRESH) {
-    return false;
+    return tl::unexpected(AuthErrorResponse::unsupported_token_type("Only refresh tokens are revocable here"));
+  }
+
+  // RFC 7009 §2.1: the token must have been issued to the requesting client.
+  if (claims.sub != client_id) {
+    return tl::unexpected(AuthErrorResponse::invalid_grant("Refresh token was issued to another client"));
   }
 
   // Read before the record lock: authenticate() holds the client lock while it stores a record.

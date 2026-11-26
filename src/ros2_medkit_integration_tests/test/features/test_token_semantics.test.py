@@ -15,8 +15,8 @@
 
 """Token semantics on running gateways.
 
-- ``POST /auth/revoke`` revokes refresh tokens only. An access token gets the
-  same answer and changes nothing.
+- ``POST /auth/revoke`` revokes refresh tokens only. An access token answers
+  ``unsupported_token_type`` and changes nothing.
 - A refresh token past its expiry, or issued by a clock running ahead, can
   still be revoked. The access tokens minted from it are refused from then on.
 - The role a token grants comes from this gateway's client table. Any role
@@ -272,15 +272,18 @@ def _pair(url, client=(CLIENT_ID, CLIENT_SECRET)):
     return resp.json()
 
 
-def _refresh(url, refresh_token):
+def _refresh(url, refresh_token, client=(CLIENT_ID, CLIENT_SECRET)):
     return requests.post(
         f'{url}/auth/token',
-        json={'grant_type': 'refresh_token', 'refresh_token': refresh_token},
+        json={'grant_type': 'refresh_token', 'refresh_token': refresh_token,
+              'client_id': client[0], 'client_secret': client[1]},
         timeout=30)
 
 
-def _revoke(url, token):
-    return requests.post(f'{url}/auth/revoke', json={'token': token}, timeout=30)
+def _revoke(url, token, client=(CLIENT_ID, CLIENT_SECRET)):
+    return requests.post(
+        f'{url}/auth/revoke',
+        json={'token': token, 'client_id': client[0], 'client_secret': client[1]}, timeout=30)
 
 
 def _bearer(access_token):
@@ -332,6 +335,13 @@ def _exp(token):
     payload = token.split('.')[1]
     payload += '=' * (-len(payload) % 4)
     return json.loads(base64.urlsafe_b64decode(payload))['exp']
+
+
+def _jti(token):
+    """Return the `jti` claim of a JWT."""
+    payload = token.split('.')[1]
+    payload += '=' * (-len(payload) % 4)
+    return json.loads(base64.urlsafe_b64decode(payload))['jti']
 
 
 class _Stream:
@@ -514,12 +524,12 @@ class TestRevocation(unittest.TestCase):
         _wait_until_answering(SHORT_BASE_URL)
 
     def test_01_revoking_an_access_token_changes_nothing(self):
-        """The answer matches a real revocation (RFC 7009), and both tokens keep working."""
+        """RFC 7009 2.2.1 refuses the token type, and both tokens keep working."""
         pair = _pair(LONG_BASE_URL)
 
         resp = _revoke(LONG_BASE_URL, pair['access_token'])
-        self.assertEqual(resp.status_code, 200, resp.text)
-        self.assertEqual(resp.json(), {'status': 'revoked'})
+        self.assertEqual(resp.status_code, 400, resp.text)
+        self.assertEqual(resp.json().get('error'), 'unsupported_token_type', resp.text)
 
         self.assertEqual(_read(LONG_BASE_URL, pair['access_token']).status_code, 200,
                          'revoking an access token withdrew it')
@@ -555,7 +565,8 @@ class TestRevocation(unittest.TestCase):
             time.sleep(POLL_INTERVAL)
         self.assertIsNotNone(refusal, 'the refresh token never expired')
         self.assertIsNotNone(late, 'no refresh succeeded before the refresh token expired')
-        self.assertEqual(refusal.status_code, 401, refusal.text)
+        self.assertEqual(refusal.status_code, 400, refusal.text)
+        self.assertEqual(refusal.json().get('error'), 'invalid_grant', refusal.text)
         self.assertIn('expired', refusal.text)
 
         self.assertEqual(_read(SHORT_BASE_URL, late).status_code, 200,
@@ -618,8 +629,9 @@ class TestMalformedTokensAreRefusedBeforeDecoding(unittest.TestCase):
         entry_points = {
             'bearer header': (lambda token: _read(FILL_BASE_URL, token),
                               HEADER_WARM_TOKEN, HEADER_FILL_TOKEN, 401),
+            # The client authenticates first; an invalid refresh token is then invalid_grant.
             'refresh_token body': (lambda token: _refresh(FILL_BASE_URL, token),
-                                   BODY_WARM_TOKEN, BODY_FILL_TOKEN, 401),
+                                   BODY_WARM_TOKEN, BODY_FILL_TOKEN, 400),
             'revoke token body': (lambda token: _revoke(FILL_BASE_URL, token),
                                   BODY_WARM_TOKEN, BODY_FILL_TOKEN, 200),
         }
@@ -656,8 +668,10 @@ class TestMalformedTokensAreRefusedBeforeDecoding(unittest.TestCase):
                 self.assertEqual(resp.status_code, 401, resp.text)
                 self.assertEqual(resp.json().get('error_description'), REFUSED_SHAPE, resp.text)
             with self.subTest(shape=shape, entry_point='refresh_token body'):
+                # The client authenticates first; an invalid refresh token is then invalid_grant.
                 resp = _refresh(LONG_BASE_URL, token)
-                self.assertEqual(resp.status_code, 401, resp.text)
+                self.assertEqual(resp.status_code, 400, resp.text)
+                self.assertEqual(resp.json().get('error'), 'invalid_grant', resp.text)
                 self.assertEqual(resp.json().get('error_description'), REFUSED_SHAPE, resp.text)
             with self.subTest(shape=shape, entry_point='revoke token body'):
                 resp = _revoke(LONG_BASE_URL, token)
@@ -680,8 +694,10 @@ class TestMalformedTokensAreRefusedBeforeDecoding(unittest.TestCase):
             self.assertEqual(resp.status_code, 401, resp.text)
             self.assertEqual(resp.json().get('error_description'), REFUSED_SHAPE, resp.text)
         with self.subTest(entry_point='refresh_token body'):
+            # The client authenticates first; an invalid refresh token is then invalid_grant.
             resp = _refresh(LONG_BASE_URL, tokens['refresh_token'])
-            self.assertEqual(resp.status_code, 401, resp.text)
+            self.assertEqual(resp.status_code, 400, resp.text)
+            self.assertEqual(resp.json().get('error'), 'invalid_grant', resp.text)
             self.assertEqual(resp.json().get('error_description'), REFUSED_SHAPE, resp.text)
         with self.subTest(entry_point='revoke token body'):
             resp = _revoke(LONG_BASE_URL, tokens['refresh_token'])
@@ -760,15 +776,37 @@ class TestClientSecret(unittest.TestCase):
                 self.assertEqual(resp.json().get('error'), 'invalid_client', resp.text)
 
     def test_02_an_empty_secret_is_refused_before_the_comparison(self):
-        """The handler answers a missing secret with 400 invalid_request."""
+        """The handler answers a missing secret with 401 invalid_client (RFC 6749 5.2)."""
         resp = _authorize(LONG_BASE_URL, '')
-        self.assertEqual(resp.status_code, 400, resp.text)
-        self.assertEqual(resp.json().get('error'), 'invalid_request', resp.text)
+        self.assertEqual(resp.status_code, 401, resp.text)
+        self.assertEqual(resp.json().get('error'), 'invalid_client', resp.text)
 
     def test_03_the_exact_secret_authenticates(self):
         resp = _authorize(LONG_BASE_URL)
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertEqual(_read(LONG_BASE_URL, resp.json()['access_token']).status_code, 200)
+
+
+class TestRefreshRecordIsBoundToItsClient(unittest.TestCase):
+    """A token signed with the shared key, naming one client and another's record, is refused."""
+
+    @classmethod
+    def setUpClass(cls):
+        _wait_until_answering(CAPPED_BASE_URL)
+
+    def test_01_a_record_of_another_client_neither_refreshes_nor_revokes(self):
+        pair = _pair(CAPPED_BASE_URL)
+        forged = _sign(_claims(sub=DOWNLOADER[0], jti=_jti(pair['refresh_token'])), typ='refresh')
+
+        refused = _refresh(CAPPED_BASE_URL, forged, DOWNLOADER)
+        self.assertEqual(refused.status_code, 400, refused.text)
+        self.assertEqual(refused.json().get('error'), 'invalid_grant', refused.text)
+
+        resp = _revoke(CAPPED_BASE_URL, forged, DOWNLOADER)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(_refresh(CAPPED_BASE_URL, pair['refresh_token']).status_code, 200,
+                         "another client's token revoked this client's record")
+        self.assertEqual(_read(CAPPED_BASE_URL, pair['access_token']).status_code, 200)
 
 
 class TestRefreshTokenCap(unittest.TestCase):
@@ -782,7 +820,7 @@ class TestRefreshTokenCap(unittest.TestCase):
         pairs = [_pair(CAPPED_BASE_URL) for _ in range(CAP + 1)]
 
         oldest = _refresh(CAPPED_BASE_URL, pairs[0]['refresh_token'])
-        self.assertEqual(oldest.status_code, 401,
+        self.assertEqual(oldest.status_code, 400,
                          f'the oldest refresh token survived a login past the cap: {oldest.text}')
         for index, pair in enumerate(pairs[1:], start=2):
             resp = _refresh(CAPPED_BASE_URL, pair['refresh_token'])
@@ -894,7 +932,7 @@ class TestRevokedRecordHorizon(unittest.TestCase):
         resp = _revoke(BRIEF_BASE_URL, pair['refresh_token'])
         self.assertEqual(resp.status_code, 200, resp.text)
         refused = _refresh(BRIEF_BASE_URL, pair['refresh_token'])
-        self.assertEqual(refused.status_code, 401)
+        self.assertEqual(refused.status_code, 400)
         self.assertIn('revoked', refused.text)
 
         # Every read of the access token is refused, as revoked and then as expired.
@@ -913,7 +951,7 @@ class TestRevokedRecordHorizon(unittest.TestCase):
         while True:
             latest = _pair(BRIEF_BASE_URL)
             refused = _refresh(BRIEF_BASE_URL, pair['refresh_token'])
-            self.assertEqual(refused.status_code, 401, 'a revoked refresh token refreshed')
+            self.assertEqual(refused.status_code, 400, 'a revoked refresh token refreshed')
             if 'not found' in refused.text or time.monotonic() >= deadline:
                 break
             time.sleep(POLL_INTERVAL)
@@ -932,13 +970,15 @@ class TestRevokedRecordsCountTowardTheCap(unittest.TestCase):
     def test_01_a_live_record_makes_room_when_one_is_revoked(self):
         first = _pair(BRIEF_BASE_URL, MIXED_CAP_CLIENT)
         second = _pair(BRIEF_BASE_URL, MIXED_CAP_CLIENT)
-        self.assertEqual(_revoke(BRIEF_BASE_URL, first['refresh_token']).status_code, 200)
+        self.assertEqual(
+            _revoke(BRIEF_BASE_URL, first['refresh_token'], MIXED_CAP_CLIENT).status_code, 200)
 
         third = _pair(BRIEF_BASE_URL, MIXED_CAP_CLIENT)
-        dropped = _refresh(BRIEF_BASE_URL, second['refresh_token'])
-        self.assertEqual(dropped.status_code, 401,
+        dropped = _refresh(BRIEF_BASE_URL, second['refresh_token'], MIXED_CAP_CLIENT)
+        self.assertEqual(dropped.status_code, 400,
                          f'the live record survived a login at the cap: {dropped.text}')
-        self.assertEqual(_refresh(BRIEF_BASE_URL, third['refresh_token']).status_code, 200)
+        self.assertEqual(
+            _refresh(BRIEF_BASE_URL, third['refresh_token'], MIXED_CAP_CLIENT).status_code, 200)
         withdrawn = _read(BRIEF_BASE_URL, first['access_token'])
         self.assertEqual(withdrawn.status_code, 401)
         self.assertIn('revoked', withdrawn.text)
@@ -946,7 +986,8 @@ class TestRevokedRecordsCountTowardTheCap(unittest.TestCase):
     def test_02_revoked_records_filling_the_cap_refuse_a_login_until_they_expire(self):
         pairs = [_pair(BRIEF_BASE_URL, FULL_CAP_CLIENT) for _ in range(BRIEF_CAP)]
         for pair in pairs:
-            self.assertEqual(_revoke(BRIEF_BASE_URL, pair['refresh_token']).status_code, 200)
+            self.assertEqual(
+                _revoke(BRIEF_BASE_URL, pair['refresh_token'], FULL_CAP_CLIENT).status_code, 200)
 
         refused = _authorize(BRIEF_BASE_URL, secret=FULL_CAP_CLIENT[1],
                              client_id=FULL_CAP_CLIENT[0])
@@ -1081,10 +1122,10 @@ class TestForeignRevocationPool(unittest.TestCase):
         recorded = [_foreign_pair(POOL_CLIENT[0], FOREIGN_LIFETIME_SEC) for _ in range(BRIEF_CAP)]
         extra_refresh, extra_access = _foreign_pair(POOL_CLIENT[0], 600)
         for refresh, _ in recorded:
-            resp = _revoke(BRIEF_BASE_URL, refresh)
+            resp = _revoke(BRIEF_BASE_URL, refresh, POOL_CLIENT)
             self.assertEqual(resp.status_code, 200, resp.text)
 
-        full = _revoke(BRIEF_BASE_URL, extra_refresh)
+        full = _revoke(BRIEF_BASE_URL, extra_refresh, POOL_CLIENT)
         self.assertEqual(full.status_code, 503, full.text)
         retry_after = int(full.headers.get('Retry-After', '0'))
         self.assertGreaterEqual(retry_after, 1)
@@ -1110,7 +1151,7 @@ class TestForeignRevocationPool(unittest.TestCase):
         resp = full
         while resp.status_code == 503 and time.monotonic() < deadline:
             time.sleep(POLL_INTERVAL)
-            resp = _revoke(BRIEF_BASE_URL, extra_refresh)
+            resp = _revoke(BRIEF_BASE_URL, extra_refresh, POOL_CLIENT)
         self.assertEqual(resp.status_code, 200, resp.text)
         refused = _read(BRIEF_BASE_URL, extra_access)
         self.assertEqual(refused.status_code, 401)
@@ -1120,13 +1161,14 @@ class TestForeignRevocationPool(unittest.TestCase):
         pairs = [_pair(BRIEF_BASE_URL, DROPPED_CLIENT) for _ in range(BRIEF_CAP * 2)]
         dropped, kept = pairs[:BRIEF_CAP], pairs[BRIEF_CAP:]
         for pair in dropped:
-            gone = _refresh(BRIEF_BASE_URL, pair['refresh_token'])
-            self.assertEqual(gone.status_code, 401, 'the cap kept a record it had to drop')
+            gone = _refresh(BRIEF_BASE_URL, pair['refresh_token'], DROPPED_CLIENT)
+            self.assertEqual(gone.status_code, 400, 'the cap kept a record it had to drop')
             self.assertIn('not found', gone.text)
-            resp = _revoke(BRIEF_BASE_URL, pair['refresh_token'])
+            resp = _revoke(BRIEF_BASE_URL, pair['refresh_token'], DROPPED_CLIENT)
             self.assertEqual(resp.status_code, 200, resp.text)
         for pair in kept:
-            self.assertEqual(_refresh(BRIEF_BASE_URL, pair['refresh_token']).status_code, 200)
+            self.assertEqual(
+                _refresh(BRIEF_BASE_URL, pair['refresh_token'], DROPPED_CLIENT).status_code, 200)
 
         login = _authorize(BRIEF_BASE_URL, secret=DROPPED_CLIENT[1], client_id=DROPPED_CLIENT[0])
         self.assertEqual(login.status_code, 200, login.text)
@@ -1191,7 +1233,8 @@ class TestDownloadsEndWithTheirToken(unittest.TestCase):
         received = len(next(chunks))
 
         revoked_at = time.monotonic()
-        self.assertEqual(_revoke(CAPPED_BASE_URL, gone['refresh_token']).status_code, 200)
+        self.assertEqual(
+            _revoke(CAPPED_BASE_URL, gone['refresh_token'], DOWNLOADER).status_code, 200)
         # The download holds one worker and this stream the other: only the download's can
         # answer /health.
         _open_stream(self, f'{CAPPED_BASE_URL}/faults/stream', stays['access_token'])

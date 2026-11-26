@@ -357,6 +357,8 @@ class AuthPolicyContractBase:
     def test_auth_endpoints_are_published_as_reachable_without_a_token(self):
         """`/auth/*` is exempt under every policy, and says so.
 
+        Their requirement is Basic client credentials or (`{}`) none, never a bearer token.
+
         Checked from the document rather than the wire: these handlers answer
         RFC 6749 errors themselves, in the body shape `_middleware_refused`
         reads, so a probe here cannot tell the two apart.
@@ -366,7 +368,7 @@ class AuthPolicyContractBase:
                 continue
             with self.subTest(path=path, method=method):
                 self.assertEqual(
-                    operation.get('security'), [],
+                    operation.get('security'), [{'basic': []}, {}],
                     f'{method.upper()} {path} is exempted by every policy but '
                     f'publishes {operation.get("security")!r}')
                 self.assertNotEqual(_response_ref(operation, '401'),

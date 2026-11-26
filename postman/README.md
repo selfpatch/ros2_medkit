@@ -12,8 +12,8 @@ All endpoints are prefixed with `/api/v1` for API versioning.
 
 ### Authentication Endpoints (JWT/OAuth2)
 - ✅ POST `/api/v1/auth/authorize` - Authenticate with client credentials (get access + refresh tokens)
-- ✅ POST `/api/v1/auth/token` - Refresh access token using refresh token
-- ✅ POST `/api/v1/auth/revoke` - Revoke a refresh token (invalidates all derived access tokens)
+- ✅ POST `/api/v1/auth/token` - Refresh access token using refresh token; sends the client's credentials as Basic auth from `client_id` and `client_secret` (percent-encode `+` as `%2B` and `%` as `%25` in either)
+- ✅ POST `/api/v1/auth/revoke` - Revoke a refresh token of the client (invalidates all derived access tokens); sends the client's credentials as Basic auth from `client_id` and `client_secret` (the same encoding)
 
 ### Discovery Endpoints
 - ✅ GET `/api/v1/` - Server capabilities and entry points

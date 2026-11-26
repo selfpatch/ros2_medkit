@@ -177,10 +177,14 @@ void write_generic_error(FrameworkOrPluginAccess token, httplib::Response & res,
  * @code
  *   { "error": "<code>", "error_description": "<message>" }
  * @endcode
- * Used only by the auth endpoints (`/auth/token`, `/auth/revoke`) which by
- * spec must speak the OAuth2 error shape, not the SOVD GenericError shape.
- * The `error` field carries the snake_case OAuth2 error code, not the SOVD
- * `error_code` key. There is no `parameters` wrapper.
+ * Used only by the auth endpoints (`/auth/authorize`, `/auth/token`,
+ * `/auth/revoke`) which by spec must speak the OAuth2 error shape, not the SOVD
+ * GenericError shape. The `error` field carries the snake_case OAuth2 error
+ * code, not the SOVD `error_code` key. There is no `parameters` wrapper.
+ *
+ * Always sets `Cache-Control: no-store` and `Pragma: no-cache` (RFC 6749
+ * §5.1). Two parameters become headers: `retry_after_seconds` (integer) is
+ * `Retry-After`, `www_authenticate` (string) is `WWW-Authenticate`.
  *
  * @param token Framework access token (constructible only by friends).
  * @param res HTTP response to mutate.

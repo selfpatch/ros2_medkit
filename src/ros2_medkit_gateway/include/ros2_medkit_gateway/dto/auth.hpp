@@ -27,14 +27,14 @@ namespace dto {
 // =============================================================================
 // AuthCredentials - request body for POST /auth/authorize and POST /auth/token.
 //
-// Wire shape (from AuthorizeRequest::from_json + AuthorizeRequest::from_form_data):
+// Wire shape (from AuthorizeRequest::parse_request, JSON or form-urlencoded):
 //   grant_type    - OAuth2 grant type (required)
 //                   "client_credentials" for /auth/authorize,
 //                   "refresh_token" for /auth/token
-//   client_id     - client identifier (optional; required by handler for
-//                   client_credentials flow)
-//   client_secret - client secret (optional; required by handler for
-//                   client_credentials flow)
+//   client_id     - client identifier (optional). With client_secret, the
+//                   client's credentials when it does not use HTTP Basic
+//                   (RFC 6749 section 2.3.1); one of the two is required
+//   client_secret - client secret (optional; see client_id)
 //   refresh_token - refresh token string (optional; required by handler for
 //                   refresh_token flow)
 //   scope         - requested scope / role (optional)
@@ -69,8 +69,8 @@ inline constexpr std::string_view dto_name<AuthCredentials> = "AuthCredentials";
 //   token_type    - always "Bearer" (required)
 //   expires_in    - seconds until access token expires (required, integer)
 //   scope         - role-based scope string (required)
-//   refresh_token - JWT refresh token string (optional; absent on token refresh
-//                   if the existing refresh token is reused)
+//   refresh_token - JWT refresh token string (optional by type; both routes
+//                   set it, and a refresh returns the token it was given)
 // =============================================================================
 struct AuthTokenResponse {
   std::string access_token;
@@ -93,13 +93,13 @@ inline constexpr std::string_view dto_name<AuthTokenResponse> = "AuthTokenRespon
 // =============================================================================
 // AuthRevokeRequest - request body for POST /auth/revoke (RFC 7009).
 //
-// Wire shape:
+// Wire shape (from RevokeRequest::parse_request, JSON or form-urlencoded):
 //   token            - the token to revoke (required)
-//   token_type_hint  - "access_token" or "refresh_token" (optional). RFC 7009
-//                      lets clients hint the token type so the server can short-
-//                      circuit lookup; the gateway currently always treats the
-//                      token as a refresh token, but the field is parsed for
-//                      forward compatibility.
+//   token_type_hint  - "access_token" or "refresh_token" (optional). Accepted;
+//                      the token's own type decides the answer.
+//   client_id        - with client_secret, the client's credentials when it
+//                      does not use HTTP Basic (RFC 6749 section 2.3.1)
+//   client_secret    - see client_id
 //
 // Like AuthCredentials, this DTO is parsed manually in the handler so the route
 // can emit the OAuth2 `invalid_request` code (underscore) rather than the SOVD
@@ -108,11 +108,14 @@ inline constexpr std::string_view dto_name<AuthTokenResponse> = "AuthTokenRespon
 struct AuthRevokeRequest {
   std::string token;
   std::optional<std::string> token_type_hint;
+  std::optional<std::string> client_id;
+  std::optional<std::string> client_secret;
 };
 
 template <>
 inline constexpr auto dto_fields<AuthRevokeRequest> = std::make_tuple(
-    field("token", &AuthRevokeRequest::token), field("token_type_hint", &AuthRevokeRequest::token_type_hint));
+    field("token", &AuthRevokeRequest::token), field("token_type_hint", &AuthRevokeRequest::token_type_hint),
+    field("client_id", &AuthRevokeRequest::client_id), field("client_secret", &AuthRevokeRequest::client_secret));
 
 template <>
 inline constexpr std::string_view dto_name<AuthRevokeRequest> = "AuthRevokeRequest";
@@ -163,8 +166,9 @@ struct OAuth2Error {
 template <>
 inline constexpr auto dto_fields<OAuth2Error> =
     std::make_tuple(field("error", &OAuth2Error::error,
-                          "RFC 6749 error code, e.g. `invalid_grant`, `invalid_request`, `unsupported_grant_type`, "
-                          "`invalid_token`, `insufficient_scope`, `server_error`."),
+                          "RFC 6749 error code, e.g. `invalid_grant`, `invalid_request`, `invalid_client`, "
+                          "`unsupported_grant_type`, `unsupported_token_type`, `invalid_token`, `insufficient_scope`, "
+                          "`server_error`."),
                     field("error_description", &OAuth2Error::error_description,
                           "Human-readable cause. Always present, though RFC 6749 permits its absence."));
 

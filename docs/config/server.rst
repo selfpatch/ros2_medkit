@@ -1102,7 +1102,7 @@ default for local development.
 .. danger::
 
    The example below uses **placeholder secrets for illustration only**.
-   In production, generate secrets with ``openssl rand -base64 32`` and
+   In production, generate secrets with ``openssl rand -hex 32`` and
    never commit them to configuration files. Use environment variable
    substitution or a secrets manager.
 
@@ -1137,15 +1137,19 @@ the access tokens minted from it, and a token with no record here is judged on
 the checks above. So a token issued before a restart, or by another gateway that shares
 this JWT configuration, is accepted.
 
-``POST /auth/revoke`` revokes refresh tokens only; for any other token it gives
-the same answer and records nothing. It revokes a refresh token this gateway did
-not issue by writing a revoked record for it, when the signature and issuer
+``POST /auth/revoke`` authenticates the client (HTTP Basic or body
+credentials) and revokes that client's refresh tokens only. An access token
+answers ``400 unsupported_token_type``, a refresh token issued to another
+client answers ``400 invalid_grant``, and a token that does not verify answers
+``200``; none of them records anything. It revokes a refresh token this gateway
+did not issue by writing a revoked record for it, when the signature and issuer
 verify here and ``sub`` is a client in ``auth.clients``; for any other subject
 it records nothing. A record this gateway holds is revoked only by a token
 whose ``sub`` is the record's client. Revocation ignores ``exp``, ``iat`` and
 ``nbf``: a refresh token past its expiry can still have live access tokens,
 and an issuer whose clock runs ahead stamps times this gateway has not reached
-yet.
+yet. ``POST /auth/token`` likewise authenticates the client and refreshes only
+a refresh token issued to it.
 
 Each record has a horizon, and a sweep drops it once the horizon has passed.
 Sweeps run at login, at refresh and every 5 minutes.

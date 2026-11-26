@@ -47,6 +47,9 @@ namespace openapi {
 
 using HandlerFn = std::function<void(const httplib::Request &, httplib::Response &)>;
 
+/// Security scheme of the `/auth/*` client credentials: HTTP Basic (RFC 6749 §2.3.1).
+inline constexpr const char * kBasicClientAuthScheme = "basic";
+
 /// Which error wire shape a route renders when its typed handler returns the
 /// error branch of `Result<T>`. Per-route knob on `RouteEntry`; default is
 /// `kSovdGenericError` (the SOVD GenericError schema everywhere except the
@@ -436,6 +439,10 @@ class RouteEntry {
   /// would answer 403 for every role the table does not otherwise cover.
   RouteEntry & public_route();
 
+  /// On a `public_route()`, publish `security: [{basic: []}, {}]`: HTTP Basic client
+  /// credentials, or (`{}`) the same credentials in the body.
+  RouteEntry & basic_client_authentication();
+
  private:
   friend class RouteRegistry;
   std::string method_;
@@ -476,6 +483,8 @@ class RouteEntry {
   /// validate_completeness() tell a deliberate exemption from an omission.
   std::optional<UserRole> required_role_;
   bool role_declared_{false};
+  /// Set by basic_client_authentication().
+  bool basic_client_authentication_{false};
 
   /// Heap-allocated so the typed wrapper closure can hold a stable handle to
   /// the renderer choice and observe later `.error_renderer(...)` updates.

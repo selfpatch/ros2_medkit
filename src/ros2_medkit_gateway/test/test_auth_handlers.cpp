@@ -17,6 +17,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <utility>
 
 #include "null_gateway_services.hpp"
 #include "ros2_medkit_gateway/core/auth/auth.hpp"
@@ -130,7 +131,7 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForWrongGrantType) {
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientId) {
+TEST_F(AuthHandlersAuthorizeTest, ReturnsInvalidClientForMissingClientId) {
   HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -138,13 +139,14 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientId) {
   TypedRequest typed_req(raw);
   auto result = handlers.post_authorize(typed_req);
 
+  // RFC 6749 §5.2: no client authentication included.
   ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().http_status, 400);
-  EXPECT_EQ(result.error().code, "invalid_request");
+  EXPECT_EQ(result.error().http_status, 401);
+  EXPECT_EQ(result.error().code, "invalid_client");
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForEmptyClientId) {
+TEST_F(AuthHandlersAuthorizeTest, ReturnsInvalidClientForEmptyClientId) {
   HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -152,13 +154,14 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForEmptyClientId) {
   TypedRequest typed_req(raw);
   auto result = handlers.post_authorize(typed_req);
 
+  // RFC 6749 §5.2: no client authentication included.
   ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().http_status, 400);
-  EXPECT_EQ(result.error().code, "invalid_request");
+  EXPECT_EQ(result.error().http_status, 401);
+  EXPECT_EQ(result.error().code, "invalid_client");
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientSecret) {
+TEST_F(AuthHandlersAuthorizeTest, ReturnsInvalidClientForMissingClientSecret) {
   HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -166,13 +169,14 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForMissingClientSecret) {
   TypedRequest typed_req(raw);
   auto result = handlers.post_authorize(typed_req);
 
+  // RFC 6749 §5.2: no client authentication included.
   ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().http_status, 400);
-  EXPECT_EQ(result.error().code, "invalid_request");
+  EXPECT_EQ(result.error().http_status, 401);
+  EXPECT_EQ(result.error().code, "invalid_client");
 }
 
 // @verifies REQ_INTEROP_086
-TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForEmptyClientSecret) {
+TEST_F(AuthHandlersAuthorizeTest, ReturnsInvalidClientForEmptyClientSecret) {
   HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
@@ -180,9 +184,10 @@ TEST_F(AuthHandlersAuthorizeTest, ReturnsBadRequestForEmptyClientSecret) {
   TypedRequest typed_req(raw);
   auto result = handlers.post_authorize(typed_req);
 
+  // RFC 6749 §5.2: no client authentication included.
   ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().http_status, 400);
-  EXPECT_EQ(result.error().code, "invalid_request");
+  EXPECT_EQ(result.error().http_status, 401);
+  EXPECT_EQ(result.error().code, "invalid_client");
 }
 
 // @verifies REQ_INTEROP_086
@@ -280,8 +285,7 @@ TEST_F(AuthHandlersRevokeTest, ReturnsBadRequestForInvalidJson) {
   HandlerContext ctx(ros2_medkit_gateway::test_support::null_services(), cors_, auth_, tls_, nullptr);
   AuthHandlers handlers(ctx);
 
-  httplib::Request raw;
-  raw.body = "not valid json {";
+  auto raw = make_json_request("not valid json {");
   TypedRequest typed_req(raw);
   auto result = handlers.post_revoke(typed_req);
 
@@ -348,7 +352,9 @@ class AuthHandlersWithManagerTest : public ::testing::Test {
     handlers_ = std::make_unique<AuthHandlers>(*ctx_);
   }
 
-  ros2_medkit_gateway::http::Result<ros2_medkit_gateway::dto::AuthTokenResponse> authorize_admin() {
+  ros2_medkit_gateway::http::Result<
+      std::pair<ros2_medkit_gateway::dto::AuthTokenResponse, ros2_medkit_gateway::http::ResponseAttachments>>
+  authorize_admin() {
     auto raw = make_json_request(
         R"({"grant_type": "client_credentials", "client_id": "test_client", "client_secret": "test_secret"})");
     TypedRequest typed_req(raw);
@@ -360,10 +366,10 @@ class AuthHandlersWithManagerTest : public ::testing::Test {
 TEST_F(AuthHandlersWithManagerTest, AuthorizeReturnsTokensForValidCredentials) {
   auto result = authorize_admin();
   ASSERT_TRUE(result.has_value());
-  EXPECT_FALSE(result->access_token.empty());
-  ASSERT_TRUE(result->refresh_token.has_value());
-  EXPECT_FALSE(result->refresh_token->empty());
-  EXPECT_EQ(result->token_type, "Bearer");
+  EXPECT_FALSE(result->first.access_token.empty());
+  ASSERT_TRUE(result->first.refresh_token.has_value());
+  EXPECT_FALSE(result->first.refresh_token->empty());
+  EXPECT_EQ(result->first.token_type, "Bearer");
 }
 
 // @verifies REQ_INTEROP_086
@@ -382,28 +388,34 @@ TEST_F(AuthHandlersWithManagerTest, AuthorizeReturnsUnauthorizedForInvalidCreden
 TEST_F(AuthHandlersWithManagerTest, TokenReturnsNewAccessTokenForValidRefreshToken) {
   auto authorized = authorize_admin();
   ASSERT_TRUE(authorized.has_value());
-  ASSERT_TRUE(authorized->refresh_token.has_value());
-  const std::string refresh_token = *authorized->refresh_token;
+  ASSERT_TRUE(authorized->first.refresh_token.has_value());
+  const std::string refresh_token = *authorized->first.refresh_token;
 
-  auto raw = make_json_request(json({{"grant_type", "refresh_token"}, {"refresh_token", refresh_token}}).dump());
+  auto raw = make_json_request(json({{"grant_type", "refresh_token"},
+                                     {"refresh_token", refresh_token},
+                                     {"client_id", "test_client"},
+                                     {"client_secret", "test_secret"}})
+                                   .dump());
   TypedRequest typed_req(raw);
   auto result = handlers_->post_token(typed_req);
 
   ASSERT_TRUE(result.has_value());
-  EXPECT_FALSE(result->access_token.empty());
-  EXPECT_EQ(result->token_type, "Bearer");
-  ASSERT_TRUE(result->refresh_token.has_value());
-  EXPECT_EQ(*result->refresh_token, refresh_token);
+  EXPECT_FALSE(result->first.access_token.empty());
+  EXPECT_EQ(result->first.token_type, "Bearer");
+  ASSERT_TRUE(result->first.refresh_token.has_value());
+  EXPECT_EQ(*result->first.refresh_token, refresh_token);
 }
 
 // @verifies REQ_INTEROP_087
-TEST_F(AuthHandlersWithManagerTest, TokenReturnsUnauthorizedForInvalidRefreshToken) {
-  auto raw = make_json_request(R"({"grant_type": "refresh_token", "refresh_token": "not.a.valid.refresh.token"})");
+TEST_F(AuthHandlersWithManagerTest, TokenReturnsInvalidGrantForInvalidRefreshToken) {
+  auto raw = make_json_request(
+      R"({"grant_type": "refresh_token", "refresh_token": "not.a.valid.refresh.token", "client_id": "test_client",)"
+      R"( "client_secret": "test_secret"})");
   TypedRequest typed_req(raw);
   auto result = handlers_->post_token(typed_req);
 
   ASSERT_FALSE(result.has_value());
-  EXPECT_EQ(result.error().http_status, 401);
+  EXPECT_EQ(result.error().http_status, 400);
   EXPECT_EQ(result.error().code, "invalid_grant");
 }
 
@@ -411,21 +423,26 @@ TEST_F(AuthHandlersWithManagerTest, TokenReturnsUnauthorizedForInvalidRefreshTok
 TEST_F(AuthHandlersWithManagerTest, RevokeRevokesRefreshTokenForSubsequentTokenRequest) {
   auto authorized = authorize_admin();
   ASSERT_TRUE(authorized.has_value());
-  ASSERT_TRUE(authorized->refresh_token.has_value());
-  const std::string refresh_token = *authorized->refresh_token;
+  ASSERT_TRUE(authorized->first.refresh_token.has_value());
+  const std::string refresh_token = *authorized->first.refresh_token;
 
-  auto revoke_raw = make_json_request(json({{"token", refresh_token}}).dump());
+  auto revoke_raw = make_json_request(
+      json({{"token", refresh_token}, {"client_id", "test_client"}, {"client_secret", "test_secret"}}).dump());
   TypedRequest revoke_req(revoke_raw);
   auto revoke_result = handlers_->post_revoke(revoke_req);
 
   ASSERT_TRUE(revoke_result.has_value());
-  EXPECT_EQ(revoke_result->status, "revoked");
+  EXPECT_EQ(revoke_result->first.status, "revoked");
 
-  auto token_raw = make_json_request(json({{"grant_type", "refresh_token"}, {"refresh_token", refresh_token}}).dump());
+  auto token_raw = make_json_request(json({{"grant_type", "refresh_token"},
+                                           {"refresh_token", refresh_token},
+                                           {"client_id", "test_client"},
+                                           {"client_secret", "test_secret"}})
+                                         .dump());
   TypedRequest token_req(token_raw);
   auto token_result = handlers_->post_token(token_req);
 
   ASSERT_FALSE(token_result.has_value());
-  EXPECT_EQ(token_result.error().http_status, 401);
+  EXPECT_EQ(token_result.error().http_status, 400);
   EXPECT_EQ(token_result.error().code, "invalid_grant");
 }

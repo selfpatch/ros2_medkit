@@ -66,6 +66,28 @@ nlohmann::json bearer_scheme() {
                          "gateway, not per release."}};
 }
 
+nlohmann::json basic_scheme() {
+  return nlohmann::json{{"type", "http"},
+                        {"scheme", "basic"},
+                        {"description",
+                         "Client credentials of the `/auth/*` operations (RFC 6749 section 2.3.1): "
+                         "`Basic base64(client_id:client_secret)`, the id and the secret form-urlencoded first. The "
+                         "empty requirement next to it is the other method, `client_id` and `client_secret` in the "
+                         "body; sending both is `invalid_request`. An `Authorization` header of another scheme is "
+                         "ignored."}};
+}
+
+/// True when the operation takes client credentials: its requirement names the Basic scheme.
+bool takes_client_credentials(const nlohmann::json & operation) {
+  const auto security = operation.find("security");
+  if (security == operation.end() || !security->is_array()) {
+    return false;
+  }
+  return std::any_of(security->begin(), security->end(), [](const nlohmann::json & requirement) {
+    return requirement.is_object() && requirement.contains(kBasicClientAuthScheme);
+  });
+}
+
 /// The five verbs an OpenAPI Path Item Object can carry that this gateway
 /// registers. Anything else under a path item (`parameters`, `summary`,
 /// vendor extensions) is not an operation and must not be rewritten as one.
@@ -189,7 +211,8 @@ void CapabilityGenerator::project_security_onto_enforcement(nlohmann::json & doc
   // document carries no document-level `security` (`openapi_spec_builder`
   // only adds one when auth is on), so an operation that publishes nothing
   // already reads as "no token needed" - erasing is enough, and is what a
-  // reader of the scheme description expects.
+  // reader of the scheme description expects. The `/auth/*` client-credentials
+  // requirement goes too: those routes answer 404 with authentication off.
   if (!ctx_.auth_config().enabled) {
     for_each_operation(document, [](const std::string &, const std::string &, nlohmann::json & operation) {
       operation.erase("security");
@@ -200,10 +223,9 @@ void CapabilityGenerator::project_security_onto_enforcement(nlohmann::json & doc
   // With it on the document *does* carry `security: [{bearerAuth: []}]`, and
   // an operation that publishes nothing inherits it - so erasing here would
   // say the opposite of the intent. OpenAPI's override for "reachable with no
-  // token" is the explicit empty list, which is also exactly what
-  // `RouteEntry::public_route()` already emits for `/auth/*`; writing it on
-  // every operation the policy admits puts those routes and the ones a
-  // permissive `require_auth_for` opens on the same footing.
+  // token" is the explicit empty list, written on every operation the policy
+  // admits. The `/auth/*` operations keep their client-credentials requirement,
+  // which the handler checks and whose `{}` alternative needs no token.
   const auto * auth_manager = ctx_.auth_manager();
   if (auth_manager == nullptr) {
     return;
@@ -222,7 +244,8 @@ void CapabilityGenerator::project_security_onto_enforcement(nlohmann::json & doc
                        // from `require_auth_for`, which has exactly three values. That is also
                        // what makes `test_auth_policy_contract`'s three gateways a *complete*
                        // sweep of the policy input space rather than a sample of it.
-                       if (!auth_manager->requires_authentication(method, std::string(API_BASE_PATH) + path)) {
+                       if (!takes_client_credentials(operation) &&
+                           !auth_manager->requires_authentication(method, std::string(API_BASE_PATH) + path)) {
                          operation["security"] = nlohmann::json::array();
                        }
                      });
@@ -368,6 +391,8 @@ nlohmann::json CapabilityGenerator::generate_root() const {
   // The *document-level* requirement - "every request needs a token" - is the
   // part that would be untrue with `auth.enabled` off, so that stays gated.
   builder.security_scheme("bearerAuth", bearer_scheme(), ctx_.auth_config().enabled);
+  // Named by the `/auth/*` operations only, so never a document-level requirement.
+  builder.security_scheme(kBasicClientAuthScheme, basic_scheme(), false);
 
   // Register named schemas in components/schemas for $ref usage.
   // Generated clients use these as named types (e.g., FaultDetail, Lock, Trigger).

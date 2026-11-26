@@ -236,7 +236,8 @@ Basic Setup
    .. danger::
 
       **Never use example credentials in production.** Generate strong secrets with
-      ``openssl rand -base64 32`` and keep them out of version control.
+      ``openssl rand -hex 32`` and keep them out of version control. A hex
+      secret has no ``+`` or ``%``, so ``curl -u`` and Postman send it as it is.
 
 2. **Launch with authentication:**
 
@@ -286,27 +287,60 @@ Response:
 
 **Step 3: Refresh the token**
 
+Refreshing needs the client's credentials, and the refresh token must have been
+issued to that client. ``curl -u`` sends them as HTTP Basic:
+
 .. code-block:: bash
 
    curl -X POST http://localhost:8080/api/v1/auth/token \
-     -H "Content-Type: application/json" \
-     -d '{
-       "grant_type": "refresh_token",
-       "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2g..."
-     }'
+     -u "admin:YOUR_ADMIN_SECRET" \
+     -d grant_type=refresh_token \
+     -d refresh_token=dGhpcyBpcyBhIHJlZnJlc2g...
+
+RFC 6749 form-urlencodes the id and the secret before base64. ``curl -u`` and
+Postman's Basic auth do not, which makes no difference for ids and secrets of
+letters, digits and ``-._~``. Percent-encode any other character for Basic:
+``+`` as ``%2B`` and ``%`` as ``%25``, else the gateway reads ``+`` as a space
+and refuses the secret. ``client_id`` and ``client_secret`` in the body work too; sending
+both forms is refused with ``400 invalid_request``.
+
+Over plain HTTP the client secret travels in clear text. When clients
+authenticate over a network, serve the gateway over HTTPS
+(``gateway_https.launch.py``, see :doc:`/tutorials/https`) or behind a TLS
+proxy.
+
+A refresh token that is unknown, expired, revoked or issued to another client
+answers ``400 invalid_grant``; missing or wrong client credentials answer
+``401 invalid_client``.
 
 **Step 4: Revoke a token**
 
 .. code-block:: bash
 
    curl -X POST http://localhost:8080/api/v1/auth/revoke \
-     -H "Content-Type: application/json" \
-     -d '{"token": "dGhpcyBpcyBhIHJlZnJlc2g..."}'
+     -u "admin:YOUR_ADMIN_SECRET" \
+     -d token=dGhpcyBpcyBhIHJlZnJlc2g... \
+     -d token_type_hint=refresh_token
 
 Revoke the **refresh** token: that withdraws it and every access token minted
-from it. An access token is not revocable on its own; the answer is the same
-and nothing changes. A refresh token past its expiry can still be revoked, so
-the access tokens minted from it just before it expired are withdrawn too.
+from it. An access token is not revocable on its own: it answers
+``400 unsupported_token_type`` and nothing changes. A client revokes only its
+own refresh tokens; another client's answers ``400 invalid_grant``. A token
+that does not verify here answers ``200`` and changes nothing. A refresh token
+past its expiry can still be revoked, so the access tokens minted from it just
+before it expired are withdrawn too.
+
+Every answer the three ``/auth/*`` handlers write carries
+``Cache-Control: no-store`` and ``Pragma: no-cache``. Two answers come before
+the handler and carry neither: the rate limiter's ``429``, and the ``413``
+the HTTP server can answer for an over-large body.
+
+.. note::
+
+   Changes for existing clients: refresh and revoke need the client's
+   credentials; ``/auth/authorize`` without credentials answers ``401``; an
+   invalid refresh token answers ``400``, not ``401``; revoking an access token
+   answers ``400``; a missing ``grant_type`` answers ``invalid_request``.
 
 A revocation also ends a stream or download this gateway serves, opened with
 an access token minted from that refresh token, at its next keepalive, event or
@@ -371,8 +405,10 @@ authenticates again with its client id and secret.
 record refuses the access tokens minted from it, and a token with no record is
 judged on the checks above. Under ``aggregation.forward_auth`` a peer accepts a
 token the aggregator minted. ``POST /auth/revoke`` on the peer, with the
-refresh token it was minted from, refuses it there: the peer writes a revoked
-record for a token it never issued, if it lists the client. The aggregator
+refresh token it was minted from and the credentials of the client it was
+issued to, refuses it there: the peer writes a revoked record for a token it
+never issued, if it lists the client. Another client of the peer cannot revoke
+it. The aggregator
 keeps accepting it. A revocation is also lost at a restart, and the withdrawn
 access tokens are honoured again for at most ``auth.token_expiry_seconds``.
 Where a revocation must hold everywhere and across restarts, disable the client
@@ -394,7 +430,7 @@ Production Recommendations
    .. code-block:: bash
 
       # Generate a secure secret
-      openssl rand -base64 32
+      openssl rand -hex 32
 
 2. **Store secrets securely:**
 
