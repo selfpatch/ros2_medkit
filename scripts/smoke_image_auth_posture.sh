@@ -481,6 +481,62 @@ expect "launch command with MEDKIT_JWT_SECRET: anonymous GET /areas" 401 "$(wait
 expect_token_works "launch command with MEDKIT_CLIENTS" "${PREFIX}-launchclosed"
 expect_closed_routes "launch command with MEDKIT_JWT_SECRET" "${PREFIX}-launchclosed"
 
+# The secure profile: the shipped file as the params layer, a generated certificate at the
+# paths the file names, the secrets in the environment. TLS 1.3 clients are answered, a
+# TLS 1.2 client is refused, and the token from MEDKIT_CLIENTS is the only way in.
+SECURE_FILE="$(dirname "$0")/../src/ros2_medkit_gateway/config/gateway_params.secure.yaml"
+CERT_DIR="$WORKDIR/certs"
+mkdir -p "$CERT_DIR"
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$CERT_DIR/key.pem" -out "$CERT_DIR/cert.pem" \
+  -days 1 -subj /CN=localhost -addext "subjectAltName=DNS:localhost" >/dev/null 2>&1
+chmod 600 "$CERT_DIR/key.pem"
+chmod a+r "$CERT_DIR/cert.pem"
+
+# The probe container verifies the certificate against this copy of it.
+docker cp "$CERT_DIR/cert.pem" "$CURL:/tmp/ca.pem"
+
+# https_code <container> <path> [curl args]: status of an HTTPS request, 000 when refused.
+# The URL names localhost, as the certificate does; --connect-to sends it to the container.
+https_code() {
+  local name=$1 path=$2
+  shift 2
+  curl_in -o /dev/null -w '%{http_code}' --cacert /tmp/ca.pem \
+    --connect-to "localhost:8443:$name:8443" "$@" "https://localhost:8443$path" || true
+}
+
+SECURE="${PREFIX}-secure"
+docker create --name "$SECURE" --network "$NET" -e ROS_DOMAIN_ID="$ROS_DOMAIN_ID" -e MEDKIT_JWT_SECRET="$SECRET" -e MEDKIT_CLIENTS="$CLIENTS" "$IMAGE" >/dev/null
+CREATED+=("$SECURE")
+docker cp "$SECURE_FILE" "$SECURE:/etc/ros2_medkit/params.yaml"
+# docker cp keeps the host owner, so the key would be unreadable to the gateway user. A tar
+# stream keeps the owner it names. Only the pair the file names goes in, never a CA key.
+GW_UID=$(docker run --rm --entrypoint id "$IMAGE" -u)
+GW_GID=$(docker run --rm --entrypoint id "$IMAGE" -g)
+tar -C "$WORKDIR" --owner="$GW_UID" --group="$GW_GID" -cf - certs/cert.pem certs/key.pem | docker cp - "$SECURE:/etc/ros2_medkit"
+docker start "$SECURE" >/dev/null
+expect_contains "secure profile: startup line" "REST API at 0.0.0.0:8443" "$(startup_line "$SECURE")"
+ready_end=$((SECONDS + DEADLINE_S))
+until docker logs "$SECURE" 2>&1 | grep -q "ready on HTTPS" || [ "$SECONDS" -ge "$ready_end" ]; do sleep 1; done
+expect_contains "secure profile: ready line" "ready on HTTPS://0.0.0.0:8443" "$(docker logs "$SECURE" 2>&1)"
+secure_end=$((SECONDS + DEADLINE_S))
+secure_code=000
+while [ "$SECONDS" -lt "$secure_end" ]; do
+  secure_code=$(https_code "$SECURE" /api/v1/areas)
+  [ "$secure_code" != "000" ] && break
+  sleep 1
+done
+expect "secure profile: anonymous GET /areas over TLS 1.3" 401 "$secure_code"
+secure_token=$(curl_in --cacert /tmp/ca.pem --connect-to "localhost:8443:$SECURE:8443" \
+  -X POST -H 'Content-Type: application/json' \
+  -d "{\"grant_type\":\"client_credentials\",\"client_id\":\"$CLIENT_ID\",\"client_secret\":\"$CLIENT_SECRET\"}" \
+  https://localhost:8443/api/v1/auth/authorize \
+  | sed -n 's/.*"access_token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+if [ -n "$secure_token" ]; then ok "secure profile: token issued"; else fail "secure profile: no token issued"; fi
+expect "secure profile: GET /areas with the token" 200 \
+  "$(https_code "$SECURE" /api/v1/areas --tlsv1.3 -H "Authorization: Bearer $secure_token")"
+expect "secure profile: TLS 1.2 client is refused" 000 \
+  "$(https_code "$SECURE" /api/v1/areas --tls-max 1.2 -H "Authorization: Bearer $secure_token")"
+
 # A port another container holds in the same network namespace, and an address
 # the container does not own: the gateway exits instead of announcing itself.
 start_container "${PREFIX}-portheld" --network "container:${PREFIX}-open" -e MEDKIT_AUTH_DISABLED=1 --

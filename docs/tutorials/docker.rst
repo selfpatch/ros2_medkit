@@ -132,6 +132,36 @@ startup warnings.
 A closed container answers ``401`` to an unauthenticated ``/api/v1/health`` probe, so use a
 probe that accepts it, or list the route in ``auth.public_routes`` (see `Health Checks`_).
 
+Running the container with the secure profile
+---------------------------------------------
+
+``config/gateway_params.secure.yaml`` turns on TLS 1.3, authentication for every
+route (except ``/api/v1/auth/*``), restricted CORS and rate limiting (see ``design/hardening.rst`` of the
+gateway). Use it as the params layer, put a certificate and key at the paths it
+names, and give the secrets as variables:
+
+.. code-block:: bash
+
+   IMAGE=ghcr.io/selfpatch/ros2_medkit-jazzy:latest
+   docker create --name medkit -p 8443:8443 \
+     -e MEDKIT_JWT_SECRET -e MEDKIT_CLIENTS "$IMAGE"
+   docker cp gateway_params.secure.yaml medkit:/etc/ros2_medkit/params.yaml
+   tar --owner="$(docker run --rm --entrypoint id "$IMAGE" -u)" \
+     --group="$(docker run --rm --entrypoint id "$IMAGE" -g)" \
+     -cf - certs/cert.pem certs/key.pem | docker cp - medkit:/etc/ros2_medkit
+   docker start medkit
+
+Ship only ``cert.pem`` and ``key.pem``, and ``ca.pem`` as well when mutual TLS is on.
+``generate_dev_certs.sh`` also writes ``ca_key.pem`` and ``client-key.pem`` into
+the same directory; a CA key in the container could mint client certificates
+that the gateway accepts. The gateway does not start without a readable pair at
+``/etc/ros2_medkit/certs``, nor without ``MEDKIT_JWT_SECRET``.
+The gateway runs as user ``medkit``. ``docker cp`` of a plain directory gives the
+files the owner they have on the host, and the key (``chmod 600``) is then
+unreadable to the gateway; a tar stream keeps the owner it names. The secrets
+stay out of the command line and of the file, but the values of ``-e`` variables
+are visible to anyone who can use the Docker API on the host (``docker inspect``).
+
 Custom Configuration
 --------------------
 

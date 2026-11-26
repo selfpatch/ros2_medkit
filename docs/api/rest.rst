@@ -3102,7 +3102,7 @@ You can configure global and per-client RPM (requests per minute) limits:
 
 Endpoint limits can also be overridden with patterns:
 
-- ``rate_limiting.endpoint_limits``: List of ``"pattern:rpm"`` strings. For example, ``["/api/v1/*/operations/*:10"]`` limits execution calls without affecting other data endpoints.
+- ``rate_limiting.endpoint_limits``: List of ``"pattern:rpm"`` strings. For example, ``["/api/v1/*/*/operations/*/executions:10"]`` limits execution calls without affecting other data endpoints.
 
 Response Headers
 ~~~~~~~~~~~~~~~~

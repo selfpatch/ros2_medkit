@@ -37,6 +37,7 @@ import tempfile
 import time
 import unittest
 
+from ament_index_python.packages import get_package_share_directory
 import launch
 import launch_testing
 import launch_testing.actions
@@ -342,6 +343,23 @@ class TestMutualTls(_Base):
             conn.close()
             status, _ = _get(gw.port, ctx, path=APPS, headers={'Authorization': f'Bearer {token}'})
             self.assertEqual(status, 200)
+
+    def test_the_dev_cert_script_makes_a_server_and_a_client_pair_mutual_tls_accepts(self):
+        script = os.path.join(get_package_share_directory('ros2_medkit_gateway'),
+                              'scripts', 'generate_dev_certs.sh')
+        out = os.path.join(_DIR, 'script-certs')
+        subprocess.run([script, out], check=True, capture_output=True)
+        params = _tls(ca_file=os.path.join(out, 'ca.pem'), require=True)
+        params['server.tls.cert_file'] = os.path.join(out, 'cert.pem')
+        params['server.tls.key_file'] = os.path.join(out, 'key.pem')
+        with _Gateway(params) as gw:
+            self.assert_started(gw)
+            ca = os.path.join(out, 'ca.pem')
+            ctx = _context(ca=ca, cert=(os.path.join(out, 'client.pem'),
+                                        os.path.join(out, 'client-key.pem')))
+            status, _ = _get(gw.port, ctx)
+            self.assertEqual(status, 200)
+            self.assert_refused(gw.port, _context(ca=ca))
 
     def test_require_client_cert_without_tls_stops_the_start(self):
         with _Gateway({'server.tls.require_client_cert': True}) as gw:

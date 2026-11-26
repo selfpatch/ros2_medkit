@@ -17,14 +17,47 @@ implies; the gateway then warns at start that it is reachable without authentica
 
 For any deployment reachable from an untrusted network, start from the secure
 field profile preset ``config/gateway_params.secure.yaml`` instead of
-``config/gateway_params.yaml``:
+``config/gateway_params.yaml``.
+
+Supply the secrets in the environment and start the gateway with the file:
 
 .. code-block:: bash
 
+   export MEDKIT_JWT_SECRET="$(openssl rand -base64 32)"
+   export MEDKIT_CLIENTS="operator:${OP_SECRET}:operator,viewer:${VIEW_SECRET}:viewer"
    ros2 run ros2_medkit_gateway gateway_node \
-     --ros-args --params-file gateway_params.secure.yaml \
-     -p auth.jwt_secret:="$MEDKIT_JWT_SECRET" \
-     -p 'auth.clients:=["operator:'"$OP_SECRET"':operator"]'
+     --ros-args --params-file gateway_params.secure.yaml
+
+The file names ``/etc/ros2_medkit/certs/cert.pem`` and ``key.pem``. The gateway
+does not start without a readable pair there, and it does not start without
+``MEDKIT_JWT_SECRET`` (the file leaves ``auth.jwt_secret`` empty). The file serves
+HTTPS on port 8443 with TLS 1.3 as the floor, answers ``401`` to every request
+without a token except ``/api/v1/auth/*``, where clients log in (``/api/v1/health``
+included; see ``auth.public_routes`` below), and allows browser origin
+``https://medkit-ui.local`` only.
+
+The Docker image takes the same file as its params layer, the certificates at the
+paths the file names, and the secrets as ``-e`` variables; see
+:doc:`/tutorials/docker`:
+
+.. code-block:: bash
+
+   IMAGE=ghcr.io/selfpatch/ros2_medkit-jazzy:latest
+   docker create --name medkit -p 8443:8443 \
+     -e MEDKIT_JWT_SECRET -e MEDKIT_CLIENTS "$IMAGE"
+   docker cp gateway_params.secure.yaml medkit:/etc/ros2_medkit/params.yaml
+   tar --owner="$(docker run --rm --entrypoint id "$IMAGE" -u)" \
+     --group="$(docker run --rm --entrypoint id "$IMAGE" -g)" \
+     -cf - certs/cert.pem certs/key.pem | docker cp - medkit:/etc/ros2_medkit
+   docker start medkit
+
+Ship only ``cert.pem`` and ``key.pem``, plus ``ca.pem`` when mutual TLS is on: never
+``ca_key.pem`` or ``client-key.pem``. The gateway runs as user ``medkit`` in the image.
+``docker cp`` of a plain directory gives the files the owner they have on the host, so the
+key stays unreadable to the gateway; a tar stream keeps the owner it names. The values of
+``-e`` variables are visible to anyone who can use the Docker API on the host
+(``docker inspect``). A liveness probe needs a token, or an entry in
+``auth.public_routes``.
 
 What the secure profile turns on
 --------------------------------
@@ -40,8 +73,17 @@ Control                          Default        Secure profile
 ``scripts.allow_uploads``        true           false (manifest-defined scripts only)
 ``docs.enabled``                 true           false (reduced surface)
 ``bulk_data.max_upload_size``    100 MiB        25 MiB
-``locking`` on operations        none           lock required before mutation
+``locking`` on operations        none           lock required for component and app operations
 ================================ ============== ===========================================
+
+``rate_limiting`` is 600 requests per minute for the gateway, 120 per client and 30 per
+client on the path ``/api/v1/*/*/operations/*/executions``, outside the 120. That path is the
+start (``POST``) and the list (``GET``) of executions; the limiter does not see the method.
+Status polls and cancels (``.../executions/{id}``) stay under the 120. ``*`` is one path
+segment; an operation id with ``/`` is held only by the per-client limit.
+``auth.public_routes`` is empty. To open one route,
+for example a liveness probe, write ``public_routes: ["GET /api/v1/health"]``; a caller
+without a token then gets the reduced health body.
 
 Credential and certificate provisioning
 ----------------------------------------
@@ -76,13 +118,15 @@ Credential and certificate provisioning
 
    .. warning::
 
-      Passing the secret inline (``-p auth.jwt_secret:=...`` as in the launch
-      example above) leaks it through ``ps`` and ``/proc/<pid>/cmdline``. Inject
-      it from ``MEDKIT_JWT_SECRET`` or from a params file that only the gateway's
-      user can read.
+      Do not pass the secret as ``-p auth.jwt_secret:=...``: it appears in
+      ``ps`` and ``/proc/<pid>/cmdline``. Use ``MEDKIT_JWT_SECRET``. A secret
+      written into a params file sits there in clear text; the file must be
+      readable by the gateway's user only.
 
 3. **Role-scoped clients.** Create the minimum set of clients in
-   ``auth.clients`` (``client_id:client_secret:role``). Roles, least to most
+   ``MEDKIT_CLIENTS`` or ``auth.clients`` (``client_id:client_secret:role``,
+   comma-separated in the variable, which replaces ``auth.clients`` when
+   ``MEDKIT_JWT_SECRET`` is set). Roles, least to most
    privileged: ``viewer`` (read), ``operator`` (+ trigger ops / ack faults /
    publish), ``configurator`` (+ modify configs), ``admin`` (+ auth
    management). Rotate secrets periodically. The role a token grants is the

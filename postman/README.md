@@ -230,8 +230,8 @@ cd ros2_medkit/src/ros2_medkit_gateway
 ```bash
 ros2 launch ros2_medkit_gateway gateway.launch.py \
   server.tls.enabled:=true \
-  server.tls.cert_file:=$(pwd)/certs/server.crt \
-  server.tls.key_file:=$(pwd)/certs/server.key \
+  server.tls.cert_file:=$(pwd)/certs/cert.pem \
+  server.tls.key_file:=$(pwd)/certs/key.pem \
   server.port:=8443
 ```
 
@@ -246,7 +246,7 @@ ros2 launch ros2_medkit_gateway gateway.launch.py \
 **Option B: Add CA Certificate (Recommended)**
 1. Go to **Settings** → **Certificates**
 2. Under **CA Certificates**, click **Select File**
-3. Select `certs/ca.crt` from your generated certificates
+3. Select `certs/ca.pem` from your generated certificates
 4. Requests to `localhost:8443` will now verify against your CA
 
 ### 4. Use TLS Environment
@@ -263,8 +263,8 @@ If the gateway is configured with `server.tls.require_client_cert: true`:
 2. Click **Add Certificate**
 3. Enter:
    - **Host**: `localhost:8443`
-   - **CRT file**: `certs/client.crt`
-   - **KEY file**: `certs/client.key`
+   - **CRT file**: `certs/client.pem`
+   - **KEY file**: `certs/client-key.pem`
 4. Click **Add**
 
 ---
