@@ -13,6 +13,7 @@ This section contains configuration references for ros2_medkit.
    diagnostic-bridge
    log-bridge
    action-status-bridge
+   policy-bridge
    graph-provider
    aggregation
 
@@ -64,6 +65,13 @@ Action Status Bridge
 :doc:`action-status-bridge`
    Action status bridge configuration for turning action outcomes into faults:
    severity of an abort, cancel and success handling, and action filtering.
+
+Policy Bridge
+-------------
+
+:doc:`policy-bridge`
+   Policy bridge configuration for turning a learned policy's own signals into
+   faults: chunk spread and inference time thresholds, and when faults pass.
 
 Graph Provider
 --------------

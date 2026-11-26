@@ -99,6 +99,20 @@ Bridge node that turns terminal ROS 2 action goal states into FaultManager fault
 .. doxygenclass:: ros2_medkit_action_status_bridge::ActionStatusBridgeNode
    :members:
 
+ros2_medkit_policy_bridge
+-------------------------
+
+Bridge node that turns a learned policy's chunk spread and inference time into FaultManager faults.
+
+.. doxygenclass:: ros2_medkit_policy_bridge::PolicyBridgeNode
+   :members:
+
+.. doxygenclass:: ros2_medkit_policy_bridge::core::PolicyMonitor
+   :members:
+
+.. doxygenclass:: ros2_medkit_policy_bridge::core::FaultSync
+   :members:
+
 ros2_medkit_serialization
 -------------------------
 
