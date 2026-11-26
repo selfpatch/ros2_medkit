@@ -1025,7 +1025,7 @@ Token-bucket-based rate limiting for API requests. Disabled by default.
      - ``[]``
      - Per-endpoint overrides as ``"pattern:rpm"`` strings.
        Pattern uses ``*`` as single-segment wildcard
-       (e.g., ``"/api/v1/*/operations/*:10"``).
+       (e.g., ``"/api/v1/*/*/operations/*/executions:10"``).
    * - ``rate_limiting.client_cleanup_interval_seconds``
      - int
      - ``300``
@@ -1045,7 +1045,7 @@ Example:
          enabled: true
          global_requests_per_minute: 600
          client_requests_per_minute: 60
-         endpoint_limits: ["/api/v1/*/operations/*:10"]
+         endpoint_limits: ["/api/v1/*/*/operations/*/executions:10"]
 
 Every request that reaches the gateway's handler spends allowance, ``OPTIONS``
 included, except a CORS preflight. A preflight is an ``OPTIONS`` request that

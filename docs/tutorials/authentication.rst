@@ -462,7 +462,9 @@ Production Recommendations
 
 5. **Always use HTTPS in production:**
 
-   See :doc:`https` for TLS configuration.
+   See :doc:`https` for TLS configuration. ``config/gateway_params.secure.yaml``
+   is a ready profile: authentication for every route and TLS 1.3, with the
+   secrets from ``MEDKIT_JWT_SECRET`` and ``MEDKIT_CLIENTS``.
 
 Troubleshooting
 ---------------

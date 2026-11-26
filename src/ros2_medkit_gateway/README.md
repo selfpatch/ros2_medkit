@@ -1591,11 +1591,12 @@ The package includes a helper script to generate self-signed certificates for de
 ./scripts/generate_dev_certs.sh ./certs
 
 # This creates:
-# ./certs/ca.crt           - CA certificate
-# ./certs/server.crt       - Server certificate
-# ./certs/server.key       - Server private key (chmod 600)
-# ./certs/client.crt       - Client certificate (for mutual TLS)
-# ./certs/client.key       - Client private key
+# ./certs/ca.pem           - CA certificate
+# ./certs/ca_key.pem       - CA private key (chmod 600)
+# ./certs/cert.pem         - Server certificate
+# ./certs/key.pem          - Server private key (chmod 600)
+# ./certs/client.pem       - Client certificate (for mutual TLS)
+# ./certs/client-key.pem   - Client private key (chmod 600)
 ```
 
 **Basic TLS (HTTPS only):** (TLS does not authenticate clients: with `0.0.0.0` and authentication off, add
@@ -1681,18 +1682,18 @@ ros2 launch ros2_medkit_gateway gateway_https.launch.py \
 curl -k https://localhost:8443/api/v1
 
 # HTTPS with CA verification
-curl --cacert ./certs/ca.crt https://localhost:8443/api/v1
+curl --cacert ./certs/ca.pem https://localhost:8443/api/v1
 
 # Mutual TLS (require_client_cert: true)
-curl --cacert ./certs/ca.crt \
-     --cert ./certs/client.crt \
-     --key ./certs/client.key \
+curl --cacert ./certs/ca.pem \
+     --cert ./certs/client.pem \
+     --key ./certs/client-key.pem \
      https://localhost:8443/api/v1/areas
 ```
 
 > ⚠️ **Security Notes:**
 > - **Never use self-signed certificates in production** - obtain certificates from a trusted CA
-> - Protect private key files with restricted permissions: `chmod 600 server.key`
+> - Protect private key files with restricted permissions: `chmod 600 key.pem`
 > - Use TLS 1.3 minimum version when all clients support it
 > - Consider using Let's Encrypt for automated certificate management
 > - Store certificates outside the source tree and never commit private keys

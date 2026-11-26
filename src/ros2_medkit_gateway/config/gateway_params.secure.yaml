@@ -6,12 +6,15 @@
 # instead of gateway_params.yaml for any deployment reachable from an
 # untrusted network.
 #
+# Secrets come from the environment, never from a launch argument:
+#
+#   export MEDKIT_JWT_SECRET=<at least 32 characters>
+#   export MEDKIT_CLIENTS="<id>:<secret>:<role>[,<id>:<secret>:<role>...]"
 #   ros2 run ros2_medkit_gateway gateway_node \
 #     --ros-args --params-file gateway_params.secure.yaml
 #
-# Items marked "REQUIRED" below must be set before the gateway will start /
-# accept clients. See design/hardening.rst for the full checklist and
-# credential / certificate provisioning steps.
+# The certificate and key named under server.tls must exist before start.
+# See design/hardening.rst for the full checklist.
 
 ros2_medkit_gateway:
   ros__parameters:
@@ -21,23 +24,23 @@ ros2_medkit_gateway:
       host: "0.0.0.0"
       port: 8443
 
-      # TLS/HTTPS - REQUIRED. Provision a real certificate (see
-      # scripts/generate_dev_certs.sh for the dev-only equivalent). The key
-      # file must be chmod 600 and owned by the gateway service user.
+      # TLS/HTTPS - REQUIRED. The gateway does not start if the certificate or
+      # key cannot be read. The key must be readable by the gateway user only
+      # (chmod 600). scripts/generate_dev_certs.sh makes a dev-only pair.
       tls:
         enabled: true
         cert_file: "/etc/ros2_medkit/certs/cert.pem"   # REQUIRED
         key_file: "/etc/ros2_medkit/certs/key.pem"     # REQUIRED (chmod 600)
-        # CA bundle for client certificates; used only with require_client_cert.
+        # CA bundle for client certificates; required by require_client_cert.
         ca_file: ""
-        # Mutual TLS: require a client certificate signed by ca_file.
+        # Mutual TLS: needs ca_file. Clients still need a token.
         # require_client_cert: true
         # 1.3 preferred on a controlled fleet; drop to 1.2 only for legacy
         # clients that cannot negotiate 1.3.
         min_version: "1.3"
 
     # CORS - restrict to the explicit origins that serve the operator UI.
-    # Never use ["*"] with credentials. Empty list disables CORS entirely
+    # Never use ["*"] with credentials. [""] disables CORS entirely
     # (correct for API-only appliances with no browser UI).
     cors:
       allowed_origins: ["https://medkit-ui.local"]  # REQUIRED if a browser UI is used; else [""]
@@ -49,21 +52,23 @@ ros2_medkit_gateway:
     # Authentication (JWT + RBAC) - REQUIRED on.
     auth:
       enabled: true
-      # HS256 shared secret (>= 32 chars) or, for RS256, the private key path.
-      # REQUIRED - inject from a secret store / env at deploy time; do NOT
-      # commit a real secret to source control.
+      # Supply the secret as MEDKIT_JWT_SECRET (>= 32 chars). It wins over this
+      # key. A value written here sits in this file in clear text.
       jwt_secret: ""            # REQUIRED
       jwt_public_key: ""
       jwt_algorithm: "HS256"
       token_expiry_seconds: 3600
       refresh_token_expiry_seconds: 86400
-      # "all" forces auth on every request (reads + writes). Use "write" only
-      # when unauthenticated reads are explicitly acceptable on this network.
+      # Routes answered without a token, as "METHOD /path". Empty keeps every
+      # route closed. Liveness probe: public_routes: ["GET /api/v1/health"]
+      public_routes: [""]
+      # "all" needs a token on every route except /api/v1/auth/*, where clients
+      # log in. Use "write" only when anonymous reads are acceptable here.
       require_auth_for: "all"
       issuer: "ros2_medkit_gateway"
-      # Provision the minimum set of role-scoped clients. Format:
-      # "client_id:client_secret:role" (roles: viewer/operator/configurator/admin).
-      # REQUIRED - replace with real, rotated credentials.
+      # Supply the clients as MEDKIT_CLIENTS, "id:secret:role" separated by
+      # commas (roles: viewer/operator/configurator/admin). With the secret set
+      # it replaces this list. Entries written here sit in the file in clear text.
       clients: [""]            # REQUIRED
 
     # Rate limiting - ON to bound abuse / runaway clients.
@@ -71,8 +76,10 @@ ros2_medkit_gateway:
       enabled: true
       global_requests_per_minute: 600
       client_requests_per_minute: 120
-      # Tighten mutating endpoints (operations / data writes).
-      endpoint_limits: ["/api/v1/*/operations/*:30"]
+      # Operation start (POST .../executions) and the execution list (GET
+      # .../executions) share one bucket. The limiter does not see the method,
+      # so status polls and cancels (.../executions/{id}) stay under the client limit.
+      endpoint_limits: ["/api/v1/*/*/operations/*/executions:30"]
       client_cleanup_interval_seconds: 300
       client_max_idle_seconds: 600
 
@@ -93,8 +100,8 @@ ros2_medkit_gateway:
       max_upload_size: 26214400  # 25 MiB
       categories: [""]
 
-    # SOVD resource locking on, so concurrent operators cannot stamp on each
-    # other's mutations.
+    # SOVD resource locking on: component and app operations need a lock, so
+    # concurrent operators cannot stamp on each other's calls.
     locking:
       enabled: true
       default_max_expiration: 3600

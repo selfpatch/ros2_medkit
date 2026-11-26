@@ -36,6 +36,9 @@ Test with curl (skip certificate verification for self-signed):
 
    curl -k https://localhost:8443/api/v1/health
 
+For a hardened deployment use ``config/gateway_params.secure.yaml``, which turns on TLS
+1.3 together with authentication and rate limiting; see ``design/hardening.rst``.
+
 Generating Development Certificates
 -----------------------------------
 
@@ -48,11 +51,12 @@ The package includes a helper script:
 
 This creates:
 
-- ``ca.crt`` - Certificate Authority certificate
-- ``server.crt`` - Server certificate
-- ``server.key`` - Server private key
-- ``client.crt`` - Client certificate (for mutual TLS)
-- ``client.key`` - Client private key
+- ``ca.pem`` - Certificate Authority certificate
+- ``ca_key.pem`` - Certificate Authority private key
+- ``cert.pem`` - Server certificate
+- ``key.pem`` - Server private key
+- ``client.pem`` - Client certificate (for mutual TLS)
+- ``client-key.pem`` - Client private key
 
 Manual Configuration
 --------------------
@@ -135,9 +139,9 @@ A client presents its certificate with curl:
 
 .. code-block:: bash
 
-   curl --cacert ./certs/ca.crt \
-        --cert ./certs/client.crt \
-        --key ./certs/client.key \
+   curl --cacert ./certs/ca.pem \
+        --cert ./certs/client.pem \
+        --key ./certs/client-key.pem \
         https://localhost:8443/api/v1/areas
 
 Without ``--cert``, or with a certificate from another CA, the handshake fails.
@@ -161,7 +165,7 @@ Using with curl
 
 .. code-block:: bash
 
-   curl --cacert ./certs/ca.crt https://localhost:8443/api/v1/areas
+   curl --cacert ./certs/ca.pem https://localhost:8443/api/v1/areas
 
 **Skip verification (development only):**
 
@@ -182,7 +186,7 @@ Using with Postman
 
 1. Go to Settings → Certificates
 2. Under "CA Certificates", click "Select File"
-3. Select your ``ca.crt`` file
+3. Select your ``ca.pem`` file
 
 Production Certificates
 -----------------------
@@ -220,7 +224,7 @@ Security Best Practices
 
    .. code-block:: bash
 
-      chmod 600 server.key
+      chmod 600 key.pem
 
 2. **Use TLS 1.3 when possible:**
 

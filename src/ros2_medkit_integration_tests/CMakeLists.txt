@@ -378,6 +378,8 @@ if(BUILD_TESTING)
     test_env_auth_contract 600
     # One gateway process per case, over hosts crossed with authentication postures.
     test_protected_mode 900
+    # One gateway per case, each over TLS, plus a rate limit crossed with real requests.
+    test_secure_profile 600
     test_rosbag_boundary_download 180
     test_rosbag_history_download 180
     test_grouping_entity_aggregation 300
