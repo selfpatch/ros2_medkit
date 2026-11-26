@@ -136,6 +136,21 @@
           ],
           "request": {
             "method": "POST",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{client_id}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{client_secret}}",
+                  "type": "string"
+                }
+              ]
+            },
             "header": [
               {
                 "key": "Content-Type",
@@ -156,7 +171,7 @@
                 "token"
               ]
             },
-            "description": "Refresh an expired access token using a refresh token (REQ_INTEROP_087). Returns new access_token. The refresh_token remains valid until its expiry. New access token is automatically saved to environment."
+            "description": "Refresh an expired access token using a refresh token (REQ_INTEROP_087). The client authenticates with HTTP Basic from client_id and client_secret, and the refresh token must have been issued to it. Returns new access_token. The refresh_token remains valid until its expiry. New access token is automatically saved to environment."
           },
           "response": []
         },
@@ -179,6 +194,21 @@
           ],
           "request": {
             "method": "POST",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "{{client_id}}",
+                  "type": "string"
+                },
+                {
+                  "key": "password",
+                  "value": "{{client_secret}}",
+                  "type": "string"
+                }
+              ]
+            },
             "header": [
               {
                 "key": "Content-Type",
@@ -199,7 +229,7 @@
                 "revoke"
               ]
             },
-            "description": "Revoke a refresh token (REQ_INTEROP_087). Invalidates the refresh token and all access tokens derived from it. Environment tokens are cleared on success."
+            "description": "Revoke a refresh token (REQ_INTEROP_087). The client authenticates with HTTP Basic from client_id and client_secret and revokes only its own refresh tokens. Invalidates the refresh token and all access tokens derived from it. Environment tokens are cleared on success."
           },
           "response": []
         },

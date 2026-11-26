@@ -465,6 +465,11 @@ RouteEntry & RouteEntry::public_route() {
   return *this;
 }
 
+RouteEntry & RouteEntry::basic_client_authentication() {
+  basic_client_authentication_ = true;
+  return *this;
+}
+
 // -----------------------------------------------------------------------------
 // RouteRegistry route registration
 // -----------------------------------------------------------------------------
@@ -1472,6 +1477,9 @@ nlohmann::json RouteRegistry::to_openapi_paths() const {
       if (route.required_role_.has_value()) {
         operation["security"] =
             nlohmann::json::array({{{"bearerAuth", nlohmann::json::array({role_to_string(*route.required_role_)})}}});
+      } else if (route.basic_client_authentication_) {
+        operation["security"] =
+            nlohmann::json::array({{{kBasicClientAuthScheme, nlohmann::json::array()}}, nlohmann::json::object()});
       } else {
         operation["security"] = nlohmann::json::array();
       }

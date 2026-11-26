@@ -23,7 +23,8 @@ and client id. A lists the client as ``admin``, B lists it as ``viewer``.
 - B grants the role its own client table lists, not the token's ``role`` claim.
 - B refuses a token whose signature does not verify, a client it does not
   list, and an anonymous read.
-- ``POST /auth/revoke`` on B refuses A's token on B. A still accepts it.
+- ``POST /auth/revoke`` on B refuses A's token on B. A still accepts it. The
+  token's own client revokes it there; another client of B cannot.
 
 ``aggregation.peer_auth_header`` is a separate hand-minted token, so A's own
 health check and entity fetch do not depend on the token under test.
@@ -77,6 +78,8 @@ PEER_APP = 'pressure_sensor'
 # No gateway here has this app. The role check runs before the entity lookup.
 ABSENT_APP = 'an_app_no_gateway_here_has'
 STRANGER = 'a_client_no_gateway_here_lists'
+# Listed by B only.
+PEER_OTHER_CLIENT = ('peer_other', 'peer_other_secret')
 
 
 def _b64(raw):
@@ -108,7 +111,7 @@ def _mint_peer_credential(lifetime_sec=3600, subject=CLIENT_ID):
     return (signing_input + b'.' + _b64(signature)).decode()
 
 
-def _auth_params(role):
+def _auth_params(role, *other_clients):
     """Return the shared JWT configuration with this gateway's role for the shared client."""
     return {
         'server.host': '127.0.0.1',
@@ -116,7 +119,7 @@ def _auth_params(role):
         'auth.require_auth_for': 'all',
         'auth.issuer': JWT_ISSUER,
         'auth.jwt_secret': JWT_SECRET,
-        'auth.clients': [f'{CLIENT_ID}:{CLIENT_SECRET}:{role}'],
+        'auth.clients': [f'{CLIENT_ID}:{CLIENT_SECRET}:{role}', *other_clients],
     }
 
 
@@ -145,7 +148,8 @@ def generate_test_description():
     peer = create_gateway_node(
         port=PEER_PORT,
         name='forward_auth_peer',
-        extra_params=_auth_params('viewer'),
+        extra_params=_auth_params(
+            'viewer', f'{PEER_OTHER_CLIENT[0]}:{PEER_OTHER_CLIENT[1]}:viewer'),
         extra_env=peer_env,
     )
 
@@ -200,6 +204,11 @@ def _authorize(url):
 
 def _bearer(token):
     return {'Authorization': f'Bearer {token}'}
+
+
+def _client_body(client=(CLIENT_ID, CLIENT_SECRET)):
+    """Body credentials (RFC 6749 2.3.1) for a refresh or a revocation."""
+    return {'client_id': client[0], 'client_secret': client[1]}
 
 
 def _error_code(resp):
@@ -289,17 +298,17 @@ class TestForwardAuthAcrossGateways(unittest.TestCase):
 
         refreshed = requests.post(
             f'{AGG_BASE_URL}/auth/token',
-            json={'grant_type': 'refresh_token', 'refresh_token': refresh},
+            json={'grant_type': 'refresh_token', 'refresh_token': refresh, **_client_body()},
             timeout=30)
         self.assertEqual(
-            refreshed.status_code, 401,
+            refreshed.status_code, 400,
             f'a gateway that never issued this refresh token answered: {refreshed.text}')
         self.assertEqual(
             refreshed.json(),
             {'error': 'invalid_grant', 'error_description': 'Refresh token not found'})
         own = requests.post(
             f'{PEER_BASE_URL}/auth/token',
-            json={'grant_type': 'refresh_token', 'refresh_token': refresh},
+            json={'grant_type': 'refresh_token', 'refresh_token': refresh, **_client_body()},
             timeout=30)
         self.assertEqual(
             own.status_code, 200, f'the issuing gateway refused its own refresh: {own.text}')
@@ -314,8 +323,18 @@ class TestForwardAuthAcrossGateways(unittest.TestCase):
             requests.get(f'{PEER_BASE_URL}/areas', headers=auth, timeout=15).status_code,
             200, 'the peer refused the token before it was revoked')
 
+        # RFC 7009 2.1: B refuses a revocation by a client the token was not issued to.
+        other = requests.post(
+            f'{PEER_BASE_URL}/auth/revoke',
+            json={'token': refresh, **_client_body(PEER_OTHER_CLIENT)}, timeout=30)
+        self.assertEqual(other.status_code, 400, other.text)
+        self.assertEqual(_error_code(other), 'invalid_grant', other.text)
+        self.assertEqual(
+            requests.get(f'{PEER_BASE_URL}/areas', headers=auth, timeout=15).status_code,
+            200, 'a refused revocation by another client was recorded on the peer')
+
         revoked = requests.post(
-            f'{PEER_BASE_URL}/auth/revoke', json={'token': refresh}, timeout=30)
+            f'{PEER_BASE_URL}/auth/revoke', json={'token': refresh, **_client_body()}, timeout=30)
         self.assertEqual(revoked.status_code, 200, revoked.text)
 
         on_peer = requests.get(f'{PEER_BASE_URL}/areas', headers=auth, timeout=15)
@@ -330,7 +349,7 @@ class TestForwardAuthAcrossGateways(unittest.TestCase):
         # A still refreshes the pair. The new access token names the record revoked on B.
         refreshed = requests.post(
             f'{AGG_BASE_URL}/auth/token',
-            json={'grant_type': 'refresh_token', 'refresh_token': refresh},
+            json={'grant_type': 'refresh_token', 'refresh_token': refresh, **_client_body()},
             timeout=30)
         self.assertEqual(refreshed.status_code, 200, refreshed.text)
         later = _bearer(refreshed.json()['access_token'])

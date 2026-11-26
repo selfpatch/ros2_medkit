@@ -42,6 +42,8 @@ from ros2_medkit_test_utils.launch_helpers import (
 
 HTTP_METHODS = {'get', 'post', 'put', 'delete', 'patch', 'head', 'options'}
 
+AUTH_PATHS = ('/auth/authorize', '/auth/token', '/auth/revoke')
+
 # Operations the document must mark `x-medkit-lock-guarded`.
 #
 # HAND-MAINTAINED, and honestly so. The list cannot be generated: the header
@@ -1041,41 +1043,70 @@ class TestOpenApiContract(GatewayTestCase):
                     'OAuth2Error', ref, f'{method.upper()} {path} [{code}]: {ref}')
         self.assertTrue(checked, 'No /auth/ operations in the document')
 
-    def test_auth_token_routes_declare_the_credential_rejection(self):
-        """The two credential-checking routes declare their 401.
+    def test_auth_routes_declare_the_statuses_their_handlers_answer(self):
+        """Each route declares its own refusals, in the RFC 6749 body.
 
-        Both answer 401 from the handler on bad credentials or a dead refresh
-        token, independently of ``auth.enabled`` - so unlike the middleware's
-        401 it is always reachable. ``/auth/revoke`` is deliberately excluded:
-        RFC 7009 section 2.2 forbids it from revealing whether the token was
-        valid, so it answers 200 either way and declaring a 401 there would
-        publish a status it cannot return.
+        All three authenticate the client (RFC 6749 2.3.1) and answer 401
+        ``invalid_client`` from the handler, independently of ``auth.enabled``.
+        The token route answers 400 ``invalid_grant`` for a dead refresh token.
+        The revoke route answers 400 for an access token or another client's
+        refresh token, and 503 when the revocation pool is full. The authorize
+        route answers 429 when revoked records fill the client's cap.
         """
-        for path in ('/auth/authorize', '/auth/token'):
-            op = self.spec()['paths'][path]['post']
-            self.assertIn('401', op['responses'], f'{path}: no 401 declared')
-            self.assertIn('OAuth2Error', op['responses']['401'].get('$ref', ''))
-        revoke = self.spec()['paths']['/auth/revoke']['post']
-        self.assertNotIn(
-            '401', revoke['responses'],
-            '/auth/revoke answers 200 for an invalid token (RFC 7009 2.2)')
+        expected = {
+            '/auth/authorize': {'400', '401', '429'},
+            '/auth/token': {'400', '401'},
+            '/auth/revoke': {'400', '401', '503'},
+        }
+        for path, statuses in expected.items():
+            responses = self.spec()['paths'][path]['post']['responses']
+            for status in sorted(statuses):
+                with self.subTest(path=path, status=status):
+                    self.assertIn(status, responses, f'{path}: no {status} declared')
+                    self.assertIn('OAuth2Error', responses[status].get('$ref', ''))
+
+    def test_auth_routes_declare_the_form_body_limit(self):
+        """cpp-httplib can answer 413 for an over-large body before the handler runs.
+
+        The global error handler fills that body-less answer with a GenericError,
+        so the declared body is the SOVD shape, not the RFC 6749 one.
+        """
+        for path in ('/auth/authorize', '/auth/token', '/auth/revoke'):
+            with self.subTest(path=path):
+                responses = self.spec()['paths'][path]['post']['responses']
+                self.assertIn('413', responses, f'{path}: no 413 declared')
+                schema = (responses['413'].get('content', {}).get('application/json', {})
+                          .get('schema', {}))
+                self.assertIn('GenericError', schema.get('$ref', ''), responses['413'])
 
     def test_auth_endpoints_accept_form_encoding(self):
-        """RFC 6749 clients default to form encoding; the spec must allow it.
+        """RFC 6749 and RFC 7009 clients send form encoding; the spec must allow it.
 
-        ``AuthorizeRequest::parse_request`` takes either encoding of the same
-        payload. ``/auth/revoke`` parses JSON only and is excluded on purpose.
+        ``AuthorizeRequest::parse_request`` and ``RevokeRequest::parse_request``
+        take either encoding of the same payload.
         """
-        for path in ('/auth/authorize', '/auth/token'):
+        for path in ('/auth/authorize', '/auth/token', '/auth/revoke'):
             media = set(
                 (self.spec()['paths'][path]['post'].get('requestBody') or {})
                 .get('content', {}))
             self.assertEqual(
                 media, {'application/json', 'application/x-www-form-urlencoded'}, path)
-        revoke_media = set(
-            (self.spec()['paths']['/auth/revoke']['post'].get('requestBody') or {})
-            .get('content', {}))
-        self.assertEqual(revoke_media, {'application/json'}, '/auth/revoke is JSON-only')
+
+    def test_auth_endpoints_document_basic_client_authentication(self):
+        """The Basic scheme is defined; with auth off no operation names it.
+
+        These operations answer 404 here, so a requirement would describe credentials
+        this gateway does not check. The auth-on half is `test_auth::test_02c`.
+        OpenAPI ignores a header parameter named Authorization, so none is declared.
+        """
+        spec = self.spec()
+        scheme = spec.get('components', {}).get('securitySchemes', {}).get('basic', {})
+        self.assertEqual((scheme.get('type'), scheme.get('scheme')), ('http', 'basic'), scheme)
+        for path in AUTH_PATHS:
+            with self.subTest(path=path):
+                op = spec['paths'][path]['post']
+                self.assertNotIn('security', op, path)
+                self.assertNotIn('Authorization', self.header_params(op), path)
 
     def test_generic_error_declares_the_vendor_code(self):
         """Vendor errors carry a 4th key the schema must declare.

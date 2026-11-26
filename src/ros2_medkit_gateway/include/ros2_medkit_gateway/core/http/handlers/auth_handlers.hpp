@@ -14,7 +14,10 @@
 
 #pragma once
 
+#include <utility>
+
 #include "ros2_medkit_gateway/dto/auth.hpp"
+#include "ros2_medkit_gateway/http/handler_result.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
 
@@ -29,17 +32,15 @@ namespace handlers {
  * - POST /auth/token     - Refresh access token (RFC 6749 token endpoint)
  * - POST /auth/revoke    - Revoke refresh token (RFC 7009)
  *
- * All three handlers follow the PR-403 typed RouteRegistry convention:
- *
- *   http::Result<dto::TResponse> X(const http::TypedRequest & req);
- *
- * The body is read directly from `req.body` (via the framework escape hatch)
- * because the auth endpoints accept BOTH `application/json` AND
- * `application/x-www-form-urlencoded` (RFC 6749 §4.1.3). The framework's
- * typed-body parser only speaks JSON and would also emit SOVD's
- * `invalid-request` (dash) code instead of OAuth2's `invalid_request`
- * (underscore). The routes set `.error_renderer(kOAuth2Error)` so any returned
- * `ErrorInfo` is rendered as `{error, error_description}` per RFC 6749 §5.2.
+ * All three authenticate the client (RFC 6749 §2.3.1): HTTP Basic or
+ * `client_id` and `client_secret` in the body. The body is read through the
+ * framework escape hatch because it may be `application/json` or
+ * `application/x-www-form-urlencoded`; the framework's typed-body parser only
+ * speaks JSON and would also emit SOVD's `invalid-request` (dash) code instead
+ * of OAuth2's `invalid_request` (underscore). The routes set
+ * `.error_renderer(kOAuth2Error)` so any returned `ErrorInfo` is rendered as
+ * `{error, error_description}` per RFC 6749 §5.2. A success carries
+ * `Cache-Control: no-store` and `Pragma: no-cache` (RFC 6749 §5.1).
  *
  * @note These endpoints are only registered/exposed when authentication is
  * enabled. The handlers still defensively return 404 when `auth.enabled` is
@@ -57,15 +58,17 @@ class AuthHandlers {
 
   /// POST /auth/authorize - authenticate with client_credentials grant.
   /// Returns an OAuth2 TokenResponse on success or an OAuth2 error on failure.
-  http::Result<dto::AuthTokenResponse> post_authorize(const http::TypedRequest & req);
+  http::Result<std::pair<dto::AuthTokenResponse, http::ResponseAttachments>>
+  post_authorize(const http::TypedRequest & req);
 
   /// POST /auth/token - refresh access token via the refresh_token grant.
-  http::Result<dto::AuthTokenResponse> post_token(const http::TypedRequest & req);
+  /// The refresh token must have been issued to the authenticated client.
+  http::Result<std::pair<dto::AuthTokenResponse, http::ResponseAttachments>> post_token(const http::TypedRequest & req);
 
-  /// POST /auth/revoke - revoke a refresh token (RFC 7009).
-  /// Always returns 200 + `{"status":"revoked"}` regardless of whether the
-  /// token existed, to prevent token-enumeration side channels.
-  http::Result<dto::AuthRevokeResponse> post_revoke(const http::TypedRequest & req);
+  /// POST /auth/revoke - revoke a refresh token of the authenticated client (RFC 7009).
+  /// A token that does not verify answers 200 `{"status":"revoked"}` and is not recorded.
+  http::Result<std::pair<dto::AuthRevokeResponse, http::ResponseAttachments>>
+  post_revoke(const http::TypedRequest & req);
 
  private:
   HandlerContext & ctx_;

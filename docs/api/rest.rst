@@ -3150,19 +3150,67 @@ SOVD ``GenericError`` used everywhere else:
      "error_description": "Refresh token is expired or unknown"
    }
 
-``/auth/authorize`` and ``/auth/token`` accept the request body as either
-``application/json`` or ``application/x-www-form-urlencoded``, the encoding
-RFC 6749 clients default to. ``/auth/revoke`` accepts JSON only, and per
-RFC 7009 section 2.2 answers ``200`` whether or not the submitted token was
-valid - so it never returns ``401``.
+All three accept the request body as ``application/x-www-form-urlencoded``,
+the encoding RFC 6749 and RFC 7009 clients send, or as ``application/json``.
+The media type is compared exactly and case-insensitively, parameters such as
+``charset`` aside; any other answers ``400 invalid_request``. In a form body a
+parameter without a value counts as omitted, a parameter the endpoint reads
+must not appear twice, and malformed percent-encoding is refused, each with
+``400 invalid_request`` (RFC 6749 section 3.1 and 3.2). A missing or empty
+``grant_type`` is ``invalid_request``; an unknown one is
+``unsupported_grant_type``.
+
+All three authenticate the client (RFC 6749 section 2.3.1), in one of two ways:
+
+* HTTP Basic: ``Authorization: Basic base64(client_id:client_secret)``. The id
+  and the secret are form-urlencoded before base64, as RFC 6749 requires; for
+  ids and secrets made of letters, digits and ``-._~`` that changes nothing.
+* ``client_id`` and ``client_secret`` in the body.
+
+Over plain HTTP the client secret travels in clear text: when clients
+authenticate over a network, serve the gateway over HTTPS
+(``gateway_https.launch.py``) or behind a TLS proxy.
+
+A request that uses both methods, or carries more than one ``Authorization``
+header, answers ``400 invalid_request``. Basic that does not decode or has an
+empty id or secret, wrong credentials, an unknown or disabled client, and
+missing credentials all answer ``401 invalid_client`` with one
+``error_description``, so the answer does not tell whether a client id exists.
+Every such answer carries
+``WWW-Authenticate: Basic realm="ros2_medkit_gateway"``, credentials sent in the
+body included (RFC 7235 section 3.1).
+An ``Authorization`` header of another scheme is not client authentication and
+is ignored. The served document declares HTTP Basic as the ``basic`` security
+scheme. With authentication on, the three operations carry
+``security: [{basic: []}, {}]``: Basic, or the credentials in the body. With it
+off they answer 404 and carry no requirement.
+
+Every answer the three handlers write, success or error, carries
+``Cache-Control: no-store`` and ``Pragma: no-cache`` (RFC 6749 section 5.1).
+Two answers are written before the handler and carry neither: the rate
+limiter's ``429``, and the ``413`` the HTTP server can answer for an over-large
+body, which has the ``GenericError`` body.
+
+.. note::
+
+   Changes for existing clients:
+
+   * ``/auth/token`` and ``/auth/revoke`` need the client's credentials.
+   * ``/auth/authorize`` without credentials answers ``401 invalid_client``, not ``400``.
+   * An unknown, expired, revoked or foreign refresh token on ``/auth/token`` answers ``400``, not ``401``.
+   * Revoking an access token answers ``400 unsupported_token_type``, not ``200``.
+   * A missing ``grant_type`` answers ``invalid_request``, not ``unsupported_grant_type``.
 
 These three endpoints are the only ones the middleware lets through
 unauthenticated whatever ``require_auth_for`` says - a caller has to be able to
-obtain a token before it has one. They are also the only operations the served
-OpenAPI document publishes with an empty ``security: []`` requirement; every
-other operation names the role the gateway's permission table grants for its
-path, so ``GET /api/v1/docs`` is where a client reads which role an endpoint
-needs. See :ref:`rest-role-required` below.
+obtain a token before it has one. With authentication on, the served OpenAPI
+document publishes them with ``security: [{basic: []}, {}]``: Basic client
+credentials, or the credentials in the body, and no token. Every other operation
+names the role the gateway's permission table grants for its path, or carries
+``security: []`` where ``require_auth_for`` admits it with no token, so
+``GET /api/v1/docs`` is where a client reads which role an endpoint needs. See
+:ref:`rest-role-required` below. With authentication off, no operation carries
+a ``security`` key.
 
 .. seealso::
 
@@ -3209,7 +3257,17 @@ false no role is published or checked, and with ``require_auth_for: write`` a
 ``POST /api/v1/auth/authorize``
    Authenticate with client credentials.
 
-   **Request:**
+   **Request** (HTTP Basic client authentication):
+
+   .. code-block:: text
+
+      POST /api/v1/auth/authorize
+      Authorization: Basic YWRtaW46YWRtaW5fc2VjcmV0X2tleQ==
+      Content-Type: application/x-www-form-urlencoded
+
+      grant_type=client_credentials
+
+   or with the credentials in a JSON body:
 
    .. code-block:: json
 
@@ -3231,35 +3289,61 @@ false no role is published or checked, and with ``require_auth_for: write`` a
         "scope": "admin"
       }
 
-   Wrong credentials answer ``401``. When revoked refresh tokens of the client
-   fill ``auth.max_refresh_tokens_per_client``, the answer is ``429`` with
+   Missing, wrong or unknown credentials answer ``401 invalid_client``. When
+   revoked refresh tokens of the client fill
+   ``auth.max_refresh_tokens_per_client``, the answer is ``429`` with
    ``Retry-After`` and ``"error": "temporarily_unavailable"``.
 
 ``POST /api/v1/auth/token``
-   Refresh access token.
+   Exchange a refresh token for a new access token. The client authenticates,
+   and the refresh token must have been issued to it.
 
    **Request:**
 
-   .. code-block:: json
+   .. code-block:: text
 
-      {
-        "grant_type": "refresh_token",
-        "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2g..."
-      }
+      POST /api/v1/auth/token
+      Authorization: Basic YWRtaW46YWRtaW5fc2VjcmV0X2tleQ==
+      Content-Type: application/x-www-form-urlencoded
+
+      grant_type=refresh_token&refresh_token=dGhpcyBpcyBhIHJlZnJlc2g...
+
+   The response has the shape of the ``/auth/authorize`` one, with the same
+   ``refresh_token``. A refresh token that is unknown, expired, revoked or
+   issued to another client answers ``400 invalid_grant`` (RFC 6749
+   section 5.2). Client authentication failures answer ``401 invalid_client``.
 
 ``POST /api/v1/auth/revoke``
-   Revoke a refresh token and the access tokens minted from it. Any other
-   token gets the same ``200`` and is not recorded. A token with no login
-   record here goes to a pool per client capped at
-   ``auth.max_refresh_tokens_per_client``; when it is full the answer is
-   ``503`` with ``Retry-After`` and ``"error": "temporarily_unavailable"``
-   (RFC 7009 section 2.2.1), and nothing is recorded.
+   Revoke a refresh token of the authenticated client and the access tokens
+   minted from it (RFC 7009). ``token_type_hint`` is accepted; the token's own
+   type decides the answer.
+
+   * A token that does not verify here (bad signature, other issuer, not a
+     JWT) answers ``200`` and is not recorded (RFC 7009 section 2.2).
+   * An access token answers ``400 unsupported_token_type``: this gateway
+     revokes refresh tokens only (RFC 7009 section 2.2.1).
+   * A refresh token issued to another client answers ``400 invalid_grant``
+     and is not recorded (RFC 7009 section 2.1).
+   * A token with no login record here goes to a pool per client capped at
+     ``auth.max_refresh_tokens_per_client``; when it is full the answer is
+     ``503`` with ``Retry-After`` and ``"error": "temporarily_unavailable"``
+     (RFC 7009 section 2.2.1), and nothing is recorded.
 
    **Request:**
 
+   .. code-block:: text
+
+      POST /api/v1/auth/revoke
+      Authorization: Basic YWRtaW46YWRtaW5fc2VjcmV0X2tleQ==
+      Content-Type: application/x-www-form-urlencoded
+
+      token=dGhpcyBpcyBhIHJlZnJlc2g...&token_type_hint=refresh_token
+
+   **Response:**
+
    .. code-block:: json
 
-      {"token": "dGhpcyBpcyBhIHJlZnJlc2g..."}
+      {"status": "revoked"}
 
 Vendor Extension Endpoints (Plugins)
 -------------------------------------
@@ -3619,9 +3703,15 @@ Vendor-specific ``x-medkit-*`` codes are enveloped: the response carries
      - 403
      - The caller is not the owner of the lock it tried to release or extend
        (``LockManager``'s ``lock-not-owner``).
+   * - ``unauthorized``
+     - 401
+     - A 401 written without a body, for example by a plugin route, and filled
+       in by the global error handler (see :ref:`rest-framework-error-bodies`).
+       The authentication middleware's own 401 uses the RFC 6749 shape.
    * - ``payload-too-large``
      - 413
-     - Upload exceeds the configured size limit
+     - Upload exceeds the configured size limit, or the HTTP server refused an
+       over-large body before the handler ran
    * - ``not-implemented``
      - 501
      - The feature is not enabled, or no backend is configured for it
@@ -3846,8 +3936,7 @@ Only the bulk-data download routes and the recording file routes declare a
 one is useful. 416 is
 nevertheless reachable everywhere.
 
-416 is not the only status answered this way, and the ``error_code`` in the
-body it produces is a placeholder - see the next section.
+416 is not the only status answered this way - see the next section.
 
 .. _rest-framework-error-bodies:
 
@@ -3860,25 +3949,21 @@ body**, and the gateway's global error handler then fills any body-less error
 response with a ``GenericError`` so that clients always receive the same
 envelope. Statuses reaching a client this way include:
 
-- **400** - malformed request line or headers, or an unparseable
-  ``multipart/form-data`` boundary
-- **413** - a form-urlencoded payload over the built-in length cap
-- **414** - request URI too long
-- **416** - unparseable ``Range`` header (see :ref:`rest-range-rejection`)
-- **500** - an exception escaping a handler
+- **400** - malformed request line or headers, an unsupported method, or an
+  unparseable ``multipart/form-data`` boundary: ``invalid-request``
+- **404** - no route matches the path: ``resource-not-found``
+- **413** - an over-large body, refused before the handler runs:
+  ``payload-too-large``
+- **414** - request line over 8192 bytes: ``invalid-request``
+- **416** - unparseable ``Range`` header (see :ref:`rest-range-rejection`):
+  ``invalid-request``
 
-**The ``error_code`` on these bodies is a placeholder.** The global handler
-writes ``resource-not-found`` regardless of the actual status, because it runs
-after the fact and has no way to know why the HTTP layer rejected the request.
-So a 413 and a 416 both arrive carrying ``"error_code":
-"resource-not-found"``. (The 404 an unrouted request produces goes through the
-same path, where that code happens to be right - which is why the mismatch is
-easy to miss on the statuses above.)
-
-**Read the HTTP status, not the ``error_code``, whenever the status was not
-produced by a handler.** The codes listed under `Common Error Codes`_ are
-accurate only for errors the gateway itself raises. The ``parameters.status``
-field on these bodies repeats the real status, which is the reliable field.
+The ``error_code`` follows the status: a status with its own code in
+`Common Error Codes`_ gets that code, any other 4xx gets ``invalid-request``
+and a 5xx gets ``internal-error``. The ``message`` is the HTTP reason phrase
+(``Payload Too Large``), and ``parameters.status`` repeats the status. These
+bodies say only what the HTTP layer decided, not why; the codes a handler
+raises carry more.
 
 Plugin Entity Delegation
 ~~~~~~~~~~~~~~~~~~~~~~~~

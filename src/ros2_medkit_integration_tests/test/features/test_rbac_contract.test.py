@@ -156,14 +156,15 @@ def generate_test_description():
 def _declared_role(operation):
     """Return the role an operation publishes.
 
-    ``''`` for an operation that publishes the empty requirement (``security:
-    []``, reachable with no token), ``None`` when it publishes no requirement
-    at all - which under ``auth.enabled`` is the defect this file reports.
+    ``''`` for an operation reachable with no token (``security: []``, or a
+    list holding the empty requirement ``{}``), ``None`` when it publishes no
+    requirement at all - which under ``auth.enabled`` is the defect this file
+    reports.
     """
     requirement = operation.get('security')
     if requirement is None:
         return None
-    if requirement == []:
+    if requirement == [] or {} in requirement:
         return ''
     return requirement[0]['bearerAuth'][0]
 
@@ -320,7 +321,7 @@ class TestRbacContract(unittest.TestCase):
             f'only {total} operations documented; the fixture lost its gates')
 
     def test_only_the_auth_endpoints_are_published_as_public(self):
-        """`security: []` is reserved for the paths the middleware exempts.
+        """A token-free requirement is reserved for the paths the middleware exempts.
 
         `AllAuthRequirementPolicy` lets `/api/v1/auth/` through by prefix and
         nothing else. Publishing the empty requirement anywhere else would

@@ -1511,7 +1511,10 @@ registration rather than in a table beside it:
   plugin's ``OperationDesc::requires_role`` emits.
   ``CapabilityGenerator::generate_impl()`` strips every per-operation
   requirement again when ``auth.enabled`` is false, once, over the assembled
-  document.
+  document. With ``auth.enabled`` true, the projection onto the policy keeps
+  ``security: [{basic: []}, {}]``, which ``basic_client_authentication()``
+  puts on the three ``/auth/*`` routes: the handler, not the middleware,
+  checks those client credentials.
 
 Two translations happen inside ``route_permissions()``:
 

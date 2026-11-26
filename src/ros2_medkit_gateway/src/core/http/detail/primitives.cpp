@@ -93,10 +93,19 @@ void write_oauth2_error(FrameworkOrPluginAccess /*token*/, httplib::Response & r
   error_json["error"] = err.code;
   error_json["error_description"] = err.message;
 
-  // The only parameter this writer reads: a refusal that ends by itself says when.
+  // RFC 6749 §5.1: no answer of the token endpoints is cached, an error included.
+  res.set_header("Cache-Control", "no-store");
+  res.set_header("Pragma", "no-cache");
+
+  // A refusal that ends by itself says when.
   const auto retry_after = err.params.find("retry_after_seconds");
   if (retry_after != err.params.end() && retry_after->is_number_integer()) {
     res.set_header("Retry-After", std::to_string(retry_after->get<int64_t>()));
+  }
+  // RFC 6749 §5.2: a failed HTTP authentication carries the challenge of the scheme the client used.
+  const auto challenge = err.params.find("www_authenticate");
+  if (challenge != err.params.end() && challenge->is_string()) {
+    res.set_header("WWW-Authenticate", challenge->get<std::string>());
   }
 
   res.set_content(error_json.dump(2), kContentTypeJson);

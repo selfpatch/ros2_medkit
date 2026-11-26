@@ -89,6 +89,28 @@ struct HttplibExceptionHandlerAdapter {
 static_assert(std::is_constructible_v<httplib::Server::ExceptionHandler, HttplibExceptionHandlerAdapter>,
               "cpp-httplib exception handler signature changed; update HttplibExceptionHandlerAdapter");
 
+/// The SOVD error code for an error status that no handler described.
+const char * error_code_for_status(int status) {
+  switch (status) {
+    case 401:
+      return ERR_UNAUTHORIZED;
+    case 403:
+      return ERR_FORBIDDEN;
+    case 404:
+      return ERR_RESOURCE_NOT_FOUND;
+    case 413:
+      return ERR_PAYLOAD_TOO_LARGE;
+    case 429:
+      return ERR_RATE_LIMIT_EXCEEDED;
+    case 501:
+      return ERR_NOT_IMPLEMENTED;
+    case 503:
+      return ERR_SERVICE_UNAVAILABLE;
+    default:
+      return status < 500 ? ERR_INVALID_REQUEST : ERR_INTERNAL_ERROR;
+  }
+}
+
 }  // namespace
 
 RESTServer::RESTServer(GatewayServices & services, std::shared_ptr<LifecycleStateReader> lifecycle_reader,
@@ -409,9 +431,11 @@ void RESTServer::setup_global_error_handlers() {
       return;
     }
 
+    // A body-less error is written by cpp-httplib before or instead of a handler: 400, 404 (no route), 413, 414
+    // and 416. The code and the message name that status.
     nlohmann::json error;
-    error["error_code"] = ERR_RESOURCE_NOT_FOUND;
-    error["message"] = "Resource not found";
+    error["error_code"] = error_code_for_status(res.status);
+    error["message"] = httplib::status_message(res.status);
     error["parameters"] = nlohmann::json::object();
     error["parameters"]["status"] = res.status;
 
@@ -2487,63 +2511,82 @@ void RESTServer::setup_routes() {
   // returned by the typed handler becomes `{"error","error_description"}`.
   // The bodies are parsed manually by the handlers because the auth endpoints
   // accept both `application/json` and `application/x-www-form-urlencoded`
-  // (RFC 6749 §4.1.3); the body-less typed POST overload is used here.
-  reg.post<dto::AuthTokenResponse>("/auth/authorize",
-                                   [this](http::TypedRequest req) -> http::Result<dto::AuthTokenResponse> {
-                                     return auth_handlers_->post_authorize(req);
-                                   })
+  // (RFC 6749 §4.1.3, RFC 7009 §2.1); the body-less typed POST overload is used here.
+  //
+  // With `auth.enabled` on, all three authenticate the client (RFC 6749 §2.3.1)
+  // and answer 401 `invalid_client` from the handler, whatever the policy says;
+  // with it off they answer 404 first. The middleware's own 401 is gated on the
+  // auth flag, so it is declared here. The `Authorization` header carries Basic client credentials, not a
+  // bearer token: the routes stay `public_route()` and name the Basic scheme.
+  // cpp-httplib can answer 413 for an over-large body before the handler runs, and the global error handler fills
+  // the body-less answer with a GenericError.
+  const std::string form_too_large = "Body too large, refused by the HTTP server before the handler.";
+  const nlohmann::json generic_error = {{"$ref", "#/components/schemas/GenericError"}};
+
+  reg.post<dto::AuthTokenResponse>(
+         "/auth/authorize",
+         [this](http::TypedRequest req) -> http::Result<std::pair<dto::AuthTokenResponse, http::ResponseAttachments>> {
+           return auth_handlers_->post_authorize(req);
+         })
       .tag("Authentication")
       .public_route()
       .summary("Authorize client")
-      .description("Authenticate and obtain authorization tokens.")
+      .description(
+          "Authenticate a client with the client_credentials grant and obtain an access token and a refresh token.")
       .request_body("Client credentials", SB::ref("AuthCredentials"))
-      // AuthorizeRequest::parse_request accepts either encoding of the same
-      // payload; declaring only JSON hid the one RFC 6749 clients default to.
       .accepts("application/x-www-form-urlencoded", SB::ref("AuthCredentials"))
+      .basic_client_authentication()
       .operation_id("authorize")
-      // Bad client credentials answer 401 independently of `auth.enabled`
-      // (auth_handlers.cpp: authenticate() failure). The middleware's own 401 is
-      // gated on the auth flag, so without this the document declares no 401 at
-      // all on the one route whose whole purpose is to reject bad credentials.
+      .response(413, form_too_large, generic_error)
+      // 401: wrong, missing or unknown client credentials.
       // 429 with `Retry-After`: revoked refresh tokens fill the client's
       // auth.max_refresh_tokens_per_client.
       .errors({401, 429})
       .error_renderer(openapi::ErrorRenderer::kOAuth2Error);
 
-  reg.post<dto::AuthTokenResponse>("/auth/token",
-                                   [this](http::TypedRequest req) -> http::Result<dto::AuthTokenResponse> {
-                                     return auth_handlers_->post_token(req);
-                                   })
+  reg.post<dto::AuthTokenResponse>(
+         "/auth/token",
+         [this](http::TypedRequest req) -> http::Result<std::pair<dto::AuthTokenResponse, http::ResponseAttachments>> {
+           return auth_handlers_->post_token(req);
+         })
       .tag("Authentication")
       .public_route()
-      .summary("Obtain access token")
-      .description("Exchange credentials or refresh token for a JWT access token.")
-      .request_body("Token request credentials", SB::ref("AuthCredentials"))
+      .summary("Refresh access token")
+      .description(
+          "Exchange a refresh token for a new access token (grant_type refresh_token). The client authenticates, and "
+          "the refresh token must have been issued to it.")
+      .request_body("Refresh token request", SB::ref("AuthCredentials"))
       .accepts("application/x-www-form-urlencoded", SB::ref("AuthCredentials"))
+      .basic_client_authentication()
       .operation_id("getToken")
-      // A refresh token that is expired, revoked or unknown answers 401, again
-      // regardless of `auth.enabled`.
+      .response(413, form_too_large, generic_error)
+      // 401: wrong, missing or unknown client credentials. A refresh token
+      // that is unknown, expired, revoked or issued to another client is
+      // 400 `invalid_grant` (RFC 6749 §5.2), under the blanket 400.
       .errors({401})
       .error_renderer(openapi::ErrorRenderer::kOAuth2Error);
 
-  reg.post<dto::AuthRevokeResponse>("/auth/revoke",
-                                    [this](http::TypedRequest req) -> http::Result<dto::AuthRevokeResponse> {
-                                      return auth_handlers_->post_revoke(req);
-                                    })
+  reg.post<dto::AuthRevokeResponse>(
+         "/auth/revoke",
+         [this](http::TypedRequest req) -> http::Result<std::pair<dto::AuthRevokeResponse, http::ResponseAttachments>> {
+           return auth_handlers_->post_revoke(req);
+         })
       .tag("Authentication")
       .public_route()
       .summary("Revoke token")
       .description(
-          "Revoke a refresh token and the access tokens minted from it. Any other token gets the same "
-          "answer and is not recorded.")
-      // No `.accepts(...)` and no `.errors({401})`, unlike the two above:
-      // post_revoke parses JSON only, and per RFC 7009 §2.2 it must not reveal
-      // whether the submitted token was valid, so it answers 200 either way.
+          "Revoke a refresh token of the authenticated client and the access tokens minted from it (RFC 7009). A "
+          "token that does not verify answers 200 and is not recorded. An access token answers 400 "
+          "`unsupported_token_type`; a refresh token issued to another client answers 400 `invalid_grant`.")
+      .request_body("Token to revoke", SB::ref("AuthRevokeRequest"))
+      .accepts("application/x-www-form-urlencoded", SB::ref("AuthRevokeRequest"))
+      .basic_client_authentication()
+      .operation_id("revokeToken")
+      .response(413, form_too_large, generic_error)
+      // 401: wrong, missing or unknown client credentials.
       // 503 with `Retry-After` (RFC 7009 §2.2.1): the client's pool of
       // revocations for tokens without a login record here is full.
-      .errors({503})
-      .request_body("Token to revoke", SB::ref("AuthRevokeRequest"))
-      .operation_id("revokeToken")
+      .errors({401, 503})
       .error_renderer(openapi::ErrorRenderer::kOAuth2Error);
 
   // === Lifecycle (status) - apps and components only, outside the 4-type loop ===

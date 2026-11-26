@@ -163,7 +163,7 @@ struct TokenResponse {
 };
 
 /**
- * @brief Authorization request for /auth/authorize endpoint
+ * @brief Request body of /auth/authorize and /auth/token
  * @verifies REQ_INTEROP_086
  */
 struct AuthorizeRequest {
@@ -196,18 +196,60 @@ struct AuthorizeRequest {
     return req;
   }
 
-  // Parse from URL-encoded form data (application/x-www-form-urlencoded)
-  static AuthorizeRequest from_form_data(const std::string & body);
+  /// parse_request() for an application/x-www-form-urlencoded body.
+  static tl::expected<AuthorizeRequest, AuthErrorResponse> from_form_data(const std::string & body);
 
   /**
    * @brief Parse AuthorizeRequest from HTTP request body with content-type detection
+   *
+   * The media type is compared exactly, case-insensitively. In a form body a field without a value is omitted, a
+   * field this struct reads must not repeat, and every field must decode (RFC 6749 §3.1, §3.2).
+   *
    * @param content_type Content-Type header value
    * @param body Request body
-   * @return AuthorizeRequest on success, AuthErrorResponse on failure
+   * @return AuthorizeRequest on success, `invalid_request` for another media type, a body that does not parse, a
+   *         repeated field or a field that is not a string
    */
   static tl::expected<AuthorizeRequest, AuthErrorResponse> parse_request(const std::string & content_type,
                                                                          const std::string & body);
 };
+
+/**
+ * @brief Request body of /auth/revoke (RFC 7009 §2.1)
+ */
+struct RevokeRequest {
+  std::string token;
+  std::optional<std::string> token_type_hint;  ///< Accepted; the token's own `typ` decides
+  std::optional<std::string> client_id;
+  std::optional<std::string> client_secret;
+
+  /**
+   * @brief Parse a JSON or form-urlencoded body, with the rules of AuthorizeRequest::parse_request
+   * @param content_type Content-Type header value
+   * @param body Request body
+   * @return RevokeRequest on success, `invalid_request` for another media type, a malformed body, a repeated field,
+   *         a field that is not a string, or no `token`
+   */
+  static tl::expected<RevokeRequest, AuthErrorResponse> parse_request(const std::string & content_type,
+                                                                      const std::string & body);
+};
+
+/// Client credentials from an HTTP Basic `Authorization` header.
+struct BasicCredentials {
+  std::string client_id;
+  std::string client_secret;
+};
+
+/**
+ * @brief Decode the value of an `Authorization` header as RFC 6749 §2.3.1 Basic client credentials
+ *
+ * The id and the secret are form-urlencoded before base64, so both are form-decoded after it.
+ *
+ * @param authorization The header value
+ * @return Empty when the scheme is not Basic; `invalid_request` when Basic does not decode
+ */
+tl::expected<std::optional<BasicCredentials>, AuthErrorResponse>
+parse_basic_authorization(const std::string & authorization);
 
 /**
  * @brief Result of token validation
@@ -261,6 +303,11 @@ struct AuthErrorResponse {
     return {"invalid_client", description, std::nullopt};
   }
 
+  /// Every client authentication failure: the body does not tell whether the client id exists.
+  static AuthErrorResponse client_authentication_failed() {
+    return invalid_client("Client authentication failed");
+  }
+
   static AuthErrorResponse invalid_grant(const std::string & description) {
     return {"invalid_grant", description, std::nullopt};
   }
@@ -287,6 +334,11 @@ struct AuthErrorResponse {
 
   static AuthErrorResponse insufficient_scope(const std::string & description) {
     return {"insufficient_scope", description, std::nullopt};
+  }
+
+  /// RFC 7009 §2.2.1: the server does not revoke this type of token.
+  static AuthErrorResponse unsupported_token_type(const std::string & description) {
+    return {"unsupported_token_type", description, std::nullopt};
   }
 
   static AuthErrorResponse temporarily_unavailable(const std::string & description, int64_t retry_after_seconds) {

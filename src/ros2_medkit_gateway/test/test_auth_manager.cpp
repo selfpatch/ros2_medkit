@@ -323,7 +323,7 @@ TEST_F(AuthManagerTest, RefreshWithAccessTokenFails) {
   ASSERT_TRUE(auth_result.has_value());
 
   // Try to use access token as refresh token (should fail due to type check)
-  auto refresh_result = auth_manager_->refresh_access_token(auth_result->access_token);
+  auto refresh_result = auth_manager_->refresh_access_token(auth_result->access_token, "admin_user");
   ASSERT_FALSE(refresh_result.has_value());
   EXPECT_EQ(refresh_result.error().error, "invalid_grant");
   EXPECT_TRUE(refresh_result.error().error_description.find("not a refresh token") != std::string::npos);
@@ -336,7 +336,7 @@ TEST_F(AuthManagerTest, RefreshAccessToken) {
   ASSERT_TRUE(auth_result.has_value());
   ASSERT_TRUE(auth_result->refresh_token.has_value());
 
-  auto refresh_result = auth_manager_->refresh_access_token(auth_result->refresh_token.value());
+  auto refresh_result = auth_manager_->refresh_access_token(auth_result->refresh_token.value(), "operator_user");
 
   ASSERT_TRUE(refresh_result.has_value());
   EXPECT_FALSE(refresh_result->access_token.empty());
@@ -346,7 +346,7 @@ TEST_F(AuthManagerTest, RefreshAccessToken) {
 }
 
 TEST_F(AuthManagerTest, RefreshWithInvalidToken) {
-  auto result = auth_manager_->refresh_access_token("invalid_refresh_token");
+  auto result = auth_manager_->refresh_access_token("invalid_refresh_token", "admin_user");
 
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().error, "invalid_grant");
@@ -359,11 +359,11 @@ TEST_F(AuthManagerTest, RevokeRefreshToken) {
   ASSERT_TRUE(auth_result->refresh_token.has_value());
 
   // Revoke the refresh token
-  bool revoked = auth_manager_->revoke_refresh_token(auth_result->refresh_token.value());
+  bool revoked = auth_manager_->revoke_refresh_token(auth_result->refresh_token.value(), "admin_user");
   EXPECT_TRUE(revoked);
 
   // Try to use the revoked refresh token
-  auto refresh_result = auth_manager_->refresh_access_token(auth_result->refresh_token.value());
+  auto refresh_result = auth_manager_->refresh_access_token(auth_result->refresh_token.value(), "admin_user");
   ASSERT_FALSE(refresh_result.has_value());
   EXPECT_EQ(refresh_result.error().error, "invalid_grant");
 
@@ -384,7 +384,7 @@ TEST_F(AuthManagerTest, RefreshRevocationPropagatestoAccessToken) {
   EXPECT_TRUE(validation.valid);
 
   // Revoke refresh token
-  auth_manager_->revoke_refresh_token(auth_result->refresh_token.value());
+  auth_manager_->revoke_refresh_token(auth_result->refresh_token.value(), "operator_user");
 
   // Access token should now be invalid because its refresh token was revoked
   validation = auth_manager_->validate_token(auth_result->access_token);
@@ -847,13 +847,14 @@ TEST(AuthorizeRequestTest, FromFormData) {
 
   auto req = AuthorizeRequest::from_form_data(form_data);
 
-  EXPECT_EQ(req.grant_type, "client_credentials");
-  EXPECT_TRUE(req.client_id.has_value());
-  EXPECT_EQ(req.client_id.value(), "test_client");
-  EXPECT_TRUE(req.client_secret.has_value());
-  EXPECT_EQ(req.client_secret.value(), "test_secret");
-  EXPECT_TRUE(req.scope.has_value());
-  EXPECT_EQ(req.scope.value(), "admin");
+  ASSERT_TRUE(req.has_value());
+  EXPECT_EQ(req->grant_type, "client_credentials");
+  EXPECT_TRUE(req->client_id.has_value());
+  EXPECT_EQ(req->client_id.value(), "test_client");
+  EXPECT_TRUE(req->client_secret.has_value());
+  EXPECT_EQ(req->client_secret.value(), "test_secret");
+  EXPECT_TRUE(req->scope.has_value());
+  EXPECT_EQ(req->scope.value(), "admin");
 }
 
 TEST(AuthorizeRequestTest, FromFormDataWithUrlEncoding) {
@@ -861,9 +862,10 @@ TEST(AuthorizeRequestTest, FromFormDataWithUrlEncoding) {
 
   auto req = AuthorizeRequest::from_form_data(form_data);
 
-  EXPECT_EQ(req.grant_type, "refresh_token");
-  EXPECT_TRUE(req.refresh_token.has_value());
-  EXPECT_EQ(req.refresh_token.value(), "abc+def=123");
+  ASSERT_TRUE(req.has_value());
+  EXPECT_EQ(req->grant_type, "refresh_token");
+  EXPECT_TRUE(req->refresh_token.has_value());
+  EXPECT_EQ(req->refresh_token.value(), "abc+def=123");
 }
 
 TEST(AuthorizeRequestTest, FromJson) {
@@ -1379,7 +1381,7 @@ TEST(AuthManagerTokenLifetimeTest, ARefreshOnlyWorkloadBoundsTheStore) {
   // Refresh is the only call. It fails once the token expires, and the sweep must still run.
   const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
   while (manager->refresh_token_count() != 0U && std::chrono::steady_clock::now() < give_up) {
-    (void)manager->refresh_access_token(first->refresh_token.value());
+    (void)manager->refresh_access_token(first->refresh_token.value(), "svc");
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
 
@@ -1408,14 +1410,14 @@ TEST(AuthManagerRevocationTest, ARevokedRecordOutlivesTheTokensItWithdraws) {
 
     // Mint a late access token (expires at issued_at + 5 or later), then revoke its record (expires at issued_at + 3).
     ASSERT_TRUE(wait_for_wall_second(issued_at + 2));
-    auto late = manager->refresh_access_token(issued->refresh_token.value());
+    auto late = manager->refresh_access_token(issued->refresh_token.value(), "svc");
     // jwt-cpp reads sub-second time: the token is expired from the start of its `exp` second.
     if (!late.has_value() && wall_seconds() >= issued_at + 3) {
       continue;
     }
     ASSERT_TRUE(late.has_value()) << "the refresh failed while the refresh token was live: "
                                   << late.error().error_description;
-    ASSERT_TRUE(manager->revoke_refresh_token(issued->refresh_token.value()));
+    ASSERT_TRUE(manager->revoke_refresh_token(issued->refresh_token.value(), "svc"));
 
     // Past the record's own expiry, inside the late token's.
     ASSERT_TRUE(wait_for_wall_second(issued_at + 4));
@@ -1449,7 +1451,7 @@ TEST(AuthManagerRevocationTest, AForeignRecordIsHeldUntilItsTokenExpiresPlusTheA
   ASSERT_TRUE(issued->refresh_token.has_value());
   const int64_t exp = exp_seconds(issued->refresh_token.value());
 
-  ASSERT_TRUE(peer->revoke_refresh_token(issued->refresh_token.value()));
+  ASSERT_TRUE(peer->revoke_refresh_token(issued->refresh_token.value(), "svc"));
   EXPECT_EQ(peer->refresh_token_count(), 1U);
 
   // Kept to exp + 1, past the peer's own refresh lifetime: no sweep drops it while the clock reads exp + 1.
@@ -1482,14 +1484,14 @@ TEST(AuthManagerRevocationTest, AForeignRevocationOfAnUnknownSubjectWritesNothin
   auto stranger = stranger_issuer->authenticate("stranger", "stranger_secret");
   ASSERT_TRUE(stranger.has_value());
   ASSERT_TRUE(stranger->refresh_token.has_value());
-  (void)peer->revoke_refresh_token(stranger->refresh_token.value());
+  (void)peer->revoke_refresh_token(stranger->refresh_token.value(), "stranger");
   EXPECT_EQ(peer->refresh_token_count(), 0U) << "a revocation for a subject this gateway does not list wrote a record";
 
   // The same revocation for a listed subject writes one record.
   auto known = known_issuer->authenticate("svc", "svc_secret");
   ASSERT_TRUE(known.has_value());
   ASSERT_TRUE(known->refresh_token.has_value());
-  EXPECT_TRUE(peer->revoke_refresh_token(known->refresh_token.value()));
+  EXPECT_TRUE(peer->revoke_refresh_token(known->refresh_token.value(), "svc"));
   EXPECT_EQ(peer->refresh_token_count(), 1U);
   EXPECT_FALSE(peer->validate_token(known->access_token).valid);
 }
@@ -1502,7 +1504,7 @@ TEST(AuthManagerRevocationTest, ALocalRevokedRecordIsHeldOnlyForTheAccessLifetim
   ASSERT_TRUE(issued.has_value());
   ASSERT_TRUE(issued->refresh_token.has_value());
 
-  ASSERT_TRUE(manager->revoke_refresh_token(issued->refresh_token.value()));
+  ASSERT_TRUE(manager->revoke_refresh_token(issued->refresh_token.value(), "svc"));
   const int64_t revoked_at = wall_seconds();
   EXPECT_EQ(manager->cleanup_expired_tokens(), 0U) << "dropped while an access token minted from it can be live";
   EXPECT_EQ(manager->refresh_token_count(), 1U);
@@ -1511,7 +1513,7 @@ TEST(AuthManagerRevocationTest, ALocalRevokedRecordIsHeldOnlyForTheAccessLifetim
   ASSERT_TRUE(wait_for_wall_second(revoked_at + 2));
   ASSERT_TRUE(manager->authenticate("svc", "svc_secret").has_value());
   EXPECT_EQ(manager->refresh_token_count(), 1U) << "the revoked record outlived the access lifetime";
-  EXPECT_FALSE(manager->refresh_access_token(issued->refresh_token.value()).has_value())
+  EXPECT_FALSE(manager->refresh_access_token(issued->refresh_token.value(), "svc").has_value())
       << "the revoked refresh token refreshed once its record was gone";
 }
 
@@ -1536,16 +1538,16 @@ TEST(AuthManagerRevocationTest, ARevocationWithAnotherSubjectLeavesTheRecord) {
                                  .set_expires_at(now + std::chrono::hours(1))
                                  .sign(jwt::algorithm::hs256{"expiry_sweep_secret_key_at_least_32_chars_long"});
 
-  EXPECT_FALSE(manager->revoke_refresh_token(forged));
+  EXPECT_FALSE(manager->revoke_refresh_token(forged, "another_client"));
   EXPECT_TRUE(manager->validate_token(issued->access_token).valid) << "another subject revoked this client's record";
-  EXPECT_TRUE(manager->refresh_access_token(issued->refresh_token.value()).has_value());
+  EXPECT_TRUE(manager->refresh_access_token(issued->refresh_token.value(), "svc").has_value());
 
   // The token's own subject does revoke it.
-  EXPECT_TRUE(manager->revoke_refresh_token(issued->refresh_token.value()));
+  EXPECT_TRUE(manager->revoke_refresh_token(issued->refresh_token.value(), "svc"));
   EXPECT_FALSE(manager->validate_token(issued->access_token).valid);
 }
 
-// An access token names no refresh record, so revoking it records nothing.
+// An access token names no refresh record: revoking one is refused and records nothing.
 // @verifies REQ_INTEROP_086
 TEST(AuthManagerRevocationTest, RevokingAnAccessTokenRecordsNothing) {
   auto manager = make_manager(3600, 86400);
@@ -1553,10 +1555,10 @@ TEST(AuthManagerRevocationTest, RevokingAnAccessTokenRecordsNothing) {
   ASSERT_TRUE(issued.has_value());
   const size_t held = manager->refresh_token_count();
 
-  const auto outcome = manager->try_revoke_refresh_token(issued->access_token);
-  ASSERT_TRUE(outcome.has_value());
-  EXPECT_FALSE(*outcome);
+  const auto outcome = manager->try_revoke_refresh_token(issued->access_token, "svc");
   EXPECT_EQ(manager->refresh_token_count(), held);
+  ASSERT_FALSE(outcome.has_value());
+  EXPECT_EQ(outcome.error().error, "unsupported_token_type");
 }
 
 // A refresh that reads the record before a revocation mints nothing that outlives the revoked record.
@@ -1585,12 +1587,12 @@ TEST(AuthManagerRevocationTest, ARefreshRacingARevokeMintsNothingThatOutlivesThe
     std::thread refresher([&] {
       while (!go.load()) {
       }
-      refreshed = manager.refresh_access_token(refresh);
+      refreshed = manager.refresh_access_token(refresh, "svc");
     });
     std::thread revoker([&] {
       while (!go.load()) {
       }
-      (void)manager.revoke_refresh_token(refresh);
+      (void)manager.revoke_refresh_token(refresh, "svc");
     });
     go.store(true);
     refresher.join();
@@ -1624,11 +1626,11 @@ TEST(AuthManagerRevocationTest, AClockSteppedBackBeforeARevokeKeepsTheRecordPast
   auto issued = manager->authenticate("svc", "svc_secret");
   ASSERT_TRUE(issued.has_value());
   const std::string refresh = issued->refresh_token.value();
-  auto refreshed = manager->refresh_access_token(refresh);
+  auto refreshed = manager->refresh_access_token(refresh, "svc");
   ASSERT_TRUE(refreshed.has_value());
   const int64_t refreshed_exp = exp_seconds(refreshed->access_token);
   now->fetch_sub(10);
-  ASSERT_TRUE(manager->revoke_refresh_token(refresh));
+  ASSERT_TRUE(manager->revoke_refresh_token(refresh, "svc"));
   const auto kept = manager->refresh_record_kept_until(jti_of(refresh));
   ASSERT_TRUE(kept.has_value());
   EXPECT_GE(*kept, refreshed_exp) << "the record goes before the refreshed access token expires";
@@ -1645,7 +1647,7 @@ TEST(AuthManagerRevocationTest, AClockSteppedBackBeforeARevokeKeepsTheRecordPast
   ASSERT_TRUE(login.has_value());
   const int64_t login_exp = exp_seconds(login->access_token);
   now->fetch_sub(10);
-  ASSERT_TRUE(manager->revoke_refresh_token(login->refresh_token.value()));
+  ASSERT_TRUE(manager->revoke_refresh_token(login->refresh_token.value(), "svc"));
   const auto login_kept = manager->refresh_record_kept_until(jti_of(login->refresh_token.value()));
   ASSERT_TRUE(login_kept.has_value());
   EXPECT_GE(*login_kept, login_exp) << "the record goes before the login access token expires";
@@ -1658,10 +1660,10 @@ TEST(AuthManagerRevocationTest, AClockSteppedBackBeforeARevokeKeepsTheRecordPast
   auto steady = manager->authenticate("svc", "svc_secret");
   ASSERT_TRUE(steady.has_value());
   const std::string steady_refresh = steady->refresh_token.value();
-  auto steady_refreshed = manager->refresh_access_token(steady_refresh);
+  auto steady_refreshed = manager->refresh_access_token(steady_refresh, "svc");
   ASSERT_TRUE(steady_refreshed.has_value());
   const int64_t last_exp = std::max(exp_seconds(steady->access_token), exp_seconds(steady_refreshed->access_token));
-  ASSERT_TRUE(manager->revoke_refresh_token(steady_refresh));
+  ASSERT_TRUE(manager->revoke_refresh_token(steady_refresh, "svc"));
   EXPECT_EQ(manager->refresh_record_kept_until(jti_of(steady_refresh)), std::optional<int64_t>(last_exp));
   now->store(last_exp);
   (void)manager->cleanup_expired_tokens();
@@ -1688,7 +1690,7 @@ TEST(AuthManagerRevocationTest, AClockJumpingForwardAndBackKeepsTheRevocation) {
 
   // Forward past the access token's exp, revoke and sweep there, then back inside its lifetime.
   now->store(start + 3600 + 1);
-  ASSERT_TRUE(manager->revoke_refresh_token(refresh));
+  ASSERT_TRUE(manager->revoke_refresh_token(refresh, "svc"));
   (void)manager->cleanup_expired_tokens();
   now->store(start + 3600 / 2);
   (void)manager->cleanup_expired_tokens();
@@ -1722,7 +1724,7 @@ TEST(AuthManagerRevocationTest, ARetryAfterMatchesTheClockTheSweepRead) {
   // 429: the client's one login slot holds a revoked record.
   auto first = manager.authenticate("svc", "svc_secret");
   ASSERT_TRUE(first.has_value());
-  ASSERT_TRUE(manager.revoke_refresh_token(first->refresh_token.value()));
+  ASSERT_TRUE(manager.revoke_refresh_token(first->refresh_token.value(), "svc"));
   const auto slot_until = manager.refresh_record_kept_until(jwt::decode(first->refresh_token.value()).get_id());
   ASSERT_TRUE(slot_until.has_value());
   auto refused = manager.authenticate("svc", "svc_secret");
@@ -1746,11 +1748,11 @@ TEST(AuthManagerRevocationTest, ARetryAfterMatchesTheClockTheSweepRead) {
   ASSERT_TRUE(foreign_first.has_value());
   ASSERT_TRUE(foreign_second.has_value());
   clock.step->store(1);
-  const auto recorded = manager.try_revoke_refresh_token(foreign_first->refresh_token.value());
+  const auto recorded = manager.try_revoke_refresh_token(foreign_first->refresh_token.value(), "svc");
   ASSERT_TRUE(recorded.has_value() && *recorded);
   const auto pool_until = manager.refresh_record_kept_until(jwt::decode(foreign_first->refresh_token.value()).get_id());
   ASSERT_TRUE(pool_until.has_value());
-  const auto full = manager.try_revoke_refresh_token(foreign_second->refresh_token.value());
+  const auto full = manager.try_revoke_refresh_token(foreign_second->refresh_token.value(), "svc");
   ASSERT_FALSE(full.has_value());
   ASSERT_TRUE(full.error().retry_after_seconds.has_value());
   const int64_t revoke_now = clock.last->load();
@@ -1760,10 +1762,10 @@ TEST(AuthManagerRevocationTest, ARetryAfterMatchesTheClockTheSweepRead) {
   clock.step->store(0);
   const int64_t pool_free_at = revoke_now + *full.error().retry_after_seconds;
   clock.value->store(pool_free_at - 1);
-  EXPECT_FALSE(manager.try_revoke_refresh_token(foreign_second->refresh_token.value()).has_value())
+  EXPECT_FALSE(manager.try_revoke_refresh_token(foreign_second->refresh_token.value(), "svc").has_value())
       << "a revocation got through before Retry-After";
   clock.value->store(pool_free_at);
-  const auto through = manager.try_revoke_refresh_token(foreign_second->refresh_token.value());
+  const auto through = manager.try_revoke_refresh_token(foreign_second->refresh_token.value(), "svc");
   ASSERT_TRUE(through.has_value()) << "a revocation at Retry-After was refused";
   EXPECT_TRUE(*through);
 }

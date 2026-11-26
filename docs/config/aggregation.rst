@@ -161,9 +161,10 @@ for peer communication.
        peer's own rules. The whole token travels, and the peer's own table
        decides the role: the peer reads ``sub`` against its ``auth.clients``
        and grants the role listed there. Revocation is per gateway:
-       ``POST /auth/revoke`` on the peer, with the refresh token, records a
-       token it did not issue as revoked there, for a client it lists, and
-       the issuing gateway goes on accepting it. The peer keeps that record
+       ``POST /auth/revoke`` on the peer, with the refresh token and the
+       credentials of the client it was issued to, records a token it did
+       not issue as revoked there, for a client it lists, and the issuing
+       gateway goes on accepting it. The peer keeps that record
        until the token's own ``exp`` plus the peer's access lifetime, by its
        own clock, in a per-client pool capped at
        ``auth.max_refresh_tokens_per_client`` (503 with ``Retry-After`` when

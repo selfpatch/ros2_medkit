@@ -771,6 +771,10 @@ curl -X PUT -H 'Content-Type: application/json' -d '{"capability": "stop"}' \
 
 Authenticate using OAuth2 client credentials flow. Returns access and refresh tokens.
 
+All three `/auth/*` endpoints authenticate the client (RFC 6749 section 2.3.1): HTTP Basic (`curl -u id:secret`; RFC 6749 form-urlencodes the id and the secret before base64, and `curl -u` does not, so a `+` or `%` in a secret is sent as `%2B` or `%25`; `openssl rand -hex 32` makes secrets without either) or `client_id` and `client_secret` in the body, never both. Over plain HTTP the secret travels in clear text; use HTTPS (`gateway_https.launch.py`) or a TLS proxy when clients authenticate over a network. They accept JSON or form-urlencoded bodies. Every answer their handlers write carries `Cache-Control: no-store` and `Pragma: no-cache`; the rate limiter's 429 and the 413 the HTTP server can answer for an over-large body come before the handler and carry neither.
+
+Changes for existing clients: refresh and revoke need the client's credentials; `/auth/authorize` without credentials answers 401; an invalid refresh token answers 400, not 401; revoking an access token answers 400; a missing `grant_type` answers `invalid_request`.
+
 **Example (JSON):**
 ```bash
 curl -X POST http://localhost:8080/api/v1/auth/authorize \
@@ -782,11 +786,11 @@ curl -X POST http://localhost:8080/api/v1/auth/authorize \
   }'
 ```
 
-**Example (Form URL-encoded):**
+**Example (Form URL-encoded, HTTP Basic):**
 ```bash
 curl -X POST http://localhost:8080/api/v1/auth/authorize \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d 'grant_type=client_credentials&client_id=my_client&client_secret=my_secret'
+  -u my_client:my_secret \
+  -d grant_type=client_credentials
 ```
 
 **Response (200 OK):**
@@ -810,16 +814,14 @@ curl -X POST http://localhost:8080/api/v1/auth/authorize \
 
 #### POST /api/v1/auth/token
 
-Refresh an access token using a refresh token.
+Refresh an access token using a refresh token. The client authenticates, and the refresh token must have been issued to it.
 
 **Example:**
 ```bash
 curl -X POST http://localhost:8080/api/v1/auth/token \
-  -H "Content-Type: application/json" \
-  -d '{
-    "grant_type": "refresh_token",
-    "refresh_token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4..."
-  }'
+  -u my_client:my_secret \
+  -d grant_type=refresh_token \
+  -d refresh_token=dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4...
 ```
 
 **Response (200 OK):**
@@ -835,16 +837,21 @@ curl -X POST http://localhost:8080/api/v1/auth/token \
 
 **Note:** The `refresh_token` in the response is the same token that was sent in the request (not a new token). Refresh token rotation is not implemented.
 
+A refresh token that is unknown, expired, revoked or issued to another client answers `400 invalid_grant`; missing or wrong client credentials answer `401 invalid_client`.
+
 #### POST /api/v1/auth/revoke
 
-Revoke a refresh token to prevent further use.
+Revoke a refresh token of the authenticated client, and the access tokens minted from it (RFC 7009).
 
 **Example:**
 ```bash
 curl -X POST http://localhost:8080/api/v1/auth/revoke \
-  -H "Content-Type: application/json" \
-  -d '{"token": "dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4..."}'
+  -u my_client:my_secret \
+  -d token=dGhpcyBpcyBhIHJlZnJlc2ggdG9rZW4... \
+  -d token_type_hint=refresh_token
 ```
+
+A token that does not verify answers 200 and changes nothing. An access token answers `400 unsupported_token_type`; another client's refresh token answers `400 invalid_grant`.
 
 **Response (200 OK):**
 ```json
