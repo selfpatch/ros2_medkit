@@ -386,7 +386,11 @@ if(BUILD_TESTING)
     # broken merge spends all of them. The glob default cuts that short and
     # reports a timeout with no test name, which is the one answer that says
     # nothing about which rule broke.
-    test_aggregator_only_configurations 300)
+    test_aggregator_only_configurations 300
+    # Each case can spend one scaled wait of 30 s, after up to 90 s for the gateway
+    # to start and discover its apps.
+    test_procfs_environ_fallback 300
+    test_procfs_domain_filter_switch 300)
   # Names actually matched against a discovered test_name in the two loops
   # below. Checked against _MEDKIT_TEST_TIMEOUT_OVERRIDES itself after both
   # loops finish - see the FATAL_ERROR check at the end of this block - so a

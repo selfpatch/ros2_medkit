@@ -87,7 +87,7 @@ The following diagram shows the three plugins and their shared infrastructure.
            - domain_id_: optional<size_t>
            - mutex_: shared_mutex
            --
-           + set_domain_filter(domain_id, on_unverified): void
+           + set_domain_filter(domain_id, on_unverified, on_other_domain): void
            + lookup(fqn, root): optional<pid_t>
            + lookup_and_read(fqn, root, read): optional<pair>
            + invalidate(): void
@@ -181,10 +181,13 @@ names to Linux PIDs. The cache:
 - Keeps only processes of the gateway's ROS domain. The domain of a process is
   ``ROS_DOMAIN_ID`` in ``/proc/{pid}/environ``, read as rcl reads it (unset or empty is 0);
   the gateway's domain comes from its own ROS context. A node with the same name in
-  another domain is never served.
+  another domain is never served, and each scan logs it at debug level. A node that sets
+  its domain in code reads as another domain; ``require_same_ros_domain: false`` turns
+  the check off for a plugin.
 - Matches a process whose ``environ`` cannot be read (another user's process) by name
-  only, and logs a warning once per PID in each plugin that looks it up, since each plugin
-  owns its cache. Without a ROS node there is no domain to compare.
+  only, and only for a node that no process of the domain matches. Each plugin owns its
+  cache and logs a warning once per such PID, when a lookup first returns it, with the
+  cache unlocked. Without a ROS node there is no domain to compare.
 - When reading a cached PID fails and that PID no longer runs as the node, rescans
   ``/proc`` once and reads again before the route answers
 - Uses TTL-based refresh (default 10 seconds, configurable via ``pid_cache_ttl_seconds``)

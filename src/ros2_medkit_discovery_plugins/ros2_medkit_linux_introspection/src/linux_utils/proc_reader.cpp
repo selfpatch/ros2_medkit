@@ -23,6 +23,7 @@
 #include <dirent.h>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -137,13 +138,20 @@ namespace {
 
 enum class DomainMatch { kSame, kOther, kUnreadable };
 
-DomainMatch match_domain(pid_t pid, const std::string & root, size_t domain_id) {
+struct DomainCheck {
+  DomainMatch match;
+  /// The domain the process's environ names; nullopt when unreadable or not a domain ID.
+  std::optional<size_t> process_domain;
+};
+
+DomainCheck match_domain(pid_t pid, const std::string & root, size_t domain_id) {
   auto env_block = read_environ(pid, root);
   if (!env_block) {
-    return DomainMatch::kUnreadable;
+    return {DomainMatch::kUnreadable, std::nullopt};
   }
   auto process_domain = ros_domain_id_from_environ(*env_block);
-  return process_domain && *process_domain == domain_id ? DomainMatch::kSame : DomainMatch::kOther;
+  auto match = process_domain && *process_domain == domain_id ? DomainMatch::kSame : DomainMatch::kOther;
+  return {match, process_domain};
 }
 
 }  // namespace
@@ -296,6 +304,7 @@ tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name
     return tl::make_unexpected("Cannot open " + proc_dir);
   }
 
+  std::optional<pid_t> unverified;
   struct dirent * entry = nullptr;
   while ((entry = readdir(dir.get())) != nullptr) {
     if (entry->d_type != DT_DIR && entry->d_type != DT_UNKNOWN) {
@@ -330,14 +339,27 @@ tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name
           continue;
         }
         auto pid = static_cast<pid_t>(pid_val);
-        if (domain_id && match_domain(pid, root, *domain_id) == DomainMatch::kOther) {
-          continue;
+        if (domain_id) {
+          auto match = match_domain(pid, root, *domain_id).match;
+          if (match == DomainMatch::kOther) {
+            continue;
+          }
+          if (match == DomainMatch::kUnreadable) {
+            // A process of the domain found later still wins.
+            if (!unverified) {
+              unverified = pid;
+            }
+            continue;
+          }
         }
         return pid;
       }
     }
   }
 
+  if (unverified) {
+    return *unverified;
+  }
   return tl::make_unexpected("No process found for node " + node_namespace + "/" + node_name);
 }
 
@@ -359,10 +381,12 @@ tl::expected<double, std::string> read_system_uptime(const std::string & root) {
 PidCache::PidCache(std::chrono::steady_clock::duration ttl) : ttl_(ttl) {
 }
 
-void PidCache::set_domain_filter(size_t domain_id, UnverifiedCallback on_unverified) {
+void PidCache::set_domain_filter(size_t domain_id, UnverifiedCallback on_unverified,
+                                 OtherDomainCallback on_other_domain) {
   std::unique_lock lock(mutex_);
   domain_id_ = domain_id;
   on_unverified_ = std::move(on_unverified);
+  on_other_domain_ = std::move(on_other_domain);
   stale_ = true;
 }
 
@@ -378,48 +402,83 @@ bool PidCache::runs_as(pid_t pid, const std::string & fqn, const std::string & r
          make_fqn(node_name, node_ns) == fqn;
 }
 
+std::pair<std::optional<pid_t>, bool> PidCache::cached(const std::string & node_fqn) const {
+  auto it = node_to_pid_.find(node_fqn);
+  if (it == node_to_pid_.end()) {
+    return {std::nullopt, false};
+  }
+  bool to_report = on_unverified_ && unverified_.count(it->second) != 0 && unverified_reported_.count(it->second) == 0;
+  return {it->second, to_report};
+}
+
+void PidCache::report_unverified(pid_t pid, const std::string & node_fqn) {
+  UnverifiedCallback on_unverified;
+  {
+    std::unique_lock lock(mutex_);
+    // A scan or another lookup may have run since the PID was read.
+    if (unverified_.count(pid) == 0 || !unverified_reported_.insert(pid).second) {
+      return;
+    }
+    on_unverified = on_unverified_;
+  }
+  if (on_unverified) {
+    on_unverified(pid, node_fqn);
+  }
+}
+
 std::optional<pid_t> PidCache::lookup(const std::string & node_fqn, const std::string & root) {
+  std::pair<std::optional<pid_t>, bool> found;
+  bool fresh = false;
   {
     std::shared_lock lock(mutex_);
-    auto now = std::chrono::steady_clock::now();
-    if (!stale_ && now - last_refresh_ < ttl_) {
-      auto it = node_to_pid_.find(node_fqn);
-      if (it != node_to_pid_.end()) {
-        return it->second;
-      }
-      return std::nullopt;
+    fresh = !stale_ && std::chrono::steady_clock::now() - last_refresh_ < ttl_;
+    if (fresh) {
+      found = cached(node_fqn);
     }
   }
-  // TTL expired or invalidated - refresh
-  refresh(root);
-
-  std::shared_lock lock(mutex_);
-  auto it = node_to_pid_.find(node_fqn);
-  if (it != node_to_pid_.end()) {
-    return it->second;
+  if (!fresh) {
+    refresh(root);
+    std::shared_lock lock(mutex_);
+    found = cached(node_fqn);
   }
-  return std::nullopt;
+  if (found.second) {
+    report_unverified(*found.first, node_fqn);
+  }
+  return found.first;
 }
 
 void PidCache::refresh(const std::string & root) {
-  std::unique_lock lock(mutex_);
-
-  // Double-check under exclusive lock to avoid redundant scans
-  auto now = std::chrono::steady_clock::now();
-  if (!stale_ && now - last_refresh_ < ttl_) {
-    return;
+  std::vector<OtherDomainProcess> other_domain;
+  OtherDomainCallback on_other_domain;
+  {
+    std::unique_lock lock(mutex_);
+    // Double-check under exclusive lock to avoid redundant scans
+    auto now = std::chrono::steady_clock::now();
+    if (!stale_ && now - last_refresh_ < ttl_) {
+      return;
+    }
+    stale_ = false;
+    scan(root, other_domain);
+    last_refresh_ = std::chrono::steady_clock::now();
+    on_other_domain = on_other_domain_;
   }
-  stale_ = false;
+  if (on_other_domain) {
+    for (const auto & process : other_domain) {
+      on_other_domain(process.pid, process.fqn, process.process_domain);
+    }
+  }
+}
 
+void PidCache::scan(const std::string & root, std::vector<OtherDomainProcess> & other_domain) {
   node_to_pid_.clear();
+  unverified_.clear();
   auto proc_dir = root + "/proc";
   UniqueDir dir(opendir(proc_dir.c_str()));
   if (!dir) {
-    last_refresh_ = std::chrono::steady_clock::now();
+    unverified_reported_.clear();
     return;
   }
 
-  std::unordered_set<pid_t> unverified;
   struct dirent * entry = nullptr;
   while ((entry = readdir(dir.get())) != nullptr) {
     if (entry->d_type != DT_DIR && entry->d_type != DT_UNKNOWN) {
@@ -454,24 +513,33 @@ void PidCache::refresh(const std::string & root) {
         continue;
       }
       auto pid = static_cast<pid_t>(pid_val);
+      bool verified = true;
       if (domain_id_) {
-        auto match = match_domain(pid, root, *domain_id_);
-        if (match == DomainMatch::kOther) {
+        auto check = match_domain(pid, root, *domain_id_);
+        if (check.match == DomainMatch::kOther) {
+          other_domain.push_back({pid, fqn, check.process_domain});
           continue;
         }
-        if (match == DomainMatch::kUnreadable) {
-          unverified.insert(pid);
-          if (on_unverified_ && unverified_reported_.count(pid) == 0) {
-            on_unverified_(pid, fqn);
-          }
-        }
+        verified = check.match == DomainMatch::kSame;
       }
-      node_to_pid_[fqn] = pid;
+      auto [it, inserted] = node_to_pid_.try_emplace(fqn, pid);
+      if (!inserted) {
+        // The last match wins, but a name-only match never replaces a verified one.
+        if (!verified && unverified_.count(it->second) == 0) {
+          continue;
+        }
+        unverified_.erase(it->second);
+        it->second = pid;
+      }
+      if (!verified) {
+        unverified_.insert(pid);
+      }
     }
   }
-  // Only PIDs still unverified stay reported, so the set does not grow with exited processes.
-  unverified_reported_.swap(unverified);
-  last_refresh_ = std::chrono::steady_clock::now();
+  // Only PIDs still served unverified stay reported, so the set does not grow.
+  for (auto it = unverified_reported_.begin(); it != unverified_reported_.end();) {
+    it = unverified_.count(*it) != 0 ? std::next(it) : unverified_reported_.erase(it);
+  }
 }
 
 size_t PidCache::size() const {
