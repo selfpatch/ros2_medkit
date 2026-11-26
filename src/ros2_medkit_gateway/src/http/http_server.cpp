@@ -196,13 +196,33 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t t
   : tls_config_(tls_config), thread_pool_size_(thread_pool_size), keep_alive_timeout_sec_(keep_alive_timeout_sec) {
 #ifdef CPPHTTPLIB_OPENSSL_SUPPORT
   if (tls_config_.enabled) {
-    // Create SSL server with certificate and key
-    ssl_server_ = std::make_unique<httplib::SSLServer>(tls_config_.cert_file.c_str(), tls_config_.key_file.c_str());
+    // A CA path makes the SSLServer require and verify a client certificate.
+    const char * client_ca = tls_config_.require_client_cert ? tls_config_.ca_file.c_str() : nullptr;
+    ssl_server_ =
+        std::make_unique<httplib::SSLServer>(tls_config_.cert_file.c_str(), tls_config_.key_file.c_str(), client_ca);
 
     if (!ssl_server_->is_valid()) {
       throw std::runtime_error(
           "Failed to create SSL server. Check certificate and key files: " + tls_config_.cert_file +
           " (key configured: " + (tls_config_.key_file.empty() ? "no" : "yes") + ")");
+    }
+    if (tls_config_.require_client_cert) {
+      // The constructor ignores a failed CA load. A store without a CA certificate would refuse every client.
+      SSL_CTX * ctx = ssl_server_->ssl_context();
+      const STACK_OF(X509_OBJECT) * loaded = X509_STORE_get0_objects(SSL_CTX_get_cert_store(ctx));
+      bool has_ca = false;
+      for (int i = 0; loaded != nullptr && i < sk_X509_OBJECT_num(loaded) && !has_ca; ++i) {
+        X509 * cert = X509_OBJECT_get0_X509(sk_X509_OBJECT_value(loaded, i));
+        has_ca = cert != nullptr && X509_check_ca(cert) != 0;
+      }
+      if (!has_ca) {
+        throw std::runtime_error("server.tls.ca_file holds no readable CA certificate: " + tls_config_.ca_file);
+      }
+      // With peer verification on, OpenSSL aborts a resumed handshake unless a session id context is set.
+      static constexpr unsigned char kSessionIdContext[] = "ros2_medkit_gateway";
+      if (SSL_CTX_set_session_id_context(ctx, kSessionIdContext, sizeof(kSessionIdContext) - 1) != 1) {
+        throw std::runtime_error("Could not set the TLS session id context for client certificates");
+      }
     }
 
     // Configure additional TLS settings
@@ -211,8 +231,10 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t t
     reuse_address_only(*ssl_server_);
     apply_keep_alive(*ssl_server_);
 
-    MEDKIT_LOG_INFO(log::Logger("http_server"), "TLS/HTTPS enabled - cert: %s, min_version: %s",
-                    tls_config_.cert_file.c_str(), tls_config_.min_version.c_str());
+    MEDKIT_LOG_INFO(log::Logger("http_server"),
+                    "TLS/HTTPS enabled - cert: %s, minimum protocol TLS %s, client certificates %s",
+                    tls_config_.cert_file.c_str(), tls_config_.min_version.c_str(),
+                    tls_config_.require_client_cert ? "required" : "not required");
     // Note: key_file path intentionally not logged for security reasons
   } else {
     server_ = std::make_unique<httplib::Server>();
@@ -387,26 +409,12 @@ void HttpServerManager::configure_tls() {
     return;
   }
 
-  // YAGNI Decision: min_version field exists in TlsConfig for future extensibility
-  // but is not fully implemented.
-  //
-  // Rationale:
-  // - cpp-httplib's SSLServer doesn't expose SSL_CTX for min_version configuration
-  // - Modern OpenSSL (1.1.1+) defaults to TLS 1.2+ which is secure
-  //
-  // Future implementation options:
-  // 1. Fork cpp-httplib to expose SSL_CTX for SSL_CTX_set_min_proto_version()
-  // 2. Use OpenSSL system-wide configuration (/etc/ssl/openssl.cnf)
-  // 3. Replace cpp-httplib with Boost.Beast or another library with full SSL control
-  //
-  // TODO(future): Add mutual TLS support - requires cpp-httplib modifications
-  // to expose SSL_CTX for SSL_CTX_set_verify() with SSL_VERIFY_PEER
-
-  if (tls_config_.min_version != "1.2") {
-    MEDKIT_LOG_WARN(log::Logger("http_server"),
-                    "min_version='%s' requested but cpp-httplib uses OpenSSL defaults (TLS 1.2+). "
-                    "Custom min_version not enforced.",
-                    tls_config_.min_version.c_str());
+  // The SSLServer constructor sets a TLS 1.1 floor. Raise it to the configured one;
+  // refusing to serve is the only safe answer when that fails.
+  const int min_proto = tls_config_.min_version == "1.3" ? TLS1_3_VERSION : TLS1_2_VERSION;
+  SSL_CTX * ctx = ssl_server_->ssl_context();
+  if (ctx == nullptr || SSL_CTX_set_min_proto_version(ctx, min_proto) != 1) {
+    throw std::runtime_error("Failed to set the minimum TLS version to " + tls_config_.min_version);
   }
 
   // Log TLS handshake failures for debugging

@@ -74,8 +74,11 @@ struct TlsConfig {
   /// Path to PEM-encoded private key file
   std::string key_file;
 
-  /// Optional: Path to CA certificate file for client verification (mutual TLS)
+  /// Path to the CA bundle client certificates are checked against. Used only with require_client_cert.
   std::string ca_file;
+
+  /// Require a client certificate signed by ca_file (mutual TLS). Default: false.
+  bool require_client_cert{false};
 
   /// Minimum TLS version: "1.2" or "1.3" (default: "1.2")
   std::string min_version{"1.2"};
@@ -104,6 +107,7 @@ class TlsConfigBuilder {
   TlsConfigBuilder & with_cert_file(const std::string & cert_file);
   TlsConfigBuilder & with_key_file(const std::string & key_file);
   TlsConfigBuilder & with_ca_file(const std::string & ca_file);
+  TlsConfigBuilder & with_require_client_cert(bool require_client_cert);
   TlsConfigBuilder & with_min_version(const std::string & min_version);
 
   /// Build and validate the configuration

@@ -1451,10 +1451,11 @@ TLS (Transport Layer Security) enables encrypted HTTPS communication. TLS is **d
 | `server.tls.enabled`         | bool   | `false` | Enable/disable TLS. When enabled, server uses HTTPS instead of HTTP.       |
 | `server.tls.cert_file`       | string | (required if enabled) | Path to PEM-encoded certificate file.                         |
 | `server.tls.key_file`        | string | (required if enabled) | Path to PEM-encoded private key file.                         |
-| `server.tls.ca_file`         | string | `""`    | Optional CA certificate (reserved for future mutual TLS support).          |
-| `server.tls.min_version`     | string | `"1.2"` | Minimum TLS version: `"1.2"` (compatible) or `"1.3"` (more secure).        |
+| `server.tls.ca_file`         | string | `""`    | CA bundle. When set, the file must exist; it is checked against client certificates only when `require_client_cert` is true. |
+| `server.tls.require_client_cert` | bool | `false` | Require a client certificate signed by `ca_file` (mutual TLS). `ca_file` must then hold at least one CA certificate. |
+| `server.tls.min_version`     | string | `"1.2"` | Protocol floor of the server: `"1.2"` or `"1.3"`. With TLS on, any other value stops the start. |
 
-> **Note:** Mutual TLS (client certificate verification) is planned for a future release.
+> **Note:** The `server.tls.*` keys are read at start; a runtime set is refused. `require_client_cert: true` needs `server.tls.enabled: true`, or the start stops. With `auth.require_auth_for` `write` or `all` (after the environment is applied), a non-loopback `server.host` and TLS off, the gateway logs a warning at start: client secrets and tokens travel in clear text.
 
 **Roles and Permissions:**
 
@@ -1593,7 +1594,7 @@ The package includes a helper script to generate self-signed certificates for de
 # ./certs/ca.crt           - CA certificate
 # ./certs/server.crt       - Server certificate
 # ./certs/server.key       - Server private key (chmod 600)
-# ./certs/client.crt       - Client certificate (for future mutual TLS)
+# ./certs/client.crt       - Client certificate (for mutual TLS)
 # ./certs/client.key       - Client private key
 ```
 
@@ -1622,7 +1623,6 @@ server:
     min_version: "1.3"
 ```
 
-<!-- TODO: Add Mutual TLS example when implemented
 **Mutual TLS (client certificate verification):**
 ```yaml
 server:
@@ -1633,10 +1633,9 @@ server:
     cert_file: "/path/to/server.crt"
     key_file: "/path/to/server.key"
     ca_file: "/path/to/ca.crt"
+    require_client_cert: true
     min_version: "1.2"
-    mutual_tls: true
 ```
--->
 
 **Quick start with HTTPS (auto-generates development certificates):**
 ```bash
@@ -1651,6 +1650,9 @@ ros2 launch ros2_medkit_gateway gateway_https.launch.py cert_dir:=/home/user/cer
 
 # Use TLS 1.3 only
 ros2 launch ros2_medkit_gateway gateway_https.launch.py min_tls_version:=1.3
+
+# Require client certificates signed by the generated CA
+ros2 launch ros2_medkit_gateway gateway_https.launch.py require_client_cert:=true
 ```
 
 **Use config from another package (`gateway_https.launch.py`):**
@@ -1660,7 +1662,7 @@ ros2 launch ros2_medkit_gateway gateway_https.launch.py \
   config_file:=<your_package>/config/gateway_params.yaml
 ```
 
-> **Parameter priority:** launch args > `config_file` > packaged defaults. `config_file` overrides only the keys it defines; `cert_dir`, `server_host`, `server_port`, `min_tls_version`, and `refresh_interval_ms` are launch-arg only and always take precedence.
+> **Parameter priority:** launch args > `config_file` > packaged defaults. `config_file` overrides only the keys it defines; `cert_dir`, `server_host`, `server_port`, `min_tls_version`, and `refresh_interval_ms` are launch-arg only and always take precedence. The exception is `require_client_cert`, which can only turn mutual TLS on: `require_client_cert:=false` does not turn off a `config_file` that sets `server.tls.require_client_cert: true`.
 
 | Launch Argument       | Default                               | Description                                                                              |
 | --------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -1670,6 +1672,7 @@ ros2 launch ros2_medkit_gateway gateway_https.launch.py \
 | `allow_unauthenticated_remote` | empty                        | Let the gateway bind a non-loopback `server_host` with authentication off. Without it such a gateway refuses to start. Empty leaves the `config_file` in charge; `true` and `false` both override it. |
 | `server_port`         | `8443`                                | Port for HTTPS API. Launch-arg only.                                                     |
 | `min_tls_version`     | `1.2`                                 | Minimum TLS version (`1.2` or `1.3`). Launch-arg only.                                  |
+| `require_client_cert` | `false`                               | Require a client certificate (mutual TLS). A `config_file` with `server.tls.require_client_cert: true` turns it on too. Without a `server.tls.ca_file` there, the generated CA signs it: the launch makes `client.pem` and `client-key.pem` in `cert_dir`, again unless that CA signed them and the key is the certificate's, and prints a curl line with them. A `ca_file` the `config_file` sets is the client CA and is never written over or used to sign: with it at `cert_dir/ca.pem` and no `cert.pem`/`key.pem`, the launch stops. |
 | `refresh_interval_ms` | `30000`                               | Safety-backstop refresh interval (graph events drive primary refresh). Launch-arg only.  |
 
 **Usage with curl (self-signed certs):**
@@ -1680,11 +1683,11 @@ curl -k https://localhost:8443/api/v1
 # HTTPS with CA verification
 curl --cacert ./certs/ca.crt https://localhost:8443/api/v1
 
-# TODO: Mutual TLS example - coming in future release
-# curl --cacert ./certs/ca.crt \
-#      --cert ./certs/client.crt \
-#      --key ./certs/client.key \
-#      https://localhost:8443/api/v1/areas
+# Mutual TLS (require_client_cert: true)
+curl --cacert ./certs/ca.crt \
+     --cert ./certs/client.crt \
+     --key ./certs/client.key \
+     https://localhost:8443/api/v1/areas
 ```
 
 > ⚠️ **Security Notes:**

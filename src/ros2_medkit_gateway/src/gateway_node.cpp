@@ -231,8 +231,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
   declare_parameter("server.tls.key_file", "");
   declare_parameter("server.tls.ca_file", "");
   declare_parameter("server.tls.min_version", "1.2");
-  // TODO(future): Add mutual_tls parameter when implemented
-  // declare_parameter("server.tls.mutual_tls", false);
+  declare_parameter("server.tls.require_client_cert", false);
 
   // Authentication parameters (REQ_INTEROP_086, REQ_INTEROP_087)
   declare_parameter("auth.enabled", false);
@@ -550,7 +549,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
                         .with_key_file(get_parameter("server.tls.key_file").as_string())
                         .with_ca_file(get_parameter("server.tls.ca_file").as_string())
                         .with_min_version(get_parameter("server.tls.min_version").as_string())
-                        // TODO(future): Add .with_mutual_tls() when implemented
+                        .with_require_client_cert(get_parameter("server.tls.require_client_cert").as_bool())
                         .build();
       // Note: HttpServerManager will log TLS configuration details
     } catch (const std::exception & e) {
@@ -565,6 +564,12 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
       throw std::runtime_error(std::string("Invalid TLS configuration: ") + e.what());
     }
   } else {
+    if (get_parameter("server.tls.require_client_cert").as_bool()) {
+      RCLCPP_FATAL(get_logger(),
+                   "server.tls.require_client_cert is true but server.tls.enabled is false: a plain-HTTP gateway "
+                   "cannot require client certificates. Refusing to start.");
+      throw std::runtime_error("server.tls.require_client_cert requires server.tls.enabled");
+    }
     RCLCPP_INFO(get_logger(), "TLS/HTTPS: disabled");
     tls_config_ = TlsConfig{};
   }
@@ -754,6 +759,13 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
                    state.c_str(), server_host_.c_str());
       throw std::runtime_error("Anonymous access and server.host '" + server_host_ + "' is not a loopback address");
     }
+  }
+
+  if (authenticated && !tls_config_.enabled && !is_loopback_bind_host(server_host_)) {
+    RCLCPP_WARN(get_logger(),
+                "Authentication is on and the REST API binds %s without TLS: client secrets and tokens travel in "
+                "clear text. Set server.tls.enabled, or put a TLS proxy in front.",
+                server_host_.c_str());
   }
 
   // Build Rate Limiting configuration
@@ -1554,15 +1566,15 @@ void GatewayNode::apply_effective_auth_parameters(bool auth_enabled, const std::
     }
   }
 
-  // Registered after the write-back, its only writer. The auth configuration
-  // is consumed once at construction, so a later set would report a change
-  // nobody applied.
+  // Registered after the write-back, its only writer. The auth and server.tls
+  // configuration is consumed once at construction, so a later set would report
+  // a change nobody applied.
   auth_parameter_guard_ = add_on_set_parameters_callback([](const std::vector<rclcpp::Parameter> & parameters) {
     rcl_interfaces::msg::SetParametersResult result;
     result.successful = true;
     for (const auto & parameter : parameters) {
       const std::string & name = parameter.get_name();
-      if (name.rfind("auth.", 0) == 0 || name == "aggregation.peer_auth_header") {
+      if (name.rfind("auth.", 0) == 0 || name.rfind("server.tls.", 0) == 0 || name == "aggregation.peer_auth_header") {
         result.successful = false;
         result.reason = name + " is read at start; restart the gateway with the new configuration";
         return result;

@@ -125,10 +125,6 @@ TEST_F(TlsConfigTest, nonexistent_key_file_throws) {
       std::invalid_argument);
 }
 
-// TODO(future): Add mutual TLS tests when implemented
-// TEST_F(TlsConfigTest, mutual_tls_without_ca_file_throws) { ... }
-// TEST_F(TlsConfigTest, mutual_tls_with_ca_file_succeeds) { ... }
-
 // Test invalid TLS version
 TEST_F(TlsConfigTest, invalid_tls_version_throws) {
   EXPECT_THROW(
