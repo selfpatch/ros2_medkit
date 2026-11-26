@@ -172,7 +172,9 @@ nlohmann::json OpenApiSpecBuilder::build() const {
 
   // The rate limiter emits the SOVD GenericError shape, so unlike the two
   // above this schema already matches the wire.
-  responses["RateLimited"]["description"] = "The client exceeded its request quota.";
+  responses["RateLimited"]["description"] =
+      "The client exceeded its request quota. The headers and the limiter values are absent on the 429 a "
+      "protected route gives an over-limit caller before its token is checked.";
   responses["RateLimited"]["content"]["application/json"]["schema"] = SchemaBuilder::ref("GenericError");
   responses["RateLimited"]["headers"] = {
       {"Retry-After", {{"description", "Seconds to wait before retrying."}, {"schema", {{"type", "string"}}}}},

@@ -3107,7 +3107,11 @@ Endpoint limits can also be overridden with patterns:
 Response Headers
 ~~~~~~~~~~~~~~~~
 
-When rate limiting is enabled, the gateway includes the following HTTP response headers on every check:
+Every request that reaches the gateway's handler spends allowance, ``OPTIONS`` included, except a CORS preflight: an ``OPTIONS`` request that carries ``Access-Control-Request-Method``, with CORS on. A preflight is answered before rate limiting and authentication and is not metered. With CORS off such a request is metered like any other. Any other ``OPTIONS`` request is an ordinary request to its route, metered and authenticated like any other. Requests the HTTP layer refuses before the handler (``400`` for a request that does not parse, ``414``, ``416`` for a bad ``Range``) are not metered. A ``413`` is not on that list: the body is read after the limiter has run, so an oversized body spends allowance and can get a ``429`` or ``401`` first.
+
+A route needs no authentication when it is under ``/auth/*`` (always), when authentication is off or ``auth.require_auth_for`` is ``none`` (every route), or for reads when ``auth.require_auth_for`` is ``write``. Under ``all`` every other route needs it, ``/health`` included.
+
+When rate limiting is enabled, the gateway includes the following HTTP response headers on a request from a caller that passed authentication and authorization, or that targets a route needing no authentication. A ``401`` or a ``403`` from RBAC carries none of them:
 
 - ``X-RateLimit-Limit``: The effective RPM limit applied.
 - ``X-RateLimit-Remaining``: Number of requests remaining in the current minute window.
@@ -3116,9 +3120,15 @@ When rate limiting is enabled, the gateway includes the following HTTP response 
 Rejection (429 Too Many Requests)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If a request exceeds the available tokens, it is rejected with an HTTP 429 status code and a ``Retry-After`` header indicating the number of seconds to wait before retrying.
+If a request exceeds the available tokens, the answer depends on the caller:
 
-**Example Response:**
+- No ``Authorization`` header on a route that needs authentication: ``401``, as for any anonymous caller, with no limiter headers. An ``Authorization`` header with an empty value counts as absent.
+- A non-empty ``Authorization`` header on a route that needs authentication: ``429`` before the token is verified, with no ``Retry-After``, no ``X-RateLimit-*`` headers and an empty ``parameters`` object. A valid token gets the same answer.
+- A route that needs no authentication: ``429`` with a ``Retry-After`` header indicating the number of seconds to wait before retrying, and the body below. A verified caller always sends ``Authorization``, so on a protected route it gets the bare ``429`` above.
+
+Breaking changes: an anonymous caller on a protected route gets ``401`` where it got ``429``; a request with a non-empty ``Authorization`` value on a protected route over the limit, a valid token included, gets the bare ``429`` where it got the full one; ``X-RateLimit-*`` no longer appear on a ``401`` or on a ``403`` from RBAC; with CORS on, a plain ``OPTIONS`` request gets the answer of its route (``401``, ``404``) where it got ``204``, or where it got ``403`` for no or a disallowed ``Origin``; ``OPTIONS`` requests spend allowance.
+
+**Example Response (full 429):**
 
 .. code-block:: json
 
