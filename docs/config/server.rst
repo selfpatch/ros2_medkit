@@ -193,11 +193,33 @@ TLS/HTTPS Configuration
    * - ``server.tls.ca_file``
      - string
      - ``""``
-     - Path to CA certificate file (reserved for mutual TLS).
+     - CA bundle. When set, the file must exist; it is checked against client certificates only when ``server.tls.require_client_cert`` is ``true``.
+   * - ``server.tls.require_client_cert``
+     - bool
+     - ``false``
+     - Require a client certificate signed by ``ca_file`` (mutual TLS). ``ca_file`` must then hold at least one CA certificate, and ``server.tls.enabled`` must be ``true``, or the gateway does not start.
    * - ``server.tls.min_version``
      - string
      - ``"1.2"``
-     - Minimum TLS version: ``"1.2"`` (compatible) or ``"1.3"`` (secure).
+     - Protocol floor of the server: ``"1.2"`` or ``"1.3"``. With TLS on, any other value stops the start.
+
+``min_version`` is enforced: a client limited to a protocol below it fails the handshake.
+With ``require_client_cert: false`` the server does not ask for a client certificate, and
+``ca_file`` changes nothing for clients. With ``true``, a client without a certificate, or
+with one signed by another CA, fails the handshake. A certificate does not replace
+authentication: tokens are still required where ``auth.require_auth_for`` demands them.
+
+The ``server.tls.*`` keys are read at start. A runtime set is refused.
+
+When ``auth.require_auth_for`` is ``write`` or ``all`` (after the environment is applied),
+``server.host`` is not a loopback address and TLS is off, the
+gateway logs a warning at start: client secrets and tokens travel in clear text. Enable
+``server.tls`` or put a TLS proxy in front.
+
+.. note::
+
+   Breaking change: ``min_version: "1.3"`` is enforced, so a client limited to
+   TLS 1.2 is refused where it connected before.
 
 Example:
 

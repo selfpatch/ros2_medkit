@@ -257,7 +257,7 @@ ros2 launch ros2_medkit_gateway gateway.launch.py \
 
 ### Mutual TLS (Client Certificates)
 
-If the gateway is configured with `mutual_tls: true`:
+If the gateway is configured with `server.tls.require_client_cert: true`:
 
 1. Go to **Settings** → **Certificates**
 2. Click **Add Certificate**

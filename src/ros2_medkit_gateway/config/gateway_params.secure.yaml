@@ -28,7 +28,10 @@ ros2_medkit_gateway:
         enabled: true
         cert_file: "/etc/ros2_medkit/certs/cert.pem"   # REQUIRED
         key_file: "/etc/ros2_medkit/certs/key.pem"     # REQUIRED (chmod 600)
+        # CA bundle for client certificates; used only with require_client_cert.
         ca_file: ""
+        # Mutual TLS: require a client certificate signed by ca_file.
+        # require_client_cert: true
         # 1.3 preferred on a controlled fleet; drop to 1.2 only for legacy
         # clients that cannot negotiate 1.3.
         min_version: "1.3"

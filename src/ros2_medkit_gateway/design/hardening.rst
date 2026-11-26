@@ -111,7 +111,9 @@ Before exposing a gateway on a shared / plant network, confirm:
   example credentials removed; secrets rotated.
 - [ ] ``server.tls.enabled: true`` with a real certificate; private key is
   ``chmod 600``; ``min_version`` is ``1.3`` (or ``1.2`` only for legacy
-  clients).
+  clients). The gateway enforces it as the protocol floor. Set
+  ``server.tls.require_client_cert: true`` with ``server.tls.ca_file`` to
+  require client certificates.
 - [ ] ``cors.allowed_origins`` is an explicit list (no ``*``); ``*`` is never
   combined with ``allow_credentials: true``.
 - [ ] ``rate_limiting.enabled: true`` with per-client and mutating-endpoint

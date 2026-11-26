@@ -106,10 +106,53 @@ Configuration Options
      - Path to PEM-encoded private key
    * - ``server.tls.ca_file``
      - ``""``
-     - CA certificate (for future mutual TLS)
+     - CA bundle. When set, the file must exist; it is checked against client certificates only with ``require_client_cert``
+   * - ``server.tls.require_client_cert``
+     - ``false``
+     - Require a client certificate signed by ``ca_file`` (mutual TLS)
    * - ``server.tls.min_version``
      - ``"1.2"``
-     - Minimum TLS version: ``"1.2"`` or ``"1.3"``
+     - Protocol floor of the server: ``"1.2"`` or ``"1.3"``; with TLS on, any other value stops the start
+
+Mutual TLS
+----------
+
+Set ``require_client_cert`` and name the CA that signed the client certificates:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       server:
+         tls:
+           enabled: true
+           cert_file: "/path/to/server.crt"
+           key_file: "/path/to/server.key"
+           ca_file: "/path/to/ca.crt"
+           require_client_cert: true
+
+A client presents its certificate with curl:
+
+.. code-block:: bash
+
+   curl --cacert ./certs/ca.crt \
+        --cert ./certs/client.crt \
+        --key ./certs/client.key \
+        https://localhost:8443/api/v1/areas
+
+Without ``--cert``, or with a certificate from another CA, the handshake fails.
+The certificate does not replace a token when authentication is on.
+
+``gateway_https.launch.py`` turns mutual TLS on with ``require_client_cert:=true``
+or with a ``config_file`` that sets ``server.tls.require_client_cert: true``.
+Without a ``server.tls.ca_file`` in that file, the launch's own CA in
+``cert_dir`` signs the client certificate: the launch writes ``client.pem`` and
+``client-key.pem``, makes them again unless that CA signed them and the key is
+the certificate's, and prints a curl line with them. A ``ca_file`` the file sets
+is kept, and the client certificate must come from that CA. The launch never
+writes over it and never signs with it, even when it is ``cert_dir/ca.pem``; if
+``cert_dir`` then has no ``cert.pem`` and ``key.pem`` to reuse, the launch stops
+with an error naming the file.
 
 Using with curl
 ---------------

@@ -103,17 +103,19 @@ ros2_medkit_gateway:
         # Example: "/etc/ros2_medkit/certs/key.pem"
         key_file: ""
 
-        # Optional: Path to CA certificate file for client verification
-        # TODO: Used for mutual TLS when implemented
+        # CA bundle. When set, the file must exist; it is checked against client
+        # certificates only when require_client_cert is true.
         # Example: "/etc/ros2_medkit/certs/ca.pem"
         ca_file: ""
 
-        # Minimum TLS version
-        # Options: "1.2" (default, widely compatible), "1.3" (more secure)
+        # Minimum protocol version the server accepts: "1.2" (default) or "1.3".
+        # With TLS on, any other value stops the start.
         min_version: "1.2"
 
-        # TODO: Mutual TLS (client certificate verification) is not yet implemented
-        # See: https://github.com/selfpatch/ros2_medkit/issues/XXX
+        # Require a client certificate signed by ca_file (mutual TLS).
+        # A client without one, or with one from another CA, fails the handshake.
+        # Needs enabled: true. The server.tls.* keys are read at start.
+        require_client_cert: false
 
     # Safety-backstop refresh interval in milliseconds.
     #
