@@ -37,6 +37,11 @@
        degrades the E2E test to a CTest skip. Runtime coupling is via ROS service
        only, so test_depend (not depend) is correct. -->
   <test_depend>ros2_medkit_fault_manager</test_depend>
+  <!-- test/integration/ start nodes through `ros2 run` and query `ros2 pkg` / `ros2 service`. -->
+  <test_depend>ros2cli</test_depend>
+  <test_depend>ros2pkg</test_depend>
+  <test_depend>ros2run</test_depend>
+  <test_depend>ros2service</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
