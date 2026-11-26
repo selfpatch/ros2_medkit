@@ -149,7 +149,7 @@ AuthManager::AuthManager(const AuthConfig & config, WallClock wall_clock)
   }
 
   // Create auth requirement policy from config
-  auth_policy_ = AuthRequirementPolicyFactory::create(config_.require_auth_for);
+  auth_policy_ = AuthRequirementPolicyFactory::create(config_);
 }
 
 tl::expected<const ClientCredentials *, AuthErrorResponse>
@@ -443,6 +443,10 @@ bool AuthManager::requires_authentication(const std::string & method, const std:
 
   // Delegate to policy
   return auth_policy_->requires_authentication(method, path);
+}
+
+bool AuthManager::is_public_route(const std::string & method, const std::string & path) const {
+  return auth_policy_ != nullptr && auth_policy_->is_public(method, path);
 }
 
 bool AuthManager::revoke_refresh_token(const std::string & refresh_token, const std::string & client_id) {

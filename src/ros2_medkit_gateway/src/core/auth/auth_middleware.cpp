@@ -14,6 +14,7 @@
 
 #include "ros2_medkit_gateway/core/auth/auth_middleware.hpp"
 
+#include <algorithm>
 #include <nlohmann/json.hpp>
 
 namespace ros2_medkit_gateway {
@@ -72,15 +73,18 @@ std::optional<std::string> AuthMiddleware::extract_bearer_token(const std::strin
     return std::nullopt;
   }
 
-  // Check for "Bearer " prefix (case-insensitive for "Bearer")
+  // The scheme name is case-insensitive (RFC 7235).
   const std::string bearer_prefix = "Bearer ";
   if (auth_header.length() < bearer_prefix.length()) {
     return std::nullopt;
   }
-
-  std::string prefix = auth_header.substr(0, bearer_prefix.length());
-  // Case-insensitive comparison for "Bearer "
-  if (prefix != "Bearer " && prefix != "bearer ") {
+  const bool scheme_matches =
+      std::equal(bearer_prefix.begin(), bearer_prefix.end(), auth_header.begin(), [](char expected, char actual) {
+        return expected == ' ' ? actual == ' '
+                               : std::tolower(static_cast<unsigned char>(actual)) ==
+                                     std::tolower(static_cast<unsigned char>(expected));
+      });
+  if (!scheme_matches) {
     return std::nullopt;
   }
 

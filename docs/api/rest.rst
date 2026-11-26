@@ -3109,7 +3109,7 @@ Response Headers
 
 Every request that reaches the gateway's handler spends allowance, ``OPTIONS`` included, except a CORS preflight: an ``OPTIONS`` request that carries ``Access-Control-Request-Method``, with CORS on. A preflight is answered before rate limiting and authentication and is not metered. With CORS off such a request is metered like any other. Any other ``OPTIONS`` request is an ordinary request to its route, metered and authenticated like any other. Requests the HTTP layer refuses before the handler (``400`` for a request that does not parse, ``414``, ``416`` for a bad ``Range``) are not metered. A ``413`` is not on that list: the body is read after the limiter has run, so an oversized body spends allowance and can get a ``429`` or ``401`` first.
 
-A route needs no authentication when it is under ``/auth/*`` (always), when authentication is off or ``auth.require_auth_for`` is ``none`` (every route), or for reads when ``auth.require_auth_for`` is ``write``. Under ``all`` every other route needs it, ``/health`` included.
+A route needs no authentication when it is under ``/auth/*`` (always), when authentication is off or ``auth.require_auth_for`` is ``none`` (every route), for reads when ``auth.require_auth_for`` is ``write``, or when its method and exact path are listed in ``auth.public_routes`` (see :ref:`public-routes`). Under ``all`` every other route needs it, an unlisted ``/health`` included.
 
 When rate limiting is enabled, the gateway includes the following HTTP response headers on a request from a caller that passed authentication and authorization, or that targets a route needing no authentication. A ``401`` or a ``403`` from RBAC carries none of them:
 
@@ -3211,14 +3211,21 @@ body, which has the ``GenericError`` body.
    * Revoking an access token answers ``400 unsupported_token_type``, not ``200``.
    * A missing ``grant_type`` answers ``invalid_request``, not ``unsupported_grant_type``.
 
-These three endpoints are the only ones the middleware lets through
-unauthenticated whatever ``require_auth_for`` says - a caller has to be able to
-obtain a token before it has one. With authentication on, the served OpenAPI
-document publishes them with ``security: [{basic: []}, {}]``: Basic client
-credentials, or the credentials in the body, and no token. Every other operation
-names the role the gateway's permission table grants for its path, or carries
-``security: []`` where ``require_auth_for`` admits it with no token, so
-``GET /api/v1/docs`` is where a client reads which role an endpoint needs. See
+The middleware lets these three endpoints through unauthenticated whatever
+``require_auth_for`` says - a caller has to be able to obtain a token before it
+has one. It also lets through every route listed in ``auth.public_routes`` (see
+:ref:`public-routes`); under ``all``, a listed ``GET /api/v1/health`` answers a
+caller without a valid token with the reduced ``200`` body. With authentication
+on, the served OpenAPI document publishes the three auth endpoints with
+``security: [{basic: []}, {}]``: Basic client credentials, or the credentials in
+the body, and no token. Every other operation names the role the gateway's
+permission table grants for its path, or carries ``security: []`` where
+``require_auth_for`` admits it with no token or ``auth.public_routes`` lists its
+path and that path has no parameters. A listed concrete path of a parameterized
+route, such as ``GET /api/v1/apps/foo``, is open, but the ``/apps/{app_id}``
+operation keeps its requirement (see ``auth.public_routes`` in
+:doc:`/config/server`). Apart from that, ``GET /api/v1/docs`` is where a client
+reads which role an endpoint needs. See
 :ref:`rest-role-required` below. With authentication off, no operation carries
 a ``security`` key.
 

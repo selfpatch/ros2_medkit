@@ -427,6 +427,16 @@ ros2_medkit_gateway:
       #   clients: ["admin:admin_secret_123:admin", "viewer:viewer_pass:viewer"]
       clients: [""]
 
+      # Routes answered without authentication, each "METHOD /path", matched
+      # exactly (no wildcards). Empty strings are stripped; [""] lists none. A
+      # malformed entry stops the gateway at start. On a listed
+      # GET /api/v1/health a caller without a valid token gets a reduced body
+      # (liveness only).
+      #
+      # Example:
+      #   public_routes: ["GET /api/v1/health"]
+      public_routes: [""]
+
     # Bulk Data Storage Configuration
     # Controls where uploaded bulk data files are stored and size limits
     bulk_data:

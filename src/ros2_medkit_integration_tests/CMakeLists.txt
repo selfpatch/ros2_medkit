@@ -296,7 +296,8 @@ if(BUILD_TESTING)
     test_triggers_restore_before_discovery
     test_aggregator_fault_stream
     test_aggregated_colliding_node_names
-    test_forward_auth_across_gateways)
+    test_forward_auth_across_gateways
+    test_peer_reduced_health)
   set(_TWO_GATEWAY_DOMAINS 2)
 
   # One gateway, plus a node of the same name in a second domain of the test's own.

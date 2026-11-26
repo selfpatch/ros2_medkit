@@ -1039,8 +1039,9 @@ after the limiter has run, so an oversized body spends allowance and can get a
 
 A route needs no authentication when it is under ``/auth/*`` (always), when
 authentication is off or ``auth.require_auth_for`` is ``none`` (every route), or
-for reads when ``auth.require_auth_for`` is ``write``. Under ``all`` every other
-route needs it, ``/health`` included.
+for reads when ``auth.require_auth_for`` is ``write``, or when it is listed in
+``auth.public_routes``. Under ``all`` every other route needs it, ``/health``
+included.
 
 Who hears the limiter depends on authentication. An ``Authorization`` header
 means one with a non-empty value; an empty one counts as absent.
@@ -1125,6 +1126,10 @@ default for local development.
      - string
      - ``"ros2_medkit_gateway"``
      - JWT issuer claim (``iss`` field in tokens).
+   * - ``auth.public_routes``
+     - string[]
+     - ``[]``
+     - Routes answered without authentication, each written ``"METHOD /path"`` (for example ``"GET /api/v1/health"``). The method is case-insensitive (stored in upper case); the path is matched exactly: no wildcard, no pattern, no prefix. The list is laid over ``auth.require_auth_for`` and only removes the requirement. An entry that does not parse stops the gateway at start, with the entry's position (counted from 1, over the entries as written) in the message, whether authentication is on or off. Parsing needs a method (GET, HEAD, POST, PUT, DELETE or OPTIONS; PATCH is refused because no route serves it) and a path that starts with ``/``, holds only ASCII letters, digits and ``- . _ ~ / : @`` and does not end in ``/``. Surrounding whitespace is trimmed. Empty and ASCII-whitespace-only strings are stripped before the check, so the shipped ``gateway_params.yaml`` value of ``[""]`` lists nothing. On a listed ``GET /api/v1/health``, a caller without a valid token gets the reduced body (see :ref:`public-routes`). The rate limiter treats a listed route like ``/auth/*``. The OpenAPI document shows the empty security requirement on a listed route whose path has no parameters. A listed concrete path of a parameterized route, such as ``GET /api/v1/apps/foo``, is open, but the document keeps the template's requirement, because it cannot express an exemption for one value.
    * - ``auth.clients``
      - string[]
      - ``[]``
@@ -1137,6 +1142,35 @@ default for local development.
    ``auth.*`` source; see :doc:`/tutorials/authentication`. All ``auth.*``
    parameters and ``aggregation.peer_auth_header`` are read once at start: a
    ``ros2 param set`` or ``ros2 param load`` of them is refused.
+
+.. _public-routes:
+
+Opening a route to callers without a token
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Under ``auth.require_auth_for`` ``all`` the health probe is refused like every
+other route. List it to open it:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       auth:
+         public_routes: ["GET /api/v1/health"]
+
+Each entry is ``METHOD /path`` and matches that method and that path only. The method is case-insensitive; the path is matched exactly, so ``GET /api/v1/health/`` is refused rather than opened as a second spelling.
+``GET /api/v1/health`` does not open ``POST /api/v1/health`` or any other route.
+A route open by ``auth.require_auth_for`` stays open. The list is read at start;
+a ``ros2 param set`` of it is refused. The default is empty, so an existing
+configuration does not change.
+
+On ``GET /api/v1/health`` a caller with no ``Authorization`` header, or one
+whose token does not validate, gets a reduced body: ``status``, ``timestamp``,
+``warning_schema_version``, an empty ``warnings`` and ``x-medkit-reduced: true``.
+A caller with a valid token gets the full body. With authentication off the full
+body goes to everyone. When ``/health`` is not listed the body is the full one
+for every caller the gateway lets through, for example anonymous reads under
+``auth.require_auth_for`` ``write``.
 
 .. note::
 

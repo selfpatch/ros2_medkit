@@ -89,6 +89,11 @@ AuthConfigBuilder & AuthConfigBuilder::with_require_auth_for(AuthRequirement req
   return *this;
 }
 
+AuthConfigBuilder & AuthConfigBuilder::with_public_routes(const std::vector<std::string> & routes) {
+  config_.public_routes = routes;
+  return *this;
+}
+
 AuthConfigBuilder & AuthConfigBuilder::with_issuer(const std::string & issuer) {
   config_.issuer = issuer;
   return *this;

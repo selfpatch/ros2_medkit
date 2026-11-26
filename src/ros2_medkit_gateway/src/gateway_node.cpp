@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "ros2_medkit_gateway/core/auth/auth_environment.hpp"
+#include "ros2_medkit_gateway/core/auth/auth_requirement_policy.hpp"
 #include "ros2_medkit_gateway/core/builtin_samplers.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
@@ -257,6 +258,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
   }
   declare_parameter("auth.require_auth_for", "write");
   declare_parameter("auth.issuer", "ros2_medkit_gateway");
+  declare_parameter("auth.public_routes", std::vector<std::string>{});
 
   // The three parameters that carry secrets are never declared with their
   // value: the parameter services serve it to every participant on the domain.
@@ -583,6 +585,23 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
     throw std::runtime_error("MEDKIT_JWT_SECRET is set but empty");
   }
 
+  // Checked whether or not authentication is on: a typo must not silently protect a route.
+  // Blank entries are stripped; positions count the entries as written.
+  std::vector<std::string> public_routes;
+  const auto public_route_entries = get_parameter("auth.public_routes").as_string_array();
+  for (std::size_t i = 0; i < public_route_entries.size(); ++i) {
+    if (is_blank_public_route_entry(public_route_entries[i])) {
+      continue;
+    }
+    const auto parsed = parse_public_route(public_route_entries[i]);
+    if (!parsed) {
+      RCLCPP_FATAL(get_logger(), "auth.public_routes entry %zu (\"%s\") is invalid: %s. Refusing to start.", i + 1,
+                   public_route_entries[i].c_str(), parsed.error().c_str());
+      throw std::runtime_error("auth.public_routes entry " + std::to_string(i + 1) + " is invalid");
+    }
+    public_routes.push_back(public_route_entries[i]);
+  }
+
   bool auth_enabled = auth_env.applies ? auth_env.enabled : get_parameter("auth.enabled").as_bool();
   // The requirement level in force; "none" while authentication is off.
   std::string effective_require_auth_for = "none";
@@ -622,6 +641,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
           .with_max_refresh_tokens_per_client(
               static_cast<int>(get_parameter("auth.max_refresh_tokens_per_client").as_int()))
           .with_require_auth_for(string_to_auth_requirement(require_auth_for))
+          .with_public_routes(public_routes)
           .with_issuer(get_parameter("auth.issuer").as_string());
 
       // Parse clients from configuration
@@ -673,6 +693,9 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
       }
 
       auth_config_ = auth_builder.build();
+      for (const auto & route : public_routes) {
+        RCLCPP_WARN(get_logger(), "auth.public_routes: %s is answered without a credential", route.c_str());
+      }
       RCLCPP_INFO(get_logger(), "Authentication enabled - algorithm: %s, require_auth_for: %s",
                   algorithm_to_string(auth_config_.jwt_algorithm).c_str(), require_auth_for.c_str());
     } catch (const std::exception & e) {

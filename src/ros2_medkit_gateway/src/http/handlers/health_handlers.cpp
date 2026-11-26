@@ -18,6 +18,8 @@
 #include <chrono>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/auth/auth_manager.hpp"
+#include "ros2_medkit_gateway/core/auth/auth_middleware.hpp"
 #include "ros2_medkit_gateway/core/auth/auth_models.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/discovery_enums.hpp"
@@ -60,12 +62,44 @@ ErrorInfo make_internal_error(const char * where, const std::exception & e) {
 
 }  // namespace
 
+namespace {
+
+/// True when the answer is cut to liveness: the route is in `auth.public_routes` and the caller
+/// presented no token this gateway accepts. Reads under `require_auth_for: write` are open without
+/// being listed, so they keep the full body. This handler serves GET only. With authentication on and no manager the
+/// answer is cut.
+bool serves_reduced_body(const HandlerContext & ctx, const http::TypedRequest & req) {
+  if (!ctx.auth_config().enabled) {
+    return false;
+  }
+  auto * manager = ctx.auth_manager();
+  if (manager == nullptr) {
+    return true;
+  }
+  if (!manager->is_public_route("GET", req.path())) {
+    return false;
+  }
+  auto header = req.header("Authorization");
+  if (!header) {
+    return true;
+  }
+  auto token = AuthMiddleware::extract_bearer_token(*header);
+  return !token || !manager->validate_token(*token).valid;
+}
+
+}  // namespace
+
 http::Result<dto::Health> HealthHandlers::get_health(const http::TypedRequest & req) {
-  (void)req;  // Unused parameter
   try {
     dto::Health response;
     response.status = "healthy";
     response.timestamp = std::chrono::system_clock::now().time_since_epoch().count();
+
+    // Returned before any section is built, so a section added later stays out of the reduced body.
+    if (serves_reduced_body(ctx_, req)) {
+      response.x_medkit_reduced = true;
+      return response;
+    }
 
     // Operator-actionable warnings the gateway flags without taking itself
     // offline. Collected across every subsystem that can produce one, so the

@@ -134,6 +134,12 @@ The gateway supports three authentication modes via the ``require_auth_for`` par
    * - ``all``
      - All endpoints require authentication. **(Recommended for production)**
 
+A route can be answered without a token in any mode by listing it in
+``auth.public_routes`` as ``"METHOD /path"``, for example
+``["GET /api/v1/health"]`` for a liveness probe on a gateway set to ``all``.
+The method is case-insensitive and the path is matched exactly. Empty and ASCII-whitespace-only entries are stripped, a malformed entry stops the gateway at start, and the
+list is read at start. See :ref:`public-routes`.
+
 Roles and Permissions
 ---------------------
 

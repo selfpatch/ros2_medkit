@@ -19,6 +19,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <tl/expected.hpp>
+
 #include "ros2_medkit_gateway/core/auth/auth_config.hpp"
 
 namespace ros2_medkit_gateway {
@@ -42,6 +44,20 @@ class IAuthRequirementPolicy {
    * @return true if authentication is required
    */
   virtual bool requires_authentication(const std::string & method, const std::string & path) const = 0;
+
+  /**
+   * @brief Whether `auth.public_routes` names this exact route
+   *
+   * Narrower than `!requires_authentication(...)`: under `require_auth_for: write` every GET
+   * needs no credential, and that is not an operator naming the route.
+   *
+   * @return false unless the policy carries a public route list
+   */
+  virtual bool is_public(const std::string & method, const std::string & path) const {
+    (void)method;
+    (void)path;
+    return false;
+  }
 
   /**
    * @brief Get a human-readable description of this policy
@@ -69,7 +85,8 @@ class NoAuthRequirementPolicy : public IAuthRequirementPolicy {
 /**
  * @brief Policy that always requires authentication
  *
- * Except for public endpoints (auth endpoints, health check)
+ * Except for `/api/v1/auth/` and the routes in `auth.public_routes`
+ * (see PublicRouteExemptionPolicy).
  */
 class AllAuthRequirementPolicy : public IAuthRequirementPolicy {
  public:
@@ -155,6 +172,44 @@ class ConfigurableAuthRequirementPolicy : public IAuthRequirementPolicy {
   bool use_requirements_map_;
 };
 
+/// One entry of `auth.public_routes`: a method and a path answered without a credential.
+struct PublicRoute {
+  std::string method;  ///< Upper-case HTTP method, e.g. "GET"
+  std::string path;    ///< Full request path, e.g. "/api/v1/health"
+};
+
+/// Parse one `auth.public_routes` entry, written "METHOD /path". Matching is exact: no wildcard, no prefix.
+/// @return the route, or a message saying what is wrong with the entry
+tl::expected<PublicRoute, std::string> parse_public_route(const std::string & entry);
+
+/// True for an entry that is empty or only whitespace. `[""]` is how a ROS 2 params file writes an empty string
+/// array, so such an entry is stripped and is neither a route nor an error.
+bool is_blank_public_route_entry(const std::string & entry);
+
+/// Parse a whole list. An entry that does not parse is dropped, which keeps its route protected.
+/// GatewayNode validates the list first and refuses to start on a bad entry.
+std::vector<PublicRoute> parse_public_routes(const std::vector<std::string> & entries);
+
+/**
+ * @brief Layers `auth.public_routes` over another policy
+ *
+ * Only removes the requirement, never adds one.
+ */
+class PublicRouteExemptionPolicy : public IAuthRequirementPolicy {
+ public:
+  PublicRouteExemptionPolicy(std::unique_ptr<IAuthRequirementPolicy> inner, std::vector<PublicRoute> public_routes);
+
+  bool requires_authentication(const std::string & method, const std::string & path) const override;
+
+  bool is_public(const std::string & method, const std::string & path) const override;
+
+  std::string description() const override;
+
+ private:
+  std::unique_ptr<IAuthRequirementPolicy> inner_;
+  std::vector<PublicRoute> public_routes_;
+};
+
 /**
  * @brief Factory to create auth requirement policies from configuration
  */
@@ -173,6 +228,15 @@ class AuthRequirementPolicyFactory {
    * @return Policy implementation based on config.enabled and config.auth_requirements
    */
   static std::unique_ptr<IAuthRequirementPolicy> create(const AuthConfig & config);
+
+  /**
+   * @brief Create policy for a requirement level, exempting configured routes
+   * @param requirement The auth requirement level
+   * @param public_routes Parsed entries of `auth.public_routes`
+   * @return The requirement policy, wrapped only when the list is not empty
+   */
+  static std::unique_ptr<IAuthRequirementPolicy> create(AuthRequirement requirement,
+                                                        const std::vector<PublicRoute> & public_routes);
 };
 
 }  // namespace ros2_medkit_gateway
