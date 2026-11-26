@@ -38,7 +38,9 @@ import tempfile
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
+from launch.actions import (DeclareLaunchArgument, LogInfo, OpaqueFunction,
+                            RegisterEventHandler, Shutdown)
+from launch.event_handlers import OnProcessExit
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -167,6 +169,11 @@ def launch_setup(context):
     min_tls_version = LaunchConfiguration('min_tls_version').perform(context)
     override_config = LaunchConfiguration('config_file').perform(context)
     cors_arg = LaunchConfiguration('cors_allowed_origins').perform(context)
+    allow_remote = LaunchConfiguration('allow_unauthenticated_remote').perform(context)
+    # Empty leaves the config_file in charge; true and false both override it.
+    allow_remote = allow_remote.strip().lower()
+    remote_override = ({'server.allow_unauthenticated_remote': allow_remote == 'true'}
+                       if allow_remote in ('true', 'false') else {})
 
     # Use temp directory if not specified
     if not cert_dir:
@@ -181,6 +188,38 @@ def launch_setup(context):
 
     # Protocol info for logging
     protocol = 'HTTPS' if cert_paths['cert_file'] else 'HTTP'
+
+    gateway = Node(
+        package='ros2_medkit_gateway',
+        executable='gateway_node',
+        name='ros2_medkit_gateway',
+        output='screen',
+        parameters=[
+            default_config, override_config,
+            {
+                'server.host': server_host,
+                'server.port': int(server_port),
+                'server.tls.enabled': True,
+                'server.tls.cert_file': cert_paths['cert_file'],
+                'server.tls.key_file': cert_paths['key_file'],
+                'server.tls.min_version': min_tls_version,
+                'refresh_interval_ms': int(refresh_interval),
+                **remote_override,
+                **cors_override(cors_arg, override_config, default_config),
+            }
+        ],
+        arguments=['--ros-args', '--log-level', 'info']
+    )
+
+    def _gateway_exited(event, context):
+        # A stack whose gateway is gone serves nothing: end the launch, and fail
+        # it when the gateway failed (a refused start included). An exit during
+        # the launch's own shutdown is not a failure.
+        if context.is_shutdown:
+            return None
+        if event.returncode:
+            raise RuntimeError(f'gateway_node exited with code {event.returncode}')
+        return [Shutdown(reason='gateway_node exited')]
 
     return [
         LogInfo(msg=['='*60]),
@@ -200,26 +239,8 @@ def launch_setup(context):
                      f'https://{server_host}:{server_port}/api/v1/health']),
         LogInfo(msg=['='*60]),
 
-        Node(
-            package='ros2_medkit_gateway',
-            executable='gateway_node',
-            name='ros2_medkit_gateway',
-            output='screen',
-            parameters=[
-                default_config, override_config,
-                {
-                    'server.host': server_host,
-                    'server.port': int(server_port),
-                    'server.tls.enabled': True,
-                    'server.tls.cert_file': cert_paths['cert_file'],
-                    'server.tls.key_file': cert_paths['key_file'],
-                    'server.tls.min_version': min_tls_version,
-                    'refresh_interval_ms': int(refresh_interval),
-                    **cors_override(cors_arg, override_config, default_config),
-                }
-            ],
-            arguments=['--ros-args', '--log-level', 'info']
-        ),
+        gateway,
+        RegisterEventHandler(OnProcessExit(target_action=gateway, on_exit=_gateway_exited)),
     ]
 
 
@@ -238,6 +259,16 @@ def generate_launch_description():
             'server_host',
             default_value='127.0.0.1',
             description='Host to bind HTTPS server (127.0.0.1 or 0.0.0.0)'
+        ),
+
+        DeclareLaunchArgument(
+            'allow_unauthenticated_remote',
+            default_value='',
+            description=(
+                'Let the gateway bind a non-loopback server_host with authentication off. '
+                'Without it such a gateway refuses to start. When set, true or false '
+                'overrides the config file; empty leaves the file in charge.'
+            )
         ),
 
         DeclareLaunchArgument(

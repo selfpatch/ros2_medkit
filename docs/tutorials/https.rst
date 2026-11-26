@@ -72,6 +72,12 @@ Manual Configuration
               key_file: "/path/to/server.key"
               min_version: "1.2"
 
+   TLS encrypts the traffic but does not authenticate clients. With
+   ``server.host`` ``"0.0.0.0"`` and authentication off, the gateway refuses to
+   start (protected mode): set ``MEDKIT_JWT_SECRET`` and ``MEDKIT_CLIENTS`` (see
+   :doc:`authentication`), or add ``allow_unauthenticated_remote: true`` under
+   ``server``.
+
 2. **Launch with TLS:**
 
    .. code-block:: bash

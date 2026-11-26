@@ -267,7 +267,10 @@ Example launch file combining your robot with ros2_medkit:
                ]),
                launch_arguments={
                    'server_host': '0.0.0.0',
-                   'server_port': '8080'
+                   'server_port': '8080',
+                   # No authentication here: a non-loopback bind needs this opt-out.
+                   # Drop it and set MEDKIT_JWT_SECRET to require a login.
+                   'allow_unauthenticated_remote': 'true'
                }.items()
            ),
        ])

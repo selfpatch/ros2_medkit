@@ -52,7 +52,9 @@ start, even when an environment variable would replace it.
        ``MEDKIT_JWT_SECRET`` is set and non-empty.
    * - ``MEDKIT_AUTH_DISABLED``
      - Exactly ``1`` turns authentication off, over the params file and over
-       ``MEDKIT_JWT_SECRET``. Any other value has no effect.
+       ``MEDKIT_JWT_SECRET``. It also opts out of protected mode (below), so a
+       container can be opened with this one variable. Any other value has no
+       effect.
 
 ``ros2 param get`` reports what the gateway enforces: ``auth.enabled`` and
 ``auth.require_auth_for`` hold the effective values (``none`` while
@@ -80,6 +82,39 @@ Where a secret is safe:
 - A params file that holds a secret must be readable only by the gateway's user.
 - A value given with ``-p`` on the command line is visible to every local user
   in the process list.
+
+Protected Mode
+--------------
+
+A gateway that answers every request anonymously (authentication off, or on with
+``auth.require_auth_for`` ``none``) serves only the local machine. With such a
+``server.host`` that is not a loopback address (``0.0.0.0``, ``::``, a
+concrete address or a host name other than ``localhost``), the gateway exits
+with status 1 and a message that names the address. ``localhost`` counts as
+loopback by its name, as RFC 6761 reserves it; the gateway binds what the
+resolver returns for it. The decision uses the authentication in force after the
+environment is applied: ``MEDKIT_JWT_SECRET`` counts as on (and forces
+``require_auth_for`` ``all``), whatever ``auth.enabled`` says. ``write`` and
+``all`` count as authentication, in any letter case; ``write`` binds the
+network and leaves reads anonymous, ``none`` leaves everything open and does
+not count. The ways out are
+
+- turn authentication on (``MEDKIT_JWT_SECRET`` and ``MEDKIT_CLIENTS``, or the
+  ``auth.*`` parameters with ``require_auth_for`` ``write`` or ``all``);
+- bind a loopback address (``server.host: 127.0.0.1``);
+- opt out with ``server.allow_unauthenticated_remote: true``, the launch
+  argument ``allow_unauthenticated_remote:=true``, or ``MEDKIT_AUTH_DISABLED=1``.
+  The gateway then logs a warning that it is reachable without authentication.
+  A launch argument that is set wins over the config file, ``false`` included: with
+  ``allow_unauthenticated_remote:=false`` a file that says ``true`` no longer opens it.
+
+A gateway that cannot bind its address (the address:port is held by a live
+process, an address the machine does not own, a name that does not resolve) also
+exits with status 1, naming the host, the port and the reason. An address the
+machine does not own is refused unless the kernel allows non-local binds
+(``net.ipv4.ip_nonlocal_bind``, ``net.ipv6.ip_nonlocal_bind``).
+
+See :ref:`protected-mode` for the parameter.
 
 Authentication Modes
 --------------------

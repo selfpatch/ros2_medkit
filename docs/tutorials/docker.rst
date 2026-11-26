@@ -65,7 +65,13 @@ Quick Start
 
 .. code-block:: bash
 
-   docker run -p 8080:8080 ghcr.io/selfpatch/ros2_medkit-jazzy:latest
+   docker run -p 127.0.0.1:8080:8080 -e MEDKIT_AUTH_DISABLED=1 ghcr.io/selfpatch/ros2_medkit-jazzy:latest
+
+The image binds ``0.0.0.0``. A gateway without authentication refuses to bind a
+non-loopback address (protected mode), so a container started with no
+``MEDKIT_*`` variable exits with an error that names the ways out.
+``MEDKIT_AUTH_DISABLED=1`` opts out, as above; ``MEDKIT_JWT_SECRET`` closes the
+container (next section).
 
 Test the gateway:
 
@@ -77,9 +83,9 @@ Test the gateway:
    curl http://localhost:8080/api/v1/version-info
    # {"items":[{"version":"<gateway-version>","vendor_info":{"name":"ros2_medkit",...}}]}
 
-With no ``MEDKIT_*`` variable set, the container answers requests without a
-credential, as a source install does. Publish the port only where that is
-acceptable, or close the container as described next.
+With ``MEDKIT_AUTH_DISABLED=1`` the container answers requests without a
+credential. Publish the port only where that is acceptable, or close the
+container as described next.
 
 Running the container closed
 ----------------------------
@@ -116,8 +122,9 @@ params file, including a mounted one that says ``auth.enabled: false``:
 
 ``MEDKIT_AUTH_DISABLED``
   Set to exactly ``1``, it turns authentication off even when
-  ``MEDKIT_JWT_SECRET`` is set. Anyone who can set it on a gateway's environment
-  can open that gateway.
+  ``MEDKIT_JWT_SECRET`` is set, and it opts out of protected mode, so the
+  gateway may bind ``0.0.0.0`` without authentication. Anyone who can set it on
+  a gateway's environment can open that gateway.
 
 See :doc:`authentication` for the entry syntax, the refusal rules and the
 startup warnings.
@@ -171,33 +178,39 @@ file, set ``allowed_origins: [""]``: the parameter is a typed string array and
    the image's own file, so a file without ``server.host`` gave the compiled
    default ``127.0.0.1``. It now inherits ``server.host: "0.0.0.0"`` and the two
    CORS origins from the container layer. A container with such a file and
-   ``--network host`` now listens on every interface. To keep the old behaviour,
-   put ``server.host: "127.0.0.1"`` in the mounted file.
+   ``--network host`` now listens on every interface, and without
+   ``MEDKIT_JWT_SECRET`` or ``MEDKIT_AUTH_DISABLED=1`` it refuses to start. To
+   keep the old behaviour, put ``server.host: "127.0.0.1"`` in the mounted file.
 
 .. note::
 
    A launch file run in the container binds ``127.0.0.1`` unless told
    otherwise. Without ``--network host`` that is the container's own loopback,
    and the published port answers with ``Connection reset by peer`` or an empty
-   reply. Pass ``server_host:=0.0.0.0``:
+   reply. Pass ``server_host:=0.0.0.0``. Without authentication the gateway
+   then refuses to start unless it is told to accept that, with
+   ``allow_unauthenticated_remote:=true`` or ``MEDKIT_AUTH_DISABLED=1``:
 
    .. code-block:: bash
 
-      docker run -p 127.0.0.1:8080:8080 ghcr.io/selfpatch/ros2_medkit-jazzy:latest \
+      docker run -p 127.0.0.1:8080:8080 -e MEDKIT_AUTH_DISABLED=1 \
+        ghcr.io/selfpatch/ros2_medkit-jazzy:latest \
         ros2 launch ros2_medkit_gateway bringup.launch.py server_host:=0.0.0.0
 
    ``127.0.0.1:8080:8080`` publishes the port on the host's loopback only, which
-   keeps the API (no authentication by default) off the LAN.
+   keeps the API (no authentication) off the LAN.
 
 To use a custom configuration, mount a params file:
 
 .. code-block:: bash
 
-   docker run -p 8080:8080 \
+   docker run -p 127.0.0.1:8080:8080 \
+     -e MEDKIT_AUTH_DISABLED=1 \
      -v ./my_params.yaml:/etc/ros2_medkit/params.yaml \
      ghcr.io/selfpatch/ros2_medkit-jazzy:latest
 
-Example ``my_params.yaml``:
+Example ``my_params.yaml`` (``MEDKIT_AUTH_DISABLED=1`` above, or
+``MEDKIT_JWT_SECRET``, is what lets the ``0.0.0.0`` bind start):
 
 .. code-block:: yaml
 
@@ -217,7 +230,7 @@ override changes the key it names and nothing else:
 
 .. code-block:: bash
 
-   docker run -p 9090:9090 ghcr.io/selfpatch/ros2_medkit-jazzy:latest \
+   docker run -p 127.0.0.1:9090:9090 -e MEDKIT_AUTH_DISABLED=1 ghcr.io/selfpatch/ros2_medkit-jazzy:latest \
      --ros-args -p server.port:=9090
 
 If the node is renamed or moved to another namespace, none of the image's files
@@ -231,7 +244,8 @@ External plugins (e.g., custom providers) can be mounted into the container at
 
 .. code-block:: bash
 
-   docker run -p 8080:8080 \
+   docker run -p 127.0.0.1:8080:8080 \
+     -e MEDKIT_AUTH_DISABLED=1 \
      -v ./my_plugin.so:/opt/ros2_medkit/plugins/my_plugin.so \
      -v ./my_params.yaml:/etc/ros2_medkit/params.yaml \
      ghcr.io/selfpatch/ros2_medkit-jazzy:latest
@@ -275,9 +289,12 @@ Example ``docker-compose.yml`` with the gateway and web UI:
      gateway:
        image: ghcr.io/selfpatch/ros2_medkit-jazzy:latest
        ports:
-         - "8080:8080"
+         - "127.0.0.1:8080:8080"
        environment:
          - ROS_DOMAIN_ID=42
+         # The image binds 0.0.0.0; without authentication it needs this opt-out.
+         # Set MEDKIT_JWT_SECRET and MEDKIT_CLIENTS instead to require a login.
+         - MEDKIT_AUTH_DISABLED=1
        healthcheck:
          # A closed container answers 401, which still shows the process is up.
          test:

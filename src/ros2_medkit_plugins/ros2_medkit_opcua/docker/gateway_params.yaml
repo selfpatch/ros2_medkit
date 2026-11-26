@@ -6,6 +6,8 @@ ros2_medkit_gateway:
     server:
       host: "0.0.0.0"
       port: 8080
+      # DEMO ONLY - the demo has no authentication, so binding 0.0.0.0 needs the opt-out.
+      allow_unauthenticated_remote: true
     refresh_interval_ms: 2000
     cors:
       # DEMO ONLY - restrict origins in production deployments

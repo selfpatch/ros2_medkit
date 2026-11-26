@@ -13,11 +13,183 @@
 // limitations under the License.
 
 #include "ros2_medkit_gateway/core/http/http_server.hpp"
+
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <signal.h>
+#include <sys/socket.h>
+
+#include <algorithm>
+#include <array>
+#include <cerrno>
+#include <chrono>
+#include <cinttypes>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
 #include "ros2_medkit_gateway/core/logging.hpp"
 
-#include <stdexcept>
-
 namespace ros2_medkit_gateway {
+
+namespace {
+
+using Address = std::array<std::uint8_t, 16>;
+
+// SO_REUSEADDR only: it lets a restarted gateway rebind over TIME_WAIT. Never SO_REUSEPORT,
+// which would let a second process bind the same address:port while this one serves it.
+void reuse_address_only(httplib::Server & srv) {
+  srv.set_socket_options([](socket_t sock) {
+    int yes = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const void *>(&yes), sizeof(yes));
+  });
+}
+
+Address from_v4(const in_addr & a) {
+  Address out{};
+  out[10] = 0xff;
+  out[11] = 0xff;
+  std::memcpy(out.data() + 12, &a.s_addr, 4);
+  return out;
+}
+
+bool is_v4_mapped(const Address & a) {
+  static const std::array<std::uint8_t, 12> prefix{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+  return std::equal(prefix.begin(), prefix.end(), a.begin());
+}
+
+bool is_wildcard(const Address & a) {
+  Address any{};
+  if (a == any) {
+    return true;
+  }
+  return is_v4_mapped(a) && a[12] == 0 && a[13] == 0 && a[14] == 0 && a[15] == 0;
+}
+
+// Two bound addresses collide when they are equal, or one is a wildcard that covers the other:
+// 0.0.0.0 covers every IPv4 address, :: covers every address. A `::` listener counts as holding
+// the IPv4 addresses too, also when it is IPv6-only: /proc does not show IPV6_V6ONLY. This errs
+// to an immediate exit, never to sharing.
+bool addresses_collide(const Address & ours, const Address & theirs) {
+  if (ours == theirs) {
+    return true;
+  }
+  for (const auto & [a, b] : {std::pair{ours, theirs}, std::pair{theirs, ours}}) {
+    if (!is_wildcard(a)) {
+      continue;
+    }
+    if (is_v4_mapped(a)) {
+      if (is_v4_mapped(b)) {
+        return true;
+      }
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Reads LISTEN sockets on `port` from /proc/net/tcp and /proc/net/tcp6. The kernel table lists every
+// listener of the network namespace, whatever its user and whatever options it bound with, which a
+// connect probe cannot promise (a listener may be unreachable or not accepting).
+std::vector<Address> listeners_on_port(int port) {
+  std::vector<Address> found;
+  for (const char * table : {"/proc/net/tcp", "/proc/net/tcp6"}) {
+    std::ifstream in(table);
+    std::string line;
+    std::getline(in, line);  // header
+    while (std::getline(in, line)) {
+      std::istringstream row(line);
+      std::string slot, local, remote, state;
+      row >> slot >> local >> remote >> state;
+      const auto colon = local.find(':');
+      if (state != "0A" || colon == std::string::npos) {
+        continue;
+      }
+      if (std::stoi(local.substr(colon + 1), nullptr, 16) != port) {
+        continue;
+      }
+      const std::string hex = local.substr(0, colon);
+      Address addr{};
+      if (hex.size() == 8) {
+        in_addr a{};
+        a.s_addr = static_cast<std::uint32_t>(std::stoul(hex, nullptr, 16));
+        addr = from_v4(a);
+      } else if (hex.size() == 32) {
+        // Four 32-bit words, each printed in host (little-endian) order.
+        for (std::size_t w = 0; w < 4; ++w) {
+          const auto word = static_cast<std::uint32_t>(std::stoul(hex.substr(w * 8, 8), nullptr, 16));
+          std::memcpy(addr.data() + w * 4, &word, 4);
+        }
+      } else {
+        continue;
+      }
+      found.push_back(addr);
+    }
+  }
+  return found;
+}
+
+// The addresses `host` names. Empty when it does not resolve; `gai_error` then holds the reason.
+std::vector<Address> resolve(const std::string & host, std::string & gai_error) {
+  addrinfo hints{};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags = AI_PASSIVE;
+  addrinfo * res = nullptr;
+  const int rc = getaddrinfo(host.empty() ? nullptr : host.c_str(), nullptr, &hints, &res);
+  if (rc != 0) {
+    gai_error = gai_strerror(rc);
+    return {};
+  }
+  std::vector<Address> out;
+  for (addrinfo * ai = res; ai != nullptr; ai = ai->ai_next) {
+    if (ai->ai_family == AF_INET) {
+      out.push_back(from_v4(reinterpret_cast<sockaddr_in *>(ai->ai_addr)->sin_addr));
+    } else if (ai->ai_family == AF_INET6) {
+      Address a{};
+      std::memcpy(a.data(), &reinterpret_cast<sockaddr_in6 *>(ai->ai_addr)->sin6_addr, 16);
+      out.push_back(a);
+    }
+  }
+  freeaddrinfo(res);
+  return out;
+}
+
+// True when a live listener may hold the address:port `host`:`port` names.
+bool live_listener_holds(const std::string & host, int port) {
+  std::string unused;
+  const auto ours = resolve(host, unused);
+  for (const auto & theirs : listeners_on_port(port)) {
+    for (const auto & mine : ours) {
+      if (addresses_collide(mine, theirs)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// True when SIGINT or SIGTERM is pending. The gateway blocks both until startup ends, so a stop
+// requested during the wait stays pending; sigpending() reads it without consuming it, and
+// the signal thread started after startup still receives it.
+bool stop_signal_pending() {
+  sigset_t pending;
+  if (sigpending(&pending) != 0) {
+    return false;
+  }
+  return sigismember(&pending, SIGINT) == 1 || sigismember(&pending, SIGTERM) == 1;
+}
+
+}  // namespace
 
 HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t thread_pool_size,
                                      std::time_t keep_alive_timeout_sec)
@@ -36,6 +208,7 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t t
     // Configure additional TLS settings
     configure_tls();
     apply_thread_pool(*ssl_server_);
+    reuse_address_only(*ssl_server_);
     apply_keep_alive(*ssl_server_);
 
     MEDKIT_LOG_INFO(log::Logger("http_server"), "TLS/HTTPS enabled - cert: %s, min_version: %s",
@@ -43,6 +216,7 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t t
     // Note: key_file path intentionally not logged for security reasons
   } else {
     server_ = std::make_unique<httplib::Server>();
+    reuse_address_only(*server_);
     apply_thread_pool(*server_);
     apply_keep_alive(*server_);
     MEDKIT_LOG_DEBUG(log::Logger("http_server"), "TLS/HTTPS disabled - using plain HTTP");
@@ -54,6 +228,7 @@ HttpServerManager::HttpServerManager(const TlsConfig & tls_config, std::size_t t
         "Ensure CPPHTTPLIB_OPENSSL_SUPPORT is defined.");
   }
   server_ = std::make_unique<httplib::Server>();
+  reuse_address_only(*server_);
   apply_thread_pool(*server_);
   apply_keep_alive(*server_);
 #endif
@@ -93,18 +268,93 @@ httplib::Server * HttpServerManager::get_server() {
   return server_.get();
 }
 
-void HttpServerManager::listen(const std::string & host, int port) {
+BindResult HttpServerManager::bind(const std::string & host, int port, int64_t wait_sec, std::string & error) {
   std::string protocol = tls_config_.enabled ? "HTTPS" : "HTTP";
   MEDKIT_LOG_INFO(log::Logger("http_server"), "Starting %s server on %s:%d...", protocol.c_str(), host.c_str(), port);
 
-#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
-  if (tls_config_.enabled && ssl_server_) {
-    ssl_server_->listen(host, port);
-    return;
+  httplib::Server * srv = get_server();
+  if (srv == nullptr) {
+    error = "no server instance";
+    return BindResult::kFailed;
   }
-#endif
-  if (server_) {
-    server_->listen(host, port);
+  errno = 0;
+  if (srv->bind_to_port(host, port)) {
+    return BindResult::kBound;
+  }
+  int bind_errno = errno;
+  std::string gai_error;
+  if (resolve(host, gai_error).empty()) {
+    error = "cannot resolve the host: " + gai_error;
+    return BindResult::kFailed;
+  }
+  error = bind_errno != 0 ? std::strerror(bind_errno) : "bind failed";
+  if (bind_errno != EADDRINUSE || live_listener_holds(host, port)) {
+    return BindResult::kFailed;
+  }
+  if (wait_sec <= 0) {
+    error += " (no live listener holds it; server.bind_wait_sec is 0, so no wait)";
+    return BindResult::kFailed;
+  }
+
+  // EADDRINUSE with no live listener: connections an earlier process closed are in TIME_WAIT (a
+  // release that bound with SO_REUSEPORT blocks a SO_REUSEADDR bind), or a process holds the port
+  // without listening. TIME_WAIT normally ends 60 s after the close; a late packet from the old
+  // peer can extend it. Retry the same bind until it succeeds or the wait ends.
+  MEDKIT_LOG_INFO(log::Logger("http_server"),
+                  "%s:%d is held, and no live listener holds it: closing connections of an earlier process, "
+                  "or a socket bound without listening; waiting up to %" PRId64 " s (server.bind_wait_sec)",
+                  host.c_str(), port, wait_sec);
+  const auto start = std::chrono::steady_clock::now();
+  const auto deadline = start + std::chrono::seconds(wait_sec);
+  const auto stopped = [&]() {
+    if (!stop_signal_pending()) {
+      return false;
+    }
+    MEDKIT_LOG_INFO(log::Logger("http_server"), "start stopped during the bind wait for %s:%d", host.c_str(), port);
+    return true;
+  };
+  if (stopped()) {
+    return BindResult::kStopped;
+  }
+  for (;;) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    if (stopped()) {
+      return BindResult::kStopped;
+    }
+    // No attempt starts after the wait ended.
+    if (std::chrono::steady_clock::now() >= deadline) {
+      break;
+    }
+    if (live_listener_holds(host, port)) {
+      error = std::strerror(EADDRINUSE);
+      return BindResult::kFailed;
+    }
+    errno = 0;
+    if (srv->bind_to_port(host, port)) {
+      const double waited = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+      MEDKIT_LOG_INFO(log::Logger("http_server"), "%s:%d bound after waiting %.1f s", host.c_str(), port, waited);
+      return BindResult::kBound;
+    }
+    bind_errno = errno;
+    if (bind_errno != EADDRINUSE) {
+      error = bind_errno != 0 ? std::strerror(bind_errno) : "bind failed";
+      return BindResult::kFailed;
+    }
+  }
+  error = std::strerror(EADDRINUSE);
+  // A listener that appeared after the last check is a live holder, not a wait that ran out.
+  if (!live_listener_holds(host, port)) {
+    char waited[32];
+    std::snprintf(waited, sizeof(waited), "%.1f",
+                  std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+    error += std::string(" (waited ") + waited + " s; no live listener appeared; server.bind_wait_sec)";
+  }
+  return BindResult::kFailed;
+}
+
+void HttpServerManager::listen_bound() {
+  if (httplib::Server * srv = get_server()) {
+    srv->listen_after_bind();
   }
 }
 

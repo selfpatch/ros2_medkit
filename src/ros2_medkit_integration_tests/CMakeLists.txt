@@ -374,6 +374,8 @@ if(BUILD_TESTING)
     test_auth_policy_contract 300
     # One gateway process per case, each waiting for its startup line or its exit.
     test_env_auth_contract 600
+    # One gateway process per case, over hosts crossed with authentication postures.
+    test_protected_mode 900
     test_rosbag_boundary_download 180
     test_rosbag_history_download 180
     test_grouping_entity_aggregation 300

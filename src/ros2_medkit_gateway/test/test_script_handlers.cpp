@@ -23,6 +23,7 @@
 #include <string>
 
 #include "null_gateway_services.hpp"
+#include "reserve_local_port.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/http/handlers/script_handlers.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
@@ -345,8 +346,11 @@ class ScriptHandlersErrorMappingTest : public ::testing::Test {
   static inline std::shared_ptr<GatewayNode> node_;
 
   static void SetUpTestSuite() {
-    std::vector<std::string> args = {"test_script_handlers", "--ros-args", "-p",
-                                     "server.port:=0",       "-p",         "refresh_interval_ms:=60000"};
+    const int port = ros2_medkit_gateway::test_support::reserve_local_port();
+    ASSERT_NE(port, 0);
+    std::vector<std::string> args = {
+        "test_script_handlers",      "--ros-args", "-p", "server.port:=" + std::to_string(port), "-p",
+        "refresh_interval_ms:=60000"};
     std::vector<char *> argv;
     argv.reserve(args.size());
     for (auto & arg : args) {

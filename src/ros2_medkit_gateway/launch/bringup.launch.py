@@ -63,6 +63,10 @@ def generate_launch_description():
             'server_host', default_value='127.0.0.1',
             description='Host to bind the gateway REST server (127.0.0.1 or 0.0.0.0).'),
         DeclareLaunchArgument(
+            'allow_unauthenticated_remote', default_value='false',
+            description='Let the gateway bind a non-loopback server_host with authentication off. '
+                        'Without it, or MEDKIT_JWT_SECRET, such a gateway refuses to start.'),
+        DeclareLaunchArgument(
             'server_port', default_value='8080',
             description='Gateway REST API port.'),
         DeclareLaunchArgument(
@@ -87,9 +91,11 @@ def generate_launch_description():
                         'diagnostic_updater publishers; new code should report faults natively.'),
     ]
 
+    allow_unauthenticated_remote = LaunchConfiguration('allow_unauthenticated_remote')
     gateway = _include(
         'ros2_medkit_gateway', 'gateway.launch.py',
         launch_arguments={'server_host': server_host, 'server_port': server_port,
+                          'allow_unauthenticated_remote': allow_unauthenticated_remote,
                           'cors_allowed_origins': cors_allowed_origins})
     fault_manager = _include(
         'ros2_medkit_fault_manager', 'fault_manager.launch.py',

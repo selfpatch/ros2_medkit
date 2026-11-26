@@ -24,6 +24,7 @@
 
 #include "../src/openapi/capability_generator.hpp"
 #include "../src/openapi/route_registry.hpp"
+#include "reserve_local_port.hpp"
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/version.hpp"
 #include "ros2_medkit_gateway/dto/health.hpp"
@@ -127,10 +128,11 @@ class CapabilityGeneratorTest : public ::testing::Test {
   }
 
   void SetUp() override {
-    node_ = std::make_shared<GatewayNode>();
-
-    // Wait briefly for node initialization
-    std::this_thread::sleep_for(100ms);
+    const int port = test_support::reserve_local_port();
+    ASSERT_NE(port, 0);
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("server.port", port);
+    node_ = std::make_shared<GatewayNode>(options);
 
     CorsConfig cors_config;
     AuthConfig auth_config;

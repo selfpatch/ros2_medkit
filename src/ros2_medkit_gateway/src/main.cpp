@@ -402,6 +402,12 @@ int main(int argc, char ** argv) {
     node.reset();
 
     rclcpp::shutdown();
+  } catch (const ros2_medkit_gateway::StartStopped &) {
+    // A stop during the bind wait ends the start the way a stop during startup ends it: exit 0.
+    if (ros_inited && rclcpp::ok()) {
+      rclcpp::shutdown();
+    }
+    return 0;
   } catch (const std::exception & ex) {
     fprintf(stderr, "[ros2_medkit_gateway] Fatal exception in main: %s\n", ex.what());
     if (ros_inited && rclcpp::ok()) {
