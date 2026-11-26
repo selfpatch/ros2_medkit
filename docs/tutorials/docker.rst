@@ -130,7 +130,7 @@ See :doc:`authentication` for the entry syntax, the refusal rules and the
 startup warnings.
 
 A closed container answers ``401`` to an unauthenticated ``/api/v1/health`` probe, so use a
-probe that accepts it (see `Health Checks`_).
+probe that accepts it, or list the route in ``auth.public_routes`` (see `Health Checks`_).
 
 Custom Configuration
 --------------------
@@ -386,7 +386,20 @@ Health Checks
 The gateway exposes a health endpoint at ``/api/v1/health``. A container at the
 image default answers it without a credential; a closed one answers ``401``.
 A probe that works for both accepts any of these HTTP answers as proof that the
-process is up:
+process is up. With ``GET /api/v1/health`` in ``auth.public_routes`` a closed
+container answers ``200`` with a body that says only that the gateway is alive.
+Pass the list in a mounted params file:
+
+.. code-block:: yaml
+
+   ros2_medkit_gateway:
+     ros__parameters:
+       auth:
+         public_routes: ["GET /api/v1/health"]
+
+or as an argument to ``docker run``, after the image name:
+``--ros-args -p auth.public_routes:="['GET /api/v1/health']"``. The probe below
+works with or without it:
 
 .. code-block:: yaml
 

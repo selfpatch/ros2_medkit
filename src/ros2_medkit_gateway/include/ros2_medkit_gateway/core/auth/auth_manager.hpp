@@ -151,6 +151,13 @@ class AuthManager {
   bool requires_authentication(const std::string & method, const std::string & path) const;
 
   /**
+   * @brief Whether `auth.public_routes` names this exact route
+   * @param method HTTP method
+   * @param path Request path
+   */
+  bool is_public_route(const std::string & method, const std::string & path) const;
+
+  /**
    * @brief The policy half of `requires_authentication`
    *
    * Borrowed, never null, owned by this manager. Exposed so a reader that has

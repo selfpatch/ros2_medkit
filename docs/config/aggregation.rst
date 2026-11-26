@@ -187,7 +187,18 @@ for peer communication.
        any forward whose caller sent no credential to pass on. Leave it empty
        unless the peers require authentication; while it is empty, such a peer
        answers 401, is recorded as offline, and contributes neither entities
-       nor events.
+       nor events. A peer that lists ``GET /api/v1/health`` in
+       ``auth.public_routes`` answers the health check with the reduced body
+       instead. The aggregator then reads ``/api/v1/areas``, ``/components``,
+       ``/apps`` and ``/functions``, the collections discovery starts with. A
+       401 or 403 on one of them records the peer offline; all of them
+       answering 2xx keeps it online. Either outcome is logged once, saying
+       the peer did not accept the credential, and holds until the next such
+       outcome or until a full ``/api/v1/health`` body shows the credential
+       accepted. Any other answer to the reads (none, 429, 5xx) logs nothing
+       and leaves that verdict as it was; before the first one, the peer is
+       online. A failed health check marks the peer offline while it fails
+       and does not clear the verdict.
 
        Sent **only to peers named in the configuration**. A peer discovered
        over mDNS never receives it, because it is not one the operator vouched

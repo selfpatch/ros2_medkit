@@ -88,6 +88,8 @@ struct PeerError {
 /// cannot tell a peer that is still working from one that died mid-answer.
 /// `elapsed` against `budget` is what separates them: a call that came back
 /// inside its budget did not run out of it, whatever else went wrong.
+/// @param error Transport error cpp-httplib returned for the call.
+/// @param elapsed Time from the start of the call to the error.
 /// @param read_budget Budget for the read this call was making.
 /// @param write_budget Budget for pushing the request body.
 /// A write that ran out compares against the WRITE budget, which is its own and
@@ -161,6 +163,8 @@ class PeerClient {
    * @param name Human-readable peer name (e.g., "subsystem_b")
    * @param timeouts Per-kind budgets; see PeerTimeouts
    * @param forward_auth Whether to forward Authorization headers to this peer
+   * @param peer_auth_header Authorization value for calls this gateway makes on
+   * its own behalf; empty sends none
    */
   PeerClient(const std::string & url, const std::string & name, PeerTimeouts timeouts, bool forward_auth = false,
              std::string peer_auth_header = "");
@@ -185,9 +189,14 @@ class PeerClient {
   /**
    * @brief Perform a health check against the peer
    *
-   * GETs /api/v1/health on the peer. Sets the internal healthy_ flag
-   * based on whether a 200 response was received, and records the peer's
-   * instance id.
+   * GETs /api/v1/health on the peer and records its instance id. A failed
+   * /health makes the peer unhealthy. A full body shows this gateway's
+   * credential accepted. A reduced body (`x-medkit-reduced: true`) says it was
+   * not; the discovery collection reads then decide: a 401 or 403 on one makes
+   * the peer unhealthy, all of them answering 2xx keep it healthy. Any other
+   * answer, a failed /health included, keeps the last such verdict; with none
+   * yet, a reduced 200 is healthy. Each refusal is logged once, when it is
+   * reached; clearing it is silent.
    */
   void check_health();
 
@@ -278,6 +287,8 @@ class PeerClient {
   /// active_clients_ and calls stop() on each so blocked I/O unwinds.
   class ScopedClient {
    public:
+    /// @param owner PeerClient that tracks this client for shutdown().
+    /// @param url Base URL of the peer.
     /// @param read_timeout_ms Read budget for this call. Connect and write
     /// come from the owner's PeerTimeouts, which do not vary per call kind.
     ScopedClient(PeerClient & owner, const std::string & url, int read_timeout_ms);
@@ -318,6 +329,10 @@ class PeerClient {
 
   std::mutex client_mutex_;
   std::unique_ptr<httplib::Client> client_;
+
+  /// What health checks last found about this gateway's credential. Guarded by client_mutex_.
+  enum class CredentialState { kNotRefused, kRefusedReadsOpen, kRefusedReadsClosed };
+  CredentialState credential_state_{CredentialState::kNotRefused};
 
   std::mutex active_mutex_;
   std::unordered_set<httplib::Client *> active_clients_;

@@ -182,6 +182,8 @@ struct Health {
   // "nothing flagged" answer - absence is not a value this endpoint has.
   int64_t warning_schema_version{kWarningSchemaVersion};
   std::vector<HealthWarning> warnings;
+  /// Present and true when the body is cut to liveness. Wire key: "x-medkit-reduced".
+  std::optional<bool> x_medkit_reduced;
 };
 
 template <>
@@ -199,7 +201,10 @@ inline constexpr auto dto_fields<Health> = std::make_tuple(
           "Random id of this gateway process, present when aggregation is enabled. Generated at startup and "
           "carried on X-Medkit-Fan-Out-Visited by the global fault list, so a gateway already asked is not asked "
           "again."),
-    field("warning_schema_version", &Health::warning_schema_version), field("warnings", &Health::warnings));
+    field("warning_schema_version", &Health::warning_schema_version), field("warnings", &Health::warnings),
+    field("x-medkit-reduced", &Health::x_medkit_reduced,
+          "True when the caller sent no token this gateway accepts and the route is in auth.public_routes. The "
+          "body then carries liveness only, and an empty warnings array does not mean nothing is wrong."));
 
 template <>
 inline constexpr std::string_view dto_name<Health> = "HealthStatus";

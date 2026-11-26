@@ -90,6 +90,7 @@ struct AuthConfig {
   int token_expiry_seconds{3600};                            ///< Access token validity (default: 1 hour)
   int refresh_token_expiry_seconds{86400};                   ///< Refresh token validity (default: 24 hours)
   AuthRequirement require_auth_for{AuthRequirement::WRITE};  ///< When to require authentication
+  std::vector<std::string> public_routes;                    ///< `METHOD /path` entries answered without a credential
   std::string issuer{"ros2_medkit_gateway"};                 ///< JWT issuer claim
   int max_refresh_tokens_per_client{100};                    ///< Live refresh records kept per client
 
@@ -124,6 +125,7 @@ class AuthConfigBuilder {
   AuthConfigBuilder & with_refresh_token_expiry(int seconds);
   AuthConfigBuilder & with_max_refresh_tokens_per_client(int count);
   AuthConfigBuilder & with_require_auth_for(AuthRequirement requirement);
+  AuthConfigBuilder & with_public_routes(const std::vector<std::string> & routes);
   AuthConfigBuilder & with_issuer(const std::string & issuer);
   AuthConfigBuilder & add_client(const std::string & client_id, const std::string & client_secret, UserRole role);
   AuthConfig build();

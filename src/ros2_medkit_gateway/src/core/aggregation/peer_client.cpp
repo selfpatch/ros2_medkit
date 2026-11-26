@@ -15,6 +15,7 @@
 #include "ros2_medkit_gateway/core/aggregation/peer_client.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <iterator>
@@ -23,6 +24,7 @@
 #include <utility>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
+#include "ros2_medkit_gateway/core/logging.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -705,19 +707,76 @@ void PeerClient::check_health() {
     headers.emplace("Authorization", peer_auth_header_);
   }
   auto result = client_->Get(std::string(API_PREFIX) + "/health", headers);
-  const bool healthy = result && result->status == 200;
+  bool healthy = result && result->status == 200;
   std::string instance_id;
+  bool reduced = false;
+  bool full = false;
   if (healthy) {
     auto body = nlohmann::json::parse(result->body, nullptr, false);
     if (body.is_object() && body.contains("x-medkit-instance-id") && body["x-medkit-instance-id"].is_string()) {
       instance_id = body["x-medkit-instance-id"].get<std::string>();
     }
+    if (body.is_object()) {
+      const auto flag = body.find("x-medkit-reduced");
+      reduced = flag != body.end() && flag->is_boolean() && flag->get<bool>();
+      full = !reduced;
+    }
   }
+  // A full body shows the credential accepted. A reduced one says it was not; the collection reads discovery starts
+  // with then decide. Any other answer, from /health or from the reads, keeps the last verdict.
+  auto credential_state = full ? CredentialState::kNotRefused : credential_state_;
+  if (reduced) {
+    static constexpr std::array<const char *, 4> kDiscoveryReads{"/areas", "/components", "/apps", "/functions"};
+    bool refused = false;
+    bool all_read = true;
+    for (const char * route : kDiscoveryReads) {
+      if (shutdown_requested_.load(std::memory_order_acquire)) {
+        all_read = false;
+        break;
+      }
+      auto read = client_->Get(std::string(API_PREFIX) + route, headers);
+      if (!read) {
+        // No answer: the next read would wait out its timeout too.
+        all_read = false;
+        break;
+      }
+      if (read->status == 401 || read->status == 403) {
+        refused = true;
+        break;
+      }
+      all_read = all_read && read->status >= 200 && read->status < 300;
+    }
+    if (refused) {
+      credential_state = CredentialState::kRefusedReadsClosed;
+    } else if (all_read) {
+      credential_state = CredentialState::kRefusedReadsOpen;
+    }
+  }
+  healthy = healthy && credential_state != CredentialState::kRefusedReadsClosed;
   {
     std::lock_guard<std::mutex> id_lock(instance_id_mutex_);
     instance_id_ = std::move(instance_id);
   }
   healthy_.store(healthy);
+
+  // Logged after the store: each refusal once, when it is reached. Clearing it is silent.
+  if (credential_state != credential_state_) {
+    credential_state_ = credential_state;
+    const log::Logger logger("aggregation");
+    if (credential_state == CredentialState::kRefusedReadsClosed) {
+      MEDKIT_LOG_WARN(logger,
+                      "Peer '%s' did not accept this gateway's credential: its /health is reduced and a discovery "
+                      "read answers 401 or 403. Marked offline; set aggregation.peer_auth_header to a token the peer "
+                      "accepts.",
+                      name_.c_str());
+    } else if (credential_state == CredentialState::kRefusedReadsOpen) {
+      MEDKIT_LOG_WARN(logger,
+                      "Peer '%s' did not accept this gateway's credential: its /health is reduced. Its discovery "
+                      "reads are open, so it stays online; set aggregation.peer_auth_header to a token the peer "
+                      "accepts.",
+                      name_.c_str());
+    }
+  }
 }
 
 std::string PeerClient::instance_id() const {
