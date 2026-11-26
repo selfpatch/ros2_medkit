@@ -389,6 +389,7 @@ if(BUILD_TESTING)
     test_aggregator_only_configurations 300
     # Each case can spend one scaled wait of 30 s, after up to 90 s for the gateway
     # to start and discover its apps.
+    test_procfs_domain_isolation 300
     test_procfs_environ_fallback 300
     test_procfs_domain_filter_switch 300)
   # Names actually matched against a discovered test_name in the two loops

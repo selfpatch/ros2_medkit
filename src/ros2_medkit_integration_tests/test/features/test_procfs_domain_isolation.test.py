@@ -146,6 +146,10 @@ class TestProcfsDomainIsolation(GatewayTestCase):
             time.sleep(0.2)
         self.fail(f'{app_id} not served as PID {pid} within {SERVED_TIMEOUT} s; last {last}')
 
+    def assert_other_runs(self):
+        """Fail when the node of the second domain has exited: then nothing could serve it."""
+        self.assertIsNone(self.other.proc.poll(), 'the node of the second domain exited')
+
     def test_1_own_process_is_served(self):
         """The procfs route serves the node of the gateway's domain."""
         self.wait_served('temp_sensor', self.own.pid)
@@ -156,6 +160,7 @@ class TestProcfsDomainIsolation(GatewayTestCase):
         marker = self.start('rpm_sensor', get_test_domain_id())
         self.wait_served('rpm_sensor', marker.pid, own_pid=self.own.pid)
         self.assertEqual(self.procfs('temp_sensor'), (200, self.own.pid))
+        self.assert_other_runs()
 
     def test_3_app_without_own_process_is_not_served_from_another_domain(self):
         """With no process of its own domain to match, the second domain's node is not served."""
@@ -177,9 +182,11 @@ class TestProcfsDomainIsolation(GatewayTestCase):
             time.sleep(0.2)
         else:
             self.fail(f'temp_sensor did not answer 404 pid-lookup-failed; last {last}')
+        self.assert_other_runs()
         unmatched.stop()
         type(self).own = self.start('temp_sensor', get_test_domain_id())
         self.wait_served('temp_sensor', self.own.pid, foreign_pid=self.other.pid)
+        self.assert_other_runs()
 
     def test_4_exit_of_the_other_node_changes_nothing(self):
         """When the node of the second domain exits, the route still serves its own process."""
