@@ -85,7 +85,8 @@ Credential and certificate provisioning
    ``auth.clients`` (``client_id:client_secret:role``). Roles, least to most
    privileged: ``viewer`` (read), ``operator`` (+ trigger ops / ack faults /
    publish), ``configurator`` (+ modify configs), ``admin`` (+ auth
-   management). Rotate secrets periodically.
+   management). Rotate secrets periodically. The role a token grants is the
+   one this list gives its ``sub``, also for a token another gateway minted.
 
 4. **Obtain a token** and call the API over HTTPS:
 
@@ -119,7 +120,9 @@ Before exposing a gateway on a shared / plant network, confirm:
   required, reviewed capability.
 - [ ] ``bulk_data.max_upload_size`` bounded to what the deployment needs.
 - [ ] If peer aggregation is used: ``aggregation.require_tls: true`` and
-  ``forward_auth`` only enabled when every peer is trusted.
+  ``forward_auth`` only enabled when every peer is trusted. Revocation is per
+  gateway, and ``forward_auth`` forwards the access token: revoke the refresh
+  token it was minted from on every gateway, or disable the client.
 - [ ] Bind ``server.host`` to a management interface where the network layout
   allows, and place the gateway behind the plant firewall / segmentation.
 - [ ] Back the gateway with persistent storage on a volume with restricted

@@ -122,7 +122,14 @@ http::Result<dto::AuthTokenResponse> AuthHandlers::post_authorize(const http::Ty
 
     auto result = auth_manager->authenticate(auth_req.client_id.value(), auth_req.client_secret.value());
     if (!result) {
-      return tl::make_unexpected(from_auth_error(401, result.error()));
+      const auto & error = result.error();
+      if (error.retry_after_seconds.has_value()) {
+        // The credentials were good; the client's refresh token slots are all held by revoked tokens.
+        auto busy = from_auth_error(429, error);
+        busy.params["retry_after_seconds"] = *error.retry_after_seconds;
+        return tl::make_unexpected(std::move(busy));
+      }
+      return tl::make_unexpected(from_auth_error(401, error));
     }
     return to_auth_token_response(*result);
   } catch (const std::exception & e) {
@@ -208,7 +215,14 @@ http::Result<dto::AuthRevokeResponse> AuthHandlers::post_revoke(const http::Type
 
     // Per RFC 7009 §2.2, the revoke endpoint must not indicate whether the
     // submitted token was valid - always respond with the same 200 body.
-    auth_manager->revoke_refresh_token(token);
+    // The one refusal is RFC 7009 §2.2.1's 503: the client's pool of
+    // revocations for tokens without a login record here is full.
+    const auto outcome = auth_manager->try_revoke_refresh_token(token);
+    if (!outcome) {
+      auto busy = from_auth_error(503, outcome.error());
+      busy.params["retry_after_seconds"] = outcome.error().retry_after_seconds.value_or(1);
+      return tl::make_unexpected(std::move(busy));
+    }
 
     dto::AuthRevokeResponse resp;
     resp.status = "revoked";

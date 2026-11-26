@@ -79,6 +79,10 @@ struct ClientCredentials {
  * @verifies REQ_INTEROP_086, REQ_INTEROP_087
  */
 struct AuthConfig {
+  /// Range of `max_refresh_tokens_per_client`. Outside it the configuration is refused.
+  static constexpr int kMinRefreshTokensPerClient = 1;
+  static constexpr int kMaxRefreshTokensPerClient = 100000;
+
   bool enabled{false};                                       ///< Whether authentication is enabled
   std::string jwt_secret;                                    ///< Secret for HS256 or path to private key for RS256
   std::string jwt_public_key;                                ///< Path to public key for RS256 (optional)
@@ -87,6 +91,7 @@ struct AuthConfig {
   int refresh_token_expiry_seconds{86400};                   ///< Refresh token validity (default: 24 hours)
   AuthRequirement require_auth_for{AuthRequirement::WRITE};  ///< When to require authentication
   std::string issuer{"ros2_medkit_gateway"};                 ///< JWT issuer claim
+  int max_refresh_tokens_per_client{100};                    ///< Live refresh records kept per client
 
   // Pre-configured clients (for development/testing)
   std::vector<ClientCredentials> clients;
@@ -117,6 +122,7 @@ class AuthConfigBuilder {
   AuthConfigBuilder & with_algorithm(JwtAlgorithm algorithm);
   AuthConfigBuilder & with_token_expiry(int seconds);
   AuthConfigBuilder & with_refresh_token_expiry(int seconds);
+  AuthConfigBuilder & with_max_refresh_tokens_per_client(int count);
   AuthConfigBuilder & with_require_auth_for(AuthRequirement requirement);
   AuthConfigBuilder & with_issuer(const std::string & issuer);
   AuthConfigBuilder & add_client(const std::string & client_id, const std::string & client_secret, UserRole role);

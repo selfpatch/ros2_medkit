@@ -728,7 +728,10 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
       if (bytes_read <= 0) {
         break;
       }
-      sink.write(buf.data(), static_cast<std::size_t>(bytes_read));
+      // A refused write (client gone, token revoked or expired) ends the transfer.
+      if (!sink.write(buf.data(), static_cast<std::size_t>(bytes_read))) {
+        return false;
+      }
       remaining -= static_cast<uint64_t>(bytes_read);
       position += static_cast<uint64_t>(bytes_read);
     }

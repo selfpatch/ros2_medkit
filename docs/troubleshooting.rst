@@ -196,8 +196,14 @@ Check your role has the required permission:
 
 **Token refresh fails**
 
-Refresh tokens are single-use. After refreshing, use the new refresh token
-from the response.
+A refresh answers with the same refresh token, which is reused until it
+expires or is revoked. A gateway restart drops every refresh record, so
+authenticate again after one. With ``auth.max_refresh_tokens_per_client``
+reached, a login drops the client's oldest unrevoked refresh token. A login
+answered 429 means revoked refresh tokens fill the cap: retry after the
+``Retry-After`` seconds. A revocation answered 503 means the client's pool of
+revocations for tokens without a login record here is full: retry after the
+``Retry-After`` seconds.
 
 TLS/HTTPS Issues
 ----------------

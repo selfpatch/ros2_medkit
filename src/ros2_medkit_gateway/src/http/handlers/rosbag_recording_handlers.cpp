@@ -184,7 +184,10 @@ http::Result<http::BinaryResponse> BulkDataHandlers::recording_file(const http::
       if (bytes_read == 0) {
         break;
       }
-      sink.write(buf.data(), bytes_read);
+      // A refused write (client gone, token revoked or expired) ends the transfer.
+      if (!sink.write(buf.data(), bytes_read)) {
+        return false;
+      }
       remaining -= bytes_read;
     }
     return remaining == 0;

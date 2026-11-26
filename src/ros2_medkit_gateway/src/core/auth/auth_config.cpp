@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <stdexcept>
+#include <string>
 
 namespace ros2_medkit_gateway {
 
@@ -78,6 +79,11 @@ AuthConfigBuilder & AuthConfigBuilder::with_refresh_token_expiry(int seconds) {
   return *this;
 }
 
+AuthConfigBuilder & AuthConfigBuilder::with_max_refresh_tokens_per_client(int count) {
+  config_.max_refresh_tokens_per_client = count;
+  return *this;
+}
+
 AuthConfigBuilder & AuthConfigBuilder::with_require_auth_for(AuthRequirement requirement) {
   config_.require_auth_for = requirement;
   return *this;
@@ -121,6 +127,13 @@ AuthConfig AuthConfigBuilder::build() {
 
     if (config_.refresh_token_expiry_seconds < config_.token_expiry_seconds) {
       throw std::invalid_argument("Refresh token expiry must be greater than or equal to token expiry");
+    }
+
+    if (config_.max_refresh_tokens_per_client < AuthConfig::kMinRefreshTokensPerClient ||
+        config_.max_refresh_tokens_per_client > AuthConfig::kMaxRefreshTokensPerClient) {
+      throw std::invalid_argument("auth.max_refresh_tokens_per_client must be between " +
+                                  std::to_string(AuthConfig::kMinRefreshTokensPerClient) + " and " +
+                                  std::to_string(AuthConfig::kMaxRefreshTokensPerClient));
     }
 
     // For RS256, validate key paths exist (actual file check done at runtime)

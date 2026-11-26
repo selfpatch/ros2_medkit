@@ -100,6 +100,11 @@ class RESTServer {
     return http_server_ && http_server_->is_running();
   }
 
+  /// The manager holding clients and refresh records, or nullptr while authentication is off. Owned here.
+  AuthManager * auth_manager() const {
+    return auth_manager_.get();
+  }
+
  private:
   void setup_routes();
 

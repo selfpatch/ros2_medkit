@@ -14,8 +14,17 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <iostream>
+#include <memory>
+#include <optional>
+#include <string>
 #include <thread>
+#include <utility>
+
+#include <jwt-cpp/jwt.h>
 
 #include "ros2_medkit_gateway/core/auth/auth.hpp"
 
@@ -1266,6 +1275,497 @@ TEST_F(AuthRequirementPolicyTest, PolicyDescriptions) {
   // Descriptions should be unique
   EXPECT_NE(no_auth.description(), all_auth.description());
   EXPECT_NE(write_only.description(), configurable.description());
+}
+
+// ---------------------------------------------------------------------------
+// Refresh record lifetime
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// One admin client, with both expiries set by the test.
+std::unique_ptr<AuthManager> make_manager(int access_expiry, int refresh_expiry,
+                                          AuthManager::WallClock clock = std::chrono::system_clock::now) {
+  auto config = AuthConfigBuilder()
+                    .with_enabled(true)
+                    .with_jwt_secret("expiry_sweep_secret_key_at_least_32_chars_long")
+                    .with_require_auth_for(AuthRequirement::ALL)
+                    .with_token_expiry(access_expiry)
+                    .with_refresh_token_expiry(refresh_expiry)
+                    .add_client("svc", "svc_secret", UserRole::ADMIN)
+                    .build();
+  return std::make_unique<AuthManager>(config, std::move(clock));
+}
+
+/// A clock that reads `seconds`, which the test moves.
+AuthManager::WallClock clock_at(const std::shared_ptr<std::atomic<int64_t>> & seconds) {
+  return [seconds] {
+    return std::chrono::system_clock::time_point(std::chrono::seconds(seconds->load()));
+  };
+}
+
+/// A clock that returns `value` and then moves it on by `step` seconds. `last` holds what it returned last.
+struct SteppingClock {
+  std::shared_ptr<std::atomic<int64_t>> value = std::make_shared<std::atomic<int64_t>>(0);
+  std::shared_ptr<std::atomic<int64_t>> step = std::make_shared<std::atomic<int64_t>>(1);
+  std::shared_ptr<std::atomic<int64_t>> last = std::make_shared<std::atomic<int64_t>>(0);
+
+  AuthManager::WallClock clock() const {
+    return [value = value, step = step, last = last] {
+      const int64_t now = value->fetch_add(step->load());
+      last->store(now);
+      return std::chrono::system_clock::time_point(std::chrono::seconds(now));
+    };
+  }
+};
+
+/// Wall-clock seconds, the unit of every token and record time.
+int64_t wall_seconds() {
+  return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+/// The `exp` claim of a token, in wall-clock seconds.
+int64_t exp_seconds(const std::string & token) {
+  return std::chrono::duration_cast<std::chrono::seconds>(jwt::decode(token).get_expires_at().time_since_epoch())
+      .count();
+}
+
+/// Polls the wall clock until it reads `target` seconds. False if 30 s of steady time pass first.
+bool wait_for_wall_second(int64_t target) {
+  const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (wall_seconds() < target) {
+    if (std::chrono::steady_clock::now() > give_up) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return true;
+}
+
+}  // namespace
+
+// The login path sweeps, so the count after ordinary use is the subject, not a sweep the test calls.
+// @verifies REQ_INTEROP_086
+TEST(AuthManagerTokenLifetimeTest, RepeatedLoginsDoNotGrowTheStoreWithoutBound) {
+  // 1 s is the lowest legal pair: refresh must be >= access.
+  auto manager = make_manager(1, 1);
+
+  for (int i = 0; i < 5; ++i) {
+    ASSERT_TRUE(manager->authenticate("svc", "svc_secret").has_value());
+  }
+  const int64_t last_issue = wall_seconds();
+  EXPECT_EQ(manager->refresh_token_count(), 5U) << "records should accumulate while they are live";
+
+  // A record expires at issue + 1 and is held one access lifetime more; the sweep drops it at issue + 3.
+  ASSERT_TRUE(wait_for_wall_second(last_issue + 3));
+  ASSERT_TRUE(manager->authenticate("svc", "svc_secret").has_value());
+
+  EXPECT_EQ(manager->refresh_token_count(), 1U)
+      << "the five expired records survived a later authorisation - the sweep is not running";
+}
+
+// A refresh-only client reaches no other path that clears the store.
+// @verifies REQ_INTEROP_086
+TEST(AuthManagerTokenLifetimeTest, ARefreshOnlyWorkloadBoundsTheStore) {
+  auto manager = make_manager(1, 1);
+
+  auto first = manager->authenticate("svc", "svc_secret");
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(first->refresh_token.has_value());
+  auto second = manager->authenticate("svc", "svc_secret");
+  ASSERT_TRUE(second.has_value());
+  EXPECT_EQ(manager->refresh_token_count(), 2U);
+
+  // Refresh is the only call. It fails once the token expires, and the sweep must still run.
+  const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (manager->refresh_token_count() != 0U && std::chrono::steady_clock::now() < give_up) {
+    (void)manager->refresh_access_token(first->refresh_token.value());
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  EXPECT_EQ(manager->refresh_token_count(), 0U)
+      << "a workload that only ever refreshes left expired records in the store";
+}
+
+// A revoked record stays until the last access token minted from it has expired.
+// @verifies REQ_INTEROP_086
+TEST(AuthManagerRevocationTest, ARevokedRecordOutlivesTheTokensItWithdraws) {
+  // An accepted withdrawn token fails at once. The record checks need the late token live by the wall clock, which
+  // jwt-cpp reads; an attempt where it was seen expired, after a forward clock step, shows nothing and runs again.
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    // 3 s each, the tightest legal pair that leaves a checkable second between the two expiries.
+    auto manager = make_manager(3, 3);
+
+    // Issue at the start of a second, so the record's expiry is known to the second.
+    ASSERT_TRUE(wait_for_wall_second(wall_seconds() + 1));
+    const int64_t issued_at = wall_seconds();
+    auto issued = manager->authenticate("svc", "svc_secret");
+    ASSERT_TRUE(issued.has_value());
+    ASSERT_TRUE(issued->refresh_token.has_value());
+    if (wall_seconds() != issued_at) {
+      continue;
+    }
+
+    // Mint a late access token (expires at issued_at + 5 or later), then revoke its record (expires at issued_at + 3).
+    ASSERT_TRUE(wait_for_wall_second(issued_at + 2));
+    auto late = manager->refresh_access_token(issued->refresh_token.value());
+    // jwt-cpp reads sub-second time: the token is expired from the start of its `exp` second.
+    if (!late.has_value() && wall_seconds() >= issued_at + 3) {
+      continue;
+    }
+    ASSERT_TRUE(late.has_value()) << "the refresh failed while the refresh token was live: "
+                                  << late.error().error_description;
+    ASSERT_TRUE(manager->revoke_refresh_token(issued->refresh_token.value()));
+
+    // Past the record's own expiry, inside the late token's.
+    ASSERT_TRUE(wait_for_wall_second(issued_at + 4));
+    const size_t dropped = manager->cleanup_expired_tokens();
+    const size_t held = manager->refresh_token_count();
+    const auto validation = manager->validate_token(late->access_token);
+    ASSERT_FALSE(validation.valid) << "the revocation stopped holding while the token it withdrew was still live";
+    const bool seen_expired = validation.error.find("expired") != std::string::npos;
+    if (seen_expired && wall_seconds() >= exp_seconds(late->access_token)) {
+      continue;
+    }
+
+    EXPECT_NE(validation.error.find("revoked"), std::string::npos) << validation.error;
+    EXPECT_EQ(dropped, 0U) << "the sweep dropped a revoked record past its own expiry";
+    EXPECT_EQ(held, 1U);
+    return;
+  }
+  FAIL() << "the wall clock stepped past the scenario's seconds in every attempt";
+}
+
+// A foreign record expires no later than this gateway's refresh lifetime after the revocation.
+// @verifies REQ_INTEROP_086
+TEST(AuthManagerRevocationTest, AForeignRecordIsHeldUntilItsTokenExpiresPlusTheAccessLifetime) {
+  // The issuer's refresh lifetime (2 s) is longer than the peer's (1 s). The peer's clock is the test's, so a
+  // wall-clock step cannot move the sweep to another second. Revocation reads no token times.
+  auto issuer = make_manager(1, 2);
+  const auto now = std::make_shared<std::atomic<int64_t>>(wall_seconds());
+  auto peer = make_manager(1, 1, clock_at(now));
+  auto issued = issuer->authenticate("svc", "svc_secret");
+  ASSERT_TRUE(issued.has_value());
+  ASSERT_TRUE(issued->refresh_token.has_value());
+  const int64_t exp = exp_seconds(issued->refresh_token.value());
+
+  ASSERT_TRUE(peer->revoke_refresh_token(issued->refresh_token.value()));
+  EXPECT_EQ(peer->refresh_token_count(), 1U);
+
+  // Kept to exp + 1, past the peer's own refresh lifetime: no sweep drops it while the clock reads exp + 1.
+  now->store(exp + 1);
+  EXPECT_EQ(peer->cleanup_expired_tokens(), 0U) << "a foreign record was cut at this gateway's refresh lifetime";
+  EXPECT_EQ(peer->refresh_token_count(), 1U);
+
+  // Dropped once exp + 1 has passed.
+  now->store(exp + 2);
+  EXPECT_EQ(peer->cleanup_expired_tokens(), 1U);
+  EXPECT_EQ(peer->refresh_token_count(), 0U);
+}
+
+// A foreign revocation is recorded only for a subject in this gateway's client table.
+// @verifies REQ_INTEROP_086
+TEST(AuthManagerRevocationTest, AForeignRevocationOfAnUnknownSubjectWritesNothing) {
+  // Same secret and issuer as make_manager, another client id.
+  auto stranger_issuer =
+      std::make_unique<AuthManager>(AuthConfigBuilder()
+                                        .with_enabled(true)
+                                        .with_jwt_secret("expiry_sweep_secret_key_at_least_32_chars_long")
+                                        .with_require_auth_for(AuthRequirement::ALL)
+                                        .with_token_expiry(3600)
+                                        .with_refresh_token_expiry(86400)
+                                        .add_client("stranger", "stranger_secret", UserRole::ADMIN)
+                                        .build());
+  auto known_issuer = make_manager(3600, 86400);
+  auto peer = make_manager(3600, 86400);
+
+  auto stranger = stranger_issuer->authenticate("stranger", "stranger_secret");
+  ASSERT_TRUE(stranger.has_value());
+  ASSERT_TRUE(stranger->refresh_token.has_value());
+  (void)peer->revoke_refresh_token(stranger->refresh_token.value());
+  EXPECT_EQ(peer->refresh_token_count(), 0U) << "a revocation for a subject this gateway does not list wrote a record";
+
+  // The same revocation for a listed subject writes one record.
+  auto known = known_issuer->authenticate("svc", "svc_secret");
+  ASSERT_TRUE(known.has_value());
+  ASSERT_TRUE(known->refresh_token.has_value());
+  EXPECT_TRUE(peer->revoke_refresh_token(known->refresh_token.value()));
+  EXPECT_EQ(peer->refresh_token_count(), 1U);
+  EXPECT_FALSE(peer->validate_token(known->access_token).valid);
+}
+
+// A revoked record minted here is kept only until the access tokens minted from it have expired.
+// @verifies REQ_INTEROP_086
+TEST(AuthManagerRevocationTest, ALocalRevokedRecordIsHeldOnlyForTheAccessLifetime) {
+  auto manager = make_manager(1, 3600);
+  auto issued = manager->authenticate("svc", "svc_secret");
+  ASSERT_TRUE(issued.has_value());
+  ASSERT_TRUE(issued->refresh_token.has_value());
+
+  ASSERT_TRUE(manager->revoke_refresh_token(issued->refresh_token.value()));
+  const int64_t revoked_at = wall_seconds();
+  EXPECT_EQ(manager->cleanup_expired_tokens(), 0U) << "dropped while an access token minted from it can be live";
+  EXPECT_EQ(manager->refresh_token_count(), 1U);
+
+  // Kept to revoked_at + 1 at the latest, so a login sweeps it once the clock reads revoked_at + 2.
+  ASSERT_TRUE(wait_for_wall_second(revoked_at + 2));
+  ASSERT_TRUE(manager->authenticate("svc", "svc_secret").has_value());
+  EXPECT_EQ(manager->refresh_token_count(), 1U) << "the revoked record outlived the access lifetime";
+  EXPECT_FALSE(manager->refresh_access_token(issued->refresh_token.value()).has_value())
+      << "the revoked refresh token refreshed once its record was gone";
+}
+
+// A jti names one record; a revocation carrying it for another subject leaves the record alone.
+// @verifies REQ_INTEROP_086
+TEST(AuthManagerRevocationTest, ARevocationWithAnotherSubjectLeavesTheRecord) {
+  auto manager = make_manager(3600, 86400);
+  // Listed, so only the subject check can refuse its revocation.
+  ASSERT_TRUE(manager->register_client("another_client", "another_secret", UserRole::VIEWER));
+  auto issued = manager->authenticate("svc", "svc_secret");
+  ASSERT_TRUE(issued.has_value());
+  ASSERT_TRUE(issued->refresh_token.has_value());
+
+  // Signed with the same key and naming the same jti, for another subject.
+  const auto now = std::chrono::system_clock::now();
+  const std::string forged = jwt::create()
+                                 .set_type("refresh")
+                                 .set_issuer("ros2_medkit_gateway")
+                                 .set_subject("another_client")
+                                 .set_id(jwt::decode(issued->refresh_token.value()).get_id())
+                                 .set_issued_at(now)
+                                 .set_expires_at(now + std::chrono::hours(1))
+                                 .sign(jwt::algorithm::hs256{"expiry_sweep_secret_key_at_least_32_chars_long"});
+
+  EXPECT_FALSE(manager->revoke_refresh_token(forged));
+  EXPECT_TRUE(manager->validate_token(issued->access_token).valid) << "another subject revoked this client's record";
+  EXPECT_TRUE(manager->refresh_access_token(issued->refresh_token.value()).has_value());
+
+  // The token's own subject does revoke it.
+  EXPECT_TRUE(manager->revoke_refresh_token(issued->refresh_token.value()));
+  EXPECT_FALSE(manager->validate_token(issued->access_token).valid);
+}
+
+// An access token names no refresh record, so revoking it records nothing.
+// @verifies REQ_INTEROP_086
+TEST(AuthManagerRevocationTest, RevokingAnAccessTokenRecordsNothing) {
+  auto manager = make_manager(3600, 86400);
+  auto issued = manager->authenticate("svc", "svc_secret");
+  ASSERT_TRUE(issued.has_value());
+  const size_t held = manager->refresh_token_count();
+
+  const auto outcome = manager->try_revoke_refresh_token(issued->access_token);
+  ASSERT_TRUE(outcome.has_value());
+  EXPECT_FALSE(*outcome);
+  EXPECT_EQ(manager->refresh_token_count(), held);
+}
+
+// A refresh that reads the record before a revocation mints nothing that outlives the revoked record.
+// In-process: the interleaving cannot be forced over HTTP.
+// @verifies REQ_INTEROP_086
+TEST(AuthManagerRevocationTest, ARefreshRacingARevokeMintsNothingThatOutlivesTheRecord) {
+  // The highest cap, so the revoked records of every iteration fit.
+  AuthManager manager(AuthConfigBuilder()
+                          .with_enabled(true)
+                          .with_jwt_secret("expiry_sweep_secret_key_at_least_32_chars_long")
+                          .with_require_auth_for(AuthRequirement::ALL)
+                          .with_token_expiry(3600)
+                          .with_refresh_token_expiry(86400)
+                          .with_max_refresh_tokens_per_client(100000)
+                          .add_client("svc", "svc_secret", UserRole::ADMIN)
+                          .build());
+  int minted = 0;
+  for (int i = 0; i < 200; ++i) {
+    auto issued = manager.authenticate("svc", "svc_secret");
+    ASSERT_TRUE(issued.has_value());
+    const std::string refresh = issued->refresh_token.value();
+    const std::string jti = jwt::decode(refresh).get_id();
+
+    std::atomic<bool> go{false};
+    tl::expected<TokenResponse, AuthErrorResponse> refreshed = tl::unexpected(AuthErrorResponse::invalid_grant(""));
+    std::thread refresher([&] {
+      while (!go.load()) {
+      }
+      refreshed = manager.refresh_access_token(refresh);
+    });
+    std::thread revoker([&] {
+      while (!go.load()) {
+      }
+      (void)manager.revoke_refresh_token(refresh);
+    });
+    go.store(true);
+    refresher.join();
+    revoker.join();
+
+    const auto kept_until = manager.refresh_record_kept_until(jti);
+    ASSERT_TRUE(kept_until.has_value()) << "iteration " << i << ": the revoked record is gone";
+    if (!refreshed.has_value()) {
+      continue;
+    }
+    ++minted;
+    EXPECT_LE(exp_seconds(refreshed->access_token), *kept_until)
+        << "iteration " << i << ": a minted access token outlives the revoked record";
+  }
+  std::cout << "refreshes that minted: " << minted << " of 200" << '\n';
+  EXPECT_GT(minted, 0) << "no refresh minted, so no minted token was checked against its record";
+}
+
+// A revoked record outlives every access token minted from it, also when the clock stepped back before the revoke.
+// In-process: a real process's wall clock cannot be moved without root. validate_token checks expiry against the
+// system clock, and the test clock stays within the access lifetime of it.
+// @verifies REQ_INTEROP_086
+TEST(AuthManagerRevocationTest, AClockSteppedBackBeforeARevokeKeepsTheRecordPastEveryMintedToken) {
+  const auto now = std::make_shared<std::atomic<int64_t>>(wall_seconds());
+  auto manager = make_manager(3600, 86400, clock_at(now));
+  const auto jti_of = [](const std::string & token) {
+    return jwt::decode(token).get_id();
+  };
+
+  // A refreshed access token, then the clock steps back 10 s before the revoke.
+  auto issued = manager->authenticate("svc", "svc_secret");
+  ASSERT_TRUE(issued.has_value());
+  const std::string refresh = issued->refresh_token.value();
+  auto refreshed = manager->refresh_access_token(refresh);
+  ASSERT_TRUE(refreshed.has_value());
+  const int64_t refreshed_exp = exp_seconds(refreshed->access_token);
+  now->fetch_sub(10);
+  ASSERT_TRUE(manager->revoke_refresh_token(refresh));
+  const auto kept = manager->refresh_record_kept_until(jti_of(refresh));
+  ASSERT_TRUE(kept.has_value());
+  EXPECT_GE(*kept, refreshed_exp) << "the record goes before the refreshed access token expires";
+
+  // Past the horizon a revoke-time clock reading gives (refreshed_exp - 10), before the token expires.
+  now->store(refreshed_exp - 5);
+  (void)manager->cleanup_expired_tokens();
+  EXPECT_FALSE(manager->validate_token(refreshed->access_token).valid)
+      << "the refreshed access token came back after the sweep";
+
+  // The access token minted at login, with no refresh.
+  now->store(wall_seconds());
+  auto login = manager->authenticate("svc", "svc_secret");
+  ASSERT_TRUE(login.has_value());
+  const int64_t login_exp = exp_seconds(login->access_token);
+  now->fetch_sub(10);
+  ASSERT_TRUE(manager->revoke_refresh_token(login->refresh_token.value()));
+  const auto login_kept = manager->refresh_record_kept_until(jti_of(login->refresh_token.value()));
+  ASSERT_TRUE(login_kept.has_value());
+  EXPECT_GE(*login_kept, login_exp) << "the record goes before the login access token expires";
+  now->store(login_exp - 5);
+  (void)manager->cleanup_expired_tokens();
+  EXPECT_FALSE(manager->validate_token(login->access_token).valid) << "the login access token came back";
+
+  // A steady clock: kept exactly until the last minted exp, and dropped once it has passed.
+  now->store(wall_seconds());
+  auto steady = manager->authenticate("svc", "svc_secret");
+  ASSERT_TRUE(steady.has_value());
+  const std::string steady_refresh = steady->refresh_token.value();
+  auto steady_refreshed = manager->refresh_access_token(steady_refresh);
+  ASSERT_TRUE(steady_refreshed.has_value());
+  const int64_t last_exp = std::max(exp_seconds(steady->access_token), exp_seconds(steady_refreshed->access_token));
+  ASSERT_TRUE(manager->revoke_refresh_token(steady_refresh));
+  EXPECT_EQ(manager->refresh_record_kept_until(jti_of(steady_refresh)), std::optional<int64_t>(last_exp));
+  now->store(last_exp);
+  (void)manager->cleanup_expired_tokens();
+  EXPECT_TRUE(manager->refresh_record_kept_until(jti_of(steady_refresh)).has_value()) << "dropped at its last exp";
+  now->store(last_exp + 1);
+  (void)manager->cleanup_expired_tokens();
+  EXPECT_FALSE(manager->refresh_record_kept_until(jti_of(steady_refresh)).has_value())
+      << "kept after the last minted access token expired";
+}
+
+// A revocation holds through a clock that jumps forward past the access token's exp and comes back.
+// In-process: a real process's wall clock cannot be moved without root.
+// @verifies REQ_INTEROP_086
+TEST(AuthManagerRevocationTest, AClockJumpingForwardAndBackKeepsTheRevocation) {
+  const auto now = std::make_shared<std::atomic<int64_t>>(wall_seconds());
+  const int64_t start = now->load();
+  auto manager = make_manager(3600, 86400, clock_at(now));
+  auto login = manager->authenticate("svc", "svc_secret");
+  ASSERT_TRUE(login.has_value());
+  const std::string refresh = login->refresh_token.value();
+  const int64_t access_exp = exp_seconds(login->access_token);
+  auto kept_login = manager->authenticate("svc", "svc_secret");
+  ASSERT_TRUE(kept_login.has_value());
+
+  // Forward past the access token's exp, revoke and sweep there, then back inside its lifetime.
+  now->store(start + 3600 + 1);
+  ASSERT_TRUE(manager->revoke_refresh_token(refresh));
+  (void)manager->cleanup_expired_tokens();
+  now->store(start + 3600 / 2);
+  (void)manager->cleanup_expired_tokens();
+
+  const auto kept = manager->refresh_record_kept_until(jwt::decode(refresh).get_id());
+  ASSERT_TRUE(kept.has_value()) << "the sweep dropped the revoked record while the clock was ahead";
+  EXPECT_GE(*kept, access_exp);
+  const auto validation = manager->validate_token(login->access_token);
+  EXPECT_FALSE(validation.valid) << "the login access token came back when the clock returned";
+  EXPECT_NE(validation.error.find("revoked"), std::string::npos) << validation.error;
+  EXPECT_TRUE(manager->validate_token(kept_login->access_token).valid) << "an unrevoked access token was refused";
+}
+
+// Retry-After is read from the clock reading the sweep used, so retrying then gets through.
+// In-process: the test clock moves between reads.
+// @verifies REQ_INTEROP_086
+TEST(AuthManagerRevocationTest, ARetryAfterMatchesTheClockTheSweepRead) {
+  SteppingClock clock;
+  clock.value->store(wall_seconds());
+  AuthManager manager(AuthConfigBuilder()
+                          .with_enabled(true)
+                          .with_jwt_secret("expiry_sweep_secret_key_at_least_32_chars_long")
+                          .with_require_auth_for(AuthRequirement::ALL)
+                          .with_token_expiry(60)
+                          .with_refresh_token_expiry(600)
+                          .with_max_refresh_tokens_per_client(1)
+                          .add_client("svc", "svc_secret", UserRole::ADMIN)
+                          .build(),
+                      clock.clock());
+
+  // 429: the client's one login slot holds a revoked record.
+  auto first = manager.authenticate("svc", "svc_secret");
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(manager.revoke_refresh_token(first->refresh_token.value()));
+  const auto slot_until = manager.refresh_record_kept_until(jwt::decode(first->refresh_token.value()).get_id());
+  ASSERT_TRUE(slot_until.has_value());
+  auto refused = manager.authenticate("svc", "svc_secret");
+  ASSERT_FALSE(refused.has_value());
+  ASSERT_TRUE(refused.error().retry_after_seconds.has_value());
+  const int64_t login_now = clock.last->load();
+  EXPECT_EQ(*refused.error().retry_after_seconds, *slot_until + 1 - login_now)
+      << "Retry-After at login was read from another clock reading than the sweep's";
+
+  clock.step->store(0);
+  const int64_t login_free_at = login_now + *refused.error().retry_after_seconds;
+  clock.value->store(login_free_at - 1);
+  EXPECT_FALSE(manager.authenticate("svc", "svc_secret").has_value()) << "a login got through before Retry-After";
+  clock.value->store(login_free_at);
+  EXPECT_TRUE(manager.authenticate("svc", "svc_secret").has_value()) << "a login at Retry-After was refused";
+
+  // 503: the client's foreign pool of one is full.
+  auto issuer = make_manager(60, 600);
+  auto foreign_first = issuer->authenticate("svc", "svc_secret");
+  auto foreign_second = issuer->authenticate("svc", "svc_secret");
+  ASSERT_TRUE(foreign_first.has_value());
+  ASSERT_TRUE(foreign_second.has_value());
+  clock.step->store(1);
+  const auto recorded = manager.try_revoke_refresh_token(foreign_first->refresh_token.value());
+  ASSERT_TRUE(recorded.has_value() && *recorded);
+  const auto pool_until = manager.refresh_record_kept_until(jwt::decode(foreign_first->refresh_token.value()).get_id());
+  ASSERT_TRUE(pool_until.has_value());
+  const auto full = manager.try_revoke_refresh_token(foreign_second->refresh_token.value());
+  ASSERT_FALSE(full.has_value());
+  ASSERT_TRUE(full.error().retry_after_seconds.has_value());
+  const int64_t revoke_now = clock.last->load();
+  EXPECT_EQ(*full.error().retry_after_seconds, *pool_until + 1 - revoke_now)
+      << "Retry-After at revoke was read from another clock reading than the sweep's";
+
+  clock.step->store(0);
+  const int64_t pool_free_at = revoke_now + *full.error().retry_after_seconds;
+  clock.value->store(pool_free_at - 1);
+  EXPECT_FALSE(manager.try_revoke_refresh_token(foreign_second->refresh_token.value()).has_value())
+      << "a revocation got through before Retry-After";
+  clock.value->store(pool_free_at);
+  const auto through = manager.try_revoke_refresh_token(foreign_second->refresh_token.value());
+  ASSERT_TRUE(through.has_value()) << "a revocation at Retry-After was refused";
+  EXPECT_TRUE(*through);
 }
 
 int main(int argc, char ** argv) {

@@ -120,8 +120,8 @@ inline constexpr std::string_view dto_name<AuthRevokeRequest> = "AuthRevokeReque
 // =============================================================================
 // AuthRevokeResponse - response body for POST /auth/revoke.
 //
-// RFC 7009 §2.2 mandates an empty response body, but the existing gateway wire
-// format ships `{"status": "revoked"}` for parity with the SOVD status pattern.
+// RFC 7009 §2.2 says the client ignores the response body. The gateway sends
+// `{"status": "revoked"}` for parity with the SOVD status pattern.
 // Integration tests assert on this field; preserve it byte-for-byte.
 // =============================================================================
 struct AuthRevokeResponse {

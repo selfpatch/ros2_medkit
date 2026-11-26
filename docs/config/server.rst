@@ -1048,11 +1048,11 @@ default for local development.
    * - ``auth.jwt_secret``
      - string
      - ``""``
-     - JWT signing secret. For HS256: the shared secret string. For RS256: path to the private key file (PEM format). ``MEDKIT_JWT_SECRET`` overrides it; set but empty, that variable stops the gateway, and with RS256 it is refused. Read back as ``<from MEDKIT_JWT_SECRET>``, ``<set at start>`` or empty, never as the value.
+     - JWT signing secret. For HS256: the shared secret string. For RS256: path to the private key file (PEM format), read once at startup, so a rotated key takes effect at the next restart. ``MEDKIT_JWT_SECRET`` overrides it; set but empty, that variable stops the gateway, and with RS256 it is refused. Read back as ``<from MEDKIT_JWT_SECRET>``, ``<set at start>`` or empty, never as the value.
    * - ``auth.jwt_public_key``
      - string
      - ``""``
-     - Path to public key file for RS256. Required for RS256, optional for HS256.
+     - Path to public key file for RS256. Required for RS256, optional for HS256. Read once at startup, so a rotated key takes effect at the next restart.
    * - ``auth.jwt_algorithm``
      - string
      - ``"HS256"``
@@ -1060,11 +1060,15 @@ default for local development.
    * - ``auth.token_expiry_seconds``
      - int
      - ``3600``
-     - Access token validity period in seconds (1 hour).
+     - Access token validity period in seconds (1 hour). A refresh record is kept until its expiry plus this value, and a revoked one minted here until the later of the last access token ``exp`` reserved from it and ``min(expires_at, revoked_at)`` plus this value, so a revocation holds until every access token minted from it has expired. A revocation of a token minted elsewhere is kept until that token's ``exp`` plus this value. Under ``aggregation.forward_auth`` a peer's value must be at least the issuer's, or a revocation the peer records for the issuer's token lapses while that token still verifies.
    * - ``auth.refresh_token_expiry_seconds``
      - int
      - ``86400``
-     - Refresh token validity period in seconds (24 hours). Must be >= ``token_expiry_seconds``.
+     - Refresh token validity period in seconds (24 hours). Must be >= ``token_expiry_seconds``. It does not bound a revocation recorded here for a token another gateway issued: that record is kept to the token's own ``exp``.
+   * - ``auth.max_refresh_tokens_per_client``
+     - int
+     - ``100``
+     - Refresh records kept per client, revoked ones included, 1 to 100000; outside that range the gateway does not start. A login at the cap drops the client's oldest unrevoked refresh token, which then stops refreshing; access tokens minted from it stay valid until they expire. The cap never drops a revoked record; the sweep drops it after its horizon. When revoked records fill the cap, a login answers 429 with ``Retry-After`` until the oldest is swept; that blocks only this client. Revocations of tokens without a login record here (minted elsewhere, or dropped by this cap) have a count of their own, also capped at this value; they never block a login. When they fill it, ``POST /auth/revoke`` answers 503 with ``Retry-After`` and records nothing. A web UI or tool that shares one client id across many sessions needs a value above its session count.
    * - ``auth.require_auth_for``
      - string
      - ``"write"``
@@ -1115,6 +1119,78 @@ Example:
          require_auth_for: "write"
          token_expiry_seconds: 3600
          clients: ["admin:REPLACE_WITH_STRONG_SECRET:admin", "viewer:REPLACE_WITH_STRONG_SECRET:viewer"]
+
+What a token is checked against
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+An access token is accepted when the signature verifies under the configured
+secret or public key, the issuer matches, the expiry is in the future, and the
+client named in ``sub`` exists in this gateway's ``auth.clients`` and is
+enabled. The role it grants is the one **this** gateway's ``auth.clients``
+gives that client. The ``role`` claim in the token is not read: any value, or
+none, is accepted.
+
+The gateway keeps a record of the refresh tokens it issues, in process memory;
+at ``auth.max_refresh_tokens_per_client`` a login drops the client's oldest
+unrevoked one. The records are a **denylist**: a record marked revoked refuses
+the access tokens minted from it, and a token with no record here is judged on
+the checks above. So a token issued before a restart, or by another gateway that shares
+this JWT configuration, is accepted.
+
+``POST /auth/revoke`` revokes refresh tokens only; for any other token it gives
+the same answer and records nothing. It revokes a refresh token this gateway did
+not issue by writing a revoked record for it, when the signature and issuer
+verify here and ``sub`` is a client in ``auth.clients``; for any other subject
+it records nothing. A record this gateway holds is revoked only by a token
+whose ``sub`` is the record's client. Revocation ignores ``exp``, ``iat`` and
+``nbf``: a refresh token past its expiry can still have live access tokens,
+and an issuer whose clock runs ahead stamps times this gateway has not reached
+yet.
+
+Each record has a horizon, and a sweep drops it once the horizon has passed.
+Sweeps run at login, at refresh and every 5 minutes.
+
+- An unrevoked record: its expiry plus ``auth.token_expiry_seconds``.
+- A revoked record minted here: the later of the last access token ``exp``
+  reserved from it and ``min(expires_at, revoked_at)`` plus
+  ``auth.token_expiry_seconds``. After a revocation no refresh reserves a new
+  access token from the record; a refresh that reserved before it can still
+  return a token, and that token is refused. The reserved ``exp`` covers a
+  clock that stepped back between a mint and the revocation; the second term
+  covers a clock that jumped forward before the revocation and comes back.
+  Access-token expiry is wall-clock time, so a clock that jumps forward past a
+  record's horizon and then back can end a revocation early.
+- A revocation of a token with no login record here (minted by another
+  gateway, or dropped by the cap): that token's own ``exp`` plus
+  ``auth.token_expiry_seconds``. The issuer may still mint from the token
+  until ``exp``. The record and the token's ``exp`` are read against the same
+  clock, so a clock difference between gateways does not shorten it.
+
+Revoked login records count toward ``auth.max_refresh_tokens_per_client`` and
+the cap never drops one. When they fill it, a login answers 429 with
+``Retry-After``, the seconds until the oldest is swept. Such a client blocks
+only itself.
+
+Revocations of tokens without a login record form a pool per client, counted
+apart from its login records and capped at the same
+``auth.max_refresh_tokens_per_client``. They never block a login. Nothing is
+dropped to make room: with the pool full, ``POST /auth/revoke`` answers 503
+with ``Retry-After``, the seconds until the oldest is swept, and records
+nothing.
+
+A stream or download this gateway serves - the fault stream, a cyclic
+subscription or trigger stream, a bulk-data or recording download - keeps the
+access token it was opened with and checks it again before each keepalive,
+event or chunk it writes. Once the token no longer validates (revoked, expired,
+or the client disabled), the stream ends at that write. The fault stream writes
+a keepalive every ``sse.keepalive_interval_sec``; cyclic subscription and
+trigger streams every 15 s, and a cyclic stream also writes a frame per sample.
+A request this gateway forwards to a peer completes like any other request.
+
+Records do not survive a restart: **a revoked token is honoured again after a
+restart**, for at most ``auth.token_expiry_seconds``. Where a revocation must
+survive a restart, disable the client in ``auth.clients``, which is checked on
+every request.
 
 See :doc:`/tutorials/authentication` for a complete setup tutorial.
 

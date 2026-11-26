@@ -241,6 +241,20 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
   declare_parameter("auth.jwt_algorithm", "HS256");
   declare_parameter("auth.token_expiry_seconds", 3600);
   declare_parameter("auth.refresh_token_expiry_seconds", 86400);
+  {
+    // Refused outside the range: the gateway does not start.
+    rcl_interfaces::msg::ParameterDescriptor desc;
+    desc.description =
+        "Login refresh records kept per client, revoked ones included. A login at the cap drops the client's oldest "
+        "unrevoked one; when revoked ones fill it, the login answers 429. Revocations of tokens without a login record "
+        "here have a count of their own at the same cap; when it is full, a revocation answers 503.";
+    rcl_interfaces::msg::IntegerRange range;
+    range.from_value = AuthConfig::kMinRefreshTokensPerClient;
+    range.to_value = AuthConfig::kMaxRefreshTokensPerClient;
+    range.step = 1;
+    desc.integer_range.push_back(range);
+    declare_parameter("auth.max_refresh_tokens_per_client", 100, desc);
+  }
   declare_parameter("auth.require_auth_for", "write");
   declare_parameter("auth.issuer", "ros2_medkit_gateway");
 
@@ -605,6 +619,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
           .with_algorithm(string_to_algorithm(jwt_algorithm))
           .with_token_expiry(static_cast<int>(get_parameter("auth.token_expiry_seconds").as_int()))
           .with_refresh_token_expiry(static_cast<int>(get_parameter("auth.refresh_token_expiry_seconds").as_int()))
+          .with_max_refresh_tokens_per_client(
+              static_cast<int>(get_parameter("auth.max_refresh_tokens_per_client").as_int()))
           .with_require_auth_for(string_to_auth_requirement(require_auth_for))
           .with_issuer(get_parameter("auth.issuer").as_string());
 
@@ -1436,6 +1452,16 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
   // Wire aggregation manager into REST server handler context
   if (aggregation_host_) {
     rest_server_->set_aggregation_manager(&aggregation_host_->manager());
+  }
+
+  // Sweep expired refresh records every 5 minutes. Logins and refreshes also sweep; this covers a quiet gateway.
+  if (rest_server_->auth_manager() != nullptr) {
+    refresh_token_cleanup_timer_ = create_wall_timer(std::chrono::minutes(5), [this]() {
+      size_t removed = rest_server_->auth_manager()->cleanup_expired_tokens();
+      if (removed > 0) {
+        RCLCPP_DEBUG(get_logger(), "Cleaned up %zu expired refresh token records", removed);
+      }
+    });
   }
 
   start_rest_server();
