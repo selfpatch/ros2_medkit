@@ -283,6 +283,17 @@ void RateLimiter::apply_rejection(const RateLimitResult & result, httplib::Respo
   res.set_content(error.dump(), "application/json");
 }
 
+void RateLimiter::apply_bare_rejection(httplib::Response & res) {
+  res.status = 429;
+
+  nlohmann::json error;
+  error["error_code"] = ERR_RATE_LIMIT_EXCEEDED;
+  error["message"] = "Too many requests.";
+  error["parameters"] = nlohmann::json::object();
+
+  res.set_content(error.dump(), "application/json");
+}
+
 void RateLimiter::cleanup_stale_clients() {
   std::lock_guard<std::mutex> lock(clients_mutex_);
   auto now = std::chrono::steady_clock::now();

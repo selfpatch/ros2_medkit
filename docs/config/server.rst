@@ -1025,6 +1025,54 @@ Example:
          client_requests_per_minute: 60
          endpoint_limits: ["/api/v1/*/operations/*:10"]
 
+Every request that reaches the gateway's handler spends allowance, ``OPTIONS``
+included, except a CORS preflight. A preflight is an ``OPTIONS`` request that
+carries ``Access-Control-Request-Method``, and the exemption applies only with
+CORS on. It is answered before rate limiting and authentication and is not
+metered. With CORS off, such a request is metered like any other. Any other
+``OPTIONS`` request is an ordinary request to its route: it is metered and
+authenticated like any other. Requests the HTTP layer refuses before the
+handler (``400`` for a request that does not parse, ``414``, ``416`` for a bad
+``Range``) are not metered. A ``413`` is not on that list: the body is read
+after the limiter has run, so an oversized body spends allowance and can get a
+``429`` or ``401`` first.
+
+A route needs no authentication when it is under ``/auth/*`` (always), when
+authentication is off or ``auth.require_auth_for`` is ``none`` (every route), or
+for reads when ``auth.require_auth_for`` is ``write``. Under ``all`` every other
+route needs it, ``/health`` included.
+
+Who hears the limiter depends on authentication. An ``Authorization`` header
+means one with a non-empty value; an empty one counts as absent.
+
+- No ``Authorization`` header on a route that needs authentication: the ``401``
+  of the authentication layer, over the limit or not. No limiter headers.
+- An ``Authorization`` header on a route that needs authentication, over the
+  limit: a ``429`` before the token is verified. It has no ``Retry-After``, no
+  ``X-RateLimit-*`` headers and no limiter values in the body. This holds for a
+  valid token too.
+- A caller that passed authentication and authorization, or a route that needs
+  none: ``X-RateLimit-*`` on the answer while under the limit. A verified caller
+  refused by RBAC gets the ``403`` with no limiter headers.
+- A route that needs no authentication, over the limit: the full ``429`` with
+  ``Retry-After``. A verified caller always sends ``Authorization``, so on a
+  protected route it gets the bare ``429`` above.
+
+.. note::
+
+   Breaking changes:
+
+   - An anonymous caller on a protected route gets ``401`` where it got ``429``.
+   - A request with a non-empty ``Authorization`` value on a protected route
+     over the limit, a valid token included, gets the bare ``429`` where it got
+     the full one.
+   - ``X-RateLimit-*`` headers no longer appear on a ``401`` or on a ``403``
+     from RBAC.
+   - With CORS on, a plain ``OPTIONS`` request gets the answer of its route
+     (``401``, ``404``) where it got ``204``; with no or a disallowed ``Origin``
+     it gets that answer where it got ``403``.
+   - ``OPTIONS`` requests spend allowance.
+
 See :doc:`/api/rest` for rate limiting response headers and 429 behavior.
 
 Authentication

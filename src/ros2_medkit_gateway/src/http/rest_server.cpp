@@ -369,8 +369,10 @@ void RESTServer::setup_pre_routing_handler() {
         }
       }
 
-      // 2. Handle preflight OPTIONS requests
-      if (req.method == "OPTIONS") {
+      // 2. A preflight is an OPTIONS with Access-Control-Request-Method. A browser cannot
+      // authenticate it, so it is answered here, before metering and authentication.
+      // Any other OPTIONS is an ordinary request.
+      if (req.method == "OPTIONS" && req.has_header("Access-Control-Request-Method")) {
         if (origin_allowed) {
           res.set_header("Access-Control-Max-Age", std::to_string(cors_config_.max_age_seconds));
           res.status = 204;
@@ -381,28 +383,45 @@ void RESTServer::setup_pre_routing_handler() {
       }
     }
 
-    // 3. Rate limiting check. If rejected, return Handled (CORS headers already set)
-    if (rate_limiter_ && rate_limiter_->is_enabled() && req.method != "OPTIONS") {
-      auto rl_result = rate_limiter_->check(req.remote_addr, req.path);
-      RateLimiter::apply_headers(rl_result, res);
-      if (!rl_result.allowed) {
-        RateLimiter::apply_rejection(rl_result, res);
-        return handled(req, res);
-      }
+    // 3. Meter every request that is not a preflight. Limiter state is written in step 5,
+    // once the caller is known.
+    bool rate_limited = false;
+    bool rate_metered = false;
+    RateLimitResult rl_result;
+    if (rate_limiter_ && rate_limiter_->is_enabled()) {
+      rl_result = rate_limiter_->check(req.remote_addr, req.path);
+      rate_limited = !rl_result.allowed;
+      rate_metered = true;
     }
 
-    // 1. Handle CORS (existing logic)
-
-    // Handle Authentication if enabled
+    // 4. Authentication
     if (auth_middleware_ && auth_middleware_->is_enabled()) {
-      // Use AuthMiddleware to process the request
       auto auth_request = AuthMiddleware::from_httplib_request(req);
+
+      // Over the limit with an Authorization header on a protected route: refuse
+      // before the token is verified, and without limiter state.
+      if (rate_limited && auth_request.authorization_header.has_value() &&
+          AuthMiddleware::rate_limit_precedes_validation(rate_limited, true,
+                                                         auth_middleware_->requires_authentication(auth_request))) {
+        RateLimiter::apply_bare_rejection(res);
+        return handled(req, res);
+      }
+
       auto result = auth_middleware_->process(auth_request);
 
       if (!result.allowed) {
         AuthMiddleware::apply_to_response(result, res);
         return handled(req, res);
       }
+    }
+
+    // 5. The caller passed authentication or the route needs none: the limiter may speak.
+    if (rate_metered) {
+      RateLimiter::apply_headers(rl_result, res);
+    }
+    if (rate_limited) {
+      RateLimiter::apply_rejection(rl_result, res);
+      return handled(req, res);
     }
 
     return httplib::Server::HandlerResponse::Unhandled;

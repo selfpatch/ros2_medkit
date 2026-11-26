@@ -119,6 +119,10 @@ class RateLimiter {
   /// Set 429 rejection response with SOVD-compliant error body.
   static void apply_rejection(const RateLimitResult & result, httplib::Response & res);
 
+  /// Set a 429 that carries no limiter state: no `Retry-After`, no `X-RateLimit-*`,
+  /// and an empty `parameters` object. For callers whose credential is not verified.
+  static void apply_bare_rejection(httplib::Response & res);
+
   /// Remove tracking entries for clients that have been idle too long.
   void cleanup_stale_clients();
 

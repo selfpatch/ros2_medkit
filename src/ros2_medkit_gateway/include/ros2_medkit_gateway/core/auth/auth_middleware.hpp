@@ -90,6 +90,34 @@ class AuthMiddleware {
   AuthMiddlewareResult process(const AuthRequest & request) const;
 
   /**
+   * @brief Whether this route needs a credential at all
+   *
+   * The question `process` asks first. The rate limiter asks it before `process`
+   * runs, so both read the one policy.
+   *
+   * @param request The HTTP request abstraction
+   * @return true if the route requires authentication
+   */
+  bool requires_authentication(const AuthRequest & request) const;
+
+  /**
+   * @brief Whether an exhausted limiter answers before the token is verified
+   *
+   * True when the allowance is gone, the caller sent an Authorization header
+   * (its presence only, the value is not parsed) and the route needs one.
+   * Without a header, `process` refuses before it verifies anything, so the
+   * 401 stays the answer.
+   *
+   * @param rate_limited                  The allowance for this caller is gone
+   * @param has_authorization_header      The caller sent an Authorization header
+   * @param route_requires_authentication The route needs a credential
+   */
+  static bool rate_limit_precedes_validation(bool rate_limited, bool has_authorization_header,
+                                             bool route_requires_authentication) {
+    return rate_limited && has_authorization_header && route_requires_authentication;
+  }
+
+  /**
    * @brief Extract bearer token from Authorization header
    * @param auth_header The Authorization header value
    * @return Token string if valid Bearer format, nullopt otherwise
