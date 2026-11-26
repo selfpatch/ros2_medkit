@@ -119,8 +119,8 @@ def _mint_access_token(role='admin', lifetime_sec=3600):
     would fail this on a distro for a reason that has nothing to do with what
     it asserts.
 
-    The gateway verifies HS256 over the shared secret and the issuer, and reads
-    the role claim; jwt-cpp additionally enforces exp.
+    The gateway verifies HS256 over the shared secret and the issuer, and takes
+    the role from its client table, not the role claim; jwt-cpp enforces exp.
     """
     header = {'alg': 'HS256', 'typ': 'access'}
     now = int(time.time())

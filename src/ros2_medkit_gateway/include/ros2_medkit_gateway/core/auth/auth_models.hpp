@@ -15,6 +15,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -244,6 +245,8 @@ struct RefreshTokenRecord {
 struct AuthErrorResponse {
   std::string error;              ///< Error code (e.g., "invalid_grant")
   std::string error_description;  ///< Human-readable description
+  /// Set when the request may succeed later: the handler answers 429 with this as `Retry-After`.
+  std::optional<int64_t> retry_after_seconds;
 
   json to_json() const {
     return {{"error", error}, {"error_description", error_description}};
@@ -251,39 +254,43 @@ struct AuthErrorResponse {
 
   // Standard OAuth2 error codes
   static AuthErrorResponse invalid_request(const std::string & description) {
-    return {"invalid_request", description};
+    return {"invalid_request", description, std::nullopt};
   }
 
   static AuthErrorResponse invalid_client(const std::string & description) {
-    return {"invalid_client", description};
+    return {"invalid_client", description, std::nullopt};
   }
 
   static AuthErrorResponse invalid_grant(const std::string & description) {
-    return {"invalid_grant", description};
+    return {"invalid_grant", description, std::nullopt};
   }
 
   static AuthErrorResponse unauthorized_client(const std::string & description) {
-    return {"unauthorized_client", description};
+    return {"unauthorized_client", description, std::nullopt};
   }
 
   static AuthErrorResponse unsupported_grant_type(const std::string & description) {
-    return {"unsupported_grant_type", description};
+    return {"unsupported_grant_type", description, std::nullopt};
   }
 
   static AuthErrorResponse invalid_scope(const std::string & description) {
-    return {"invalid_scope", description};
+    return {"invalid_scope", description, std::nullopt};
   }
 
   static AuthErrorResponse access_denied(const std::string & description) {
-    return {"access_denied", description};
+    return {"access_denied", description, std::nullopt};
   }
 
   static AuthErrorResponse invalid_token(const std::string & description) {
-    return {"invalid_token", description};
+    return {"invalid_token", description, std::nullopt};
   }
 
   static AuthErrorResponse insufficient_scope(const std::string & description) {
-    return {"insufficient_scope", description};
+    return {"insufficient_scope", description, std::nullopt};
+  }
+
+  static AuthErrorResponse temporarily_unavailable(const std::string & description, int64_t retry_after_seconds) {
+    return {"temporarily_unavailable", description, retry_after_seconds};
   }
 };
 

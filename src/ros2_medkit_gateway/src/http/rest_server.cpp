@@ -175,6 +175,23 @@ RESTServer::RESTServer(GatewayServices & services, std::shared_ptr<LifecycleStat
   // members of this server, declared in that order), so the borrowed policy
   // stays valid for as long as the registry can be asked.
   route_registry_->set_auth_policy(auth_manager_ ? auth_manager_->auth_policy() : nullptr, API_BASE_PATH);
+  // An open stream re-checks the token it was opened with, so revocation and expiry also end it. The manager
+  // outlives the registry and the HTTP server, as above.
+  if (auth_manager_) {
+    route_registry_->set_stream_auth_check(
+        [manager = auth_manager_.get()](const httplib::Request & req) -> openapi::RouteRegistry::StreamAuthCheck {
+          if (!manager->requires_authentication(req.method, req.path)) {
+            return {};
+          }
+          auto token = AuthMiddleware::extract_bearer_token(req.get_header_value("Authorization"));
+          if (!token.has_value()) {
+            return {};
+          }
+          return [manager, bearer = std::move(*token)]() {
+            return manager->validate_token(bearer).valid;
+          };
+        });
+  }
   // Read the same flag the middleware branch above reads, so the document
   // declares 429 exactly when the limiter is live.
   route_registry_->set_rate_limit_enabled(rate_limit_config.enabled);
@@ -2488,7 +2505,9 @@ void RESTServer::setup_routes() {
       // (auth_handlers.cpp: authenticate() failure). The middleware's own 401 is
       // gated on the auth flag, so without this the document declares no 401 at
       // all on the one route whose whole purpose is to reject bad credentials.
-      .errors({401})
+      // 429 with `Retry-After`: revoked refresh tokens fill the client's
+      // auth.max_refresh_tokens_per_client.
+      .errors({401, 429})
       .error_renderer(openapi::ErrorRenderer::kOAuth2Error);
 
   reg.post<dto::AuthTokenResponse>("/auth/token",
@@ -2514,10 +2533,15 @@ void RESTServer::setup_routes() {
       .tag("Authentication")
       .public_route()
       .summary("Revoke token")
-      .description("Revoke an access or refresh token.")
+      .description(
+          "Revoke a refresh token and the access tokens minted from it. Any other token gets the same "
+          "answer and is not recorded.")
       // No `.accepts(...)` and no `.errors({401})`, unlike the two above:
       // post_revoke parses JSON only, and per RFC 7009 §2.2 it must not reveal
       // whether the submitted token was valid, so it answers 200 either way.
+      // 503 with `Retry-After` (RFC 7009 §2.2.1): the client's pool of
+      // revocations for tokens without a login record here is full.
+      .errors({503})
       .request_body("Token to revoke", SB::ref("AuthRevokeRequest"))
       .operation_id("revokeToken")
       .error_renderer(openapi::ErrorRenderer::kOAuth2Error);

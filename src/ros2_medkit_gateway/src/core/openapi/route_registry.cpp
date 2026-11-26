@@ -561,12 +561,30 @@ bool RouteRegistry::gate_blocked(httplib::Response & res, const GateHandle & gat
 // Escape-hatch routes (SSE / binary / static asset / docs)
 // -----------------------------------------------------------------------------
 
+bool RouteRegistry::write_checked(httplib::DataSink & sink, const StreamAuthCheck & check,
+                                  const std::function<bool(httplib::DataSink &)> & body) {
+  if (!check) {
+    return body(sink);
+  }
+  if (!check()) {
+    return false;
+  }
+  httplib::DataSink checked;
+  checked.write = [&sink, &check](const char * data, std::size_t length) {
+    return check() && sink.write(data, length);
+  };
+  checked.is_writable = sink.is_writable;
+  checked.done = sink.done;
+  checked.done_with_trailer = sink.done_with_trailer;
+  return body(checked);
+}
+
 RouteEntry & RouteRegistry::sse(const std::string & openapi_path,
                                 std::function<http::Result<http::SseStream>(http::TypedRequest)> stream_factory) {
   auto renderer = std::make_shared<ErrorRenderer>(ErrorRenderer::kSovdGenericError);
   auto gate = std::make_shared<std::optional<RouteGate>>();
-  HandlerFn fn = [factory = std::move(stream_factory), renderer, gate](const httplib::Request & req,
-                                                                       httplib::Response & res) {
+  HandlerFn fn = [factory = std::move(stream_factory), renderer, gate,
+                  auth_check = stream_auth_check_](const httplib::Request & req, httplib::Response & res) {
     // Install the forwarding scope so SSE factories that call
     // validate_entity_for_route can stream a proxied wire response for entities
     // owned by a remote peer. Without it the validator's Forwarded branch has
@@ -584,6 +602,8 @@ RouteEntry & RouteRegistry::sse(const std::string & openapi_path,
       return;
     }
     auto stream = std::make_shared<http::SseStream>(std::move(outcome.value()));
+    // Checked before every keepalive and event, so revocation or expiry ends the stream at its next write.
+    auto still_authorized = stream_auth_check_for(*auth_check, req);
     // SSE proxy-friendliness headers (no client wants buffered Server-Sent
     // Events). Set BEFORE the chunked content provider takes over; the
     // framework owns these so individual handlers stay free of httplib state.
@@ -591,18 +611,20 @@ RouteEntry & RouteRegistry::sse(const std::string & openapi_path,
     // Content-Type header; never set it on `res` first or it duplicates.
     res.set_header("Cache-Control", "no-cache");
     res.set_header("X-Accel-Buffering", "no");
-    res.set_chunked_content_provider("text/event-stream",
-                                     [stream](std::size_t /*offset*/, httplib::DataSink & sink) -> bool {
-                                       if (!stream || !stream->next_event) {
-                                         sink.done();
-                                         return false;
-                                       }
-                                       const bool keep_going = stream->next_event(sink);
-                                       if (!keep_going) {
-                                         sink.done();
-                                       }
-                                       return keep_going;
-                                     });
+    res.set_chunked_content_provider(
+        "text/event-stream", [stream, still_authorized](std::size_t /*offset*/, httplib::DataSink & sink) -> bool {
+          if (!stream || !stream->next_event) {
+            sink.done();
+            return false;
+          }
+          const bool keep_going = write_checked(sink, still_authorized, [&stream](httplib::DataSink & checked) {
+            return stream->next_event(checked);
+          });
+          if (!keep_going) {
+            sink.done();
+          }
+          return keep_going;
+        });
   };
   auto & entry = add_route("get", openapi_path, std::move(fn));
   entry.error_renderer_ = renderer;
@@ -633,7 +655,8 @@ RouteRegistry::binary_download(const std::string & openapi_path,
                                const std::vector<std::string> & media_types) {
   auto renderer = std::make_shared<ErrorRenderer>(ErrorRenderer::kSovdGenericError);
   auto gate = std::make_shared<std::optional<RouteGate>>();
-  HandlerFn fn = [handler = std::move(handler), renderer, gate](const httplib::Request & req, httplib::Response & res) {
+  HandlerFn fn = [handler = std::move(handler), renderer, gate,
+                  auth_check = stream_auth_check_](const httplib::Request & req, httplib::Response & res) {
     // Forwarding scope: entity-scoped binary downloads (bulk-data, scripts) on a
     // remote peer must proxy through validate_entity_for_route (see sse / wrap_body_less).
     http::detail::ForwardResponseScope forward_scope(&res);
@@ -656,6 +679,8 @@ RouteRegistry::binary_download(const std::string & openapi_path,
       return;
     }
     auto bin = std::make_shared<http::BinaryResponse>(std::move(outcome.value()));
+    // Checked before every chunk, like the SSE routes.
+    auto still_authorized = stream_auth_check_for(*auth_check, req);
     if (!bin->supports_ranges) {
       // The provider cannot seek, so the Range is ignored (RFC 9110 section 14.2) and
       // the answer is a 200 with the whole body, not a 206 that carries all of it.
@@ -691,18 +716,22 @@ RouteRegistry::binary_download(const std::string & openapi_path,
       // cpp-httplib only fills this in for HEAD, so a GET would otherwise serve
       // partial content no client knew it could ask for.
       res.set_header("Accept-Ranges", "bytes");
-      res.set_content_provider(static_cast<std::size_t>(bin->total_size), bin->content_type,
-                               [bin](std::size_t offset, std::size_t length, httplib::DataSink & sink) -> bool {
-                                 return bin->provider(static_cast<std::uint64_t>(offset),
-                                                      static_cast<std::uint64_t>(length), sink);
-                               });
+      res.set_content_provider(
+          static_cast<std::size_t>(bin->total_size), bin->content_type,
+          [bin, still_authorized](std::size_t offset, std::size_t length, httplib::DataSink & sink) -> bool {
+            return write_checked(sink, still_authorized, [&bin, offset, length](httplib::DataSink & checked) {
+              return bin->provider(static_cast<std::uint64_t>(offset), static_cast<std::uint64_t>(length), checked);
+            });
+          });
     } else {
-      res.set_chunked_content_provider(bin->content_type,
-                                       [bin](std::size_t /*offset*/, httplib::DataSink & sink) -> bool {
-                                         const bool keep = bin->provider(0, bin->total_size, sink);
-                                         sink.done();
-                                         return keep;
-                                       });
+      res.set_chunked_content_provider(
+          bin->content_type, [bin, still_authorized](std::size_t /*offset*/, httplib::DataSink & sink) -> bool {
+            const bool keep = write_checked(sink, still_authorized, [&bin](httplib::DataSink & checked) {
+              return bin->provider(0, bin->total_size, checked);
+            });
+            sink.done();
+            return keep;
+          });
     }
   };
   auto & entry = add_route("get", openapi_path, std::move(fn));

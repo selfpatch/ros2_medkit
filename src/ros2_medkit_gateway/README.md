@@ -1430,6 +1430,7 @@ JWT-based authentication with Role-Based Access Control (RBAC). Authentication i
 | `auth.jwt_algorithm`                | string   | `HS256`               | JWT signing algorithm: `HS256` (symmetric) or `RS256` (asymmetric).        |
 | `auth.token_expiry_seconds`         | int      | `3600`                | Access token lifetime in seconds (range: 60-86400).                        |
 | `auth.refresh_token_expiry_seconds` | int      | `86400`               | Refresh token lifetime in seconds (range: 300-604800).                     |
+| `auth.max_refresh_tokens_per_client` | int     | `100`                 | Refresh records per client, revoked ones included (1-100000). At the cap a login drops the oldest unrevoked one; when revoked ones fill it, a login answers 429 with `Retry-After`. Revocations of tokens with no login record here have their own count at the same cap; when full, a revoke answers 503 with `Retry-After`. |
 | `auth.require_auth_for`             | string   | `write`               | Auth requirement: `none`, `write` (POST/PUT/DELETE only), or `all`.        |
 | `auth.issuer`                       | string   | `ros2_medkit_gateway` | JWT issuer claim for token validation.                                     |
 | `auth.clients`                      | string[] | `[]`                  | Client credentials in format `client_id:client_secret:role`.               |

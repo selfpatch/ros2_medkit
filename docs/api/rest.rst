@@ -3231,6 +3231,10 @@ false no role is published or checked, and with ``require_auth_for: write`` a
         "scope": "admin"
       }
 
+   Wrong credentials answer ``401``. When revoked refresh tokens of the client
+   fill ``auth.max_refresh_tokens_per_client``, the answer is ``429`` with
+   ``Retry-After`` and ``"error": "temporarily_unavailable"``.
+
 ``POST /api/v1/auth/token``
    Refresh access token.
 
@@ -3244,7 +3248,12 @@ false no role is published or checked, and with ``require_auth_for: write`` a
       }
 
 ``POST /api/v1/auth/revoke``
-   Revoke a token.
+   Revoke a refresh token and the access tokens minted from it. Any other
+   token gets the same ``200`` and is not recorded. A token with no login
+   record here goes to a pool per client capped at
+   ``auth.max_refresh_tokens_per_client``; when it is full the answer is
+   ``503`` with ``Retry-After`` and ``"error": "temporarily_unavailable"``
+   (RFC 7009 section 2.2.1), and nothing is recorded.
 
    **Request:**
 

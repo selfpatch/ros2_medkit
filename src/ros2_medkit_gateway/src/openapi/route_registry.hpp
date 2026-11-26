@@ -109,7 +109,7 @@ struct MultipartPart {
   nlohmann::json schema{};
   /// Whether the handler rejects the request when the part is absent.
   bool required{false};
-  /// Media type published in `encoding.<part>.contentType`. Empty omits the
+  /// Media type published in encoding.\<part\>.contentType. Empty omits the
   /// encoding entry entirely, which is what a plain text part wants.
   std::string content_type{};
 };
@@ -881,6 +881,18 @@ class RouteRegistry {
     auth_api_prefix_ = std::move(api_prefix);
   }
 
+  /// A check an open stream runs before each write; the stream ends when it returns false.
+  using StreamAuthCheck = std::function<bool()>;
+
+  /// Set how a stream route builds its check from the request that opened it.
+  ///
+  /// SSE and binary download responses outlive the auth middleware's one check, so a token revoked or expired
+  /// after the stream opened would keep it open. The factory returns an empty check when the request needs none
+  /// (authentication off, or not required on the route). Must be set before `start()`; unset means no check.
+  void set_stream_auth_check(std::function<StreamAuthCheck(const httplib::Request &)> factory) {
+    *stream_auth_check_ = std::move(factory);
+  }
+
   /// Set whether rate limiting is enabled (controls 429 in OpenAPI output).
   /// The limiter runs pre-routing on every non-OPTIONS request, so when it is
   /// on, 429 is reachable on every route and the document has to say so.
@@ -921,7 +933,7 @@ class RouteRegistry {
   /// CRUD): registers a raw cpp-httplib handler under an OpenAPI-style path so
   /// the route shows up in the generated spec, Swagger UI and the endpoint
   /// list. The caller documents request/response schemas manually via the
-  /// fluent builder. Prefer the typed get<T>/post<T> API for new routes.
+  /// fluent builder. Prefer the typed get\<T\>/post\<T\> API for new routes.
   RouteEntry & raw(const std::string & method, const std::string & openapi_path, HandlerFn handler) {
     return add_route(method, openapi_path, std::move(handler));
   }
@@ -954,6 +966,18 @@ class RouteRegistry {
   bool rate_limit_enabled_{false};
   bool aggregation_enabled_{false};
   bool locking_enabled_{true};
+  // Shared with the stream handlers, like a route gate, so a factory set after registration still reaches them.
+  using StreamAuthCheckFactory = std::function<StreamAuthCheck(const httplib::Request &)>;
+  std::shared_ptr<StreamAuthCheckFactory> stream_auth_check_ = std::make_shared<StreamAuthCheckFactory>();
+
+  /// The check for the stream `req` opens; empty when no factory is set or the request needs none.
+  static StreamAuthCheck stream_auth_check_for(const StreamAuthCheckFactory & factory, const httplib::Request & req) {
+    return factory ? factory(req) : StreamAuthCheck{};
+  }
+
+  /// Runs `body` on a sink whose writes fail once `check` fails. An empty `check` runs `body` on `sink` itself.
+  static bool write_checked(httplib::DataSink & sink, const StreamAuthCheck & check,
+                            const std::function<bool(httplib::DataSink &)> & body);
 
   /// True when `openapi_path` carries one of the four entity-id path
   /// parameters, which is exactly the condition under which a handler can call

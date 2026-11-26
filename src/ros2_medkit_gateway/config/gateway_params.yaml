@@ -396,6 +396,11 @@ ros2_medkit_gateway:
       # Must be >= token_expiry_seconds
       refresh_token_expiry_seconds: 86400
 
+      # Login refresh records per client, revoked ones included (1-100000). A login at the cap drops
+      # the oldest unrevoked one; revoked ones filling it make a login answer 429. Revocations of
+      # tokens without a login record here have their own count at this cap (503 when full).
+      max_refresh_tokens_per_client: 100
+
       # When to require authentication
       # Options:
       #   - "none": No authentication required (auth endpoints still available)

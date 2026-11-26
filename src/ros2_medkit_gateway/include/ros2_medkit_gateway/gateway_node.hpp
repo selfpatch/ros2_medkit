@@ -601,6 +601,9 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   // Timer for periodic cleanup of expired cyclic subscriptions
   rclcpp::TimerBase::SharedPtr subscription_cleanup_timer_;
 
+  // Timer for the periodic sweep of expired refresh token records (every 5 minutes)
+  rclcpp::TimerBase::SharedPtr refresh_token_cleanup_timer_;
+
   // REST server thread management
   std::unique_ptr<std::thread> server_thread_;
 };

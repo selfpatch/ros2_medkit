@@ -295,7 +295,8 @@ if(BUILD_TESTING)
     test_peer_recovery
     test_triggers_restore_before_discovery
     test_aggregator_fault_stream
-    test_aggregated_colliding_node_names)
+    test_aggregated_colliding_node_names
+    test_forward_auth_across_gateways)
   set(_TWO_GATEWAY_DOMAINS 2)
 
   # One gateway, plus a node of the same name in a second domain of the test's own.
@@ -395,7 +396,10 @@ if(BUILD_TESTING)
     # to start and discover its apps.
     test_procfs_domain_isolation 300
     test_procfs_environ_fallback 300
-    test_procfs_domain_filter_switch 300)
+    test_procfs_domain_filter_switch 300
+    # Several gateways and a demo node, with cases that wait for tokens, revoked
+    # records and open streams to expire.
+    test_token_semantics 300)
   # Names actually matched against a discovered test_name in the two loops
   # below. Checked against _MEDKIT_TEST_TIMEOUT_OVERRIDES itself after both
   # loops finish - see the FATAL_ERROR check at the end of this block - so a

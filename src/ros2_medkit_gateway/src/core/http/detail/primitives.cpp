@@ -15,6 +15,8 @@
 #include "ros2_medkit_gateway/http/detail/primitives.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <string>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 
@@ -90,6 +92,12 @@ void write_oauth2_error(FrameworkOrPluginAccess /*token*/, httplib::Response & r
   nlohmann::json error_json;
   error_json["error"] = err.code;
   error_json["error_description"] = err.message;
+
+  // The only parameter this writer reads: a refusal that ends by itself says when.
+  const auto retry_after = err.params.find("retry_after_seconds");
+  if (retry_after != err.params.end() && retry_after->is_number_integer()) {
+    res.set_header("Retry-After", std::to_string(retry_after->get<int64_t>()));
+  }
 
   res.set_content(error_json.dump(2), kContentTypeJson);
 }

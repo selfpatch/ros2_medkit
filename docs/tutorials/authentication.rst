@@ -303,6 +303,89 @@ Response:
      -H "Content-Type: application/json" \
      -d '{"token": "dGhpcyBpcyBhIHJlZnJlc2g..."}'
 
+Revoke the **refresh** token: that withdraws it and every access token minted
+from it. An access token is not revocable on its own; the answer is the same
+and nothing changes. A refresh token past its expiry can still be revoked, so
+the access tokens minted from it just before it expired are withdrawn too.
+
+A revocation also ends a stream or download this gateway serves, opened with
+an access token minted from that refresh token, at its next keepalive, event or
+chunk. A request forwarded to a peer completes like any other request.
+
+Each login stores one refresh record. ``auth.max_refresh_tokens_per_client``
+(default 100) caps the records per client, revoked ones included: a login at
+the cap drops the client's oldest unrevoked refresh token, which then stops
+refreshing. The cap never drops a revoked record; the sweep drops it once the
+access tokens minted from it have expired, by the later of the last reserved
+``exp`` and ``min(expires_at, revoked_at)`` plus ``auth.token_expiry_seconds``.
+When
+revoked records fill the cap, a login answers 429 with ``Retry-After`` until
+the oldest is swept. That blocks only that client.
+
+Revoking a token with no login record here - minted by another gateway, or
+dropped by the cap - records it in a pool of its own per client, capped at the
+same value and kept to the token's ``exp`` plus ``auth.token_expiry_seconds``.
+That pool never blocks a login; when it is full, ``POST /auth/revoke`` answers
+503 with ``Retry-After``.
+
+What a Token Is Worth
+---------------------
+
+**The role comes from the gateway that answers.** Each gateway reads ``sub``
+against its own ``auth.clients`` and grants the role listed there. The ``role``
+claim in the token is not read: any value, or none, is accepted. A client that
+is ``admin`` on one gateway
+and ``viewer`` on another may only read on the second, whichever of them minted
+the token.
+
+**Access tokens survive a restart.** They are judged on the signature, the
+issuer, the expiry, and the client named in ``sub`` existing and being enabled
+here. None of that depends on the process that issued the token.
+
+**A token is in JWS compact form or it is invalid.** Three base64url parts
+joined by ``.``, with no padding (RFC 7515 section 7.1). The gateway refuses a
+token when:
+
+- it has other than three parts, or a character outside ``A-Z``, ``a-z``,
+  ``0-9``, ``-`` and ``_``;
+- a part is empty, or has a length that leaves 1 when divided by 4;
+- the last character of a part sets a bit past the part's final byte. RFC 4648
+  section 3.5 leaves those bits zero; another spelling of the same bytes is
+  refused, not decoded.
+
+Such a token is refused before it is decoded, with the answer each entry point
+gives a token that is not valid:
+
+- in the ``Authorization`` header, ``401 invalid_token``;
+- as the ``refresh_token`` of ``POST /auth/token``, ``invalid_grant``;
+- as the ``token`` of ``POST /auth/revoke``, ``200`` with
+  ``{"status": "revoked"}``, the answer to every token (RFC 7009 section 2.2).
+  Nothing is revoked.
+
+**Refresh tokens do not.** Exchanging one needs the record the issuing gateway
+wrote when it minted the pair, and the records live in process memory. After a
+restart, ``POST /auth/token`` answers ``invalid_grant`` and the client
+authenticates again with its client id and secret.
+
+**Revocation is per gateway.** The refresh records are a denylist: a revoked
+record refuses the access tokens minted from it, and a token with no record is
+judged on the checks above. Under ``aggregation.forward_auth`` a peer accepts a
+token the aggregator minted. ``POST /auth/revoke`` on the peer, with the
+refresh token it was minted from, refuses it there: the peer writes a revoked
+record for a token it never issued, if it lists the client. The aggregator
+keeps accepting it. A revocation is also lost at a restart, and the withdrawn
+access tokens are honoured again for at most ``auth.token_expiry_seconds``.
+Where a revocation must hold everywhere and across restarts, disable the client
+in ``auth.clients`` on every gateway.
+
+Gateways that share a signing configuration share ``auth.token_expiry_seconds``
+too. A peer keeps its record of a foreign revocation until the token's own
+``exp`` plus the peer's access lifetime. The issuer mints no access token after
+that ``exp``, and the peer reads both ``exp`` values against its own clock, so
+a clock difference between the gateways does not shorten the revocation. A
+shorter access lifetime on the peer does: the record goes while access tokens
+the issuer minted near ``exp`` are still live.
+
 Production Recommendations
 --------------------------
 
@@ -355,8 +438,9 @@ Troubleshooting
 
 **Token refresh fails**
 
-- Refresh tokens are single-use; get a new one after refresh
+- A refresh answers the same refresh token, which stays usable until it expires
 - Check that the refresh token hasn't been revoked
+- After a gateway restart, authenticate again: refresh records do not survive it
 
 See Also
 --------

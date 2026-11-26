@@ -14,8 +14,12 @@
 
 #pragma once
 
+#include <chrono>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <tl/expected.hpp>
 #include <unordered_map>
@@ -36,11 +40,16 @@ namespace ros2_medkit_gateway {
  */
 class AuthManager {
  public:
+  /// The wall clock that token times and record horizons are read from.
+  using WallClock = std::function<std::chrono::system_clock::time_point()>;
+
   /**
    * @brief Construct AuthManager with configuration
    * @param config Authentication configuration
+   * @param wall_clock Clock for token times and record horizons. A test replaces it to move time; jwt-cpp's
+   *        verification keeps the system clock.
    */
-  explicit AuthManager(const AuthConfig & config);
+  explicit AuthManager(const AuthConfig & config, WallClock wall_clock = std::chrono::system_clock::now);
 
   ~AuthManager() = default;
 
@@ -84,6 +93,9 @@ class AuthManager {
 
   /**
    * @brief Validate a JWT access token
+   *
+   * The returned role is the one this manager's client table gives `sub`, not the token's `role` claim.
+   *
    * @param token The JWT token string
    * @param expected_type Expected token type (defaults to ACCESS)
    * @return TokenValidationResult with claims if valid
@@ -144,15 +156,27 @@ class AuthManager {
   }
 
   /**
-   * @brief Revoke a refresh token
+   * @brief Revoke a refresh token, also one past its expiry or minted by another gateway
+   *
+   * `exp`, `iat` and `nbf` are not checked. A login record is revoked only by a token with its client as subject, and
+   * kept until the later of the last access token `exp` reserved from it and `min(expires_at, now)` plus the access
+   * token lifetime. A token with no login record here (minted
+   * elsewhere, or dropped by the cap) gets a revoked record only when its subject is in the client table. Those
+   * records form a pool per client of `max_refresh_tokens_per_client`, apart from the login records, and are kept to
+   * the token's `exp` plus the access token lifetime.
+   *
    * @param refresh_token The refresh token to revoke
-   * @return true if revoked, false if not found
+   * @return true if a record is revoked, false if nothing is recorded. The client's pool being full is an error with
+   *         `retry_after_seconds` set: seconds until its oldest record expires.
    */
+  tl::expected<bool, AuthErrorResponse> try_revoke_refresh_token(const std::string & refresh_token);
+
+  /// try_revoke_refresh_token(), with a full pool reported as false.
   bool revoke_refresh_token(const std::string & refresh_token);
 
   /**
-   * @brief Clean up expired refresh tokens
-   * @return Number of tokens cleaned up
+   * @brief Drop refresh records whose horizon has passed (see try_revoke_refresh_token)
+   * @return Number of records dropped
    */
   size_t cleanup_expired_tokens();
 
@@ -186,6 +210,13 @@ class AuthManager {
    */
   bool enable_client(const std::string & client_id);
 
+  /// Number of refresh records held, login and foreign. Public so a test can observe the sweep bound.
+  size_t refresh_token_count() const;
+
+  /// Last wall-clock second the record for refresh `jti` is kept; empty when none is held.
+  /// Public so a test can observe the horizon.
+  std::optional<int64_t> refresh_record_kept_until(const std::string & jti) const;
+
  private:
   /**
    * @brief Generate a JWT token
@@ -194,12 +225,20 @@ class AuthManager {
    */
   std::string generate_jwt(const JwtClaims & claims) const;
 
+  /// Whether decode_jwt checks `exp`, `iat` and `nbf` against this clock. Signature and issuer are verified either way.
+  enum class TimeChecks { CHECK, IGNORE };
+
   /**
    * @brief Decode and verify a JWT token
+   *
+   * The `role` claim is not read: the role comes from the client table or the refresh record.
+   *
    * @param token JWT token string
+   * @param time_checks TimeChecks::IGNORE accepts a token outside its validity window
    * @return JwtClaims if valid
    */
-  tl::expected<JwtClaims, std::string> decode_jwt(const std::string & token) const;
+  tl::expected<JwtClaims, std::string> decode_jwt(const std::string & token,
+                                                  TimeChecks time_checks = TimeChecks::CHECK) const;
 
   /**
    * @brief Generate a unique token ID
@@ -216,19 +255,37 @@ class AuthManager {
   static bool matches_path(const std::string & pattern, const std::string & path);
 
   /**
-   * @brief Store a refresh token
-   * @param record Refresh token record
+   * @brief Store a login refresh record, making room under the client's cap
+   * @param token_id The refresh token's jti
+   * @param client_id Client the record belongs to
+   * @param role Role the record grants on refresh
+   * @return The clock second the record was stored at, which stamps the login tokens. When revoked records fill the
+   *         client's cap, nothing is stored and the error is the seconds until a sweep frees a slot.
    */
-  void store_refresh_token(const RefreshTokenRecord & record);
+  tl::expected<int64_t, int64_t> store_refresh_token(const std::string & token_id, const std::string & client_id,
+                                                     UserRole role);
 
-  /**
-   * @brief Get a refresh token record by token ID
-   * @param token_id Token ID (jti)
-   * @return RefreshTokenRecord if found
-   */
-  std::optional<RefreshTokenRecord> get_refresh_token(const std::string & token_id) const;
+  /// Whether refresh `token_id` is revoked here, in a login record or in the foreign pool.
+  bool refresh_token_revoked(const std::string & token_id) const;
+
+  /// cleanup_expired_tokens() without the lock, at the caller's one clock reading `now_ts`.
+  /// The caller holds refresh_tokens_mutex_.
+  size_t cleanup_expired_locked(int64_t now_ts);
+
+  /// Drops the client's oldest unrevoked records until one more fits under the cap. Revoked records count toward the
+  /// cap and are never dropped; when they fill it, returns the seconds until a sweep frees a slot.
+  /// The caller holds refresh_tokens_mutex_.
+  std::optional<int64_t> make_room_for_client_locked(const std::string & client_id, int64_t now_ts);
+
+  /// Whole seconds of wall_clock_, the unit of every token and record time.
+  int64_t now_seconds() const;
 
   AuthConfig config_;
+  WallClock wall_clock_;
+
+  // RS256 key material, read once in the constructor. Empty under HS256. Not written after construction.
+  std::string rs256_private_key_;
+  std::string rs256_public_key_;
 
   // RBAC entries check_authorization matches against, populated via
   // add_route_permissions() before the server starts listening. Empty until
@@ -242,9 +299,26 @@ class AuthManager {
   mutable std::mutex clients_mutex_;
   std::unordered_map<std::string, ClientCredentials> clients_;
 
-  // Refresh token storage (thread-safe)
+  // A refresh record, its store order (ranks a client's records for the cap), the last second it is kept, and the
+  // latest exp of an access token minted from it.
+  struct StoredRefreshToken {
+    RefreshTokenRecord record;
+    uint64_t sequence{0};
+    int64_t keep_until{0};
+    int64_t minted_until{0};
+  };
+
+  // A revocation of a refresh token with no login record here: its client and the last second it is kept.
+  struct ForeignRevocation {
+    std::string client_id;
+    int64_t keep_until{0};
+  };
+
+  // Refresh token storage (thread-safe). Login records, and revocations of tokens without one, by jti.
   mutable std::mutex refresh_tokens_mutex_;
-  std::unordered_map<std::string, RefreshTokenRecord> refresh_tokens_;
+  std::unordered_map<std::string, StoredRefreshToken> refresh_tokens_;
+  std::unordered_map<std::string, ForeignRevocation> foreign_revocations_;
+  uint64_t next_refresh_sequence_{0};
 };
 
 }  // namespace ros2_medkit_gateway
