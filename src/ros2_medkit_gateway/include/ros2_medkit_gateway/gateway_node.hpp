@@ -78,6 +78,9 @@ namespace ros2_medkit_gateway {
 
 class GatewayNode : public rclcpp::Node, public GatewayServices {
  public:
+  /// The options must leave automatically_declare_parameters_from_overrides and
+  /// allow_undeclared_parameters off; either would serve secrets as parameters. Throws before the node exists
+  /// otherwise.
   explicit GatewayNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions{});
   ~GatewayNode() override;
 
@@ -418,6 +421,14 @@ class GatewayNode : public rclcpp::Node, public GatewayServices {
   /// (ROS_DOMAIN_ID / RMW_IMPLEMENTATION / ROS_LOCALHOST_ONLY) and likely causes,
   /// so a misconfigured bringup is not a silent empty tree.
   void log_startup_summary();
+
+  /// Writes the enforced posture into `auth.enabled` and `auth.require_auth_for`,
+  /// then refuses every later write to `auth.*` and `aggregation.peer_auth_header`.
+  void apply_effective_auth_parameters(bool auth_enabled, const std::string & require_auth_for);
+
+  /// Refuses runtime writes to the auth parameters; installed by
+  /// apply_effective_auth_parameters.
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr auth_parameter_guard_;
 
   // Configuration parameters
   std::string server_host_;

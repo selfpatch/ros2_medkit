@@ -93,7 +93,10 @@ class GatewayTestCase(unittest.TestCase):
 
     @classmethod
     def _wait_for_gateway_health(cls):
-        """Poll GET /health until the gateway responds with 200.
+        """Poll GET /health until the gateway answers at all.
+
+        A 401 or 403 counts as up: the process is listening and has decided on
+        the request. A gateway with ``require_auth_for: all`` never answers 200.
 
         Uses ``time.monotonic()`` for a reliable, monotonic clock.
 
@@ -108,7 +111,7 @@ class GatewayTestCase(unittest.TestCase):
         while time.monotonic() < deadline:
             try:
                 response = requests.get(f'{cls.BASE_URL}/health', timeout=2)
-                if response.status_code == 200:
+                if response.status_code in (200, 401, 403):
                     return
             except requests.exceptions.RequestException:
                 pass
