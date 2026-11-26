@@ -25,6 +25,7 @@
 #include <thread>
 #include <vector>
 
+#include "reserve_local_port.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -98,8 +99,11 @@ class ParameterErrorPrecedenceTest : public ::testing::Test {
   }
 
   void SetUp() override {
+    const int port = ros2_medkit_gateway::test_support::reserve_local_port();
+    ASSERT_NE(port, 0);
     rclcpp::NodeOptions options;
     options.parameter_overrides({
+        rclcpp::Parameter("server.port", port),
         // Fail fast on the ghost node's wait_for_service and keep the test
         // runtime bounded.
         rclcpp::Parameter("parameter_service_timeout_sec", 1.0),

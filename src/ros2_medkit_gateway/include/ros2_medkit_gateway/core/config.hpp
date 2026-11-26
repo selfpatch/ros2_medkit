@@ -42,6 +42,8 @@ struct RestConfig : ServerIdentity {
   bool docs_enabled{true};
   std::string server_host{"localhost"};
   int64_t server_port{8080};
+  /// Longest wait for closing connections of an earlier process to release the bind address; 0 = none.
+  int64_t bind_wait_sec{70};
   /// Logger name the REST server reports its warnings under.
   std::string logger_name{"rest_server"};
 };

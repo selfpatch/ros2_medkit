@@ -390,6 +390,7 @@ ros2_medkit_gateway:
     server:
       host: "0.0.0.0"
       port: 8080
+      allow_unauthenticated_remote: true
     refresh_interval_ms: 2000
     plugins: ["opcua"]
     plugins.opcua.poll_interval_ms: 1000

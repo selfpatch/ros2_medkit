@@ -23,6 +23,7 @@
 #include <string>
 #include <thread>
 
+#include "reserve_local_port.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -103,8 +104,14 @@ class LifecycleHandlersTest : public ::testing::Test {
   }
 
   void SetUp() override {
-    gateway_node_ = std::make_shared<GatewayNode>();
+    const int port = ros2_medkit_gateway::test_support::reserve_local_port();
+    ASSERT_NE(port, 0);
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("server.port", port);
+    gateway_node_ = std::make_shared<GatewayNode>(options);
     ASSERT_NE(gateway_node_, nullptr);
+    // The tests seed the entity cache; a discovery refresh would replace it.
+    gateway_node_->stop_discovery_refresh_for_testing();
 
     executor_ = std::make_unique<rclcpp::executors::MultiThreadedExecutor>();
     executor_->add_node(gateway_node_);
@@ -119,8 +126,6 @@ class LifecycleHandlersTest : public ::testing::Test {
     ctx_ = std::make_unique<HandlerContext>(*gateway_node_, cors_, auth_, tls_, nullptr);
     handlers_ = std::make_unique<LifecycleHandlers>(*ctx_, nullptr);  // no plugin manager
 
-    // Give the executor a moment to start before seeding cache.
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
     seed_cache();
   }
 
@@ -341,8 +346,14 @@ class EntityDetailStatusLinkTest : public ::testing::Test {
   }
 
   void SetUp() override {
-    gateway_node_ = std::make_shared<GatewayNode>();
+    const int port = ros2_medkit_gateway::test_support::reserve_local_port();
+    ASSERT_NE(port, 0);
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("server.port", port);
+    gateway_node_ = std::make_shared<GatewayNode>(options);
     ASSERT_NE(gateway_node_, nullptr);
+    // The tests seed the entity cache; a discovery refresh would replace it.
+    gateway_node_->stop_discovery_refresh_for_testing();
 
     executor_ = std::make_unique<rclcpp::executors::MultiThreadedExecutor>();
     executor_->add_node(gateway_node_);
@@ -353,8 +364,6 @@ class EntityDetailStatusLinkTest : public ::testing::Test {
     while (!executor_->is_spinning()) {
       std::this_thread::yield();
     }
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     App app;
     app.id = "online_sensor";
@@ -492,8 +501,14 @@ class LifecycleHandlersWithProviderTest : public ::testing::Test {
   }
 
   void SetUp() override {
-    gateway_node_ = std::make_shared<GatewayNode>();
+    const int port = ros2_medkit_gateway::test_support::reserve_local_port();
+    ASSERT_NE(port, 0);
+    rclcpp::NodeOptions options;
+    options.append_parameter_override("server.port", port);
+    gateway_node_ = std::make_shared<GatewayNode>(options);
     ASSERT_NE(gateway_node_, nullptr);
+    // The tests seed the entity cache; a discovery refresh would replace it.
+    gateway_node_->stop_discovery_refresh_for_testing();
 
     executor_ = std::make_unique<rclcpp::executors::MultiThreadedExecutor>();
     executor_->add_node(gateway_node_);
@@ -504,8 +519,6 @@ class LifecycleHandlersWithProviderTest : public ::testing::Test {
     while (!executor_->is_spinning()) {
       std::this_thread::yield();
     }
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     // Seed cache with one online app.
     App app;

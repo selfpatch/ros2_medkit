@@ -147,23 +147,25 @@ ROS 2 distributions:
 .. code-block:: bash
 
    # Jazzy (recommended)
-   docker run -p 8080:8080 ghcr.io/selfpatch/ros2_medkit-jazzy:latest
+   docker run -p 127.0.0.1:8080:8080 -e MEDKIT_AUTH_DISABLED=1 ghcr.io/selfpatch/ros2_medkit-jazzy:latest
 
    # Humble
-   docker run -p 8080:8080 ghcr.io/selfpatch/ros2_medkit-humble:latest
+   docker run -p 127.0.0.1:8080:8080 -e MEDKIT_AUTH_DISABLED=1 ghcr.io/selfpatch/ros2_medkit-humble:latest
 
    # Lyrical
-   docker run -p 8080:8080 ghcr.io/selfpatch/ros2_medkit-lyrical:latest
+   docker run -p 127.0.0.1:8080:8080 -e MEDKIT_AUTH_DISABLED=1 ghcr.io/selfpatch/ros2_medkit-lyrical:latest
 
 The gateway will be available at http://localhost:8080/api/v1/health.
 
-To close the container, set ``MEDKIT_JWT_SECRET`` and ``MEDKIT_CLIENTS`` (see
+The image binds ``0.0.0.0``, and a gateway without authentication refuses to bind
+a non-loopback address, so a container needs either ``MEDKIT_AUTH_DISABLED=1`` (open,
+as above) or ``MEDKIT_JWT_SECRET`` and ``MEDKIT_CLIENTS`` (closed; see
 :doc:`tutorials/docker`). To use a custom configuration, mount a params file; it
 is applied on top of the image's own settings:
 
 .. code-block:: bash
 
-   docker run -p 8080:8080 \
+   docker run -p 127.0.0.1:8080:8080 -e MEDKIT_AUTH_DISABLED=1 \
      -v ./my_params.yaml:/etc/ros2_medkit/params.yaml \
      ghcr.io/selfpatch/ros2_medkit-jazzy:latest
 

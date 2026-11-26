@@ -78,6 +78,7 @@ access to the host's DDS traffic and match the environment:
    # (no -p needed); reach the API at http://localhost:8080.
    docker run --rm \
      --network host \
+     -e MEDKIT_AUTH_DISABLED=1 \
      -e ROS_DOMAIN_ID=0 \
      -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
      ghcr.io/selfpatch/ros2_medkit-jazzy:latest
@@ -88,9 +89,17 @@ the host network:
 .. code-block:: bash
 
    docker run --rm --network container:<stack_container> \
+     -e MEDKIT_AUTH_DISABLED=1 \
      -e ROS_DOMAIN_ID=0 \
      -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
      ghcr.io/selfpatch/ros2_medkit-jazzy:latest
+
+.. note::
+
+   The image binds ``0.0.0.0``, and a gateway without authentication refuses to
+   bind a non-loopback address unless told otherwise. ``MEDKIT_AUTH_DISABLED=1``
+   above opens the API to anyone who can reach the port. Set ``MEDKIT_JWT_SECRET``
+   and ``MEDKIT_CLIENTS`` instead to require a login.
 
 .. note::
 
@@ -135,4 +144,6 @@ Troubleshooting
      - CORS: the gateway is not allowing the UI's origin.
    * - Cannot reach the gateway from another host
      - Bind host is loopback; set ``server.host`` to ``0.0.0.0`` and expose the
-       port.
+       port. Without authentication also set ``MEDKIT_AUTH_DISABLED=1`` or
+       ``server.allow_unauthenticated_remote: true``, or the gateway refuses to
+       start (or set ``MEDKIT_JWT_SECRET`` to require a login).

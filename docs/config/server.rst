@@ -47,10 +47,10 @@ names the value that was refused. This applies to ``server.port``,
 
    [ERROR] [ros2_medkit_gateway]: Invalid port 70000. Must be between 1024-65535. Using default 8080.
 
-**Refused at startup.** ``parameter_service_timeout_sec`` and
-``parameter_service_negative_cache_sec`` are declared with a floating-point range
-descriptor, so rclcpp itself rejects an out-of-range value and the gateway does
-not start:
+**Refused at startup.** The parameters declared with a range descriptor
+(``parameter_service_timeout_sec`` and ``parameter_service_negative_cache_sec``,
+floating-point; ``server.bind_wait_sec``, integer) are rejected by rclcpp itself
+when the value is out of range, and the gateway does not start:
 
 .. code-block:: text
 
@@ -91,19 +91,80 @@ Network Settings
    * - ``server.host``
      - string
      - ``"127.0.0.1"``
-     - Host to bind the REST server. Use ``"0.0.0.0"`` for Docker or network access.
+     - Host to bind the REST server. Without authentication only a loopback host is
+       accepted (see :ref:`protected-mode`); use ``"0.0.0.0"`` for Docker or network access
+       together with authentication or ``server.allow_unauthenticated_remote``.
+   * - ``server.bind_wait_sec``
+     - int
+     - ``70``
+     - Longest wait (seconds) at start for closing connections of an earlier process to release
+       the bind address when no live listener holds it. TIME_WAIT normally ends 60 s after the
+       close, so the default covers it; a late packet from the old peer can extend it. Range 0
+       to 300; a value outside it stops the gateway at start. ``0`` means no wait. A stop (SIGINT or SIGTERM) during the wait ends
+       it at once. See :ref:`protected-mode`.
+   * - ``server.allow_unauthenticated_remote``
+     - bool
+     - ``false``
+     - Let a gateway without authentication bind a non-loopback host. ``MEDKIT_AUTH_DISABLED=1``
+       implies it. The gateway logs a warning at start. Launch argument:
+       ``allow_unauthenticated_remote``.
    * - ``server.port``
      - int
      - ``8080``
      - Port for REST API. Valid range: 1024-65535.
 
+.. _protected-mode:
+
+Protected mode
+^^^^^^^^^^^^^^
+
+A gateway that answers every request anonymously (authentication off, or
+``auth.require_auth_for`` ``none``) binds only the local machine. A loopback
+``server.host`` (``127.0.0.0/8``, ``::1``, ``localhost``) starts as before; ``localhost`` counts
+as loopback by its name, as RFC 6761 reserves it, and the gateway binds what the resolver
+returns for it. Any other value (``0.0.0.0``, ``::``, a concrete address, a host name) makes the
+gateway exit with status 1 and a message that names the address, unless authentication is in
+force. The check uses the authentication the gateway enforces after the environment is
+applied, so ``MEDKIT_JWT_SECRET`` counts as authentication on whatever ``auth.enabled`` says.
+``auth.require_auth_for`` ``write`` and ``all`` count, in any letter case; ``write`` binds the
+network and leaves reads anonymous. ``none`` does not count: authentication on with ``none`` is
+refused like authentication off. Three ways out:
+
+- Turn authentication on: ``MEDKIT_JWT_SECRET`` (with ``MEDKIT_CLIENTS``) or the ``auth``
+  parameters with ``auth.require_auth_for`` ``write`` or ``all``; see
+  :doc:`/tutorials/authentication`.
+- Bind a loopback address.
+- Opt out: ``server.allow_unauthenticated_remote: true``, the launch argument
+  ``allow_unauthenticated_remote:=true``, or ``MEDKIT_AUTH_DISABLED=1``. Anyone who can reach
+  the address then controls the robot; use it for demos and for networks you trust.
+
+A gateway that cannot bind ``server.host`` and ``server.port`` (the address:port is held by a
+live process, an address the machine does not own, a name that does not resolve, a bracketed form
+such as ``[::1]``) also exits with status 1. The message names the host, the port and the
+reason, and the gateway never logs its ready line. An address the machine does not own is
+refused unless the kernel allows non-local binds (``net.ipv4.ip_nonlocal_bind``,
+``net.ipv6.ip_nonlocal_bind``). A second gateway cannot bind an address:port a live process
+holds, and the gateway never binds with ``SO_REUSEPORT``: two gateways never serve one
+address:port. ``127.0.0.1:P`` and ``127.0.0.2:P`` are different addresses. A live listener on
+the same address:port ends the start at once. When the bind fails with no live listener (the
+first start after an upgrade from a release before this one, whose closed connections stay in
+TIME_WAIT, or a process that holds the port without listening), the gateway logs one line naming
+the address:port and the wait, retries the bind until it succeeds or ``server.bind_wait_sec``
+ends, and then exits 1 with the time waited in the message. TIME_WAIT normally ends 60 s after
+the close, which the default covers; a late packet from the old peer can extend it, and then the
+wait ends with exit 1 (a restart policy starts the gateway again). A restart of this version
+over its own TIME_WAIT needs no wait. A listener on ``::`` counts as holding the IPv4 addresses
+of the port too, also when it is IPv6-only: the gateway then exits at once rather than risk
+sharing the port.
+
 Example:
 
 .. code-block:: bash
 
-   # Expose on all interfaces (Docker/network)
+   # Expose on all interfaces (Docker/network), without authentication
    ros2 run ros2_medkit_gateway gateway_node --ros-args \
        -p server.host:=0.0.0.0 \
+       -p server.allow_unauthenticated_remote:=true \
        -p server.port:=8080
 
 TLS/HTTPS Configuration
@@ -983,7 +1044,7 @@ default for local development.
    * - ``auth.enabled``
      - bool
      - ``false``
-     - Enable/disable JWT authentication. ``MEDKIT_JWT_SECRET`` turns it on and ``MEDKIT_AUTH_DISABLED=1`` turns it off, whatever this says. Reads back the value in force.
+     - Enable/disable JWT authentication. ``MEDKIT_JWT_SECRET`` turns it on and ``MEDKIT_AUTH_DISABLED=1`` turns it off, whatever this says. Reads back the value in force. With it off, or on with ``auth.require_auth_for`` ``none``, the gateway binds only a loopback host unless ``server.allow_unauthenticated_remote`` is set (:ref:`protected-mode`).
    * - ``auth.jwt_secret``
      - string
      - ``""``
@@ -1151,6 +1212,7 @@ Complete Example
        server:
          host: "0.0.0.0"
          port: 8080
+         allow_unauthenticated_remote: true  # no auth.* below, so opt out of protected mode
          tls:
            enabled: false
 

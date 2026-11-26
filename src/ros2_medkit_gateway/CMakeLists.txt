@@ -673,6 +673,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_auth_environment gateway_ros2)
   medkit_test_needs_no_domain(test_auth_environment)
 
+  medkit_add_gtest(test_bind_address test/test_bind_address.cpp)
+  target_link_libraries(test_bind_address gateway_core)
+  medkit_test_needs_no_domain(test_bind_address)
+
   # Add data access manager tests
   medkit_add_gtest(test_data_access_manager test/test_data_access_manager.cpp)
   target_link_libraries(test_data_access_manager gateway_ros2)
