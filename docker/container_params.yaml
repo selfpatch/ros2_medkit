@@ -1,0 +1,17 @@
+# What a container needs on top of the packaged gateway_params.yaml.
+#
+# server.host: the published port is reached through a non-loopback address.
+# refresh_interval_ms: a container's graph changes as sibling containers come and go.
+# cors: origins of the web UI run next to the container.
+#       No wildcard. A file that sets cors.allowed_origins replaces this list.
+#
+# A file, not `-p` arguments, so that /etc/ros2_medkit/params.yaml can override it.
+ros2_medkit_gateway:
+  ros__parameters:
+    server:
+      host: "0.0.0.0"
+    refresh_interval_ms: 2000
+    cors:
+      allowed_origins:
+        - "http://localhost:3000"
+        - "http://localhost:5173"
