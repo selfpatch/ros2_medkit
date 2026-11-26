@@ -27,6 +27,8 @@ namespace ros2_medkit_linux_introspection {
 struct IntrospectionConfig {
   std::unique_ptr<PidCache> pid_cache;
   std::string proc_root{"/"};
+  /// Match a node's process only in the gateway's ROS domain.
+  bool require_same_ros_domain{true};
 };
 
 inline IntrospectionConfig parse_introspection_config(const nlohmann::json & config) {
@@ -39,6 +41,9 @@ inline IntrospectionConfig parse_introspection_config(const nlohmann::json & con
       val = 1;
     }
     ttl = std::chrono::seconds{val};
+  }
+  if (config.contains("require_same_ros_domain")) {
+    result.require_same_ros_domain = config["require_same_ros_domain"].get<bool>();
   }
   if (config.contains("proc_root")) {
     result.proc_root = config["proc_root"].get<std::string>();

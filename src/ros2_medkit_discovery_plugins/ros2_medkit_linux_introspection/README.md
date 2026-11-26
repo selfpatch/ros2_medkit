@@ -21,9 +21,10 @@ Maps ROS 2 nodes to OS processes and reports CPU, memory, systemd unit status, a
   markers its runtime leaves behind
 - **SystemdUtils** - Queries systemd via D-Bus for service metadata
 - **PidCache** - TTL-based cache mapping ROS 2 node names to Linux PIDs. It keeps only
-  processes of the gateway's ROS domain (`ROS_DOMAIN_ID` in `/proc/<pid>/environ`); a process
-  whose environment cannot be read is matched by name only, with one warning per PID in
-  each plugin that looks it up (each plugin has its own cache)
+  processes of the gateway's ROS domain (`ROS_DOMAIN_ID` in `/proc/<pid>/environ`) unless
+  `require_same_ros_domain` is false. A process whose environment cannot be read is
+  matched by name only when no process of the domain has that name, with one warning per
+  PID in each plugin that serves it (each plugin has its own cache)
 
 ## Configuration
 
@@ -40,7 +41,13 @@ plugins.systemd.path: "/path/to/libsystemd_introspection.so"
 plugins.container.path: "/path/to/libcontainer_introspection.so"
 plugins.container.pid_cache_ttl_seconds: 30
 plugins.container.proc_root: "/"
+plugins.container.require_same_ros_domain: true
 ```
+
+`require_same_ros_domain` (default `true`) matches a node's process only in the gateway's
+ROS domain. Set it to `false` for a node that picks its domain in code
+(`rclcpp::InitOptions::set_domain_id`): its environment names another domain, so the
+plugin does not find its process.
 
 ## Documentation
 

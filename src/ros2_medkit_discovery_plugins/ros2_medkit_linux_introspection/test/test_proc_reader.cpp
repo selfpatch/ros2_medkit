@@ -230,3 +230,36 @@ TEST_F(SyntheticProcTest, UnreadableEnvironIsAnError) {
   ASSERT_FALSE(result.has_value());
   EXPECT_NE(result.error().find("environ"), std::string::npos);
 }
+
+TEST_F(SyntheticProcTest, FindPidForNodePrefersProcessOfTheDomain) {
+  using namespace std::string_literals;
+  // An empty env writes no environ file: the environment cannot be read.
+  auto write_node = [this](const std::string & pid, const std::string & name, const std::string & env) {
+    auto dir = tmpdir_ / "proc" / pid;
+    fs::create_directories(dir);
+    auto cmdline = "/usr/bin/node\0--ros-args\0__node:="s + name + "\0__ns:=/demo\0"s;
+    std::ofstream(dir / "cmdline", std::ios::binary) << cmdline;
+    if (!env.empty()) {
+      std::ofstream(dir / "environ", std::ios::binary) << env;
+    }
+  };
+  // The two nodes are written in opposite orders, so one of them lists the unreadable
+  // process first whatever order the directory is read in.
+  write_node("100", "talker", "");
+  write_node("200", "talker", "ROS_DOMAIN_ID=7\0"s);
+  write_node("300", "listener", "ROS_DOMAIN_ID=7\0"s);
+  write_node("400", "listener", "");
+
+  auto talker = find_pid_for_node("talker", "/demo", tmpdir_.string(), 7);
+  ASSERT_TRUE(talker.has_value()) << talker.error();
+  EXPECT_EQ(talker.value(), 200);
+  auto listener = find_pid_for_node("listener", "/demo", tmpdir_.string(), 7);
+  ASSERT_TRUE(listener.has_value()) << listener.error();
+  EXPECT_EQ(listener.value(), 300);
+
+  // With no process of the domain, the unreadable one is matched on its name.
+  fs::remove_all(tmpdir_ / "proc" / "200");
+  auto unverified = find_pid_for_node("talker", "/demo", tmpdir_.string(), 7);
+  ASSERT_TRUE(unverified.has_value()) << unverified.error();
+  EXPECT_EQ(unverified.value(), 100);
+}

@@ -19,13 +19,16 @@
 
 #include <rclcpp/rclcpp.hpp>
 
+#include <cstddef>
+#include <optional>
 #include <string>
 
 namespace ros2_medkit_linux_introspection {
 
 /// Limit the PID lookups of cache to the ROS domain of the gateway node. A process whose
-/// environ cannot be read is matched on its name alone, with one warning per PID. Without
-/// a ROS node there is no domain to match, and the cache is left unchanged.
+/// environ cannot be read is matched on its name alone, with one warning per PID served.
+/// A process of another domain is skipped with a debug line. Without a ROS node there is
+/// no domain to match, and the cache is left unchanged.
 inline void match_gateway_domain(ros2_medkit_gateway::PluginContext & ctx, PidCache & cache,
                                  const std::string & plugin_name) {
   auto * node = ros2_medkit_gateway::as_ros_plugin_context(ctx)->node();
@@ -33,13 +36,20 @@ inline void match_gateway_domain(ros2_medkit_gateway::PluginContext & ctx, PidCa
     return;
   }
   auto logger = node->get_logger().get_child(plugin_name);
-  cache.set_domain_filter(node->get_node_base_interface()->get_context()->get_domain_id(),
-                          [logger](pid_t pid, const std::string & fqn) {
-                            RCLCPP_WARN(logger,
-                                        "Cannot read the environment of PID %d (%s): it is matched by node "
-                                        "name only, its ROS domain is not checked",
-                                        static_cast<int>(pid), fqn.c_str());
-                          });
+  size_t domain_id = node->get_node_base_interface()->get_context()->get_domain_id();
+  cache.set_domain_filter(
+      domain_id,
+      [logger](pid_t pid, const std::string & fqn) {
+        RCLCPP_WARN(logger,
+                    "Cannot read the environment of PID %d (%s): it is matched by node "
+                    "name only, its ROS domain is not checked",
+                    static_cast<int>(pid), fqn.c_str());
+      },
+      [logger, domain_id](pid_t pid, const std::string & fqn, std::optional<size_t> process_domain) {
+        auto named = process_domain ? std::to_string(*process_domain) : std::string{"not a domain ID"};
+        RCLCPP_DEBUG(logger, "PID %d (%s) is not matched: its ROS_DOMAIN_ID is %s, the gateway's domain is %zu",
+                     static_cast<int>(pid), fqn.c_str(), named.c_str(), domain_id);
+      });
 }
 
 }  // namespace ros2_medkit_linux_introspection

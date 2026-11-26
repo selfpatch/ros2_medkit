@@ -43,11 +43,14 @@ class ContainerPlugin : public GatewayPlugin, public IntrospectionProvider {
     auto cfg = ros2_medkit_linux_introspection::parse_introspection_config(config);
     pid_cache_ = std::move(cfg.pid_cache);
     proc_root_ = std::move(cfg.proc_root);
+    require_same_ros_domain_ = cfg.require_same_ros_domain;
   }
 
   void set_context(PluginContext & ctx) override {
     ctx_ = &ctx;
-    ros2_medkit_linux_introspection::match_gateway_domain(ctx, *pid_cache_, name());
+    if (require_same_ros_domain_) {
+      ros2_medkit_linux_introspection::match_gateway_domain(ctx, *pid_cache_, name());
+    }
     ctx.register_capability(SovdEntityType::APP, "x-medkit-container");
     ctx.register_capability(SovdEntityType::COMPONENT, "x-medkit-container");
   }
@@ -103,6 +106,7 @@ class ContainerPlugin : public GatewayPlugin, public IntrospectionProvider {
   std::unique_ptr<ros2_medkit_linux_introspection::PidCache> pid_cache_ =
       std::make_unique<ros2_medkit_linux_introspection::PidCache>();
   std::string proc_root_{"/"};
+  bool require_same_ros_domain_{true};
 
   /// PID and cgroup info of a node, read again after a rescan when the cached PID is stale.
   ros2_medkit_linux_introspection::PidCache::ReadResult<

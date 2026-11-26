@@ -27,6 +27,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace ros2_medkit_linux_introspection {
 
@@ -56,8 +57,8 @@ tl::expected<std::string, std::string> read_environ(pid_t pid, const std::string
 std::optional<size_t> ros_domain_id_from_environ(const std::string & env_block);
 
 /// Scan /proc for ROS 2 node processes, return PID for matching node.
-/// With domain_id, a process of another ROS domain is skipped; a process whose environ
-/// cannot be read is matched on its name alone.
+/// With domain_id, a process of another ROS domain is skipped. A process whose environ
+/// cannot be read is matched on its name alone, only when no process of the domain matches.
 tl::expected<pid_t, std::string> find_pid_for_node(const std::string & node_name, const std::string & node_namespace,
                                                    const std::string & root = "/",
                                                    std::optional<size_t> domain_id = std::nullopt);
@@ -71,6 +72,10 @@ class PidCache {
   /// Called with the PID and FQN of a process matched on its name alone.
   using UnverifiedCallback = std::function<void(pid_t, const std::string &)>;
 
+  /// Called with the PID, FQN and ROS domain of a process skipped for its domain. The
+  /// domain is nullopt when the process's ROS_DOMAIN_ID is not a domain ID.
+  using OtherDomainCallback = std::function<void(pid_t, const std::string &, std::optional<size_t>)>;
+
   /// What lookup_and_read returns: the PID and the result of reading it.
   template <typename T>
   using ReadResult = std::optional<std::pair<pid_t, T>>;
@@ -78,8 +83,11 @@ class PidCache {
   explicit PidCache(std::chrono::steady_clock::duration ttl = std::chrono::seconds{10});
 
   /// Keep only node processes of ROS domain domain_id. A process whose environ cannot be
-  /// read is kept on its name alone and passed to on_unverified once.
-  void set_domain_filter(size_t domain_id, UnverifiedCallback on_unverified = {});
+  /// read is kept on its name alone, only for an FQN no process of the domain has.
+  /// on_unverified gets such a PID once, when a lookup first returns it. on_other_domain
+  /// gets each skipped process in every scan. Neither is called with the cache locked.
+  void set_domain_filter(size_t domain_id, UnverifiedCallback on_unverified = {},
+                         OtherDomainCallback on_other_domain = {});
 
   /// Lookup PID for a node FQN (e.g. "/namespace/node_name"). Refreshes if TTL expired.
   std::optional<pid_t> lookup(const std::string & node_fqn, const std::string & root = "/");
@@ -119,12 +127,32 @@ class PidCache {
   /// True when the process pid still carries the node FQN on its command line.
   static bool runs_as(pid_t pid, const std::string & node_fqn, const std::string & root);
 
+  /// A process a scan skipped because its ROS domain is not the gateway's.
+  struct OtherDomainProcess {
+    pid_t pid;
+    std::string fqn;
+    std::optional<size_t> process_domain;
+  };
+
+  /// Rebuild the cache from root/proc. Needs mutex_ held exclusively.
+  void scan(const std::string & root, std::vector<OtherDomainProcess> & other_domain);
+
+  /// Cached PID of a node FQN, and whether it is still to be reported. Needs mutex_ held.
+  std::pair<std::optional<pid_t>, bool> cached(const std::string & node_fqn) const;
+
+  /// Pass pid to on_unverified_ unless it was reported before. Takes mutex_ itself.
+  void report_unverified(pid_t pid, const std::string & node_fqn);
+
   std::unordered_map<std::string, pid_t> node_to_pid_;
   std::chrono::steady_clock::time_point last_refresh_;
   std::chrono::steady_clock::duration ttl_;
   bool stale_{true};
   std::optional<size_t> domain_id_;
   UnverifiedCallback on_unverified_;
+  OtherDomainCallback on_other_domain_;
+  /// PIDs in node_to_pid_ matched on their name alone.
+  std::unordered_set<pid_t> unverified_;
+  /// PIDs of unverified_ already passed to on_unverified_.
   std::unordered_set<pid_t> unverified_reported_;
   mutable std::shared_mutex mutex_;
 };

@@ -71,10 +71,13 @@ is independent:
        # Use absolute paths if launching from a different directory.
        plugins.procfs.path: "install/ros2_medkit_linux_introspection/lib/ros2_medkit_linux_introspection/libprocfs_introspection.so"
        plugins.procfs.pid_cache_ttl_seconds: 10
+       plugins.procfs.require_same_ros_domain: true
        plugins.systemd.path: "install/ros2_medkit_linux_introspection/lib/ros2_medkit_linux_introspection/libsystemd_introspection.so"
        plugins.systemd.pid_cache_ttl_seconds: 10
+       plugins.systemd.require_same_ros_domain: true
        plugins.container.path: "install/ros2_medkit_linux_introspection/lib/ros2_medkit_linux_introspection/libcontainer_introspection.so"
        plugins.container.pid_cache_ttl_seconds: 10
+       plugins.container.require_same_ros_domain: true
 
 Or enable just one plugin:
 
@@ -90,6 +93,12 @@ Configuration parameters (all plugins):
 ``pid_cache_ttl_seconds`` (int, default 10)
    TTL in seconds for the PID cache. The cache maps ROS 2 node FQNs to PIDs by scanning
    ``/proc``. Lower values give fresher data but increase ``/proc`` scan frequency.
+
+``require_same_ros_domain`` (bool, default true)
+   Match a node's process only in the gateway's ROS domain, which the plugin reads as
+   ``ROS_DOMAIN_ID`` from ``/proc/{pid}/environ``. Set it to false for a node that picks
+   its domain in code (``rclcpp::InitOptions::set_domain_id``): its environ names
+   another domain, so the plugin does not find its process.
 
 ``proc_root`` (string, default ``"/"``)
    Root path for ``/proc`` access. Primarily used for testing with synthetic ``/proc``
@@ -351,12 +360,20 @@ started, the cache may not have picked it up yet. Causes:
   runs again.
 - Node in another ROS domain. The cache only returns a process whose ``ROS_DOMAIN_ID``
   (from ``/proc/{pid}/environ``, unset means 0) equals the gateway's domain. A node with
-  the same name in another domain on the same host is not served.
+  the same name in another domain on the same host is not served. The plugin logs each
+  process it skips at debug level, with its PID, FQN and both domains; enable it with
+  ``--ros-args --log-level ros2_medkit_gateway.procfs_introspection:=debug`` (or the
+  ``systemd_introspection`` or ``container_introspection`` logger).
+- Domain set in code. A node that picks its domain with
+  ``rclcpp::InitOptions::set_domain_id`` is in the gateway's graph, but its environ
+  names the domain it was started with, so the route answers 404 for it. Set
+  ``require_same_ros_domain: false`` for the plugin to match it by name in any domain.
 - Environment not readable. When the gateway runs as another user than the node and
-  cannot read its ``/proc/{pid}/environ``, it matches that process by name only and logs
-  ``Cannot read the environment of PID ...`` once in each plugin that looks the process
-  up, since each plugin has its own PID cache. The domain check then does not apply to
-  it; run the gateway as the same user as the nodes to keep it.
+  cannot read its ``/proc/{pid}/environ``, it matches that process by name only, unless
+  a process of the gateway's domain has the same name. Each plugin that serves the
+  process logs ``Cannot read the environment of PID ...`` once, since each plugin has
+  its own PID cache. The domain check then does not apply to it; run the gateway as
+  the same user as the nodes to keep it.
 
 Composable nodes
 ~~~~~~~~~~~~~~~~
