@@ -1,0 +1,47 @@
+# Builds the gateway image for amd64 and runs the image smoke on a pull request that
+# touches what the image is made of: the Dockerfile, docker/ and the smoke script.
+# The publish workflow runs the same smoke after a merge; this one stops a change
+# that breaks the entrypoint or the config layers before it lands.
+
+name: Docker image smoke
+
+on:
+    pull_request:
+        branches:
+            - main
+        paths:
+            - Dockerfile
+            - docker/**
+            - scripts/smoke_image_auth_posture.sh
+            - .github/workflows/docker-image-smoke.yml
+
+concurrency:
+    group: docker-image-smoke-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    smoke:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 60
+        permissions:
+            contents: read
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v3
+
+            - name: Build the image (linux/amd64, jazzy)
+              uses: docker/build-push-action@v6
+              with:
+                  context: .
+                  platforms: linux/amd64
+                  build-args: ROS_DISTRO=jazzy
+                  load: true
+                  tags: ros2_medkit-smoke:pr
+
+            - name: Check the image's auth posture
+              run: |
+                  SMOKE_PREFIX="medkit-smoke-${{ github.run_id }}-${{ github.run_attempt }}" \
+                    scripts/smoke_image_auth_posture.sh ros2_medkit-smoke:pr
