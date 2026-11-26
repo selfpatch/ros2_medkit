@@ -56,6 +56,8 @@ class TopicsTestPlugin : public GatewayPlugin, public IntrospectionProvider {
     function_id_ = config.value("function_id", "");
     function_host_ = config.value("function_host", "");
     copy_function_id_ = config.value("copy_function_id", "");
+    // Opt-in: shows the received config as the Function's description.
+    config_dump_ = config.value("expose_config", false) ? config.dump() : "";
   }
 
   void set_context(PluginContext & context) override {
@@ -136,6 +138,7 @@ class TopicsTestPlugin : public GatewayPlugin, public IntrospectionProvider {
       func.id = function_id_;
       func.name = "Plugin Function";
       func.source = "plugin";
+      func.description = config_dump_;
       if (!function_host_.empty()) {
         func.hosts.push_back(function_host_);
       }
@@ -167,6 +170,7 @@ class TopicsTestPlugin : public GatewayPlugin, public IntrospectionProvider {
   std::string function_id_;
   std::string function_host_;
   std::string copy_function_id_;
+  std::string config_dump_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr publisher_;
   std::thread publish_thread_;
   std::atomic<bool> running_{false};

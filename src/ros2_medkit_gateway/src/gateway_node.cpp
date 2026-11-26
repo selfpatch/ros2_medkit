@@ -22,16 +22,19 @@
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/auth/auth_environment.hpp"
 #include "ros2_medkit_gateway/core/builtin_samplers.hpp"
 #include "ros2_medkit_gateway/core/data/topic_data_provider.hpp"
 #include "ros2_medkit_gateway/core/discovery/merge_types.hpp"
@@ -52,7 +55,54 @@ using namespace std::chrono_literals;
 
 namespace ros2_medkit_gateway {
 
-GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medkit_gateway", options) {
+namespace {
+
+// Parameter overrides by name, read without declaring the parameter. The map
+// merges the params file, `-p` arguments and programmatic overrides.
+using ParameterOverrides = std::map<std::string, rclcpp::ParameterValue>;
+
+std::string override_string(const ParameterOverrides & overrides, const std::string & name) {
+  const auto found = overrides.find(name);
+  if (found == overrides.end()) {
+    return std::string();
+  }
+  if (found->second.get_type() != rclcpp::ParameterType::PARAMETER_STRING) {
+    throw std::invalid_argument(name + " must be a string");
+  }
+  return found->second.get<std::string>();
+}
+
+std::vector<std::string> override_string_array(const ParameterOverrides & overrides, const std::string & name) {
+  const auto found = overrides.find(name);
+  if (found == overrides.end()) {
+    return {};
+  }
+  if (found->second.get_type() != rclcpp::ParameterType::PARAMETER_STRING_ARRAY) {
+    throw std::invalid_argument(name + " must be a list of strings");
+  }
+  return found->second.get<std::vector<std::string>>();
+}
+
+// Runs before the Node base class is built. Both options make rclcpp declare the overrides, secrets
+// and plugin config included, with their values, and publish them on /parameter_events.
+const rclcpp::NodeOptions & checked_node_options(const rclcpp::NodeOptions & options) {
+  if (options.automatically_declare_parameters_from_overrides()) {
+    throw std::invalid_argument(
+        "GatewayNode: NodeOptions::automatically_declare_parameters_from_overrides must be false: "
+        "it would serve secrets and plugin config as parameters");
+  }
+  if (options.allow_undeclared_parameters()) {
+    throw std::invalid_argument(
+        "GatewayNode: NodeOptions::allow_undeclared_parameters must be false: "
+        "it would serve secrets and plugin config as parameters");
+  }
+  return options;
+}
+
+}  // namespace
+
+GatewayNode::GatewayNode(const rclcpp::NodeOptions & options)
+  : Node("ros2_medkit_gateway", checked_node_options(options)) {
   log::set_sink(std::make_shared<Ros2LogSink>());
   RCLCPP_INFO(get_logger(), "Initializing ROS 2 Medkit Gateway...");
 
@@ -172,14 +222,39 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
   // Authentication parameters (REQ_INTEROP_086, REQ_INTEROP_087)
   declare_parameter("auth.enabled", false);
-  declare_parameter("auth.jwt_secret", "");
   declare_parameter("auth.jwt_public_key", "");
   declare_parameter("auth.jwt_algorithm", "HS256");
   declare_parameter("auth.token_expiry_seconds", 3600);
   declare_parameter("auth.refresh_token_expiry_seconds", 86400);
   declare_parameter("auth.require_auth_for", "write");
   declare_parameter("auth.issuer", "ros2_medkit_gateway");
-  declare_parameter("auth.clients", std::vector<std::string>{});
+
+  // The three parameters that carry secrets are never declared with their
+  // value: the parameter services serve it to every participant on the domain.
+  // Their values are taken from the overrides, handed to their consumers below,
+  // and the parameters are declared with a sentinel and `ignore_override`.
+  const auto auth_env = resolve_auth_environment_from_process();
+  const auto & secret_overrides = get_node_parameters_interface()->get_parameter_overrides();
+  const std::string configured_jwt_secret = override_string(secret_overrides, "auth.jwt_secret");
+  const std::vector<std::string> configured_clients = override_string_array(secret_overrides, "auth.clients");
+  const std::string configured_peer_auth_header = override_string(secret_overrides, "aggregation.peer_auth_header");
+  {
+    const rcl_interfaces::msg::ParameterDescriptor plain;
+    std::string secret_shown;
+    if (!auth_env.jwt_secret.empty()) {
+      secret_shown = kSecretShownFromJwtSecretVariable;
+    } else if (!configured_jwt_secret.empty()) {
+      secret_shown = kSecretShownSetAtStart;
+    }
+    declare_parameter("auth.jwt_secret", secret_shown, plain, /*ignore_override=*/true);
+    const std::vector<std::string> clients_shown =
+        auth_env.clients_given ? redact_client_entries(auth_env.clients, kSecretShownFromClientsVariable)
+                               : redact_client_entries(configured_clients, kSecretShownSetAtStart);
+    declare_parameter("auth.clients", clients_shown, plain, /*ignore_override=*/true);
+    declare_parameter("aggregation.peer_auth_header",
+                      configured_peer_auth_header.empty() ? std::string() : std::string(kSecretShownSetAtStart), plain,
+                      /*ignore_override=*/true);
+  }
 
   // OpenAPI documentation endpoints
   declare_parameter("docs.enabled", true);
@@ -261,7 +336,6 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   declare_parameter("aggregation.mdns_name", std::string(""));  // defaults to hostname
   // Security: forward Authorization header to peers (default: false to prevent token leakage)
   declare_parameter("aggregation.forward_auth", false);
-  declare_parameter("aggregation.peer_auth_header", "");
   // Security: require TLS for all peer URLs (default: false)
   declare_parameter("aggregation.require_tls", false);
   // URL scheme for mDNS-discovered peer URLs (default: "http")
@@ -465,23 +539,72 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
   }
 
   // Build Authentication configuration (REQ_INTEROP_086, REQ_INTEROP_087)
-  bool auth_enabled = get_parameter("auth.enabled").as_bool();
+  //
+  // The environment is read here, in the node, so the rule holds however the
+  // gateway is started. Its secrets come from `configured_*` and `auth_env`.
+  for (const auto & notice : auth_env.notices) {
+    RCLCPP_WARN(get_logger(), "%s", notice.c_str());
+  }
+  if (auth_env.jwt_secret_empty) {
+    // A blank value is a failed interpolation; starting open under it is the
+    // outcome the variable exists to prevent.
+    RCLCPP_FATAL(get_logger(),
+                 "MEDKIT_JWT_SECRET is set but empty. Refusing to start: set it to a secret of at least 32 "
+                 "characters, unset it, or set MEDKIT_AUTH_DISABLED=1 to run without authentication.");
+    throw std::runtime_error("MEDKIT_JWT_SECRET is set but empty");
+  }
+
+  bool auth_enabled = auth_env.applies ? auth_env.enabled : get_parameter("auth.enabled").as_bool();
+  // The requirement level in force; "none" while authentication is off.
+  std::string effective_require_auth_for = "none";
   if (auth_enabled) {
     try {
+      const std::string require_auth_for =
+          auth_env.require_auth_for_all ? std::string("all") : get_parameter("auth.require_auth_for").as_string();
+      effective_require_auth_for = require_auth_for;
+      const bool secret_from_environment = !auth_env.jwt_secret.empty();
+      const std::string jwt_secret = secret_from_environment ? auth_env.jwt_secret : configured_jwt_secret;
+      const std::string jwt_algorithm = get_parameter("auth.jwt_algorithm").as_string();
+
+      // Under RS256 `auth.jwt_secret` is a key file path, so an environment
+      // secret has no valid reading.
+      if (secret_from_environment && string_to_algorithm(jwt_algorithm) == JwtAlgorithm::RS256) {
+        throw std::invalid_argument(
+            "MEDKIT_JWT_SECRET (environment) is set and auth.jwt_algorithm is RS256 (parameters). The variable "
+            "carries a shared secret, which is HS256; RS256 reads auth.jwt_secret as a private key file path. Set "
+            "auth.jwt_algorithm to HS256, or unset MEDKIT_JWT_SECRET and configure the RS256 key paths.");
+      }
+
+      // An empty MEDKIT_CLIENTS is a decision and starts; a list of which no
+      // entry survived leaves nobody able to log in.
+      if (auth_env.clients_given && auth_env.client_entries_seen > 0 && auth_env.clients.empty()) {
+        throw std::invalid_argument(
+            "every MEDKIT_CLIENTS entry was refused, so no client can obtain a token. The WARN lines above name "
+            "each entry by position.");
+      }
+
       AuthConfigBuilder auth_builder;
       auth_builder.with_enabled(true)
-          .with_jwt_secret(get_parameter("auth.jwt_secret").as_string())
+          .with_jwt_secret(jwt_secret)
           .with_jwt_public_key(get_parameter("auth.jwt_public_key").as_string())
-          .with_algorithm(string_to_algorithm(get_parameter("auth.jwt_algorithm").as_string()))
+          .with_algorithm(string_to_algorithm(jwt_algorithm))
           .with_token_expiry(static_cast<int>(get_parameter("auth.token_expiry_seconds").as_int()))
           .with_refresh_token_expiry(static_cast<int>(get_parameter("auth.refresh_token_expiry_seconds").as_int()))
-          .with_require_auth_for(string_to_auth_requirement(get_parameter("auth.require_auth_for").as_string()))
+          .with_require_auth_for(string_to_auth_requirement(require_auth_for))
           .with_issuer(get_parameter("auth.issuer").as_string());
 
       // Parse clients from configuration
       // Format: "client_id:client_secret:role" (e.g., "admin:secret123:admin")
-      auto clients = get_parameter("auth.clients").as_string_array();
+      const auto & clients = auth_env.clients_given ? auth_env.clients : configured_clients;
+      if (clients.empty()) {
+        RCLCPP_WARN(get_logger(),
+                    "Authentication is on and no client is configured, so nothing can obtain a token. Set "
+                    "auth.clients, or MEDKIT_CLIENTS=<id>:<secret>:admin in the environment.");
+      }
+      // 1-based, counting every entry as given.
+      std::size_t client_position = 0;
       for (const auto & client_str : clients) {
+        ++client_position;
         if (client_str.empty()) {
           continue;
         }
@@ -492,39 +615,61 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
           std::string client_id = client_str.substr(0, first_colon);
           std::string client_secret = client_str.substr(first_colon + 1, last_colon - first_colon - 1);
           std::string role_str = client_str.substr(last_colon + 1);
+          // A `ros2 param dump` holds these in place of every secret; registered, anyone could log in.
+          if (is_secret_placeholder(client_secret)) {
+            throw std::invalid_argument("auth.clients entry " + std::to_string(client_position) +
+                                        " has the placeholder " + client_secret +
+                                        " as its secret, which the gateway shows in place of a secret. Set the "
+                                        "real secret; a parameter dump does not hold it");
+          }
           try {
             UserRole role = string_to_role(role_str);
             auth_builder.add_client(client_id, client_secret, role);
             RCLCPP_INFO(get_logger(), "Registered client '%s' with role '%s'", client_id.c_str(), role_str.c_str());
-          } catch (const std::exception & e) {
-            RCLCPP_WARN(get_logger(), "Invalid role '%s' for client '%s': %s", role_str.c_str(), client_id.c_str(),
-                        e.what());
+          } catch (const std::exception &) {
+            // No field of a refused entry is logged; any of them may hold a secret.
+            RCLCPP_WARN(get_logger(),
+                        "auth.clients entry %zu names an unknown role (viewer, operator, configurator or admin) and "
+                        "was dropped.",
+                        client_position);
           }
+        } else if (first_colon == std::string::npos) {
+          RCLCPP_WARN(get_logger(), "auth.clients entry %zu has no ':' and was dropped. Expected 'id:secret:role'.",
+                      client_position);
         } else {
-          RCLCPP_WARN(get_logger(), "Invalid client format: '%s'. Expected 'client_id:client_secret:role'",
-                      client_str.c_str());
+          RCLCPP_WARN(get_logger(), "auth.clients entry %zu is not 'id:secret:role' and was dropped.", client_position);
         }
       }
 
       auth_config_ = auth_builder.build();
       RCLCPP_INFO(get_logger(), "Authentication enabled - algorithm: %s, require_auth_for: %s",
-                  algorithm_to_string(auth_config_.jwt_algorithm).c_str(),
-                  get_parameter("auth.require_auth_for").as_string().c_str());
+                  algorithm_to_string(auth_config_.jwt_algorithm).c_str(), require_auth_for.c_str());
     } catch (const std::exception & e) {
-      // Fail closed: authentication was explicitly requested but could not be
-      // built (e.g. empty jwt_secret). Refuse to start rather than silently
-      // serving an unauthenticated API under a configuration that asked for
-      // auth.
+      // Fail closed: authentication was requested but could not be configured.
+      // The source line says which values the environment supplied, so the
+      // operator is sent to the right place.
+      const bool env_supplied_the_secret = !auth_env.jwt_secret.empty();
+      const bool env_supplied_the_clients = auth_env.clients_given;
+      std::string source = "The settings came from the parameters: auth.*.";
+      if (env_supplied_the_secret || env_supplied_the_clients) {
+        source = "The environment supplied ";
+        source += env_supplied_the_secret ? "auth.jwt_secret (MEDKIT_JWT_SECRET)" : "";
+        source += (env_supplied_the_secret && env_supplied_the_clients) ? " and " : "";
+        source += env_supplied_the_clients ? "auth.clients (MEDKIT_CLIENTS)" : "";
+        source += "; every other auth.* value came from the parameters.";
+      }
       RCLCPP_FATAL(get_logger(),
-                   "Authentication is enabled (auth.enabled=true) but the auth configuration is invalid: %s. "
-                   "Refusing to start unauthenticated - fix the auth configuration or disable auth.",
-                   e.what());
+                   "Authentication is enabled but the auth configuration is invalid: %s. %s "
+                   "Refusing to start unauthenticated.",
+                   e.what(), source.c_str());
       throw std::runtime_error(std::string("Invalid authentication configuration: ") + e.what());
     }
   } else {
     RCLCPP_INFO(get_logger(), "Authentication: disabled");
     auth_config_ = AuthConfig{};
   }
+
+  apply_effective_auth_parameters(auth_enabled, effective_require_auth_for);
 
   // Build Rate Limiting configuration
   bool rate_limit_enabled = get_parameter("rate_limiting.enabled").as_bool();
@@ -1075,7 +1220,7 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
     agg_config.discover = get_parameter("aggregation.discover").as_bool();
     agg_config.mdns_service = get_parameter("aggregation.mdns_service").as_string();
     agg_config.forward_auth = get_parameter("aggregation.forward_auth").as_bool();
-    agg_config.peer_auth_header = get_parameter("aggregation.peer_auth_header").as_string();
+    agg_config.peer_auth_header = configured_peer_auth_header;
     agg_config.require_tls = get_parameter("aggregation.require_tls").as_bool();
     agg_config.peer_scheme = get_parameter("aggregation.peer_scheme").as_string();
     if (agg_config.peer_scheme != "http" && agg_config.peer_scheme != "https") {
@@ -1297,6 +1442,38 @@ std::string GatewayNode::connectable_host(const std::string & bind_host) {
     return "[" + bind_host + "]";
   }
   return bind_host;
+}
+
+void GatewayNode::apply_effective_auth_parameters(bool auth_enabled, const std::string & require_auth_for) {
+  // The environment can decide the posture, so the two parameters are written
+  // back to what is enforced. No secret is written back: the secret parameters
+  // carry sentinels from their declaration.
+  const std::vector<rclcpp::Parameter> effective = {rclcpp::Parameter("auth.enabled", auth_enabled),
+                                                    rclcpp::Parameter("auth.require_auth_for", require_auth_for)};
+  for (const auto & parameter : effective) {
+    // One at a time, so a rejected parameter names itself.
+    const auto result = set_parameter(parameter);
+    if (!result.successful) {
+      RCLCPP_WARN(get_logger(), "Could not write back %s: %s", parameter.get_name().c_str(), result.reason.c_str());
+    }
+  }
+
+  // Registered after the write-back, its only writer. The auth configuration
+  // is consumed once at construction, so a later set would report a change
+  // nobody applied.
+  auth_parameter_guard_ = add_on_set_parameters_callback([](const std::vector<rclcpp::Parameter> & parameters) {
+    rcl_interfaces::msg::SetParametersResult result;
+    result.successful = true;
+    for (const auto & parameter : parameters) {
+      const std::string & name = parameter.get_name();
+      if (name.rfind("auth.", 0) == 0 || name == "aggregation.peer_auth_header") {
+        result.successful = false;
+        result.reason = name + " is read at start; restart the gateway with the new configuration";
+        return result;
+      }
+    }
+    return result;
+  });
 }
 
 void GatewayNode::log_startup_summary() {

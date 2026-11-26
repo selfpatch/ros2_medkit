@@ -1,0 +1,820 @@
+#!/usr/bin/env python3
+# Copyright 2026 bburda
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""The gateway node reads MEDKIT_JWT_SECRET, MEDKIT_CLIENTS and MEDKIT_AUTH_DISABLED.
+
+The gateways here start with no entrypoint and no launch file, only an
+environment, so the rule is proven for every way of starting the node. Each
+case pairs the environment with a params file that says the opposite, because
+a rule that only agrees with the file proves nothing about precedence.
+
+Three gateways run for the whole file (closed by the environment, opened by the
+environment, closed by a file alone). The sweep classes start further gateways
+as subprocesses, one per case, because a refusal is observed as an exit code.
+
+@verifies REQ_INTEROP_086, REQ_INTEROP_087
+"""
+
+import atexit
+import base64
+import hashlib
+import hmac
+import os
+import select
+import shutil
+import signal
+import subprocess
+import tempfile
+import time
+import unittest
+
+import launch
+import launch_testing
+import launch_testing.actions
+import pytest
+import requests
+
+from ros2_medkit_test_utils.constants import (
+    ALLOWED_EXIT_CODES,
+    API_BASE_PATH,
+    get_test_port,
+)
+from ros2_medkit_test_utils.gateway_test_case import GatewayTestCase
+from ros2_medkit_test_utils.launch_helpers import create_gateway_node
+from ros2_medkit_test_utils.param_client import ParameterClient
+
+CLOSED_PORT = get_test_port(0)
+DISABLED_PORT = get_test_port(1)
+# Subprocess gateways take this port one at a time.
+SWEEP_PORT = get_test_port(2)
+FILE_CLOSED_PORT = get_test_port(3)
+
+# How long `ros2 param` may spend discovering a gateway over DDS.
+PARAM_DISCOVERY_TIMEOUT = 30
+READY_LINE = 'Medkit Gateway ready on'
+START_LINE = 'Initializing ROS 2 Medkit Gateway'
+
+CLOSED_BASE_URL = f'http://127.0.0.1:{CLOSED_PORT}{API_BASE_PATH}'
+DISABLED_BASE_URL = f'http://127.0.0.1:{DISABLED_PORT}{API_BASE_PATH}'
+FILE_CLOSED_BASE_URL = f'http://127.0.0.1:{FILE_CLOSED_PORT}{API_BASE_PATH}'
+SWEEP_BASE_URL = f'http://127.0.0.1:{SWEEP_PORT}{API_BASE_PATH}'
+
+JWT_SECRET = 'an_environment_supplied_secret_of_at_least_32_chars'
+FILE_JWT_SECRET = 'a_file_supplied_secret_of_at_least_32_characters'
+SECRET_32 = 'k' * 32
+SECRET_31 = 'j' * 31
+CLIENT_ID = 'envclient'
+CLIENT_SECRET = 'env_client_secret'
+FILE_CLIENT_ID = 'fileclient'
+FILE_CLIENT_SECRET = 'a_file_supplied_client_secret'
+# The secret half of a two-field entry, and of `id:role:secret` entries, whose
+# secret lands in the role field.
+MALFORMED_CLIENT_SECRET = 's3cret_that_must_not_be_logged'
+SWAPPED_FILE_SECRET = 's3cret_swapped_in_the_file_zz'
+SWAPPED_ENV_SECRET = 's3cret_swapped_in_the_env_zz'
+PEER_HEADER_PARAM = 'aggregation.peer_auth_header'
+PEER_AUTH_HEADER = 'Bearer zz_peer_token_that_must_not_be_served'
+SECOND_SECRET = 'second_entry_secret_zz'
+# What the parameter services show in place of a secret.
+SECRET_PLACEHOLDERS = ('<set at start>', '<from MEDKIT_CLIENTS>', '<from MEDKIT_JWT_SECRET>')
+DUMPED_CLIENT_ID = 'dumped'
+# Sit in the id slot of entries that must be refused; no message may carry them.
+CANARY_ID = 'canary_id_zz_must_not_be_logged'
+CANARY_TWO_FIELDS = 'canary_two_fields_zz_must_not_be_logged'
+
+# Every value that must never reach a gateway's output.
+SECRETS = (
+    JWT_SECRET, FILE_JWT_SECRET, SECRET_32, SECRET_31, CLIENT_SECRET,
+    FILE_CLIENT_SECRET, MALFORMED_CLIENT_SECRET, SWAPPED_FILE_SECRET,
+    SWAPPED_ENV_SECRET, PEER_AUTH_HEADER, SECOND_SECRET, CANARY_ID, CANARY_TWO_FIELDS,
+)
+
+_PARAMS_DIR = tempfile.mkdtemp(prefix='medkit_env_auth_')
+
+# A params file is applied only to the node whose name heads it.
+ENV_CLOSED_NODE = 'gateway_env_closed'
+ENV_DISABLED_NODE = 'gateway_env_disabled'
+FILE_CLOSED_NODE = 'gateway_file_closed'
+
+# A key the environment never touches, with a different value per file; it
+# shows that the file reached its gateway at all.
+CLOSED_FILE_TOKEN_EXPIRY = 1234
+DISABLED_FILE_TOKEN_EXPIRY = 2345
+
+
+def _write_params(name, node_name, auth_enabled, require_auth_for, token_expiry=None,
+                  extra_clients=()):
+    """Write a params file stating an auth posture for the environment to override."""
+    path = os.path.join(_PARAMS_DIR, name)
+    clients = [f'{FILE_CLIENT_ID}:{FILE_CLIENT_SECRET}:viewer', *extra_clients]
+    lines = [
+        f'{node_name}:',
+        '  ros__parameters:',
+        '    auth:',
+        f'      enabled: {"true" if auth_enabled else "false"}',
+        f'      require_auth_for: "{require_auth_for}"',
+        f'      jwt_secret: "{FILE_JWT_SECRET}"',
+        '      clients:',
+        *[f'        - "{c}"' for c in clients],
+    ]
+    if token_expiry is not None:
+        lines.append(f'      token_expiry_seconds: {token_expiry}')
+    with open(path, 'w', encoding='utf-8') as handle:
+        handle.write('\n'.join(lines) + '\n')
+    return path
+
+
+AUTH_OFF_PARAMS = _write_params(
+    'auth-off.yaml', ENV_CLOSED_NODE, False, 'write', CLOSED_FILE_TOKEN_EXPIRY,
+    [f'{CLIENT_ID}:{FILE_CLIENT_SECRET}:viewer'])
+AUTH_ON_PARAMS = _write_params('auth-on.yaml', ENV_DISABLED_NODE, True, 'write',
+                               DISABLED_FILE_TOKEN_EXPIRY)
+FILE_CLOSED_PARAMS = _write_params(
+    'file-closed.yaml', FILE_CLOSED_NODE, True, 'all', None,
+    [f'{CLIENT_ID}:{CLIENT_SECRET}:admin', f'twofield:{MALFORMED_CLIENT_SECRET}',
+     f'swapped:admin:{SWAPPED_FILE_SECRET}'])
+# For the subprocess gateways, which carry the default node name.
+SWEEP_OFF_PARAMS = _write_params('sweep-off.yaml', '/**', False, 'write')
+SWEEP_ON_PARAMS = _write_params('sweep-on.yaml', '/**', True, 'all')
+SWEEP_CANARY_PARAMS = _write_params(
+    'sweep-canary.yaml', '/**', True, 'all', None,
+    [f'{CANARY_ID}:x:wizard', f'{CANARY_TWO_FIELDS}:only'])
+
+
+@pytest.mark.launch_test
+def generate_test_description():
+    """Three gateways, differing in what their environments and files say."""
+    closed = create_gateway_node(
+        port=CLOSED_PORT,
+        name=ENV_CLOSED_NODE,
+        parameter_files=[AUTH_OFF_PARAMS],
+        extra_params={'server.host': '127.0.0.1'},
+        extra_env={
+            'MEDKIT_JWT_SECRET': JWT_SECRET,
+            'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin,'
+                              f'envswapped:admin:{SWAPPED_ENV_SECRET}',
+        },
+    )
+    disabled = create_gateway_node(
+        port=DISABLED_PORT,
+        name=ENV_DISABLED_NODE,
+        parameter_files=[AUTH_ON_PARAMS],
+        extra_params={'server.host': '127.0.0.1',
+                      'aggregation.peer_auth_header': PEER_AUTH_HEADER},
+        extra_env={
+            'MEDKIT_JWT_SECRET': JWT_SECRET,
+            'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin',
+            'MEDKIT_AUTH_DISABLED': '1',
+        },
+    )
+    file_closed = create_gateway_node(
+        port=FILE_CLOSED_PORT,
+        name=FILE_CLOSED_NODE,
+        parameter_files=[FILE_CLOSED_PARAMS],
+        extra_params={'server.host': '127.0.0.1'},
+    )
+    return launch.LaunchDescription([
+        closed,
+        disabled,
+        file_closed,
+        launch_testing.actions.ReadyToTest(),
+    ]), {'closed': closed, 'disabled': disabled, 'file_closed': file_closed}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _ros2_param(*args):
+    """Run `ros2 param ...` and return (rc, output).
+
+    The HTTP port answering says nothing about DDS discovery of the parameter
+    services. Where the verb takes `--timeout`, the CLI waits for the node in one
+    discovery. Humble's verbs do not, so the call repeats while the node is missing.
+    """
+    verb = args[0]
+    wait = ['--timeout', str(PARAM_DISCOVERY_TIMEOUT)] if _cli_waits_for_node(verb) else []
+    deadline = time.monotonic() + PARAM_DISCOVERY_TIMEOUT
+    while True:
+        completed = subprocess.run(
+            ['ros2', 'param', verb, '--no-daemon', *wait, *args[1:]],
+            capture_output=True, text=True, timeout=PARAM_DISCOVERY_TIMEOUT + 30, check=False,
+        )
+        output = completed.stdout + completed.stderr
+        if 'Node not found' not in output or time.monotonic() >= deadline:
+            return completed.returncode, output
+        time.sleep(1)
+
+
+_CLI_WAITS = {}
+
+
+def _cli_waits_for_node(verb):
+    """Return True when `ros2 param <verb>` takes `--timeout` to wait for the node."""
+    if verb not in _CLI_WAITS:
+        usage = subprocess.run(['ros2', 'param', verb, '--help'], capture_output=True,
+                               text=True, timeout=30, check=False).stdout
+        _CLI_WAITS[verb] = '--timeout' in usage
+    return _CLI_WAITS[verb]
+
+
+_PARAMS = {}
+
+
+def _client():
+    """Return the one parameter client of this test process, created on first use."""
+    if 'client' not in _PARAMS:
+        _PARAMS['client'] = ParameterClient('env_auth_contract_probe')
+        atexit.register(_PARAMS['client'].close)
+    return _PARAMS['client']
+
+
+def _param_value(node, name):
+    """Return the parameter's value as Python data, read from the node's parameter service."""
+    return _client().get(node, name)
+
+
+def _other_value(value):
+    """Return a value of the same type as `value`, but different."""
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, list):
+        return ['x:y:admin']
+    if isinstance(value, int):
+        return value + 1
+    return 'other_value'
+
+
+def _b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b'=')
+
+
+def _signed_with(token, secret):
+    """Return True when `token` carries a valid HS256 signature under `secret`."""
+    head, body, signature = token.split('.')
+    expected = hmac.new(secret.encode(), f'{head}.{body}'.encode(), hashlib.sha256).digest()
+    return hmac.compare_digest(_b64url(expected), signature.encode())
+
+
+def _authorize(base_url, client_id, client_secret):
+    return requests.post(
+        f'{base_url}/auth/authorize',
+        json={'grant_type': 'client_credentials', 'client_id': client_id,
+              'client_secret': client_secret},
+        timeout=30,
+    )
+
+
+def _status(base_url, client_id, client_secret):
+    return _authorize(base_url, client_id, client_secret).status_code
+
+
+def _assert_no_secret(testcase, output):
+    """Assert the output is a real gateway log, then that it holds no secret."""
+    testcase.assertIn(
+        START_LINE, output,
+        f'no gateway startup line in the capture, so a clean scan proves nothing: {output[-400:]}')
+    for secret in SECRETS:
+        testcase.assertNotIn(secret, output, f'a secret reached the output: {secret[:8]}...')
+
+
+class _Gateway:
+    """A `gateway_node` subprocess on the sweep port, started with this environment.
+
+    ``rc`` is None when the gateway announced itself ready (or was still running
+    at the timeout), else its exit code. Leaving the block kills its process
+    group: `ros2 run` execs the node as a child, so killing the wrapper alone
+    would leave a gateway holding the port.
+    """
+
+    def __init__(self, testcase, env_extra=None, extra_args=(), params_file=None, timeout=45):
+        self.testcase = testcase
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith('MEDKIT_')}
+        self.env.update(env_extra or {})
+        self.command = [
+            'ros2', 'run', 'ros2_medkit_gateway', 'gateway_node', '--ros-args',
+            '-p', f'server.port:={SWEEP_PORT}', '-p', 'server.host:=127.0.0.1',
+            *(['--params-file', params_file] if params_file else []),
+            *extra_args,
+        ]
+        self.timeout = timeout
+        self.rc = None
+        self.ready = False
+        self._chunks = []
+        self._process = None
+
+    @property
+    def output(self):
+        return b''.join(self._chunks).decode(errors='replace')
+
+    def _read_until(self, marker):
+        """Return 'marker', 'exit' (output closed) or 'deadline'."""
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            readable, _, _ = select.select([self._process.stdout], [], [], 0.5)
+            if not readable:
+                continue
+            chunk = os.read(self._process.stdout.fileno(), 65536)
+            if not chunk:
+                return 'exit'
+            self._chunks.append(chunk)
+            if marker.encode() in b''.join(self._chunks[-2:]):
+                return 'marker'
+        return 'deadline'
+
+    def assert_up(self):
+        """Assert the gateway printed its ready line and answers HTTP."""
+        self.testcase.assertIsNone(self.rc, self.output[-600:])
+        self.testcase.assertTrue(
+            self.ready, f'no ready line before the deadline: {self.output[-600:]}')
+        self.testcase.assertIn(READY_LINE, self.output)
+        resp = requests.get(f'{SWEEP_BASE_URL}/health', timeout=15)
+        self.testcase.assertIn(resp.status_code, (200, 401, 403))
+
+    def __enter__(self):
+        self._process = subprocess.Popen(
+            self.command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=self.env, start_new_session=True,
+        )
+        outcome = self._read_until(READY_LINE)
+        self.ready = outcome == 'marker'
+        if outcome == 'exit':
+            self._process.wait(timeout=15)
+            self.rc = self._process.returncode
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.rc is None:
+            os.killpg(os.getpgid(self._process.pid), signal.SIGTERM)
+            try:
+                self._process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(self._process.pid), signal.SIGKILL)
+        rest, _ = self._process.communicate()
+        if rest:
+            self._chunks.append(rest)
+        if exc_type is None:
+            _assert_no_secret(self.testcase, self.output)
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Long-running gateways
+# ---------------------------------------------------------------------------
+
+class TestEnvironmentClosesTheNode(GatewayTestCase):
+    """MEDKIT_JWT_SECRET closes a gateway whose params file says auth is off."""
+
+    BASE_URL = CLOSED_BASE_URL
+
+    def test_00_the_file_reached_this_gateway(self):
+        """Premise: every auth key of the file is overridden but the expiry."""
+        self.assertEqual(
+            _param_value(f'/{ENV_CLOSED_NODE}', 'auth.token_expiry_seconds'),
+            CLOSED_FILE_TOKEN_EXPIRY)
+
+    def test_01_every_route_is_closed_not_only_the_writes(self):
+        """The file says auth off and require_auth_for write; both lose."""
+        for path in ('/areas', '/components', '/apps', '/health', '/'):
+            with self.subTest(path=path):
+                resp = requests.get(f'{CLOSED_BASE_URL}{path}', timeout=15)
+                self.assertEqual(resp.status_code, 401, f'anonymous GET {path}: {resp.text[:200]}')
+
+    def test_02_a_write_is_closed_too(self):
+        resp = requests.post(f'{CLOSED_BASE_URL}/apps/none/operations/x/executions',
+                             json={}, timeout=15)
+        self.assertEqual(resp.status_code, 401, resp.text[:200])
+
+    def test_03_the_environment_credential_issues_a_working_token(self):
+        """The mirror: a gateway closed to everyone would pass the cases above."""
+        token = _authorize(CLOSED_BASE_URL, CLIENT_ID, CLIENT_SECRET)
+        self.assertEqual(token.status_code, 200, token.text)
+        self.assertEqual(token.json().get('scope'), 'admin', token.text[:300])
+        resp = requests.get(
+            f'{CLOSED_BASE_URL}/areas',
+            headers={'Authorization': f'Bearer {token.json()["access_token"]}'}, timeout=15)
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+    def test_04_the_token_is_signed_with_the_environment_secret(self):
+        """Not with the file's secret, which the params file also carries."""
+        token = _authorize(CLOSED_BASE_URL, CLIENT_ID, CLIENT_SECRET).json()['access_token']
+        self.assertTrue(_signed_with(token, JWT_SECRET), 'not signed with MEDKIT_JWT_SECRET')
+        self.assertFalse(_signed_with(token, FILE_JWT_SECRET), 'signed with the file secret')
+
+    def test_05_the_file_credential_is_gone(self):
+        """MEDKIT_CLIENTS replaces auth.clients; it does not add to it.
+
+        The file names the same id with another secret, and a second id.
+        """
+        for client_id, secret in ((CLIENT_ID, FILE_CLIENT_SECRET),
+                                  (FILE_CLIENT_ID, FILE_CLIENT_SECRET)):
+            with self.subTest(client=client_id):
+                self.assertNotEqual(_status(CLOSED_BASE_URL, client_id, secret), 200)
+
+    def test_06_a_swapped_entry_registered_nothing(self):
+        for secret in (SWAPPED_ENV_SECRET, 'admin'):
+            self.assertNotEqual(_authorize(CLOSED_BASE_URL, 'envswapped', secret).status_code, 200)
+
+
+class TestAuthDisabledWinsOverEverything(GatewayTestCase):
+    """MEDKIT_AUTH_DISABLED=1 beats the secret and a file that asks for auth."""
+
+    BASE_URL = DISABLED_BASE_URL
+
+    def test_00_the_file_reached_this_gateway(self):
+        self.assertEqual(
+            _param_value(f'/{ENV_DISABLED_NODE}', 'auth.token_expiry_seconds'),
+            DISABLED_FILE_TOKEN_EXPIRY)
+
+    def test_01_every_route_is_answered(self):
+        for path in ('/areas', '/health'):
+            with self.subTest(path=path):
+                resp = requests.get(f'{DISABLED_BASE_URL}{path}', timeout=15)
+                self.assertEqual(resp.status_code, 200, resp.text[:200])
+
+    def test_02_the_environment_credential_gets_no_token(self):
+        """Authentication is off, and the gateway holds no signing secret."""
+        self.assertNotEqual(_status(DISABLED_BASE_URL, CLIENT_ID, CLIENT_SECRET), 200)
+
+    def test_03_no_secret_is_served_with_authentication_off(self):
+        secret = _param_value(f'/{ENV_DISABLED_NODE}', 'auth.jwt_secret')
+        self.assertEqual(secret, '<set at start>')
+        clients = _param_value(f'/{ENV_DISABLED_NODE}', 'auth.clients')
+        self.assertEqual(clients, [f'{FILE_CLIENT_ID}:<set at start>:viewer'])
+
+    def test_04_the_peer_auth_header_reads_as_a_sentinel(self):
+        self.assertEqual(
+            _param_value(f'/{ENV_DISABLED_NODE}', PEER_HEADER_PARAM), '<set at start>')
+
+    def test_05_the_peer_auth_header_cannot_be_set_at_runtime(self):
+        result = _client().set_one(f'/{ENV_DISABLED_NODE}', PEER_HEADER_PARAM, 'Bearer other')
+        self.assertFalse(result.successful)
+        self.assertIn('read at start', result.reason)
+        self.assertEqual(
+            _param_value(f'/{ENV_DISABLED_NODE}', PEER_HEADER_PARAM), '<set at start>')
+
+    def test_06_introspection_reports_the_open_posture(self):
+        self.assertIs(_param_value(f'/{ENV_DISABLED_NODE}', 'auth.enabled'), False)
+        self.assertEqual(_param_value(f'/{ENV_DISABLED_NODE}', 'auth.require_auth_for'), 'none')
+
+
+class TestIntrospectionAgreesWithEnforcement(GatewayTestCase):
+    """`ros2 param get` answers what the gateway enforces, and refuses writes."""
+
+    BASE_URL = CLOSED_BASE_URL
+    NODE = f'/{ENV_CLOSED_NODE}'
+
+    def test_01_the_closed_gateway_reports_the_posture_it_serves(self):
+        self.assertIs(_param_value(self.NODE, 'auth.enabled'), True)
+        self.assertEqual(_param_value(self.NODE, 'auth.require_auth_for'), 'all')
+
+    def test_02_secrets_read_back_as_sentinels(self):
+        self.assertEqual(_param_value(self.NODE, 'auth.jwt_secret'), '<from MEDKIT_JWT_SECRET>')
+        self.assertEqual(
+            _param_value(self.NODE, 'auth.clients'),
+            [f'{CLIENT_ID}:<from MEDKIT_CLIENTS>:admin'])
+
+    def test_03_every_auth_parameter_is_refused_and_unchanged(self):
+        listing = _client().list_names(self.NODE)
+        names = [n for n in listing if n.startswith('auth.') or n == PEER_HEADER_PARAM]
+        self.assertIn('auth.enabled', names, listing)
+        self.assertIn('auth.clients', names, listing)
+        self.assertIn(PEER_HEADER_PARAM, names, listing)
+        for name in names:
+            with self.subTest(parameter=name):
+                before = _param_value(self.NODE, name)
+                result = _client().set_one(self.NODE, name, _other_value(before))
+                self.assertFalse(result.successful)
+                self.assertIn('read at start', result.reason)
+                self.assertEqual(_param_value(self.NODE, name), before)
+        resp = requests.get(f'{CLOSED_BASE_URL}/areas', timeout=15)
+        self.assertEqual(resp.status_code, 401, resp.text)
+
+    def test_04_a_non_auth_parameter_is_untouched_by_the_guard(self):
+        result = _client().set_one(self.NODE, 'refresh_interval_ms', 3000)
+        self.assertTrue(result.successful, result.reason)
+        self.assertEqual(_param_value(self.NODE, 'refresh_interval_ms'), 3000)
+
+    def test_05_a_param_load_applies_what_it_may_and_refuses_the_rest(self):
+        """`ros2 param load` sets each key in turn: the auth entry is refused, the rest applies."""
+        path = os.path.join(_PARAMS_DIR, 'runtime-load.yaml')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write(
+                f'/{ENV_CLOSED_NODE}:\n'
+                '  ros__parameters:\n'
+                '    auth:\n'
+                '      enabled: false\n'
+                '    refresh_interval_ms: 4500\n'
+            )
+        _, output = _ros2_param('load', self.NODE, path)
+        self.assertIn('read at start', output, output)
+        self.assertEqual(_param_value(self.NODE, 'refresh_interval_ms'), 4500)
+        self.assertIs(_param_value(self.NODE, 'auth.enabled'), True)
+        self.assertEqual(requests.get(f'{CLOSED_BASE_URL}/areas', timeout=15).status_code, 401)
+
+    def test_06_an_atomic_batch_mixing_the_two_is_refused_whole(self):
+        before = _param_value(self.NODE, 'refresh_interval_ms')
+        result = _client().set_atomically(
+            self.NODE, {'refresh_interval_ms': 6100, 'auth.enabled': False})
+        self.assertFalse(result.successful)
+        self.assertIn('read at start', result.reason)
+        self.assertEqual(_param_value(self.NODE, 'refresh_interval_ms'), before)
+
+
+class TestAFileSuppliedSecretIsAlsoRedacted(GatewayTestCase):
+    """A file-closed gateway with no MEDKIT_* variable: same read-back, same behaviour."""
+
+    BASE_URL = FILE_CLOSED_BASE_URL
+    NODE = f'/{FILE_CLOSED_NODE}'
+
+    def test_01_the_file_alone_closes_the_gateway(self):
+        resp = requests.get(f'{FILE_CLOSED_BASE_URL}/areas', timeout=15)
+        self.assertEqual(resp.status_code, 401)
+
+    def test_02_the_posture_reads_back(self):
+        self.assertIs(_param_value(self.NODE, 'auth.enabled'), True)
+        self.assertEqual(_param_value(self.NODE, 'auth.require_auth_for'), 'all')
+
+    def test_03_the_file_secret_reads_back_as_a_sentinel(self):
+        self.assertEqual(_param_value(self.NODE, 'auth.jwt_secret'), '<set at start>')
+
+    def test_04_the_file_client_secrets_read_back_as_sentinels(self):
+        self.assertEqual(
+            _param_value(self.NODE, 'auth.clients'),
+            [f'{FILE_CLIENT_ID}:<set at start>:viewer', f'{CLIENT_ID}:<set at start>:admin'])
+
+    def test_05_the_credential_still_works_and_signs_with_the_file_secret(self):
+        token = _authorize(FILE_CLOSED_BASE_URL, CLIENT_ID, CLIENT_SECRET)
+        self.assertEqual(token.status_code, 200, token.text)
+        self.assertTrue(_signed_with(token.json()['access_token'], FILE_JWT_SECRET))
+        resp = requests.get(
+            f'{FILE_CLOSED_BASE_URL}/areas',
+            headers={'Authorization': f'Bearer {token.json()["access_token"]}'}, timeout=15)
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+    def test_06_the_malformed_entries_registered_no_client(self):
+        for client_id, secret in (('twofield', MALFORMED_CLIENT_SECRET),
+                                  ('swapped', SWAPPED_FILE_SECRET), ('swapped', 'admin')):
+            self.assertNotEqual(_status(FILE_CLOSED_BASE_URL, client_id, secret), 200)
+
+
+# ---------------------------------------------------------------------------
+# One gateway per case
+# ---------------------------------------------------------------------------
+
+def _anonymous_status(path='/areas'):
+    return requests.get(f'{SWEEP_BASE_URL}{path}', timeout=15).status_code
+
+
+class TestEnvironmentSweep(unittest.TestCase):
+    """The three variables across their input space, one gateway per case."""
+
+    def test_01_no_variable_set_leaves_main_behaviour(self):
+        with _Gateway(self) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 200)
+            self.assertEqual(_anonymous_status('/health'), 200)
+            self.assertIs(_param_value('/ros2_medkit_gateway', 'auth.enabled'), False)
+            self.assertEqual(_param_value('/ros2_medkit_gateway', 'auth.require_auth_for'), 'none')
+            self.assertEqual(_param_value('/ros2_medkit_gateway', 'auth.jwt_secret'), '')
+            self.assertEqual(_param_value('/ros2_medkit_gateway', 'auth.clients'), [])
+
+    def test_02_a_file_closed_gateway_without_variables_is_unchanged(self):
+        with _Gateway(self, params_file=SWEEP_ON_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 401)
+            token = _authorize(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET)
+            self.assertEqual(token.status_code, 200, token.text)
+            self.assertTrue(_signed_with(token.json()['access_token'], FILE_JWT_SECRET))
+
+    def test_03_the_secret_length_boundary(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': SECRET_31}) as gateway:
+            self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+            self.assertIn('JWT secret must be at least 32 characters', gateway.output)
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': SECRET_32}) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 401)
+
+    def test_04_an_empty_secret_refuses_to_start_and_names_the_variable(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': ''}, params_file=SWEEP_ON_PARAMS) as gateway:
+            self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+            self.assertIn('MEDKIT_JWT_SECRET is set but empty', gateway.output)
+            self.assertNotIn(READY_LINE, gateway.output)
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': '',
+                             'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin'}) as gateway:
+            self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+
+    def test_05_disabled_wins_over_an_empty_secret(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': '', 'MEDKIT_AUTH_DISABLED': '1'}) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 200)
+
+    def test_06_only_the_literal_one_disables(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_AUTH_DISABLED': '1'},
+                      params_file=SWEEP_ON_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 200)
+        for value in ('0', 'true', ''):
+            with self.subTest(value=value):
+                with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET,
+                                     'MEDKIT_AUTH_DISABLED': value},
+                              params_file=SWEEP_OFF_PARAMS) as gateway:
+                    gateway.assert_up()
+                    self.assertEqual(_anonymous_status('/areas'), 401)
+        for value in ('0', 'true', ''):
+            with self.subTest(value=value, secret=False):
+                with _Gateway(self, {'MEDKIT_AUTH_DISABLED': value},
+                              params_file=SWEEP_ON_PARAMS) as gateway:
+                    gateway.assert_up()
+                    self.assertEqual(_anonymous_status('/areas'), 401)
+
+    def test_07_the_secret_beats_every_params_source(self):
+        """A `-p` argument comes after the file, and the environment still wins."""
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET,
+                             'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin'},
+                      params_file=SWEEP_OFF_PARAMS,
+                      extra_args=('-p', 'auth.enabled:=false',
+                                  '-p', 'auth.require_auth_for:=write',
+                                  '-p', f'auth.jwt_secret:={SECOND_SECRET}_pad_to_32')) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 401)
+            token = _authorize(SWEEP_BASE_URL, CLIENT_ID, CLIENT_SECRET)
+            self.assertEqual(token.status_code, 200, token.text)
+            self.assertTrue(_signed_with(token.json()['access_token'], JWT_SECRET))
+
+    def test_08_a_secret_under_rs256_names_both_settings_and_no_value(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET,
+                             'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin'},
+                      extra_args=('-p', 'auth.jwt_algorithm:=RS256')) as gateway:
+            self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+            line = next(row for row in gateway.output.splitlines() if 'Refusing to start' in row)
+            self.assertIn('MEDKIT_JWT_SECRET (environment)', line)
+            self.assertIn('auth.jwt_algorithm is RS256 (parameters)', line)
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET},
+                      extra_args=('-p', 'auth.jwt_algorithm:=HS256')) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_anonymous_status('/areas'), 401)
+
+    def test_09_a_refusal_names_where_each_value_came_from(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET},
+                      extra_args=('-p', 'auth.token_expiry_seconds:=0')) as gateway:
+            self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+            line = next(row for row in gateway.output.splitlines() if 'Refusing to start' in row)
+            self.assertIn('Token expiry must be positive', line)
+            self.assertIn(
+                'The environment supplied auth.jwt_secret (MEDKIT_JWT_SECRET); every other '
+                'auth.* value came from the parameters.', line)
+            self.assertNotIn('MEDKIT_CLIENTS', line)
+
+    def test_10_clients_unset_leaves_the_files_clients(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET},
+                      params_file=SWEEP_OFF_PARAMS) as gateway:
+            gateway.assert_up()
+            token = _authorize(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET)
+            self.assertEqual(token.status_code, 200, token.text)
+
+    def test_11_clients_without_a_secret_are_ignored_with_a_warning(self):
+        with _Gateway(self, {'MEDKIT_CLIENTS': f'{CLIENT_ID}:{CLIENT_SECRET}:admin'},
+                      params_file=SWEEP_ON_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertIn('MEDKIT_CLIENTS is set and MEDKIT_JWT_SECRET is unset', gateway.output)
+            self.assertEqual(
+                _status(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET), 200)
+            self.assertNotEqual(_status(SWEEP_BASE_URL, CLIENT_ID, CLIENT_SECRET), 200)
+
+    def test_11b_an_empty_clients_value_without_a_secret_is_ignored_with_a_warning(self):
+        with _Gateway(self, {'MEDKIT_CLIENTS': ''}, params_file=SWEEP_ON_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertIn('MEDKIT_CLIENTS is set and MEDKIT_JWT_SECRET is unset', gateway.output)
+            self.assertEqual(_status(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET), 200)
+
+    def test_12_an_empty_clients_value_means_no_clients_and_warns(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': ''},
+                      params_file=SWEEP_OFF_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertIn('MEDKIT_CLIENTS is empty', gateway.output)
+            self.assertNotEqual(
+                _status(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET), 200)
+
+    def test_13_a_list_refused_in_full_stops_the_gateway(self):
+        with _Gateway(self, {'MEDKIT_JWT_SECRET': JWT_SECRET,
+                             'MEDKIT_CLIENTS': f'nocolons,also-bad,third:{MALFORMED_CLIENT_SECRET}'
+                                               ':wizard'}) as gateway:
+            self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+            self.assertIn('every MEDKIT_CLIENTS entry was refused', gateway.output)
+
+    def test_14_one_refused_entry_does_not_take_the_others_with_it(self):
+        clients = (f'good:{CLIENT_SECRET}:admin,nocolons,'
+                   f'{MALFORMED_CLIENT_SECRET}:x,swapped:admin:{SWAPPED_ENV_SECRET}')
+        env = {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': clients}
+        with _Gateway(self, env) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_status(SWEEP_BASE_URL, 'good', CLIENT_SECRET), 200)
+            self.assertIn('MEDKIT_CLIENTS entry 2 is not', gateway.output)
+            self.assertIn('MEDKIT_CLIENTS entry 3 is not', gateway.output)
+            self.assertIn('MEDKIT_CLIENTS entry 4 names an unknown role', gateway.output)
+            self.assertNotIn('swapped', gateway.output)
+
+    def test_15_a_duplicate_id_keeps_the_first_entry_and_warns(self):
+        clients = f'dup:{CLIENT_SECRET}:admin,dup:{SECOND_SECRET}:viewer'
+        env = {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': clients}
+        with _Gateway(self, env) as gateway:
+            gateway.assert_up()
+            self.assertIn(
+                'MEDKIT_CLIENTS entry 2 repeats the client id of entry 1', gateway.output)
+            self.assertNotIn('"dup"', gateway.output)
+            self.assertEqual(_status(SWEEP_BASE_URL, 'dup', CLIENT_SECRET), 200)
+            self.assertNotEqual(_status(SWEEP_BASE_URL, 'dup', SECOND_SECRET), 200)
+
+    def test_15b_a_refused_entry_is_reported_by_position_only(self):
+        """The id slot of a shifted entry can hold a secret, so no field is logged."""
+        env = {'MEDKIT_JWT_SECRET': JWT_SECRET,
+               'MEDKIT_CLIENTS': f'{CANARY_ID}:x:wizard,{CANARY_TWO_FIELDS}:only,'
+                                 f'good:{CLIENT_SECRET}:admin'}
+        with _Gateway(self, env) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_status(SWEEP_BASE_URL, 'good', CLIENT_SECRET), 200)
+            self.assertNotIn(CANARY_ID, gateway.output)
+            self.assertNotIn(CANARY_TWO_FIELDS, gateway.output)
+            self.assertIn('MEDKIT_CLIENTS entry 1 names an unknown role', gateway.output)
+
+    def test_15c_a_refused_file_entry_is_reported_by_position_only(self):
+        with _Gateway(self, params_file=SWEEP_CANARY_PARAMS) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_status(SWEEP_BASE_URL, FILE_CLIENT_ID, FILE_CLIENT_SECRET), 200)
+            self.assertNotIn(CANARY_ID, gateway.output)
+            self.assertNotIn(CANARY_TWO_FIELDS, gateway.output)
+            self.assertIn('auth.clients entry 2 names an unknown role', gateway.output)
+            self.assertIn('auth.clients entry 3 is not', gateway.output)
+
+    def test_15d_a_disabled_value_other_than_one_leaves_a_default_gateway_open(self):
+        for value in ('0', 'true', ''):
+            with self.subTest(value=value):
+                with _Gateway(self, {'MEDKIT_AUTH_DISABLED': value}) as gateway:
+                    gateway.assert_up()
+                    self.assertEqual(_anonymous_status('/areas'), 200)
+
+    def test_16_surrounding_whitespace_is_trimmed(self):
+        clients = f' one:{CLIENT_SECRET}:admin ,\ttwo:{SECOND_SECRET}:viewer\t'
+        env = {'MEDKIT_JWT_SECRET': JWT_SECRET, 'MEDKIT_CLIENTS': clients}
+        with _Gateway(self, env) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_status(SWEEP_BASE_URL, 'one', CLIENT_SECRET), 200)
+            self.assertEqual(_status(SWEEP_BASE_URL, 'two', SECOND_SECRET), 200)
+
+    def test_17_a_placeholder_client_secret_stops_the_gateway(self):
+        """A `ros2 param dump` reused as a params file must not register a public secret."""
+        env = {'MEDKIT_JWT_SECRET': JWT_SECRET}
+        for index, placeholder in enumerate(SECRET_PLACEHOLDERS):
+            with self.subTest(placeholder=placeholder, source='file'):
+                params = _write_params(f'dump-{index}.yaml', '/**', True, 'all', None,
+                                       [f'{DUMPED_CLIENT_ID}:{placeholder}:admin'])
+                with _Gateway(self, env, params_file=params) as gateway:
+                    self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+                    line = next((row for row in gateway.output.splitlines()
+                                 if 'Refusing to start' in row), '')
+                    self.assertIn(f'auth.clients entry 2 has the placeholder {placeholder}', line)
+        with self.subTest(source='MEDKIT_CLIENTS'):
+            env_clients = dict(
+                env, MEDKIT_CLIENTS=f'{DUMPED_CLIENT_ID}:<from MEDKIT_CLIENTS>:admin')
+            with _Gateway(self, env_clients) as gateway:
+                self.assertEqual(gateway.rc, 1, gateway.output[-600:])
+                self.assertIn('auth.clients entry 1 has the placeholder', gateway.output)
+        params = _write_params('dump-real.yaml', '/**', True, 'all', None,
+                               [f'{DUMPED_CLIENT_ID}:{CLIENT_SECRET}:admin'])
+        with _Gateway(self, env, params_file=params) as gateway:
+            gateway.assert_up()
+            self.assertEqual(_status(SWEEP_BASE_URL, DUMPED_CLIENT_ID, CLIENT_SECRET), 200)
+
+
+@launch_testing.post_shutdown_test()
+class TestEnvAuthContractShutdown(unittest.TestCase):
+    """Every gateway exits cleanly and none printed a secret."""
+
+    def test_exit_codes(self, proc_info, closed, disabled, file_closed):
+        for proc in (closed, disabled, file_closed):
+            launch_testing.asserts.assertExitCodes(
+                proc_info, allowable_exit_codes=ALLOWED_EXIT_CODES, process=proc)
+
+    def test_no_secret_reached_the_log(self, proc_output, closed, disabled, file_closed):
+        # Concatenated with no separator: a chunk boundary can fall mid-line.
+        for proc in (closed, disabled, file_closed):
+            text = ''.join(out.text.decode(errors='replace') for out in proc_output[proc])
+            self.assertIn(READY_LINE, text, 'the capture holds no gateway startup line')
+            _assert_no_secret(self, text)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(_PARAMS_DIR, ignore_errors=True)

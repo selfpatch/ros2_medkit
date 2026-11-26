@@ -974,6 +974,29 @@ TEST_F(TestGatewayNode, tls_enabled_with_missing_cert_fails_closed) {
   EXPECT_THROW(std::make_shared<ros2_medkit_gateway::GatewayNode>(options), std::exception);
 }
 
+// Both options would declare the overrides, secrets included, as served parameters.
+TEST_F(TestGatewayNode, automatically_declared_overrides_are_refused) {
+  node_.reset();
+  int free_port = reserve_free_port();
+  ASSERT_NE(free_port, 0);
+
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({rclcpp::Parameter("server.port", free_port)});
+  options.automatically_declare_parameters_from_overrides(true);
+  EXPECT_THROW(std::make_shared<ros2_medkit_gateway::GatewayNode>(options), std::invalid_argument);
+}
+
+TEST_F(TestGatewayNode, undeclared_parameters_are_refused) {
+  node_.reset();
+  int free_port = reserve_free_port();
+  ASSERT_NE(free_port, 0);
+
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({rclcpp::Parameter("server.port", free_port)});
+  options.allow_undeclared_parameters(true);
+  EXPECT_THROW(std::make_shared<ros2_medkit_gateway::GatewayNode>(options), std::invalid_argument);
+}
+
 // =============================================================================
 // Entity type path extraction tests
 // =============================================================================
