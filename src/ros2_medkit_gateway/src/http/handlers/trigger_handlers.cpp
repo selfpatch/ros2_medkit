@@ -214,7 +214,9 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
   // "/temperature" binds to "/sensor/temperature".
   std::string resolved_topic_name;
   if (parsed->collection == "data" && !parsed->resource_path.empty()) {
-    resolved_topic_name = resolve_trigger_topic(ctx_.services().entity_cache(), entity_id, parsed->resource_path);
+    // By the route's type and id: ids are unique per type only.
+    resolved_topic_name =
+        resolve_trigger_topic(ctx_.services().entity_cache(), entity_id, entity_type, parsed->resource_path);
     if (resolved_topic_name.empty() && entity_result->is_plugin) {
       // Plugin data points are enumerable right now, so a name the plugin does
       // not have can be rejected outright with a suggestion - parking it would
@@ -230,7 +232,7 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
       auto * pmgr = ctx_.services().plugin_manager();
       std::optional<nlohmann::json> content;
       if (pmgr != nullptr) {
-        if (auto * data_prov = pmgr->get_data_provider_for_entity(entity_id)) {
+        if (auto * data_prov = pmgr->get_data_provider_for_entity(entity_result->sovd_type(), entity_id)) {
           try {
             if (auto result = data_prov->list_data(entity_id)) {
               content = result->content;
@@ -241,7 +243,7 @@ TriggerHandlers::post_trigger(const http::TypedRequest & req, dto::TriggerCreate
           }
         }
         if (!content) {
-          content = pmgr->fetch_entity_data_via_route(entity_id);
+          content = pmgr->fetch_entity_data_via_route(entity_result->sovd_type(), entity_id);
         }
       }
       // Same liveness guard as the fault-trigger enumeration in gateway_node:
@@ -343,7 +345,7 @@ http::Result<dto::Collection<dto::Trigger>> TriggerHandlers::get_triggers(const 
     return tl::unexpected(flatten_validator_error(entity_result.error()));
   }
 
-  auto triggers = trigger_mgr_.list(entity_id);
+  auto triggers = trigger_mgr_.list(extract_entity_type(req.path()), entity_id);
   dto::Collection<dto::Trigger> response;
   for (const auto & trig : triggers) {
     response.items.push_back(trigger_info_to_dto(trig, build_event_source(trig)));
@@ -374,7 +376,7 @@ http::Result<dto::Trigger> TriggerHandlers::get_trigger(const http::TypedRequest
   const std::string trigger_id = *trigger_id_result;
 
   auto trig = trigger_mgr_.get(trigger_id);
-  if (!trig || trig->entity_id != entity_id) {
+  if (!trig || !on_route(*trig, req, entity_id)) {
     return tl::unexpected(
         make_error(404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", json{{"trigger_id", trigger_id}}));
   }
@@ -412,7 +414,7 @@ http::Result<dto::Trigger> TriggerHandlers::put_trigger(const http::TypedRequest
 
   // Verify trigger exists and belongs to this entity before updating.
   auto existing = trigger_mgr_.get(trigger_id);
-  if (!existing || existing->entity_id != entity_id) {
+  if (!existing || !on_route(*existing, req, entity_id)) {
     return tl::unexpected(
         make_error(404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", json{{"trigger_id", trigger_id}}));
   }
@@ -453,7 +455,7 @@ http::Result<http::NoContent> TriggerHandlers::del_trigger(const http::TypedRequ
 
   // Verify trigger exists and belongs to this entity before deleting.
   auto existing = trigger_mgr_.get(trigger_id);
-  if (!existing || existing->entity_id != entity_id) {
+  if (!existing || !on_route(*existing, req, entity_id)) {
     return tl::unexpected(
         make_error(404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", json{{"trigger_id", trigger_id}}));
   }
@@ -493,7 +495,7 @@ http::Result<http::SseStream> TriggerHandlers::sse_trigger_events(const http::Ty
         make_error(404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", json{{"trigger_id", trigger_id}}));
   }
 
-  if (trig->entity_id != entity_id) {
+  if (!on_route(*trig, req, entity_id)) {
     return tl::unexpected(
         make_error(404, ERR_RESOURCE_NOT_FOUND, "Trigger not found", json{{"trigger_id", trigger_id}}));
   }
@@ -566,6 +568,11 @@ http::Result<http::SseStream> TriggerHandlers::sse_trigger_events(const http::Ty
 std::string TriggerHandlers::build_event_source(const TriggerInfo & info) {
   return std::string(API_BASE_PATH) + "/" + info.entity_type + "/" + info.entity_id + "/triggers/" + info.id +
          "/events";
+}
+
+bool TriggerHandlers::on_route(const TriggerInfo & trig, const http::TypedRequest & req,
+                               const std::string & entity_id) {
+  return trig.entity_id == entity_id && trig.entity_type == extract_entity_type(req.path());
 }
 
 std::string TriggerHandlers::extract_entity_type(const std::string & path) {

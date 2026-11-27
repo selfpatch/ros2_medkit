@@ -167,10 +167,9 @@ class FakePluginContext : public RosPluginContext {
   nlohmann::json list_all_faults() const override {
     return all_faults;
   }
-  void register_sampler(
-      const std::string & /*topic*/,
-      const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> &
-      /*sampler*/) override {
+  void register_sampler(const std::string & /*topic*/, const std::function<tl::expected<nlohmann::json, std::string>(
+                                                           SovdEntityType, const std::string &, const std::string &)> &
+                        /*sampler*/) override {
   }
   ResourceChangeNotifier * get_resource_change_notifier() override {
     return nullptr;
@@ -723,7 +722,8 @@ TEST_F(OpcuaPluginTest, GetFaultFound) {
   ctx_.all_faults = {{"faults", {{{"fault_code", "PLC_LOW_LEVEL"}, {"source_id", "tank"}, {"severity", 2}}}}};
   auto result = plugin_.get_fault("tank", "PLC_LOW_LEVEL");
   ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(result->content.value("fault_code", ""), "PLC_LOW_LEVEL");
+  ASSERT_TRUE(result->content.contains("fault_code"));
+  EXPECT_EQ(result->content["fault_code"], "PLC_LOW_LEVEL");
 }
 
 // -- configure() validation (issue #481) --

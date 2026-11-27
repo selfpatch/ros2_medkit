@@ -82,5 +82,10 @@ PluginContext Read-Only Access
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The plugin only uses read-only ``PluginContext`` methods (``get_entity_snapshot()``,
-``get_entity()``, ``list_entity_faults()``, ``get_entity_capabilities()``,
+``get_entity(type, id)``, ``list_entity_faults(type, id)``, ``get_entity_capabilities(type, id)``,
 ``get_type_capabilities()``). It never mutates gateway state.
+
+A request names its entity by ``entity_id`` alone, so the plugin resolves it the way an
+id-only ``PluginContext`` call does: it looks the id up under every entity type and answers for
+the one entity that holds it. An id more than one entity holds is refused with an error naming
+the types, never answered for one of them.

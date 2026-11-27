@@ -117,12 +117,13 @@ std::optional<CyclicSubscriptionInfo> SubscriptionManager::get(const std::string
   return state->info;
 }
 
-std::vector<CyclicSubscriptionInfo> SubscriptionManager::list(const std::string & entity_id) const {
+std::vector<CyclicSubscriptionInfo> SubscriptionManager::list(SovdEntityType entity_type,
+                                                              const std::string & entity_id) const {
   std::lock_guard<std::mutex> lock(map_mutex_);
   std::vector<CyclicSubscriptionInfo> result;
   for (const auto & [id, state] : subscriptions_) {
     std::lock_guard<std::mutex> sub_lock(state->mtx);
-    if (state->info.entity_id == entity_id) {
+    if (state->info.entity_id == entity_id && entity_type_from_collection(state->info.entity_type) == entity_type) {
       result.push_back(state->info);
     }
   }

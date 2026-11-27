@@ -105,7 +105,7 @@ TEST_F(SubscriptionManagerTest, CapacityFreedAfterRemove) {
   for (int i = 0; i < 5; ++i) {
     (void)mgr_.create("e", "apps", "/r", "data", "/t", "sse", CyclicInterval::FAST, 60);
   }
-  auto list = mgr_.list("e");
+  auto list = mgr_.list(SovdEntityType::APP, "e");
   ASSERT_FALSE(list.empty());
   mgr_.remove(list[0].id);
 
@@ -134,7 +134,7 @@ TEST_F(SubscriptionManagerTest, CleanupExpiredRemovesOnlyExpired) {
   size_t removed = mgr_.cleanup_expired();
   EXPECT_EQ(removed, 1u);
   EXPECT_EQ(mgr_.active_count(), 1u);
-  EXPECT_EQ(mgr_.list("b").size(), 1u);
+  EXPECT_EQ(mgr_.list(SovdEntityType::APP, "b").size(), 1u);
 }
 
 TEST_F(SubscriptionManagerTest, IsActiveReturnsFalseAfterExpiry) {
@@ -182,6 +182,7 @@ TEST_F(SubscriptionManagerTest, UpdateNonexistentFails) {
 TEST(SubscriptionManagerConcurrencyTest, ConcurrentCreateIsThreadSafe) {
   SubscriptionManager mgr(100);
   std::vector<std::thread> threads;
+  threads.reserve(20);
   std::atomic<int> success_count{0};
 
   for (int i = 0; i < 20; ++i) {
@@ -202,6 +203,7 @@ TEST(SubscriptionManagerConcurrencyTest, ConcurrentCreateIsThreadSafe) {
 TEST(SubscriptionManagerConcurrencyTest, ConcurrentCreateRespectsCapacity) {
   SubscriptionManager mgr(5);
   std::vector<std::thread> threads;
+  threads.reserve(20);
   std::atomic<int> success_count{0};
 
   for (int i = 0; i < 20; ++i) {

@@ -149,13 +149,13 @@ TEST_F(TriggerManagerTest, List_ReturnsTriggersForEntity) {
   (void)manager_->create(make_request("sensor"));
   (void)manager_->create(make_request("actuator"));
 
-  auto sensor_triggers = manager_->list("sensor");
+  auto sensor_triggers = manager_->list("apps", "sensor");
   EXPECT_EQ(sensor_triggers.size(), 2u);
 
-  auto actuator_triggers = manager_->list("actuator");
+  auto actuator_triggers = manager_->list("apps", "actuator");
   EXPECT_EQ(actuator_triggers.size(), 1u);
 
-  auto empty = manager_->list("nonexistent");
+  auto empty = manager_->list("apps", "nonexistent");
   EXPECT_TRUE(empty.empty());
 }
 
@@ -223,7 +223,7 @@ TEST_F(TriggerManagerTest, SingleShot_NotifyMatchingChange) {
   ASSERT_TRUE(created.has_value());
 
   // Notify a matching resource change
-  notifier_.notify("data", "sensor", "/temperature", json(42.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(42.0));
 
   // Wait for event via synchronization primitive instead of sleeping
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
@@ -258,10 +258,10 @@ TEST_F(TriggerManagerTest, SingleShot_RemovedAfterFiring) {
 
   // Verify trigger exists before firing
   EXPECT_TRUE(manager_->get(trigger_id).has_value());
-  EXPECT_EQ(manager_->list("sensor").size(), 1u);
+  EXPECT_EQ(manager_->list("apps", "sensor").size(), 1u);
 
   // Fire the one-shot trigger
-  notifier_.notify("data", "sensor", "/temperature", json(42.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(42.0));
   ASSERT_TRUE(manager_->wait_for_event(trigger_id, std::chrono::milliseconds(2000)));
 
   // Wait for the notifier worker to finish cleaning up the one-shot trigger
@@ -274,7 +274,7 @@ TEST_F(TriggerManagerTest, SingleShot_RemovedAfterFiring) {
 
   // Trigger must be fully removed from memory (not just terminated)
   EXPECT_FALSE(manager_->get(trigger_id).has_value()) << "One-shot trigger should be removed after firing";
-  EXPECT_TRUE(manager_->list("sensor").empty()) << "list() should not include removed trigger";
+  EXPECT_TRUE(manager_->list("apps", "sensor").empty()) << "list() should not include removed trigger";
 
   // Verify capacity was freed: we should be able to create a new trigger
   auto new_trigger = manager_->create(make_request("sensor", "OnChange"));
@@ -296,7 +296,7 @@ TEST_F(TriggerManagerTest, EventFrameCarriesTimestampAndPayloadAndNoError) {
   auto created = manager_->create(req);
   ASSERT_TRUE(created.has_value());
 
-  notifier_.notify("data", "sensor", "/temperature", json(42.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(42.0));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event = manager_->consume_pending_event(created->id);
@@ -318,14 +318,14 @@ TEST_F(TriggerManagerTest, Multishot_NotifyTwice) {
   ASSERT_TRUE(created.has_value());
 
   // First change
-  notifier_.notify("data", "sensor", "/temperature", json(42.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(42.0));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event1 = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event1.has_value());
 
   // Second change
-  notifier_.notify("data", "sensor", "/temperature", json(43.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(43.0));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event2 = manager_->consume_pending_event(created->id);
@@ -382,7 +382,7 @@ TEST_F(TriggerManagerTest, Hierarchy_ComponentToApp) {
   ASSERT_TRUE(created.has_value());
 
   // Notify from a child app "sensor" - should fire the trigger
-  notifier_.notify("data", "sensor", "/temperature", json(42.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(42.0));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event = manager_->consume_pending_event(created->id);
@@ -408,7 +408,7 @@ TEST_F(TriggerManagerTest, Hierarchy_AreaToApp) {
   ASSERT_TRUE(created.has_value());
 
   // Notify from nested app "lidar"
-  notifier_.notify("data", "lidar", "/temperature", json(55.0));
+  notifier_.notify("data", SovdEntityType::APP, "lidar", "/temperature", json(55.0));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event = manager_->consume_pending_event(created->id);
@@ -431,7 +431,7 @@ TEST_F(TriggerManagerTest, Hierarchy_NoMatchForUnrelatedEntity) {
   ASSERT_TRUE(created.has_value());
 
   // Notify from unrelated entity "other_entity"
-  notifier_.notify("data", "other_entity", "/temperature", json(42.0));
+  notifier_.notify("data", SovdEntityType::APP, "other_entity", "/temperature", json(42.0));
 
   // Short sleep is acceptable here - we are verifying that NO event fires
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -471,7 +471,7 @@ TEST_F(TriggerManagerTest, EventEnvelopeFormat) {
   auto created = manager_->create(req);
   ASSERT_TRUE(created.has_value());
 
-  notifier_.notify("data", "sensor", "/temperature", json(42.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(42.0));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event = manager_->consume_pending_event(created->id);
@@ -494,7 +494,7 @@ TEST_F(TriggerManagerTest, ConsumePendingEvent_ClearsEvent) {
   auto created = manager_->create(req);
   ASSERT_TRUE(created.has_value());
 
-  notifier_.notify("data", "sensor", "/temperature", json(42.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(42.0));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event1 = manager_->consume_pending_event(created->id);
@@ -523,7 +523,7 @@ TEST_F(TriggerManagerTest, WaitForEvent_BlocksUntilEventArrives) {
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
   // Send event
-  notifier_.notify("data", "sensor", "/temperature", json(42.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(42.0));
 
   waiter.join();
   EXPECT_TRUE(event_received.load());
@@ -582,7 +582,7 @@ TEST_F(TriggerManagerTest, JsonPointer_ExtractsSubElement) {
 
   // The change value has a "data" field
   json value = {{"data", 42.0}, {"metadata", "ignored"}};
-  notifier_.notify("data", "sensor", "/temperature", value);
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", value);
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event = manager_->consume_pending_event(created->id);
@@ -598,7 +598,7 @@ TEST_F(TriggerManagerTest, JsonPointer_EmptyPathUsesFullValue) {
   auto created = manager_->create(req);
   ASSERT_TRUE(created.has_value());
 
-  notifier_.notify("data", "sensor", "/temperature", json(42.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(42.0));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   auto event = manager_->consume_pending_event(created->id);
@@ -617,27 +617,27 @@ TEST_F(TriggerManagerTest, OnChangeTo_FiresOnlyWhenTargetReached) {
   ASSERT_TRUE(created.has_value());
 
   // First notification: value is 100, no previous -> fires (target match, first eval)
-  notifier_.notify("data", "sensor", "/temperature", json(100));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(100));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
   auto event1 = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event1.has_value());
 
   // Second notification: value stays 100 -> does NOT fire (no change)
-  notifier_.notify("data", "sensor", "/temperature", json(100));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(100));
   // Short sleep is acceptable - verifying NO event fires
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   auto event2 = manager_->consume_pending_event(created->id);
   EXPECT_FALSE(event2.has_value());
 
   // Third notification: value goes to 50 -> does NOT fire (not target)
-  notifier_.notify("data", "sensor", "/temperature", json(50));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(50));
   // Short sleep is acceptable - verifying NO event fires
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   auto event3 = manager_->consume_pending_event(created->id);
   EXPECT_FALSE(event3.has_value());
 
   // Fourth notification: back to 100 -> fires (transition to target)
-  notifier_.notify("data", "sensor", "/temperature", json(100));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(100));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
   auto event4 = manager_->consume_pending_event(created->id);
   EXPECT_TRUE(event4.has_value());
@@ -651,14 +651,14 @@ TEST_F(TriggerManagerTest, EnterRange_FiresOnTransition) {
   ASSERT_TRUE(created.has_value());
 
   // First notification: value = 10, no previous -> EnterRange returns false (needs transition)
-  notifier_.notify("data", "sensor", "/temperature", json(10));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(10));
   // Short sleep is acceptable - verifying NO event fires
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
   auto event1 = manager_->consume_pending_event(created->id);
   EXPECT_FALSE(event1.has_value());
 
   // Second notification: 10 -> 25 (enters range) -> fires
-  notifier_.notify("data", "sensor", "/temperature", json(25));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(25));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
   auto event2 = manager_->consume_pending_event(created->id);
   EXPECT_TRUE(event2.has_value());
@@ -675,7 +675,7 @@ TEST_F(TriggerManagerTest, NoFireForDifferentCollection) {
   ASSERT_TRUE(created.has_value());
 
   // Notify with different collection "faults"
-  notifier_.notify("faults", "sensor", "/temperature", json("fault_data"));
+  notifier_.notify("faults", SovdEntityType::APP, "sensor", "/temperature", json("fault_data"));
 
   // Short sleep is acceptable - verifying NO event fires
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -691,7 +691,7 @@ TEST_F(TriggerManagerTest, NoFireForDifferentResourcePath) {
   ASSERT_TRUE(created.has_value());
 
   // Notify with different resource path "/humidity"
-  notifier_.notify("data", "sensor", "/humidity", json(65.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/humidity", json(65.0));
 
   // Short sleep is acceptable - verifying NO event fires
   std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -742,19 +742,19 @@ TEST_F(TriggerManagerTest, MultishotRapidEvents_AllConsumed) {
   ASSERT_TRUE(created.has_value());
 
   // Fire 3 events - wait for each to be processed to avoid timing issues
-  notifier_.notify("data", "sensor", "/temperature", json(10.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(10.0));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
   auto event1 = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event1.has_value());
   EXPECT_EQ((*event1)["payload"], json(10.0));
 
-  notifier_.notify("data", "sensor", "/temperature", json(20.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(20.0));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
   auto event2 = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event2.has_value());
   EXPECT_EQ((*event2)["payload"], json(20.0));
 
-  notifier_.notify("data", "sensor", "/temperature", json(30.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor", "/temperature", json(30.0));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
   auto event3 = manager_->consume_pending_event(created->id);
   ASSERT_TRUE(event3.has_value());
@@ -818,7 +818,7 @@ TEST_F(TriggerManagerTest, MultiEntity_SameResourcePathDifferentEntities) {
   ASSERT_TRUE(created2.has_value());
 
   // Notify for sensor_a - only sensor_a's trigger should fire
-  notifier_.notify("data", "sensor_a", "/temperature", json(42.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor_a", "/temperature", json(42.0));
   ASSERT_TRUE(manager_->wait_for_event(created1->id, std::chrono::milliseconds(2000)));
   auto event1 = manager_->consume_pending_event(created1->id);
   EXPECT_TRUE(event1.has_value());
@@ -829,7 +829,7 @@ TEST_F(TriggerManagerTest, MultiEntity_SameResourcePathDifferentEntities) {
   EXPECT_FALSE(event2.has_value());
 
   // Notify for sensor_b - only sensor_b's trigger should fire
-  notifier_.notify("data", "sensor_b", "/temperature", json(43.0));
+  notifier_.notify("data", SovdEntityType::APP, "sensor_b", "/temperature", json(43.0));
   ASSERT_TRUE(manager_->wait_for_event(created2->id, std::chrono::milliseconds(2000)));
   auto event3 = manager_->consume_pending_event(created2->id);
   EXPECT_TRUE(event3.has_value());
@@ -1022,8 +1022,8 @@ TEST_F(TriggerManagerTest, Sweep_RemovesOrphanedTriggers) {
 
   manager_->sweep_orphaned_triggers();
 
-  EXPECT_FALSE(manager_->list("alive_app").empty());
-  EXPECT_TRUE(manager_->list("gone_app").empty());
+  EXPECT_FALSE(manager_->list("apps", "alive_app").empty());
+  EXPECT_TRUE(manager_->list("apps", "gone_app").empty());
 }
 
 TEST_F(TriggerManagerTest, Sweep_FiresOnRemovedCallback) {
@@ -1050,7 +1050,7 @@ TEST_F(TriggerManagerTest, Sweep_NoopWithoutEntityExistsFn) {
 
   // No entity_exists_fn set - sweep should not crash or remove anything
   manager_->sweep_orphaned_triggers();
-  EXPECT_FALSE(manager_->list("sensor").empty());
+  EXPECT_FALSE(manager_->list("apps", "sensor").empty());
 }
 
 TEST_F(TriggerManagerTest, Sweep_SkipsInactiveTriggers) {
@@ -1060,7 +1060,7 @@ TEST_F(TriggerManagerTest, Sweep_SkipsInactiveTriggers) {
   ASSERT_TRUE(created.has_value());
 
   // Fire the single-shot trigger so it becomes TERMINATED and is removed
-  notifier_.notify("data", "gone_app", "/temperature", json(42.0));
+  notifier_.notify("data", SovdEntityType::APP, "gone_app", "/temperature", json(42.0));
   ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
 
   // Wait for the notifier worker to finish cleaning up the one-shot trigger
@@ -1210,10 +1210,10 @@ TEST_F(TriggerManagerTest, DeferredResolution_RetryWithoutSubscriberSafe) {
   EXPECT_NO_THROW(manager_->retry_unresolved_triggers());
 
   // Set resolve_fn but no subscriber -> still no-op (skips resolve)
-  manager_->set_resolve_topic_fn(
-      [](const std::string & /*entity_id*/, const std::string & /*resource_path*/) -> std::string {
-        return "/sensor/temperature";
-      });
+  manager_->set_resolve_topic_fn([](const std::string & /*entity_id*/, const std::string & /*entity_type*/,
+                                    const std::string & /*resource_path*/) -> std::string {
+    return "/sensor/temperature";
+  });
   EXPECT_NO_THROW(manager_->retry_unresolved_triggers());
 
   // Trigger should still exist

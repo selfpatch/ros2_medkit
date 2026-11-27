@@ -18,6 +18,8 @@
 #include <cctype>
 #include <utility>
 
+#include "ros2_medkit_gateway/core/plugins/plugin_entities.hpp"
+
 namespace ros2_medkit_gateway {
 namespace discovery {
 
@@ -62,6 +64,11 @@ LayerOutput PluginLayer::discover() {
   }
 
   auto result = provider_->introspect(discovery_context_);
+
+  // One id names one of a plugin's entities: a later entity of another type
+  // under it is left out, as the gateway's ownership refresh leaves it out
+  // (and reports it there, once).
+  (void)drop_cross_type_duplicates(result.new_entities);
 
   // Map new_entities to LayerOutput
   output.areas = std::move(result.new_entities.areas);

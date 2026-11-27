@@ -186,9 +186,10 @@ class PluginManager : public LogProviderRegistry {
 
   /// Register entity ownership for a plugin.
   /// Called after IntrospectionProvider::introspect() returns new entities.
-  /// Maps entity IDs to the plugin that created them, enabling per-entity
-  /// provider routing in handlers.
-  void register_entity_ownership(const std::string & plugin_name, const std::vector<std::string> & entity_ids);
+  /// Maps each entity, by its type and id, to the plugin that created it,
+  /// enabling per-entity provider routing in handlers. A local entity of
+  /// another type sharing an id with a plugin's entity is not the plugin's.
+  void register_entity_ownership(const std::string & plugin_name, const std::vector<MemberRef> & entities);
 
   /// Clear all entity ownership entries for a given plugin.
   /// Called before re-registering during refresh to remove stale entries.
@@ -197,20 +198,22 @@ class PluginManager : public LogProviderRegistry {
   /// Get DataProvider for a specific entity (if plugin-owned)
   /// @return Non-owning pointer, or nullptr if entity is not plugin-owned
   ///         or owning plugin doesn't implement DataProvider
-  DataProvider * get_data_provider_for_entity(const std::string & entity_id) const;
+  DataProvider * get_data_provider_for_entity(SovdEntityType entity_type, const std::string & entity_id) const;
 
   /// Get OperationProvider for a specific entity (if plugin-owned)
   /// @return Non-owning pointer, or nullptr if entity is not plugin-owned
   ///         or owning plugin doesn't implement OperationProvider
-  OperationProvider * get_operation_provider_for_entity(const std::string & entity_id) const;
+  OperationProvider * get_operation_provider_for_entity(SovdEntityType entity_type,
+                                                        const std::string & entity_id) const;
 
   /// Get LifecycleProvider for a specific entity (if plugin-owned)
   /// @return Non-owning pointer, or nullptr if entity is not plugin-owned
   ///         or owning plugin doesn't implement LifecycleProvider
-  LifecycleProvider * get_lifecycle_provider_for_entity(const std::string & entity_id) const;
+  LifecycleProvider * get_lifecycle_provider_for_entity(SovdEntityType entity_type,
+                                                        const std::string & entity_id) const;
 
   /// Get FaultProvider for a specific entity (if plugin-owned)
-  FaultProvider * get_fault_provider_for_entity(const std::string & entity_id) const;
+  FaultProvider * get_fault_provider_for_entity(SovdEntityType entity_type, const std::string & entity_id) const;
 
   /**
    * @brief Fetch an entity's current data by dispatching the owning plugin's
@@ -229,21 +232,24 @@ class PluginManager : public LogProviderRegistry {
    * @param item optional data point name; when non-empty the single-item
    *        route (x-plc-data/<item>) is dispatched instead of the list.
    *
+   * The route is an App's (`apps/<id>/x-plc-data`), so only a plugin-owned
+   * App is fetched this way.
+   *
    * @return Parsed JSON body on a 200 response; nullopt when the entity is
-   *         not plugin-owned, no route matches, or the handler fails.
+   *         not a plugin-owned App, no route matches, or the handler fails.
    */
-  std::optional<nlohmann::json> fetch_entity_data_via_route(const std::string & entity_id,
+  std::optional<nlohmann::json> fetch_entity_data_via_route(SovdEntityType entity_type, const std::string & entity_id,
                                                             const std::string & item = "");
 
   /// Whether the entity's owning plugin registered a GET data route
   /// (x-plc-data) that fetch_entity_data_via_route() could dispatch. Cheap
   /// route-table check, no handler invocation - capability advertising uses
   /// it so /data is only announced where a read can actually be served.
-  bool has_entity_data_route(const std::string & entity_id);
+  bool has_entity_data_route(SovdEntityType entity_type, const std::string & entity_id);
 
-  /// Check if an entity is owned by a plugin
+  /// Check if an entity, by its type and id, is owned by a plugin
   /// @return Plugin name if owned, nullopt otherwise
-  std::optional<std::string> get_entity_owner(const std::string & entity_id) const;
+  std::optional<std::string> get_entity_owner(SovdEntityType entity_type, const std::string & entity_id) const;
 
   // ---- Info ----
   bool has_plugins() const;
@@ -304,8 +310,8 @@ class PluginManager : public LogProviderRegistry {
   ScriptProvider * first_script_provider_ = nullptr;
   ResourceSamplerRegistry * sampler_registry_ = nullptr;
   TransportRegistry * transport_registry_ = nullptr;
-  /// Entity ID -> plugin name mapping (populated from IntrospectionProvider results)
-  std::unordered_map<std::string, std::string> entity_ownership_;
+  /// (entity type, entity ID) -> plugin name mapping (populated from IntrospectionProvider results)
+  std::unordered_map<MemberRef, std::string, MemberRefHash> entity_ownership_;
   bool shutdown_called_ = false;
 };
 

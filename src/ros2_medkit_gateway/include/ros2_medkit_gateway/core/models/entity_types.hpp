@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <cstddef>
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -32,6 +34,37 @@ enum class SovdEntityType {
   APP,        ///< Software application - individual ROS 2 node
   FUNCTION,   ///< High-level capability (aggregates Apps)
   UNKNOWN     ///< Unknown/not found
+};
+
+/**
+ * @brief An entity named by its type and its id - a member of a grouping
+ * entity, the entity a lock is held on, an entity a plugin owns
+ *
+ * An App and a Component may share an id, so the id alone does not name an
+ * entity: everything that resolves, dispatches to or asks the reachability of a
+ * member, and every record kept per entity, takes the pair.
+ */
+struct MemberRef {
+  SovdEntityType type{SovdEntityType::UNKNOWN};
+  std::string id;
+
+  bool operator==(const MemberRef & other) const {
+    return type == other.type && id == other.id;
+  }
+  bool operator!=(const MemberRef & other) const {
+    return !(*this == other);
+  }
+};
+
+/// Hash of a MemberRef, for the maps that hold one record per entity - a lock,
+/// a lock override, a plugin's ownership of an entity - and so key it by the
+/// entity's type and id, never by the id alone.
+struct MemberRefHash {
+  size_t operator()(const MemberRef & ref) const noexcept {
+    size_t seed = std::hash<std::string>{}(ref.id);
+    seed ^= static_cast<size_t>(ref.type) + size_t{0x9e3779b9U} + (seed << 6U) + (seed >> 2U);
+    return seed;
+  }
 };
 
 /**
@@ -104,5 +137,12 @@ std::optional<ResourceCollection> parse_resource_collection(const std::string & 
  * @return Parsed type, or UNKNOWN if invalid
  */
 SovdEntityType parse_entity_type(const std::string & str);
+
+/**
+ * @brief The entity type an entity collection's path segment names
+ * @param segment "areas", "components", "apps" or "functions"
+ * @return The type, or UNKNOWN for any other segment
+ */
+SovdEntityType entity_type_from_collection(const std::string & segment);
 
 }  // namespace ros2_medkit_gateway

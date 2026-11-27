@@ -84,7 +84,11 @@ tl::expected<std::string, ErrorInfo> read_topic_id(const http::TypedRequest & re
 struct AddressedDataItem {
   std::string full_topic_path;
   std::string item_id;
-  std::string member_id;                 ///< Empty when the id carried no member half.
+  std::string member_id;  ///< Empty when the id carried no member half.
+  /// The type of the member the id named. A member half names an entity the
+  /// aggregation lists among its contributors; an App wins over a Component
+  /// sharing its id, because a topic is an App's.
+  SovdEntityType member_type{SovdEntityType::APP};
   bool provided_by_named_member{false};  ///< Meaningful only when member_id is set.
   std::string owner_member_id;           ///< The member a bare id is dispatched through; empty means serve here.
 };
@@ -123,7 +127,7 @@ std::string serving_member_for_topic(const ThreadSafeEntityCache & cache, const 
   }
   std::string peer;
   for (const auto & owner : owners->second) {
-    const std::string owner_peer = peer_source_of_member(cache, owner);
+    const std::string owner_peer = peer_source_of_member(cache, MemberRef{SovdEntityType::APP, owner});
     if (owner_peer.empty() || (!peer.empty() && owner_peer != peer)) {
       return {};
     }
@@ -152,7 +156,7 @@ std::string serving_member_for_topic(const ThreadSafeEntityCache & cache, const 
 /// can change where the request is served. Walking the entity is not free, so a
 /// gateway with no peers - where every member is served here anyway - skips it.
 tl::expected<AddressedDataItem, ErrorInfo> address_data_item(const ThreadSafeEntityCache & cache,
-                                                             const std::string & entity_id,
+                                                             SovdEntityType entity_type, const std::string & entity_id,
                                                              const std::string & topic_name, bool resolve_owner) {
   AddressedDataItem addressed;
   addressed.full_topic_path = to_full_topic_path(topic_name);
@@ -161,12 +165,12 @@ tl::expected<AddressedDataItem, ErrorInfo> address_data_item(const ThreadSafeEnt
   if (topic_name.find(':') == std::string::npos) {
     if (resolve_owner) {
       addressed.owner_member_id =
-          serving_member_for_topic(cache, cache.get_entity_data(entity_id), addressed.full_topic_path);
+          serving_member_for_topic(cache, cache.get_entity_data(entity_type, entity_id), addressed.full_topic_path);
     }
     return addressed;
   }
 
-  auto aggregated = cache.get_entity_data(entity_id);
+  auto aggregated = cache.get_entity_data(entity_type, entity_id);
   auto parsed = http::parse_member_qualified_id(topic_name, aggregated.is_aggregated);
   if (!parsed.has_member) {
     if (resolve_owner) {
@@ -175,8 +179,14 @@ tl::expected<AddressedDataItem, ErrorInfo> address_data_item(const ThreadSafeEnt
     return addressed;
   }
 
-  if (std::find(aggregated.source_ids.begin(), aggregated.source_ids.end(), parsed.member_id) ==
-      aggregated.source_ids.end()) {
+  std::optional<SovdEntityType> named_type;
+  for (size_t i = 0; i < aggregated.source_ids.size() && i < aggregated.source_types.size(); ++i) {
+    if (aggregated.source_ids[i] == parsed.member_id &&
+        (!named_type || aggregated.source_types[i] == SovdEntityType::APP)) {
+      named_type = aggregated.source_types[i];
+    }
+  }
+  if (!named_type) {
     return tl::make_unexpected(
         make_error(404, ERR_RESOURCE_NOT_FOUND, "Member not found in entity",
                    json{{"entity_id", entity_id}, {"id", topic_name}, {"member_id", parsed.member_id}}));
@@ -193,6 +203,7 @@ tl::expected<AddressedDataItem, ErrorInfo> address_data_item(const ThreadSafeEnt
   }
 
   addressed.member_id = parsed.member_id;
+  addressed.member_type = *named_type;
   addressed.full_topic_path = to_full_topic_path(parsed.item_id);
   auto owners = aggregated.owners_by_topic.find(addressed.full_topic_path);
   addressed.provided_by_named_member =
@@ -229,7 +240,12 @@ std::string member_data_resource_path(const std::string & full_topic_path) {
 std::optional<ErrorInfo> dispatch_data_item(const HandlerContext & ctx, const http::TypedRequest & req,
                                             const std::string & entity_id, const std::string & topic_name,
                                             const AddressedDataItem & addressed) {
-  const std::string & serving_member = addressed.member_id.empty() ? addressed.owner_member_id : addressed.member_id;
+  // The member the id named, by the type it was resolved to, or else the owner
+  // the tree records for the topic, which is an App: topics are collected from
+  // Apps.
+  const MemberRef serving_member = addressed.member_id.empty()
+                                       ? MemberRef{SovdEntityType::APP, addressed.owner_member_id}
+                                       : MemberRef{addressed.member_type, addressed.member_id};
   auto dispatch = ctx.dispatch_to_member(req, serving_member, member_data_resource_path(addressed.full_topic_path),
                                          json{{"entity_id", entity_id}, {"id", topic_name}});
   if (!dispatch) {
@@ -375,7 +391,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
   // Delegate to plugin DataProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
     auto * pmgr = ctx_.services().plugin_manager();
-    auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
+    auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_info.sovd_type(), entity_id) : nullptr;
     if (data_prov == nullptr) {
       // PLC bridges serve live values through their own x-plc-data route
       // instead of a DataProvider - dispatch it in-process (same path the
@@ -384,7 +400,8 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
       // category), and SOVD requires id on every item - normalize here so
       // /data items always carry id/name/category regardless of which plugin
       // path produced them; vendor extras pass through untouched.
-      if (auto via_route = pmgr ? pmgr->fetch_entity_data_via_route(entity_id) : std::nullopt) {
+      if (auto via_route =
+              pmgr ? pmgr->fetch_entity_data_via_route(entity_info.sovd_type(), entity_id) : std::nullopt) {
         if (via_route->contains("items") && (*via_route)["items"].is_array()) {
           for (auto & item : (*via_route)["items"]) {
             if (!item.is_object()) {
@@ -430,7 +447,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
   try {
     // Use unified cache method to get aggregated data.
     const auto & cache = ctx_.services().entity_cache();
-    auto aggregated = cache.get_entity_data(entity_id);
+    auto aggregated = cache.get_entity_data(entity_info.sovd_type(), entity_id);
 
     auto & type_schemas = *ctx_.services().type_schemas();
 
@@ -444,7 +461,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
         return false;
       }
       return std::all_of(owners->second.begin(), owners->second.end(), [&cache](const std::string & member_id) {
-        return member_is_peer_contributed(cache, member_id);
+        return member_is_peer_contributed(cache, MemberRef{SovdEntityType::APP, member_id});
       });
     };
 
@@ -570,7 +587,7 @@ http::Result<dto::DataListResult> DataHandlers::list_data(const http::TypedReque
         if (auto owners = aggregated.owners_by_topic.find(topic); owners != aggregated.owners_by_topic.end()) {
           const bool any_unreachable =
               std::any_of(owners->second.begin(), owners->second.end(), [this](const std::string & member_id) {
-                return !ctx_.is_entity_available(member_id);
+                return !ctx_.is_member_available(MemberRef{SovdEntityType::APP, member_id});
               });
           if (any_unreachable) {
             item.x_medkit->available = false;
@@ -636,12 +653,12 @@ http::Result<dto::DataValue> DataHandlers::get_data_item(const http::TypedReques
 
   // Delegate to plugin DataProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
-    return read_plugin_data_item(ctx_.services().plugin_manager(), entity_id, topic_name);
+    return read_plugin_data_item(ctx_.services().plugin_manager(), entity_info.sovd_type(), entity_id, topic_name);
   }
 
   try {
-    auto addressed =
-        address_data_item(ctx_.services().entity_cache(), entity_id, topic_name, ctx_.aggregation_manager() != nullptr);
+    auto addressed = address_data_item(ctx_.services().entity_cache(), entity_info.sovd_type(), entity_id, topic_name,
+                                       ctx_.aggregation_manager() != nullptr);
     if (!addressed) {
       return tl::make_unexpected(addressed.error());
     }
@@ -737,7 +754,7 @@ http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedReques
   // Delegate to plugin DataProvider for plugin-owned entities.
   if (entity_info.is_plugin) {
     auto * pmgr = ctx_.services().plugin_manager();
-    auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_id) : nullptr;
+    auto * data_prov = pmgr ? pmgr->get_data_provider_for_entity(entity_info.sovd_type(), entity_id) : nullptr;
     if (data_prov == nullptr) {
       return tl::make_unexpected(
           make_error(404, ERR_RESOURCE_NOT_FOUND, "No data provider for plugin entity '" + entity_id + "'"));
@@ -813,8 +830,8 @@ http::Result<dto::DataValue> DataHandlers::put_data_item(const http::TypedReques
     // A write addresses the same item a read does, so it resolves the same way -
     // including which gateway publishes it. Publishing here for a member another
     // gateway runs would create a publisher on a graph that member is not on.
-    auto addressed =
-        address_data_item(ctx_.services().entity_cache(), entity_id, topic_name, ctx_.aggregation_manager() != nullptr);
+    auto addressed = address_data_item(ctx_.services().entity_cache(), entity_info.sovd_type(), entity_id, topic_name,
+                                       ctx_.aggregation_manager() != nullptr);
     if (!addressed) {
       return tl::make_unexpected(addressed.error());
     }

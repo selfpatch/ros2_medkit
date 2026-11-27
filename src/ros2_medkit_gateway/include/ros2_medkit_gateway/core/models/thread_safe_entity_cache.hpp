@@ -61,6 +61,9 @@ struct TopicData {
 struct AggregatedData {
   std::vector<TopicData> topics;
   std::vector<std::string> source_ids;  ///< Entity IDs that contributed
+  /// The type of each `source_ids` entry, at the same index: a Component and
+  /// an App may share an id, and only the pair names one member.
+  std::vector<SovdEntityType> source_types;
   /// Contributing members per topic name, for the items in `topics`.
   ///
   /// `source_ids` says which members contributed something; it does not say
@@ -72,6 +75,8 @@ struct AggregatedData {
   /// contributor: a topic published by one member and subscribed by another is
   /// merged into a single item with direction "both", so recording only the
   /// first would name a publisher for an item a subscriber also owns.
+  ///
+  /// The ids are App ids: topics are collected from Apps only.
   std::unordered_map<std::string, std::vector<std::string>> owners_by_topic;
   std::string aggregation_level;  ///< "app" | "component" | "area" | "function"
   bool is_aggregated{false};      ///< true if collected from sub-entities
@@ -102,7 +107,7 @@ struct AggregatedOperations {
   /// one owner, while two members exposing the same SHORT name at different
   /// paths stay two items with an owner each - which is what lets a caller see
   /// that the short name, the id the HTTP API uses, is ambiguous.
-  std::unordered_map<std::string, std::string> owner_by_path;
+  std::unordered_map<std::string, MemberRef> owner_by_path;
   std::string aggregation_level;  ///< "app" | "component" | "area" | "function"
   bool is_aggregated{false};      ///< true if collected from sub-entities
 
@@ -308,6 +313,8 @@ class ThreadSafeEntityCache {
   bool has_component(const std::string & id) const;
   bool has_app(const std::string & id) const;
   bool has_function(const std::string & id) const;
+  /// The entity of `type` with this id exists. False for SERVER and UNKNOWN.
+  bool has_entity(SovdEntityType type, const std::string & id) const;
 
   // --- Topic type lookup (O(1)) ---
   /**
@@ -331,10 +338,6 @@ class ThreadSafeEntityCache {
 
   /// Look up a single node FQN to app entity ID mapping (shared lock, no map copy)
   std::string resolve_node_to_app(const std::string & node_fqn) const;
-
-  // --- Resolve any entity by ID ---
-  std::optional<EntityRef> find_entity(const std::string & id) const;
-  SovdEntityType get_entity_type(const std::string & id) const;
 
   // =========================================================================
   // Relationship queries (O(1) via indexes)
@@ -381,7 +384,10 @@ class ThreadSafeEntityCache {
   ///
   /// Cycles in the parent graph terminate: parents are only checked for
   /// existence when a manifest is validated, not for acyclicity.
-  std::vector<std::string> get_members(SovdEntityType type, const std::string & entity_id) const;
+  ///
+  /// Each member is named by its type and id: an App and a Component sharing
+  /// an id are two members.
+  std::vector<MemberRef> get_members(SovdEntityType type, const std::string & entity_id) const;
 
   // =========================================================================
   // Aggregation methods (uses relationship indexes)
@@ -423,15 +429,15 @@ class ThreadSafeEntityCache {
   // =========================================================================
 
   /**
-   * @brief Aggregate data (topics) for any entity by ID
+   * @brief Aggregate data (topics) for the entity of `type` named `entity_id`
    *
-   * Unified method that works for all entity types.
-   * Aggregates topics from the entity and its children.
+   * Works for all entity types: topics of the entity and its children. The
+   * entity is named by its type and id, as a route names it: an Area and a
+   * Function may share an id, so there is no lookup by id alone.
    *
-   * @param entity_id Entity ID to get data for
-   * @return AggregatedData with topics, or empty if entity not found
+   * @return AggregatedData with topics, or empty if the entity is not found
    */
-  AggregatedData get_entity_data(const std::string & entity_id) const;
+  AggregatedData get_entity_data(SovdEntityType type, const std::string & entity_id) const;
 
   /**
    * @brief Aggregate data (topics) for an App
@@ -464,16 +470,15 @@ class ThreadSafeEntityCache {
   // =========================================================================
 
   /**
-   * @brief Aggregate configurations (node FQNs) for any entity by ID
+   * @brief Aggregate configurations (node FQNs) for the entity of `type` named `entity_id`
    *
-   * Unified method that works for all entity types.
-   * For Apps, returns the single bound node.
-   * For Components/Areas/Functions, aggregates all child app nodes.
+   * Works for all entity types. For Apps, returns the single bound node. For
+   * Components/Areas/Functions, aggregates all child app nodes. Named by type
+   * and id; see get_entity_data.
    *
-   * @param entity_id Entity ID to get configurations for
-   * @return AggregatedConfigurations with node FQNs, or empty if entity not found
+   * @return AggregatedConfigurations with node FQNs, or empty if the entity is not found
    */
-  AggregatedConfigurations get_entity_configurations(const std::string & entity_id) const;
+  AggregatedConfigurations get_entity_configurations(SovdEntityType type, const std::string & entity_id) const;
 
   /**
    * @brief Get configurations for an App (returns its single bound node)

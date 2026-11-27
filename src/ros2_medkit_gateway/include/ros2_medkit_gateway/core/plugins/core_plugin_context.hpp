@@ -19,6 +19,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ros2_medkit_gateway/core/gateway_services.hpp"
@@ -65,6 +66,15 @@ class CorePluginContext : public RosPluginContext {
   /// Null: this host has no ROS node.
   rclcpp::Node * node() const override;
 
+  // The typed calls of PluginContext, beside the id-only overrides below.
+  using PluginContext::acquire_lock;
+  using PluginContext::check_lock;
+  using PluginContext::get_entity;
+  using PluginContext::get_entity_capabilities;
+  using PluginContext::list_entity_faults;
+  using PluginContext::register_entity_capability;
+  using PluginContext::release_lock;
+
   std::optional<PluginEntityInfo> get_entity(const std::string & id) const override;
   std::vector<PluginEntityInfo> get_child_apps(const std::string & component_id) const override;
   nlohmann::json list_entity_faults(const std::string & entity_id) const override;
@@ -82,21 +92,53 @@ class CorePluginContext : public RosPluginContext {
   tl::expected<void, LockError> release_lock(const std::string & entity_id, const std::string & client_id) override;
   IntrospectionInput get_entity_snapshot() const override;
   nlohmann::json list_all_faults() const override;
-  void register_sampler(
-      const std::string & collection,
-      const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> & fn)
-      override;
+  void
+  register_sampler(const std::string & collection,
+                   const std::function<tl::expected<nlohmann::json, std::string>(SovdEntityType, const std::string &,
+                                                                                 const std::string &)> & fn) override;
   ResourceChangeNotifier * get_resource_change_notifier() override;
   ConditionRegistry * get_condition_registry() override;
   void notify_entities_changed(const EntityChangeScope & scope) override;
 
+ protected:
+  std::optional<PluginEntityInfo> get_entity_typed(SovdEntityType type, const std::string & id) const override;
+  nlohmann::json list_entity_faults_typed(SovdEntityType entity_type, const std::string & entity_id) const override;
+  void register_entity_capability_typed(SovdEntityType entity_type, const std::string & entity_id,
+                                        const std::string & capability_name) override;
+  std::vector<std::string> get_entity_capabilities_typed(SovdEntityType entity_type,
+                                                         const std::string & entity_id) const override;
+  LockAccessResult check_lock_typed(SovdEntityType entity_type, const std::string & entity_id,
+                                    const std::string & client_id, const std::string & collection) const override;
+  tl::expected<LockInfo, LockError> acquire_lock_typed(SovdEntityType entity_type, const std::string & entity_id,
+                                                       const std::string & client_id,
+                                                       const std::vector<std::string> & scopes,
+                                                       int expiration_seconds) override;
+  tl::expected<void, LockError> release_lock_typed(SovdEntityType entity_type, const std::string & entity_id,
+                                                   const std::string & client_id) override;
+
  private:
+  /// The types of the entities that hold `id` in the cache, in the order Component, App, Area, Function.
+  std::vector<SovdEntityType> holders_of(const std::string & id) const;
+
+  /// The type of the one entity that holds a bare `id`, for the id-only calls. Nullopt when none holds it, or when
+  /// more than one does: that is logged once per id (naming `call`, the id and the types), and again only after the
+  /// id has been held by at most one entity in between. `holders` receives the types found.
+  std::optional<SovdEntityType> resolve_bare_id(const std::string & id, const char * call,
+                                                std::vector<SovdEntityType> & holders) const;
+
   GatewayServices * services_;
   CorePluginContextWiring wiring_;
 
   mutable std::mutex capabilities_mutex_;
   std::unordered_map<SovdEntityType, std::vector<std::string>> type_capabilities_;
-  std::unordered_map<std::string, std::vector<std::string>> entity_capabilities_;
+  /// By type and id (register_entity_capability(type, id, name)).
+  std::unordered_map<MemberRef, std::vector<std::string>, MemberRefHash> entity_capabilities_;
+  /// By id alone (register_entity_capability(id, name)): applied, when looked up, to the one entity holding the id.
+  std::unordered_map<std::string, std::vector<std::string>> untyped_entity_capabilities_;
+
+  mutable std::mutex ambiguity_mutex_;
+  /// Bare ids logged as held by more than one entity, until a lookup finds them held by at most one.
+  mutable std::unordered_set<std::string> ambiguous_ids_logged_;
 };
 
 /// Builds the context of a host without a ROS node. The fault manager and the sampler registry of `services` are used

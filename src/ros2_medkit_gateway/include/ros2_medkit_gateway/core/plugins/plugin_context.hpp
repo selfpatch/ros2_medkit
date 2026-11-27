@@ -69,9 +69,20 @@ class PluginContext {
   virtual ~PluginContext() = default;
 
   // ---- Entity access (read-only) ----
+  //
+  // An entity is named by its type and its id: an App and a Component may
+  // share an id. Use the typed calls. Each id-only call resolves a bare id only
+  // when exactly one entity holds it; an id more than one entity holds is
+  // refused, with one WARN naming the id and the types.
 
-  /// Look up an entity by ID. Returns nullopt if not found.
+  /// Look up an entity by ID. Returns nullopt if not found, or if more than
+  /// one entity holds the id (prefer get_entity(type, id)).
   virtual std::optional<PluginEntityInfo> get_entity(const std::string & id) const = 0;
+
+  /// Look up the entity of `type` with this ID. Returns nullopt if not found.
+  std::optional<PluginEntityInfo> get_entity(SovdEntityType type, const std::string & id) const {
+    return get_entity_typed(type, id);
+  }
 
   /// Get all Apps belonging to a Component (for aggregation endpoints)
   virtual std::vector<PluginEntityInfo> get_child_apps(const std::string & component_id) const = 0;
@@ -79,8 +90,17 @@ class PluginContext {
   // ---- Fault access ----
 
   /// List faults for a given entity. Returns JSON array of fault objects.
-  /// Empty array if entity has no faults or fault manager is unavailable.
+  /// Empty array if entity has no faults or fault manager is unavailable. When
+  /// more than one entity holds the id, returns an error object instead:
+  /// {"error_code": "invalid-parameter", "message": ..., "entity_types": [...]}
+  /// (prefer list_entity_faults(type, id)).
   virtual nlohmann::json list_entity_faults(const std::string & entity_id) const = 0;
+
+  /// List faults of the entity of `type` with this ID, as list_entity_faults(id)
+  /// does.
+  nlohmann::json list_entity_faults(SovdEntityType entity_type, const std::string & entity_id) const {
+    return list_entity_faults_typed(entity_type, entity_id);
+  }
 
   // ---- HTTP handler utilities (for entity-scoped routes) ----
 
@@ -118,21 +138,42 @@ class PluginContext {
    * @brief Register a custom capability for a specific entity
    *
    * Like register_capability(entity_type, name) but scoped to a single entity.
+   * The capability applies to the one entity that holds the id; while more than
+   * one entity holds it, it applies to none (one WARN). Prefer
+   * register_entity_capability(type, id, name).
    *
    * @param entity_id Specific entity ID
    * @param capability_name Capability name (use x- prefix for vendor extensions)
    */
   virtual void register_entity_capability(const std::string & entity_id, const std::string & capability_name) = 0;
 
+  /// Register a custom capability for the entity of `entity_type` with this ID.
+  void register_entity_capability(SovdEntityType entity_type, const std::string & entity_id,
+                                  const std::string & capability_name) {
+    register_entity_capability_typed(entity_type, entity_id, capability_name);
+  }
+
   // ---- Capability query (used by discovery handlers) ----
 
   /// Get plugin-registered capabilities for an entity type
   virtual std::vector<std::string> get_type_capabilities(SovdEntityType entity_type) const = 0;
 
-  /// Get plugin-registered capabilities for a specific entity
+  /// Get plugin-registered capabilities for a specific entity. Empty when more
+  /// than one entity holds the id (prefer get_entity_capabilities(type, id)).
   virtual std::vector<std::string> get_entity_capabilities(const std::string & entity_id) const = 0;
 
+  /// Get plugin-registered capabilities for the entity of `entity_type` with
+  /// this ID.
+  std::vector<std::string> get_entity_capabilities(SovdEntityType entity_type, const std::string & entity_id) const {
+    return get_entity_capabilities_typed(entity_type, entity_id);
+  }
+
   // ---- Locking ----
+  //
+  // An entity is named by its type and its id: an App and a Component may
+  // share an id, and each has its own lock. Use the typed calls. Each id-only
+  // call resolves a bare id only when exactly one entity holds it, and refuses
+  // an id more than one entity holds (one WARN naming the id and the types).
 
   /**
    * @brief Check if a lock blocks access to a collection on an entity.
@@ -140,10 +181,17 @@ class PluginContext {
    * @param entity_id Entity to check
    * @param client_id Client requesting access
    * @param collection Resource collection being accessed (e.g. "configurations")
-   * @return LockAccessResult with allowed/denied status and details
+   * @return LockAccessResult with allowed/denied status and details; denied when
+   *         more than one entity holds the id
    */
   virtual LockAccessResult check_lock(const std::string & entity_id, const std::string & client_id,
                                       const std::string & collection) const = 0;
+
+  /// check_lock for the entity of `entity_type` with this id.
+  LockAccessResult check_lock(SovdEntityType entity_type, const std::string & entity_id, const std::string & client_id,
+                              const std::string & collection) const {
+    return check_lock_typed(entity_type, entity_id, client_id, collection);
+  }
 
   /**
    * @brief Acquire a lock on an entity.
@@ -152,20 +200,35 @@ class PluginContext {
    * @param client_id Client acquiring the lock
    * @param scopes Optional lock scopes (empty = all collections)
    * @param expiration_seconds Lock TTL in seconds
-   * @return LockInfo on success, LockError on failure
+   * @return LockInfo on success, LockError on failure (also when more than one
+   *         entity holds the id)
    */
   virtual tl::expected<LockInfo, LockError> acquire_lock(const std::string & entity_id, const std::string & client_id,
                                                          const std::vector<std::string> & scopes,
                                                          int expiration_seconds) = 0;
+
+  /// acquire_lock on the entity of `entity_type` with this id.
+  tl::expected<LockInfo, LockError> acquire_lock(SovdEntityType entity_type, const std::string & entity_id,
+                                                 const std::string & client_id, const std::vector<std::string> & scopes,
+                                                 int expiration_seconds) {
+    return acquire_lock_typed(entity_type, entity_id, client_id, scopes, expiration_seconds);
+  }
 
   /**
    * @brief Release a lock on an entity.
    *
    * @param entity_id Entity to unlock
    * @param client_id Client releasing the lock
-   * @return void on success, LockError on failure
+   * @return void on success, LockError on failure (also when more than one
+   *         entity holds the id)
    */
   virtual tl::expected<void, LockError> release_lock(const std::string & entity_id, const std::string & client_id) = 0;
+
+  /// release_lock on the entity of `entity_type` with this id.
+  tl::expected<void, LockError> release_lock(SovdEntityType entity_type, const std::string & entity_id,
+                                             const std::string & client_id) {
+    return release_lock_typed(entity_type, entity_id, client_id);
+  }
 
   // ---- Entity bulk access ----
 
@@ -186,10 +249,14 @@ class PluginContext {
   // ---- Resource sampler registration ----
 
   /// Register a cyclic subscription sampler for a custom collection.
-  virtual void register_sampler(
-      const std::string & /*collection*/,
-      const std::function<tl::expected<nlohmann::json, std::string>(const std::string &, const std::string &)> &
-      /*fn*/) {
+  ///
+  /// The sampler is called with the type and id of the entity the subscription
+  /// was created on, and the subscribed resource path. An App and a Component
+  /// may share an id, so a sampler reads the entity of that type.
+  virtual void
+  register_sampler(const std::string & /*collection*/,
+                   const std::function<tl::expected<nlohmann::json, std::string>(SovdEntityType, const std::string &,
+                                                                                 const std::string &)> & /*fn*/) {
   }
 
   // ---- Trigger infrastructure access ----
@@ -262,6 +329,47 @@ class PluginContext {
    * the fragment visible to the next reload.
    */
   virtual void notify_entities_changed(const EntityChangeScope & /*scope*/) {
+  }
+
+ protected:
+  // ---- Typed entity calls ----
+  //
+  // The typed calls above (get_entity(type, id) and the others) answer through
+  // these. They have other names than the calls, so a context that overrides
+  // only an id-only call hides no virtual function. Each default answers through
+  // the id-only call, for a context (a test mock) that implements only that one;
+  // the gateway's context overrides them all.
+
+  virtual std::optional<PluginEntityInfo> get_entity_typed(SovdEntityType type, const std::string & id) const {
+    auto entity = get_entity(id);
+    if (entity && entity->type == type) {
+      return entity;
+    }
+    return std::nullopt;
+  }
+  virtual nlohmann::json list_entity_faults_typed(SovdEntityType /*entity_type*/, const std::string & entity_id) const {
+    return list_entity_faults(entity_id);
+  }
+  virtual void register_entity_capability_typed(SovdEntityType /*entity_type*/, const std::string & entity_id,
+                                                const std::string & capability_name) {
+    register_entity_capability(entity_id, capability_name);
+  }
+  virtual std::vector<std::string> get_entity_capabilities_typed(SovdEntityType /*entity_type*/,
+                                                                 const std::string & entity_id) const {
+    return get_entity_capabilities(entity_id);
+  }
+  virtual LockAccessResult check_lock_typed(SovdEntityType /*entity_type*/, const std::string & entity_id,
+                                            const std::string & client_id, const std::string & collection) const {
+    return check_lock(entity_id, client_id, collection);
+  }
+  virtual tl::expected<LockInfo, LockError>
+  acquire_lock_typed(SovdEntityType /*entity_type*/, const std::string & entity_id, const std::string & client_id,
+                     const std::vector<std::string> & scopes, int expiration_seconds) {
+    return acquire_lock(entity_id, client_id, scopes, expiration_seconds);
+  }
+  virtual tl::expected<void, LockError>
+  release_lock_typed(SovdEntityType /*entity_type*/, const std::string & entity_id, const std::string & client_id) {
+    return release_lock(entity_id, client_id);
   }
 };
 

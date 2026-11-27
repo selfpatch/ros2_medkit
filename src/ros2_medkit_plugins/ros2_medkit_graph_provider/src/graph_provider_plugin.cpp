@@ -521,9 +521,15 @@ void GraphProviderPlugin::set_context(PluginContext & context) {
   load_parameters();
   subscribe_to_diagnostics();
 
+  // The graph is a Function's: a subscription on another entity sharing a
+  // Function's id is answered with an error, not with that Function's graph.
   ctx_->register_sampler("x-medkit-graph",
-                         [this](const std::string & entity_id,
+                         [this](SovdEntityType entity_type, const std::string & entity_id,
                                 const std::string & /*resource_path*/) -> tl::expected<nlohmann::json, std::string> {
+                           if (entity_type != SovdEntityType::FUNCTION) {
+                             return tl::make_unexpected("x-medkit-graph is served for Functions only, not for '" +
+                                                        entity_id + "', which the subscription names by another type");
+                           }
                            auto payload = build_current_graph(entity_id);
                            if (!payload.has_value()) {
                              return tl::make_unexpected(std::string("Graph snapshot not available: ") + entity_id);
@@ -550,7 +556,7 @@ std::vector<GatewayPlugin::PluginRoute> GraphProviderPlugin::get_routes() {
 
          // Check lock access for vendor extension collection
          auto client_id = req.header("X-Client-Id");
-         auto lock_result = ctx_->check_lock(function_id, client_id, "x-medkit-graph");
+         auto lock_result = ctx_->check_lock(SovdEntityType::FUNCTION, function_id, client_id, "x-medkit-graph");
          if (!lock_result.allowed) {
            nlohmann::json params = {{"entity_id", function_id}, {"collection", "x-medkit-graph"}};
            if (!lock_result.denied_by_lock_id.empty()) {

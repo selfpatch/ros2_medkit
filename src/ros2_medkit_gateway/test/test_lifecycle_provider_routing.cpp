@@ -70,7 +70,7 @@ TEST(LifecycleProviderRouting, UnownedEntityReturnsNull) {
   mgr.add_plugin(std::move(plugin));
 
   // No ownership registered - entity is not owned by any plugin
-  EXPECT_EQ(mgr.get_lifecycle_provider_for_entity("unowned"), nullptr);
+  EXPECT_EQ(mgr.get_lifecycle_provider_for_entity(SovdEntityType::APP, "unowned"), nullptr);
 }
 
 TEST(LifecycleProviderRouting, LifecycleProviderResolvedForOwnedEntity) {
@@ -80,9 +80,9 @@ TEST(LifecycleProviderRouting, LifecycleProviderResolvedForOwnedEntity) {
   auto * raw = plugin.get();
   mgr.add_plugin(std::move(plugin));
 
-  mgr.register_entity_ownership("lifecycle_plugin", {"my_node"});
+  mgr.register_entity_ownership("lifecycle_plugin", {{SovdEntityType::APP, "my_node"}});
 
-  auto * lp = mgr.get_lifecycle_provider_for_entity("my_node");
+  auto * lp = mgr.get_lifecycle_provider_for_entity(SovdEntityType::APP, "my_node");
   ASSERT_NE(lp, nullptr);
   EXPECT_EQ(lp, static_cast<LifecycleProvider *>(raw));
 
@@ -97,15 +97,15 @@ TEST(LifecycleProviderRouting, BarePluginReturnsNullLifecycleProvider) {
   auto plugin = std::make_unique<MockBarePlugin>();
   mgr.add_plugin(std::move(plugin));
 
-  mgr.register_entity_ownership("bare_plugin", {"entity1"});
+  mgr.register_entity_ownership("bare_plugin", {{SovdEntityType::APP, "entity1"}});
 
   // Entity is owned, but plugin doesn't implement LifecycleProvider
-  EXPECT_EQ(mgr.get_lifecycle_provider_for_entity("entity1"), nullptr);
+  EXPECT_EQ(mgr.get_lifecycle_provider_for_entity(SovdEntityType::APP, "entity1"), nullptr);
 }
 
 TEST(LifecycleProviderRouting, OwnershipForNonLoadedPluginReturnsNull) {
   PluginManager mgr;
-  mgr.register_entity_ownership("ghost_plugin", {"entity1"});
+  mgr.register_entity_ownership("ghost_plugin", {{SovdEntityType::APP, "entity1"}});
 
-  EXPECT_EQ(mgr.get_lifecycle_provider_for_entity("entity1"), nullptr);
+  EXPECT_EQ(mgr.get_lifecycle_provider_for_entity(SovdEntityType::APP, "entity1"), nullptr);
 }

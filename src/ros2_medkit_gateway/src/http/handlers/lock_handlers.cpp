@@ -83,6 +83,12 @@ dto::Lock lock_info_to_dto(const LockInfo & lock, const std::string & client_id)
   return dto;
 }
 
+/// True when `lock` is held on the entity the route names: its id and its type.
+/// An App and a Component may share an id, and the lock of one is not the other's.
+bool lock_is_on(const LockInfo & lock, const EntityInfo & entity) {
+  return lock.entity_id == entity.id && lock.entity_type == entity.sovd_type();
+}
+
 /// Read the positional entity-id capture group from the typed request.
 ///
 /// The legacy handlers tested `req.matches.size() < 2` and returned
@@ -226,7 +232,8 @@ LockHandlers::post_lock(const http::TypedRequest & req, dto::AcquireLockRequest 
     bool break_lock = body.break_lock.value_or(false);
 
     // Acquire the lock.
-    auto result = lock_manager_->acquire(entity_id, client_id, scopes, body.lock_expiration, break_lock);
+    auto result = lock_manager_->acquire(entity_result->sovd_type(), entity_id, client_id, scopes, body.lock_expiration,
+                                         break_lock);
 
     if (!result.has_value()) {
       const auto & err = result.error();
@@ -268,7 +275,7 @@ http::Result<dto::Collection<dto::Lock>> LockHandlers::get_locks(const http::Typ
     // X-Client-Id is optional for list (used for `owned` field).
     auto client_id = req.header("X-Client-Id").value_or("");
 
-    auto lock = lock_manager_->get_lock(entity_id);
+    auto lock = lock_manager_->get_lock(entity_result->sovd_type(), entity_id);
 
     dto::Collection<dto::Lock> response;
     if (lock) {
@@ -311,7 +318,7 @@ http::Result<dto::Lock> LockHandlers::get_lock(const http::TypedRequest & req) {
     auto client_id = req.header("X-Client-Id").value_or("");
 
     auto lock = lock_manager_->get_lock_by_id(lock_id);
-    if (!lock || lock->entity_id != entity_id) {
+    if (!lock || !lock_is_on(*lock, *entity_result)) {
       return tl::unexpected(make_error(404, ERR_RESOURCE_NOT_FOUND, "Lock not found",
                                        json{{"lock_id", lock_id}, {"entity_id", entity_id}}));
     }
@@ -358,7 +365,7 @@ http::Result<http::NoContent> LockHandlers::put_lock(const http::TypedRequest & 
 
     // Verify lock exists and belongs to this entity.
     auto lock = lock_manager_->get_lock_by_id(lock_id);
-    if (!lock || lock->entity_id != entity_id) {
+    if (!lock || !lock_is_on(*lock, *entity_result)) {
       return tl::unexpected(make_error(404, ERR_RESOURCE_NOT_FOUND, "Lock not found",
                                        json{{"lock_id", lock_id}, {"entity_id", entity_id}}));
     }
@@ -369,7 +376,7 @@ http::Result<http::NoContent> LockHandlers::put_lock(const http::TypedRequest & 
     }
 
     // Extend the lock.
-    auto result = lock_manager_->extend(entity_id, client_id, body.lock_expiration);
+    auto result = lock_manager_->extend(entity_result->sovd_type(), entity_id, client_id, body.lock_expiration);
     if (!result.has_value()) {
       const auto & err = result.error();
       return tl::unexpected(make_error(err.status_code, to_sovd_error_code(err.code), err.message));
@@ -416,13 +423,13 @@ http::Result<http::NoContent> LockHandlers::del_lock(const http::TypedRequest & 
 
     // Verify lock exists and belongs to this entity.
     auto lock = lock_manager_->get_lock_by_id(lock_id);
-    if (!lock || lock->entity_id != entity_id) {
+    if (!lock || !lock_is_on(*lock, *entity_result)) {
       return tl::unexpected(make_error(404, ERR_RESOURCE_NOT_FOUND, "Lock not found",
                                        json{{"lock_id", lock_id}, {"entity_id", entity_id}}));
     }
 
     // Release the lock.
-    auto result = lock_manager_->release(entity_id, client_id);
+    auto result = lock_manager_->release(entity_result->sovd_type(), entity_id, client_id);
     if (!result.has_value()) {
       const auto & err = result.error();
       return tl::unexpected(make_error(err.status_code, to_sovd_error_code(err.code), err.message));

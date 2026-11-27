@@ -22,6 +22,7 @@
 #include <tl/expected.hpp>
 
 #include "ros2_medkit_gateway/core/data/data_types.hpp"
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/core/models/error_info.hpp"
 #include "ros2_medkit_gateway/core/providers/data_provider.hpp"
 #include "ros2_medkit_gateway/dto/data.hpp"
@@ -42,11 +43,14 @@ std::string to_full_topic_path(const std::string & topic_name);
 
 /// Reads one data item of a plugin-owned entity: through its `DataProvider`, else through its
 /// `x-plc-data` route. `GET /{entity}/data/{item}` and the cyclic-subscription sampler both use it.
-tl::expected<dto::DataValue, ErrorInfo> read_plugin_data_item(PluginManager * plugins, const std::string & entity_id,
+tl::expected<dto::DataValue, ErrorInfo> read_plugin_data_item(PluginManager * plugins, SovdEntityType entity_type,
+                                                              const std::string & entity_id,
                                                               const std::string & topic_name);
 
 /// The two reads of a plugin-owned entity's whole data list, in the order `GET /{entity}/data` uses them:
-/// the plugin's `DataProvider`, else its `x-plc-data` route.
+/// the plugin's `DataProvider`, else its `x-plc-data` route. Keyed by a fault's reporting source, a bare id:
+/// a plugin entity reports under its own id, and one id names one of a plugin's entities (see
+/// drop_cross_type_duplicates), so the source is read as the plugin's App with that id, else its Component.
 struct PluginDataReaders {
   /// The `DataProvider` of the plugin that owns the entity. Null when it has none.
   using ProviderResolver = std::function<DataProvider *(const std::string & entity_id)>;

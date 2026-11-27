@@ -85,7 +85,7 @@ FaultTriggerHost::FaultTriggerHost(const FaultTriggerHostConfig & config, int po
   // Same in-process x-plc-data route the freeze-frame capture uses, so a rule sees exactly the value the /data
   // endpoint would serve.
   auto fetcher = [plugins](const std::string & app_id, const std::string & data_name) -> std::optional<double> {
-    const auto content = plugins->fetch_entity_data_via_route(app_id);
+    const auto content = plugins->fetch_entity_data_via_route(SovdEntityType::APP, app_id);
     // A down link serves frozen last-known values. Returning nullopt holds the rule state instead of firing on a stale
     // number for the whole outage.
     if (!content || !FreezeFrameSource::content_has_live_data(*content) ||
@@ -116,7 +116,7 @@ FaultTriggerHost::FaultTriggerHost(const FaultTriggerHostConfig & config, int po
 
   // Same route as the fetcher: "exists" means exactly "the fetcher could ever read it".
   auto data_point_names = [plugins](const std::string & app_id) -> std::optional<std::vector<std::string>> {
-    const auto content = plugins->fetch_entity_data_via_route(app_id);
+    const auto content = plugins->fetch_entity_data_via_route(SovdEntityType::APP, app_id);
     if (!content || !FreezeFrameSource::content_has_live_data(*content)) {
       return std::nullopt;
     }
@@ -133,8 +133,11 @@ FaultTriggerHost::FaultTriggerHost(const FaultTriggerHostConfig & config, int po
   };
 
   // Distinct from the data route, which returns nullopt for both an unknown app and a transient outage.
+  // A fault trigger belongs to an App (the route is /apps/{id}/fault-triggers),
+  // so the App is looked up: by id alone a Component sharing the id would stand
+  // in for an App that is gone.
   auto entity_exists = [cache](const std::string & app_id) -> bool {
-    return cache->find_entity(app_id).has_value();
+    return cache->get_app(app_id).has_value();
   };
 
   engine_ =

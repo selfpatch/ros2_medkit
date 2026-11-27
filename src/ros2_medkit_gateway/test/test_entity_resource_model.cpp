@@ -383,31 +383,14 @@ TEST_F(EntityCacheTest, HasEntityReturnsCorrectValue) {
   EXPECT_FALSE(cache_.has_app("unknown"));
 }
 
-TEST_F(EntityCacheTest, FindEntityReturnsCorrectType) {
+TEST_F(EntityCacheTest, HasEntityChecksTheNamedType) {
   cache_.update_all(areas_, components_, apps_, {});
 
-  auto comp_ref = cache_.find_entity("nav2");
-  ASSERT_TRUE(comp_ref.has_value());
-  EXPECT_EQ(comp_ref->type, SovdEntityType::COMPONENT);
-
-  auto app_ref = cache_.find_entity("controller");
-  ASSERT_TRUE(app_ref.has_value());
-  EXPECT_EQ(app_ref->type, SovdEntityType::APP);
-
-  auto area_ref = cache_.find_entity("perception");
-  ASSERT_TRUE(area_ref.has_value());
-  EXPECT_EQ(area_ref->type, SovdEntityType::AREA);
-
-  EXPECT_FALSE(cache_.find_entity("unknown").has_value());
-}
-
-TEST_F(EntityCacheTest, GetEntityTypeReturnsCorrectType) {
-  cache_.update_all(areas_, components_, apps_, {});
-
-  EXPECT_EQ(cache_.get_entity_type("nav2"), SovdEntityType::COMPONENT);
-  EXPECT_EQ(cache_.get_entity_type("controller"), SovdEntityType::APP);
-  EXPECT_EQ(cache_.get_entity_type("perception"), SovdEntityType::AREA);
-  EXPECT_EQ(cache_.get_entity_type("unknown"), SovdEntityType::UNKNOWN);
+  EXPECT_TRUE(cache_.has_entity(SovdEntityType::COMPONENT, "nav2"));
+  EXPECT_TRUE(cache_.has_entity(SovdEntityType::APP, "controller"));
+  EXPECT_TRUE(cache_.has_entity(SovdEntityType::AREA, "perception"));
+  EXPECT_FALSE(cache_.has_entity(SovdEntityType::APP, "nav2"));
+  EXPECT_FALSE(cache_.has_entity(SovdEntityType::COMPONENT, "unknown"));
 }
 
 // ============================================================================
@@ -532,6 +515,7 @@ TEST_F(EntityCacheTest, ConcurrentReadsDoNotBlock) {
 
   std::atomic<int> completed{0};
   std::vector<std::thread> readers;
+  readers.reserve(10);
 
   // Start multiple readers
   for (int i = 0; i < 10; ++i) {
@@ -566,6 +550,7 @@ TEST_F(EntityCacheTest, ConcurrentReadsAndWritesDoNotDeadlock) {
 
   // Multiple readers
   std::vector<std::thread> readers;
+  readers.reserve(4);
   for (int i = 0; i < 4; ++i) {
     readers.emplace_back([this, &keep_running, &read_count] {
       while (keep_running) {
@@ -709,14 +694,6 @@ TEST_F(AggregationServiceTest, ShouldAggregateCheckCorrect) {
   EXPECT_FALSE(AggregationService::should_aggregate(SovdEntityType::APP));
 }
 
-TEST_F(AggregationServiceTest, GetOperationsByIdAutoDetectsType) {
-  auto result = service_->get_operations_by_id("nav_stack");
-  EXPECT_EQ(result.aggregation_level, "component");
-
-  result = service_->get_operations_by_id("controller");
-  EXPECT_EQ(result.aggregation_level, "app");
-}
-
 // ============================================================================
 // Data Aggregation Tests
 // ============================================================================
@@ -820,19 +797,19 @@ TEST_F(DataAggregationTest, AreaDataAggregatesFromAllComponents) {
   EXPECT_GE(result.topics.size(), 5);
 }
 
-TEST_F(DataAggregationTest, GetEntityDataAutoDetectsType) {
-  auto app_result = cache_.get_entity_data("camera_driver");
+TEST_F(DataAggregationTest, GetEntityDataReadsTheNamedType) {
+  auto app_result = cache_.get_entity_data(SovdEntityType::APP, "camera_driver");
   EXPECT_EQ(app_result.aggregation_level, "app");
 
-  auto comp_result = cache_.get_entity_data("sensor_stack");
+  auto comp_result = cache_.get_entity_data(SovdEntityType::COMPONENT, "sensor_stack");
   EXPECT_EQ(comp_result.aggregation_level, "component");
 
-  auto area_result = cache_.get_entity_data("perception");
+  auto area_result = cache_.get_entity_data(SovdEntityType::AREA, "perception");
   EXPECT_EQ(area_result.aggregation_level, "area");
 }
 
 TEST_F(DataAggregationTest, UnknownEntityReturnsEmptyData) {
-  auto result = cache_.get_entity_data("nonexistent");
+  auto result = cache_.get_entity_data(SovdEntityType::APP, "nonexistent");
 
   EXPECT_TRUE(result.topics.empty());
   EXPECT_TRUE(result.source_ids.empty());
@@ -855,6 +832,15 @@ class MemberResolutionTest : public ::testing::Test {
     std::sort(v.begin(), v.end());
     return v;
   }
+  /// The member ids, compared as a set.
+  static std::vector<std::string> sorted_ids(const std::vector<MemberRef> & members) {
+    std::vector<std::string> ids;
+    ids.reserve(members.size());
+    for (const auto & member : members) {
+      ids.push_back(member.id);
+    }
+    return sorted(std::move(ids));
+  }
 
   ThreadSafeEntityCache cache_;
 };
@@ -871,7 +857,7 @@ TEST_F(MemberResolutionTest, AreaMembersAreItsComponentsAndTheirApps) {
   };
   cache_.update_all(areas, components, apps, {});
 
-  EXPECT_EQ(sorted(cache_.get_members(SovdEntityType::AREA, "vehicle")),
+  EXPECT_EQ(sorted_ids(cache_.get_members(SovdEntityType::AREA, "vehicle")),
             sorted({"primary-ecu", "secondary-ecu", "temp_sensor", "pressure_sensor"}));
 }
 
@@ -887,7 +873,7 @@ TEST_F(MemberResolutionTest, AreaMembersDescendIntoSubareas) {
   std::vector<App> apps{make_app("rpm_sensor", "RPM", "engine-ecu")};
   cache_.update_all({parent, child}, components, apps, {});
 
-  EXPECT_EQ(sorted(cache_.get_members(SovdEntityType::AREA, "vehicle")), sorted({"engine-ecu", "rpm_sensor"}));
+  EXPECT_EQ(sorted_ids(cache_.get_members(SovdEntityType::AREA, "vehicle")), sorted({"engine-ecu", "rpm_sensor"}));
 }
 
 TEST_F(MemberResolutionTest, FunctionMembersIncludeHostsThatAreComponents) {
@@ -906,7 +892,7 @@ TEST_F(MemberResolutionTest, FunctionMembersIncludeHostsThatAreComponents) {
   func.hosts = {"temp_sensor", "brake-ecu"};
   cache_.update_all(areas, components, apps, {func});
 
-  const auto members = sorted(cache_.get_members(SovdEntityType::FUNCTION, "vehicle_health"));
+  const auto members = sorted_ids(cache_.get_members(SovdEntityType::FUNCTION, "vehicle_health"));
   for (const char * expected : {"actuator", "brake-ecu", "temp_sensor"}) {
     EXPECT_NE(std::find(members.begin(), members.end(), expected), members.end())
         << "function member missing: " << expected;
@@ -928,7 +914,7 @@ TEST_F(MemberResolutionTest, ComponentIsAMemberOfItselfAndCarriesItsChildren) {
   std::vector<App> apps{make_app("actuator", "Actuator", "brake-ecu")};
   cache_.update_all(areas, {parent, child}, apps, {});
 
-  EXPECT_EQ(sorted(cache_.get_members(SovdEntityType::COMPONENT, "vehicle-ecu")),
+  EXPECT_EQ(sorted_ids(cache_.get_members(SovdEntityType::COMPONENT, "vehicle-ecu")),
             sorted({"vehicle-ecu", "brake-ecu", "actuator"}));
 }
 
@@ -944,7 +930,7 @@ TEST_F(MemberResolutionTest, ComponentParentCycleTerminates) {
   second.parent_component_id = "ecu-a";
   cache_.update_all(areas, {first, second}, {}, {});
 
-  EXPECT_EQ(sorted(cache_.get_members(SovdEntityType::COMPONENT, "ecu-a")), sorted({"ecu-a", "ecu-b"}));
+  EXPECT_EQ(sorted_ids(cache_.get_members(SovdEntityType::COMPONENT, "ecu-a")), sorted({"ecu-a", "ecu-b"}));
 }
 
 TEST_F(MemberResolutionTest, LeafReturnsOnlyItself) {
@@ -953,7 +939,8 @@ TEST_F(MemberResolutionTest, LeafReturnsOnlyItself) {
   std::vector<App> apps{make_app("temp_sensor", "Temp", "primary-ecu")};
   cache_.update_all(areas, components, apps, {});
 
-  EXPECT_EQ(cache_.get_members(SovdEntityType::APP, "temp_sensor"), std::vector<std::string>{"temp_sensor"});
+  EXPECT_EQ(cache_.get_members(SovdEntityType::APP, "temp_sensor"),
+            (std::vector<MemberRef>{{SovdEntityType::APP, "temp_sensor"}}));
 }
 
 TEST_F(MemberResolutionTest, UnknownGroupingHasNoMembers) {

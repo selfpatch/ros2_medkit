@@ -80,11 +80,12 @@ void register_builtin_conditions(ConditionRegistry & conditions);
 /// The entity a reporting source (a node FQN) belongs to, or an empty string. A leading slash is optional.
 std::string resolve_trigger_entity(const ThreadSafeEntityCache & cache, const std::string & node_fqn);
 
-/// The topic of `entity_id` a data trigger on `resource_path` binds to: the first one whose name equals the path or
-/// ends with it. Empty when there is none. `resource_path` starts with the separator slash, and the item after it may
-/// carry its own leading slash, as in GET.
+/// The topic of the entity of `entity_type` ("apps", "components", "areas", "functions") and `entity_id` a data
+/// trigger on `resource_path` binds to: the first one whose name equals the path or ends with it. Empty when there is
+/// none. Ids are unique per type only, so the entity is looked up by both. `resource_path` starts with the separator
+/// slash, and the item after it may carry its own leading slash, as in GET.
 std::string resolve_trigger_topic(const ThreadSafeEntityCache & cache, const std::string & entity_id,
-                                  const std::string & resource_path);
+                                  const std::string & entity_type, const std::string & resource_path);
 
 /// Builds the store and the manager, wires them to `cache`, restores persistent triggers and, when the wiring has a
 /// fault event source, starts the fault feed. Throws `std::invalid_argument` when `wiring.cache` is null.

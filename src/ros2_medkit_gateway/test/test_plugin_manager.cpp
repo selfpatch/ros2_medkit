@@ -243,10 +243,11 @@ class MockSamplerPlugin : public GatewayPlugin {
   void configure(const json & /*cfg*/) override {
   }
   void set_context(PluginContext & context) override {
-    context.register_sampler(collection_,
-                             [this](const std::string &, const std::string &) -> tl::expected<json, std::string> {
-                               return json{{"plugin", name()}};
-                             });
+    context.register_sampler(
+        collection_,
+        [this](SovdEntityType, const std::string &, const std::string &) -> tl::expected<json, std::string> {
+          return json{{"plugin", name()}};
+        });
   }
 
  private:
@@ -267,10 +268,10 @@ class MockSamplerThrowOnGetRoutes : public GatewayPlugin {
   void configure(const json & /*cfg*/) override {
   }
   void set_context(PluginContext & context) override {
-    context.register_sampler(collection_,
-                             [](const std::string &, const std::string &) -> tl::expected<json, std::string> {
-                               return json{{"ok", true}};
-                             });
+    context.register_sampler(
+        collection_, [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<json, std::string> {
+          return json{{"ok", true}};
+        });
   }
   std::vector<PluginRoute> get_routes() override {
     throw std::runtime_error("get_routes failed");
@@ -493,7 +494,7 @@ TEST(PluginManagerTest, BuiltinSamplerSurvivesPluginDisable) {
   TransportRegistry transport_registry;
   sampler_registry.register_sampler(
       "data",
-      [](const std::string &, const std::string &) -> tl::expected<json, std::string> {
+      [](SovdEntityType, const std::string &, const std::string &) -> tl::expected<json, std::string> {
         return json{{"builtin", true}};
       },
       true);
@@ -566,9 +567,9 @@ TEST(PluginManagerTest, FetchEntityDataViaRouteDispatchesOwningPluginHandler) {
   auto * raw = plugin.get();
   mgr.add_plugin(std::move(plugin));
   mgr.configure_plugins();
-  mgr.register_entity_ownership("mock_plc", {"plc_app"});
+  mgr.register_entity_ownership("mock_plc", {{SovdEntityType::APP, "plc_app"}});
 
-  auto body = mgr.fetch_entity_data_via_route("plc_app");
+  auto body = mgr.fetch_entity_data_via_route(SovdEntityType::APP, "plc_app");
   ASSERT_TRUE(body.has_value());
   EXPECT_EQ((*body)["connected"], true);
   ASSERT_EQ((*body)["items"].size(), 2u);
@@ -584,9 +585,9 @@ TEST(PluginManagerTest, FetchEntityDataViaRouteSingleItemDispatchesItemRoute) {
   auto * raw = plugin.get();
   mgr.add_plugin(std::move(plugin));
   mgr.configure_plugins();
-  mgr.register_entity_ownership("mock_plc", {"plc_app"});
+  mgr.register_entity_ownership("mock_plc", {{SovdEntityType::APP, "plc_app"}});
 
-  auto body = mgr.fetch_entity_data_via_route("plc_app", "level");
+  auto body = mgr.fetch_entity_data_via_route(SovdEntityType::APP, "plc_app", "level");
   ASSERT_TRUE(body.has_value());
   EXPECT_EQ((*body)["single"], true);
   // The item must actually reach the dispatched path - a regression to the
@@ -599,7 +600,7 @@ TEST(PluginManagerTest, FetchEntityDataViaRouteUnownedEntityReturnsNullopt) {
   mgr.add_plugin(std::make_unique<MockPlcRoutePlugin>());
   mgr.configure_plugins();
 
-  EXPECT_FALSE(mgr.fetch_entity_data_via_route("plc_app").has_value());
+  EXPECT_FALSE(mgr.fetch_entity_data_via_route(SovdEntityType::APP, "plc_app").has_value());
 }
 
 TEST(PluginManagerTest, FetchEntityDataViaRouteErrorResponseReturnsNullopt) {
@@ -607,18 +608,18 @@ TEST(PluginManagerTest, FetchEntityDataViaRouteErrorResponseReturnsNullopt) {
   mgr.add_plugin(std::make_unique<MockPlcRoutePlugin>());
   mgr.configure_plugins();
   // Owned by the plugin, but its handler 404s for this entity.
-  mgr.register_entity_ownership("mock_plc", {"unmapped_app"});
+  mgr.register_entity_ownership("mock_plc", {{SovdEntityType::APP, "unmapped_app"}});
 
-  EXPECT_FALSE(mgr.fetch_entity_data_via_route("unmapped_app").has_value());
+  EXPECT_FALSE(mgr.fetch_entity_data_via_route(SovdEntityType::APP, "unmapped_app").has_value());
 }
 
 TEST(PluginManagerTest, FetchEntityDataViaRouteNoMatchingRouteReturnsNullopt) {
   PluginManager mgr;
   mgr.add_plugin(std::make_unique<MockRoutePlugin>());  // registers x-test-route only
   mgr.configure_plugins();
-  mgr.register_entity_ownership("mock_route", {"plc_app"});
+  mgr.register_entity_ownership("mock_route", {{SovdEntityType::APP, "plc_app"}});
 
-  EXPECT_FALSE(mgr.fetch_entity_data_via_route("plc_app").has_value());
+  EXPECT_FALSE(mgr.fetch_entity_data_via_route(SovdEntityType::APP, "plc_app").has_value());
 }
 
 TEST(PluginManagerTest, GetRoutesCalledOnceAcrossRegisterAndFetch) {
@@ -627,14 +628,14 @@ TEST(PluginManagerTest, GetRoutesCalledOnceAcrossRegisterAndFetch) {
   auto * raw = plugin.get();
   mgr.add_plugin(std::move(plugin));
   mgr.configure_plugins();
-  mgr.register_entity_ownership("mock_plc", {"plc_app"});
+  mgr.register_entity_ownership("mock_plc", {{SovdEntityType::APP, "plc_app"}});
 
   // Fetch before server setup (lazy cache), then register, then fetch again:
   // the "called once during REST server setup" plugin contract must hold.
-  EXPECT_TRUE(mgr.fetch_entity_data_via_route("plc_app").has_value());
+  EXPECT_TRUE(mgr.fetch_entity_data_via_route(SovdEntityType::APP, "plc_app").has_value());
   httplib::Server srv;
   mgr.register_routes(srv, "/api/v1");
-  EXPECT_TRUE(mgr.fetch_entity_data_via_route("plc_app").has_value());
+  EXPECT_TRUE(mgr.fetch_entity_data_via_route(SovdEntityType::APP, "plc_app").has_value());
   EXPECT_EQ(raw->get_routes_calls_, 1);
 }
 
