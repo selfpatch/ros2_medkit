@@ -871,8 +871,7 @@ jobs:
       volumes:
         - "/mnt:/mnt"
       options: ${{ matrix.sanitizer == 'tsan' && '--privileged' || '' }}
-    # A cold cache builds the chain from scratch, which is the ~20 min the TSan
-    # workspace job measures, before the 45-minute test budget starts.
+    # Covers a cold-cache sanitizer build plus the 45-minute test step.
     timeout-minutes: 90
     defaults:
       run:
@@ -918,9 +917,8 @@ jobs:
 
       - name: Redirect heavy build output to /mnt
         run: |
-          # Same reasoning as the workspace sanitizer jobs, and the same need:
-          # the chain built here still includes the gateway.
-          # The path must match the sanitizer job whose ccache this job restores, so ccache can hit.
+          # Build on /mnt, as the workspace sanitizer jobs do. The path must match the
+          # sanitizer job whose ccache this job restores, so ccache can hit.
           mkdir -p /mnt/${{ matrix.sanitizer }}/build /mnt/${{ matrix.sanitizer }}/tmp
           ln -sfn /mnt/${{ matrix.sanitizer }}/build build
           df -h / /mnt
