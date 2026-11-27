@@ -329,6 +329,11 @@ endif()
   target_link_libraries(test_fault_manager_core_concurrency fault_manager_core)
   medkit_test_needs_no_domain(test_fault_manager_core_concurrency)
 
+  # Healing and correlation together. Plain C++ core, no ROS node.
+  medkit_add_gtest(test_fault_manager_core_correlation test/test_fault_manager_core_correlation.cpp)
+  target_link_libraries(test_fault_manager_core_correlation fault_manager_core)
+  medkit_test_needs_no_domain(test_fault_manager_core_correlation)
+
   # CaptureThreadPool unit tests
   medkit_add_gtest(test_capture_thread_pool test/test_capture_thread_pool.cpp)
   target_link_libraries(test_capture_thread_pool fault_manager_lib)

@@ -245,14 +245,15 @@ Hierarchical mode identifies root cause → symptom relationships.
      - Hide symptom faults from normal queries
    * - ``auto_clear_with_root``
      - ``true``
-     - Auto-clear symptoms when root cause is cleared
+     - Auto-clear symptoms when root cause is cleared or heals
 
 **How it works:**
 
 1. When ``ESTOP_001`` is reported, it's marked as a root cause
 2. Any ``MOTOR_*`` or ``DRIVE_*`` faults within 2000ms are marked as symptoms
 3. Symptoms are muted (not shown in default fault list)
-4. Clearing ``ESTOP_001`` auto-clears all its symptoms
+4. Clearing ``ESTOP_001`` auto-clears all its symptoms, and so does ``ESTOP_001`` healing
+   through PASSED reports
 
 Auto-Cluster Mode
 -----------------
