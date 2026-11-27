@@ -278,6 +278,15 @@ endif()
   medkit_add_launch_test(test_rosbag_integration test/integration/test_rosbag_integration.test.py TIMEOUT 150
     LABELS "integration")
 
+  # Rosbag retention pins: a real fault_manager_node, sized payloads, SQLite file.
+  medkit_add_launch_test(test_rosbag_quota test/integration/test_rosbag_quota.test.py TIMEOUT 600
+    LABELS "integration")
+
+  if(POSTGRES_SUPPORT)
+    medkit_add_launch_test(test_rosbag_quota_pg test/integration/test_rosbag_quota_pg.test.py TIMEOUT 300
+      LABELS "integration")
+  endif()
+
   # Launches without snapshots.rosbag.format, so the parameter default (mcap)
   # is what is under test rather than an operator's explicit choice.
   medkit_add_launch_test(test_rosbag_default_format test/integration/test_rosbag_default_format.test.py TIMEOUT 150
