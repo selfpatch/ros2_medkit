@@ -237,7 +237,9 @@ via the health endpoint (``GET /health``). The report includes:
 - Layer names and ordering
 - Total entity count, enrichment count
 - Conflict details (which layers disagreed on which field groups)
-- Cross-type ID collision warnings
+- The number of ids held by entities of two types (``id_collisions``). Such
+  ids are legitimate, since every route names the entity type, and each pair
+  is logged once at INFO when it appears
 - Gap-fill filtering statistics
 
 In hybrid mode, the ``GET /health`` response includes full discovery diagnostics:

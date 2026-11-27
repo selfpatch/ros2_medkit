@@ -67,7 +67,7 @@ inline std::string sanitized_leaf(const std::string & input) {
 /// sanitized leaf wins exactly (the deterministic mapping); otherwise the
 /// closest name within an input-length-scaled edit distance budget.
 inline std::string suggest_data_point(const std::string & input, const std::vector<std::string> & names) {
-  const std::string leaf = sanitized_leaf(input);
+  std::string leaf = sanitized_leaf(input);
   if (!leaf.empty() && std::find(names.begin(), names.end(), leaf) != names.end()) {
     return leaf;
   }

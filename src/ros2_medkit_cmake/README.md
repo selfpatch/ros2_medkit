@@ -183,6 +183,15 @@ which binds a TCP socket on `32768 + domain`. Because it is an OS-level lock rat
 CTest property, it reaches across the separate `ctest` runs colcon starts per package, which
 is what a `RESOURCE_LOCK` never could.
 
+The lock reaches one network namespace only, so it keeps the tests apart from each other but
+not from other ROS processes on the network: a stack in another container on the same Docker
+bridge, or on the same LAN, that uses the domain would see the test's nodes and answer its
+services. The wrapper therefore also keeps each test's DDS discovery on its host, with
+`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`, or `ROS_LOCALHOST_ONLY=1` on Humble. On Humble it
+also adds `<Discovery><MaxAutoParticipantIndex>120</MaxAutoParticipantIndex></Discovery>` to
+`CYCLONEDDS_URI`: `lo` has no multicast, so CycloneDDS numbers the participants of a domain and
+by default refuses one past index 9.
+
 When the test command returns, and before the domain is released, the wrapper runs
 `fastdds shm clean`. It removes the shared memory of participants that were killed rather
 than shut down, and leaves every file a live process still holds. A line starting with

@@ -61,6 +61,10 @@ inline std::string graph_node_fqn(const std::string & name, const std::string & 
   return ns + "/" + name;
 }
 
+/// Name of the parameter transport's client node. The node is created without the
+/// process's remaps, so every gateway on a graph has its client node at "/_param_client_node".
+inline constexpr const char * kParamClientNodeName = "_param_client_node";
+
 /**
  * @brief Is this FQN one of the gateway's in-process helper nodes?
  *
