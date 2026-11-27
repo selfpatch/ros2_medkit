@@ -221,9 +221,23 @@ After merging, the **RuntimeLinker** binds manifest apps to running ROS 2 nodes:
 
 1. **Discovery**: All layers produce entities
 2. **Merging**: Pipeline merges entities by ID, applying field-group policies
-3. **Linking**: For each manifest app, checks ``ros_binding`` configuration
+3. **Linking**: For each manifest app, drops the node FQN, online flag and node
+   resources the merge brought in from a runtime app that only shares the
+   app's id, then checks its ``ros_binding`` configuration. Only the binding
+   ties an app to a node (see
+   :ref:`the app's id plays no part in linking <manifest-app-id-is-not-a-binding>`)
 4. **Binding**: If match found, copies runtime resources (topics, services, actions)
-5. **Status**: Apps with matched nodes are marked ``is_online: true``
+5. **Status**: Manifest apps with matched nodes are marked ``is_online: true``,
+   the others ``false``. An external manifest app keeps the status of the
+   plugin that serves it, unless a ROS node's app has the same id and gap-fill
+   lets it into the merge (with ``allow_heuristic_apps`` off, or a namespace
+   filter keeping the node out, the plugin's status stays): with the default
+   merge policies the merge then replaces the plugin's status with the node's
+   and the app reads offline
+   (see :ref:`the app's id plays no part in linking <manifest-app-id-is-not-a-binding>`).
+   Apps the manifest does not declare (gap-fill apps for unmanifested nodes,
+   plugin apps) are not linked and keep the status their own layer reported,
+   so a running unmanifested node's app is online
 6. **Suppression**: Heuristic entities that duplicate manifest-covered namespaces
    (components/areas) or linked app IDs (apps) are removed. Gap-fill apps in
    uncovered namespaces survive.

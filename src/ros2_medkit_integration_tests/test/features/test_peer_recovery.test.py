@@ -940,10 +940,35 @@ class PeerRecoveryTest(unittest.TestCase):
 
         # And one level down: the items the retained copy carried through the
         # outage are not sitting beside the ones the live peer just reported.
-        peer_topics = [
-            item for item in self._function_items('data')
-            if item.get('x-medkit', {}).get('ros2', {}).get('topic') == PEER_TOPIC
-        ]
+        #
+        # The live copy is waited for, not read once. The peer lists what its
+        # ROS graph shows, and the graph of a gateway that has just restarted
+        # can leave out a running node for a refresh or longer. A single read
+        # can then catch the peer listing no item for the topic at all, which
+        # says nothing about a retained copy lingering beside a live one. Once
+        # the peer lists the topic itself, the merged list has to hold it once.
+        def topic_of(item):
+            return item.get('x-medkit', {}).get('ros2', {}).get('topic')
+
+        def live_copy_listed():
+            own = requests.get(f'{PEER_URL}/functions/{MERGED_FUNCTION}/data', timeout=15)
+            if own.status_code != 200 or not any(
+                    topic_of(item) == PEER_TOPIC for item in own.json().get('items', [])):
+                return None
+            copies = [
+                item for item in self._function_items('data') if topic_of(item) == PEER_TOPIC
+            ]
+            return copies or None
+
+        started = time.monotonic()
+        peer_topics = _poll(live_copy_listed, timeout=RECOVERY_TIMEOUT)
+        self.assertIsNotNone(
+            peer_topics,
+            f'{PEER_TOPIC} was not listed {RECOVERY_TIMEOUT}s after its peer came back; '
+            f'the peer reports {self._peer_app_view(PEER_DECLARED_APP)}',
+        )
+        print(f'[recovery] the peer listed {PEER_TOPIC} again after '
+              f'{time.monotonic() - started:.1f}s')
         self.assertEqual(
             len(peer_topics), 1,
             f'{PEER_TOPIC} is offered {len(peer_topics)} times after its peer came '

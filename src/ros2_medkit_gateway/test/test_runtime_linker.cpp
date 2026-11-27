@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -72,6 +73,18 @@ class RuntimeLinkerTest : public ::testing::Test {
     return app;
   }
 
+  // The ids link() is told the manifest declares. Most cases here hand the
+  // linker manifest apps only, so every id they pass is a manifest id. They
+  // also pass their runtime apps as the ones that went into the merge, which is
+  // what the pipeline does while gap-fill admits every node.
+  static std::unordered_set<std::string> ids_of(const std::vector<App> & apps) {
+    std::unordered_set<std::string> ids;
+    for (const auto & app : apps) {
+      ids.insert(app.id);
+    }
+    return ids;
+  }
+
   std::unique_ptr<RuntimeLinker> linker_;
   ManifestConfig config_;
 };
@@ -85,7 +98,7 @@ TEST_F(RuntimeLinkerTest, ExactMatch_NodeNameAndNamespace) {
   std::vector<App> apps = {create_app("controller_app", "controller", "/nav")};
   std::vector<App> runtime_apps = {create_runtime_app("controller", "/nav")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_EQ(result.linked_apps.size(), 1);
   EXPECT_TRUE(result.linked_apps[0].is_online);
@@ -100,7 +113,7 @@ TEST_F(RuntimeLinkerTest, ExactMatch_RootNamespace) {
   std::vector<App> apps = {create_app("my_app", "my_node", "/")};
   std::vector<App> runtime_apps = {create_runtime_app("my_node", "/")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_EQ(result.linked_apps.size(), 1);
   EXPECT_TRUE(result.linked_apps[0].is_online);
@@ -111,7 +124,7 @@ TEST_F(RuntimeLinkerTest, NoMatch_DifferentNodeName) {
   std::vector<App> apps = {create_app("app1", "controller", "/nav")};
   std::vector<App> runtime_apps = {create_runtime_app("planner", "/nav")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_EQ(result.linked_apps.size(), 1);
   EXPECT_FALSE(result.linked_apps[0].is_online);
@@ -124,7 +137,7 @@ TEST_F(RuntimeLinkerTest, NoMatch_DifferentNamespace) {
   std::vector<App> apps = {create_app("app1", "controller", "/navigation")};
   std::vector<App> runtime_apps = {create_runtime_app("controller", "/planning")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_FALSE(result.linked_apps[0].is_online);
   EXPECT_EQ(result.unlinked_app_ids.size(), 1);
@@ -141,7 +154,7 @@ TEST_F(RuntimeLinkerTest, WildcardNamespace_MatchesAny) {
       create_runtime_app("controller", "/ns2"),
   };
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_TRUE(result.linked_apps[0].is_online);
   // Should match the first one found
@@ -154,7 +167,7 @@ TEST_F(RuntimeLinkerTest, WildcardNamespace_MatchesRootNamespace) {
   std::vector<App> apps = {create_app("app1", "my_node", "*")};
   std::vector<App> runtime_apps = {create_runtime_app("my_node", "/")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_TRUE(result.linked_apps[0].is_online);
   EXPECT_EQ(result.linked_apps[0].bound_fqn, "/my_node");
@@ -164,7 +177,7 @@ TEST_F(RuntimeLinkerTest, WildcardNamespace_MatchesNestedNamespace) {
   std::vector<App> apps = {create_app("app1", "controller", "*")};
   std::vector<App> runtime_apps = {create_runtime_app("controller", "/robot/nav/local")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_TRUE(result.linked_apps[0].is_online);
   EXPECT_EQ(result.linked_apps[0].bound_fqn, "/robot/nav/local/controller");
@@ -188,7 +201,7 @@ TEST_F(RuntimeLinkerTest, TopicNamespace_MatchesByPublisher) {
   std::vector<App> apps = {app};
   std::vector<App> runtime_apps = {rt_app};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_TRUE(result.linked_apps[0].is_online);
   EXPECT_EQ(result.linked_apps[0].bound_fqn, "/sensor_driver");
@@ -208,7 +221,7 @@ TEST_F(RuntimeLinkerTest, TopicNamespace_MatchesBySubscriber) {
   std::vector<App> apps = {app};
   std::vector<App> runtime_apps = {rt_app};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_TRUE(result.linked_apps[0].is_online);
 }
@@ -227,7 +240,7 @@ TEST_F(RuntimeLinkerTest, TopicNamespace_NoMatch) {
   std::vector<App> apps = {app};
   std::vector<App> runtime_apps = {rt_app};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_FALSE(result.linked_apps[0].is_online);
 }
@@ -244,7 +257,7 @@ TEST_F(RuntimeLinkerTest, OrphanNodes_DetectedCorrectly) {
       create_runtime_app("mapper", "/map"),
   };
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_EQ(result.orphan_nodes.size(), 2);
   EXPECT_TRUE(std::find(result.orphan_nodes.begin(), result.orphan_nodes.end(), "/nav/planner") !=
@@ -263,7 +276,7 @@ TEST_F(RuntimeLinkerTest, OrphanNodes_AllMatched) {
       create_runtime_app("node2", "/"),
   };
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_TRUE(result.orphan_nodes.empty());
   EXPECT_EQ(result.app_to_node.size(), 2);
@@ -279,7 +292,7 @@ TEST_F(RuntimeLinkerTest, OrphanPolicy_Error_ReportsError) {
   std::vector<App> apps = {};
   std::vector<App> runtime_apps = {create_runtime_app("orphan_node", "/")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_TRUE(result.has_errors(config_.unmanifested_nodes));
   EXPECT_EQ(result.orphan_nodes.size(), 1);
@@ -291,7 +304,7 @@ TEST_F(RuntimeLinkerTest, OrphanPolicy_Ignore_NoError) {
   std::vector<App> apps = {};
   std::vector<App> runtime_apps = {create_runtime_app("orphan_node", "/")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_FALSE(result.has_errors(config_.unmanifested_nodes));
 }
@@ -303,7 +316,7 @@ TEST_F(RuntimeLinkerTest, OrphanPolicy_Warn_NoError) {
   std::vector<App> apps = {};
   std::vector<App> runtime_apps = {create_runtime_app("orphan_node", "/")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   // WARN logs warnings but does not fail
   EXPECT_FALSE(result.has_errors(config_.unmanifested_nodes));
@@ -317,7 +330,7 @@ TEST_F(RuntimeLinkerTest, OrphanPolicy_IncludeAsOrphan_NoError) {
   std::vector<App> apps = {};
   std::vector<App> runtime_apps = {create_runtime_app("orphan_node", "/")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   // INCLUDE_AS_ORPHAN includes orphans but does not fail
   EXPECT_FALSE(result.has_errors(config_.unmanifested_nodes));
@@ -337,7 +350,7 @@ TEST_F(RuntimeLinkerTest, EnrichApp_CopiesTopics) {
 
   std::vector<App> runtime_apps = {rt_app};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_TRUE(result.linked_apps[0].is_online);
   EXPECT_EQ(result.linked_apps[0].topics.publishes.size(), 2);
@@ -353,7 +366,7 @@ TEST_F(RuntimeLinkerTest, EnrichApp_CopiesServices) {
 
   std::vector<App> runtime_apps = {rt_app};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_TRUE(result.linked_apps[0].is_online);
   EXPECT_EQ(result.linked_apps[0].services.size(), 2);
@@ -367,7 +380,7 @@ TEST_F(RuntimeLinkerTest, EnrichApp_CopiesActions) {
 
   std::vector<App> runtime_apps = {rt_app};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_TRUE(result.linked_apps[0].is_online);
   EXPECT_EQ(result.linked_apps[0].actions.size(), 1);
@@ -386,7 +399,7 @@ TEST_F(RuntimeLinkerTest, ExternalApp_NotLinked) {
   std::vector<App> apps = {app};
   std::vector<App> runtime_apps = {create_runtime_app("some_node", "/")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_EQ(result.linked_apps.size(), 1);
   EXPECT_FALSE(result.linked_apps[0].is_online);
@@ -407,7 +420,7 @@ TEST_F(RuntimeLinkerTest, NoBinding_GoesToUnlinked) {
   std::vector<App> apps = {app};
   std::vector<App> runtime_apps = {create_runtime_app("some_node", "/")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_FALSE(result.linked_apps[0].is_online);
   EXPECT_EQ(result.unlinked_app_ids.size(), 1);
@@ -423,7 +436,7 @@ TEST_F(RuntimeLinkerTest, EmptyBinding_GoesToUnlinked) {
   std::vector<App> apps = {app};
   std::vector<App> runtime_apps = {create_runtime_app("some_node", "/")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_FALSE(result.linked_apps[0].is_online);
   EXPECT_EQ(result.unlinked_app_ids.size(), 1);
@@ -440,7 +453,7 @@ TEST_F(RuntimeLinkerTest, IsAppOnline_AfterLinking) {
   };
   std::vector<App> runtime_apps = {create_runtime_app("online_node", "/")};
 
-  linker_->link(apps, runtime_apps, config_);
+  linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_TRUE(linker_->is_app_online("online_app"));
   EXPECT_FALSE(linker_->is_app_online("offline_app"));
@@ -451,7 +464,7 @@ TEST_F(RuntimeLinkerTest, GetBoundNode_ReturnsCorrectFqn) {
   std::vector<App> apps = {create_app("app1", "my_node", "/ns")};
   std::vector<App> runtime_apps = {create_runtime_app("my_node", "/ns")};
 
-  linker_->link(apps, runtime_apps, config_);
+  linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   auto bound = linker_->get_bound_node("app1");
   ASSERT_TRUE(bound.has_value());
@@ -464,7 +477,7 @@ TEST_F(RuntimeLinkerTest, GetAppForNode_ReturnsCorrectId) {
   std::vector<App> apps = {create_app("app1", "my_node", "/ns")};
   std::vector<App> runtime_apps = {create_runtime_app("my_node", "/ns")};
 
-  linker_->link(apps, runtime_apps, config_);
+  linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   auto app_id = linker_->get_app_for_node("/ns/my_node");
   ASSERT_TRUE(app_id.has_value());
@@ -489,7 +502,7 @@ TEST_F(RuntimeLinkerTest, MultipleApps_AllLinked) {
       create_runtime_app("node3", "/"),
   };
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_EQ(result.linked_apps.size(), 3);
   for (const auto & app : result.linked_apps) {
@@ -511,7 +524,7 @@ TEST_F(RuntimeLinkerTest, MultipleApps_SomeUnlinked) {
       create_runtime_app("node3", "/"),
   };
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   EXPECT_EQ(result.linked_apps.size(), 4);
   EXPECT_EQ(result.app_to_node.size(), 2);
@@ -532,7 +545,7 @@ TEST_F(RuntimeLinkerTest, ResultSummary_FormatsCorrectly) {
       create_runtime_app("orphan", "/"),
   };
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   std::string summary = result.summary();
   EXPECT_TRUE(summary.find("1 linked") != std::string::npos);
@@ -544,7 +557,7 @@ TEST_F(RuntimeLinkerTest, GetLastResult_ReturnsLatest) {
   std::vector<App> apps = {create_app("app1", "node1", "*")};
   std::vector<App> runtime_apps = {create_runtime_app("node1", "/")};
 
-  linker_->link(apps, runtime_apps, config_);
+  linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   const auto & last = linker_->get_last_result();
   EXPECT_EQ(last.app_to_node.size(), 1);
@@ -559,7 +572,7 @@ TEST_F(RuntimeLinkerTest, NamespaceMatch_RejectsStringPrefix) {
   std::vector<App> apps = {create_app("nav_app", "navigator", "/nav")};
   std::vector<App> runtime_apps = {create_runtime_app("navigator", "/navigation")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
   EXPECT_FALSE(result.linked_apps[0].is_online);
 }
 
@@ -568,7 +581,7 @@ TEST_F(RuntimeLinkerTest, NamespaceMatch_AcceptsPathPrefix) {
   std::vector<App> apps = {create_app("nav_app", "planner", "/nav")};
   std::vector<App> runtime_apps = {create_runtime_app("planner", "/nav/sub")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
   EXPECT_TRUE(result.linked_apps[0].is_online);
 }
 
@@ -577,7 +590,7 @@ TEST_F(RuntimeLinkerTest, NodeName_ExactLastSegmentOnly) {
   std::vector<App> apps = {create_app("mapper", "map", "/")};
   std::vector<App> runtime_apps = {create_runtime_app("map_server", "/")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
   EXPECT_FALSE(result.linked_apps[0].is_online);
 }
 
@@ -589,7 +602,7 @@ TEST_F(RuntimeLinkerTest, Wildcard_DeterministicMultiMatch) {
       create_runtime_app("controller", "/alpha"),
   };
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
   EXPECT_TRUE(result.linked_apps[0].is_online);
   // Deterministic: alphabetically first FQN wins
   EXPECT_EQ(result.linked_apps[0].bound_fqn, "/alpha/controller");
@@ -601,7 +614,7 @@ TEST_F(RuntimeLinkerTest, TopicNamespace_RejectsStringPrefix) {
   App rt_app = create_runtime_app("some_node", "/");
   rt_app.topics.publishes = {"/statement/data"};
 
-  auto result = linker_->link({app}, {rt_app}, config_);
+  auto result = linker_->link({app}, {rt_app}, {rt_app}, {app.id}, config_);
   EXPECT_FALSE(result.linked_apps[0].is_online);
 }
 
@@ -611,7 +624,7 @@ TEST_F(RuntimeLinkerTest, TopicNamespace_AcceptsPathPrefix) {
   App rt_app = create_runtime_app("some_node", "/");
   rt_app.topics.publishes = {"/state/machine"};
 
-  auto result = linker_->link({app}, {rt_app}, config_);
+  auto result = linker_->link({app}, {rt_app}, {rt_app}, {app.id}, config_);
   EXPECT_TRUE(result.linked_apps[0].is_online);
 }
 
@@ -627,7 +640,7 @@ TEST_F(RuntimeLinkerTest, TwoAppsCompeteForSameNode) {
   };
   std::vector<App> runtime_apps = {create_runtime_app("controller", "/nav")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
 
   // First app wins (insertion order = priority)
   EXPECT_TRUE(result.linked_apps[0].is_online);
@@ -648,7 +661,7 @@ TEST_F(RuntimeLinkerTest, LinkingReportSummaryIncludesConflicts) {
   };
   std::vector<App> runtime_apps = {create_runtime_app("controller", "/nav")};
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
   auto summary = result.summary();
   EXPECT_TRUE(summary.find("conflict") != std::string::npos);
 }
@@ -660,7 +673,7 @@ TEST_F(RuntimeLinkerTest, WildcardMultiMatchCounted) {
       create_runtime_app("controller", "/beta"),
   };
 
-  auto result = linker_->link(apps, runtime_apps, config_);
+  auto result = linker_->link(apps, runtime_apps, runtime_apps, ids_of(apps), config_);
   EXPECT_EQ(result.wildcard_multi_match, 1u);
 }
 
@@ -719,7 +732,7 @@ TEST_F(RuntimeLinkerTest, MergedInput_SuppressesRuntimeDuplicates) {
                                   orphan_runtime_app};
   std::vector<App> runtime_apps = {runtime_origin_app, runtime_origin_app2, orphan_runtime_app};
 
-  auto result = linker_->link(merged_apps, runtime_apps, config_);
+  auto result = linker_->link(merged_apps, runtime_apps, runtime_apps, {"lidar-sim", "imu-driver"}, config_);
 
   // Both manifest apps should be linked
   EXPECT_EQ(result.app_to_node.size(), 2u);
@@ -782,7 +795,7 @@ TEST_F(RuntimeLinkerTest, MergedInput_PreservesOrphanRuntimeApps) {
   std::vector<App> merged_apps = {manifest_app, rt_matching, rt_orphan};
   std::vector<App> runtime_apps = {rt_matching, rt_orphan};
 
-  auto result = linker_->link(merged_apps, runtime_apps, config_);
+  auto result = linker_->link(merged_apps, runtime_apps, runtime_apps, {"nav-controller"}, config_);
 
   // Manifest app linked
   EXPECT_EQ(result.app_to_node.size(), 1u);
@@ -855,7 +868,7 @@ TEST(RuntimeLinkerHelperNodes, TheOrphanSkipFollowsTheAppFilterSetting) {
 
   {
     RuntimeLinker filtering(node.get(), /*filter_internal_nodes=*/true);
-    const auto result = filtering.link({}, runtime_apps, config);
+    const auto result = filtering.link({}, runtime_apps, runtime_apps, {}, config);
     EXPECT_FALSE(contains(result.orphan_nodes, helper_fqn))
         << "a helper node the app filter removes was reported as unmanifested";
     EXPECT_TRUE(contains(result.orphan_nodes, foreign.bound_fqn.value()))
@@ -863,7 +876,7 @@ TEST(RuntimeLinkerHelperNodes, TheOrphanSkipFollowsTheAppFilterSetting) {
   }
   {
     RuntimeLinker serving(node.get(), /*filter_internal_nodes=*/false);
-    const auto result = serving.link({}, runtime_apps, config);
+    const auto result = serving.link({}, runtime_apps, runtime_apps, {}, config);
     EXPECT_TRUE(contains(result.orphan_nodes, helper_fqn))
         << "with the app filter off the helper is served as an app, so it is unmanifested and must be counted";
     EXPECT_TRUE(contains(result.orphan_nodes, foreign.bound_fqn.value()));
@@ -873,6 +886,116 @@ TEST(RuntimeLinkerHelperNodes, TheOrphanSkipFollowsTheAppFilterSetting) {
   if (owned_rclcpp) {
     rclcpp::shutdown();
   }
+}
+
+// =============================================================================
+// A manifest app is bound by its ros_binding only, never by a same-id node (#769)
+//
+// MergePipeline hands link() the merged apps and the runtime apps that went
+// into the merge. One of those whose id equals a manifest app's id has been
+// merged into it, so (with the default merge policies) the manifest app
+// arrives carrying that node's bound_fqn, is_online and resources.
+// =============================================================================
+
+namespace {
+
+// What the merge leaves on a manifest app after folding in the runtime app of
+// `node`: the node's FQN, its online flag and its resources.
+App with_state_of(App app, const App & node) {
+  app.bound_fqn = node.bound_fqn;
+  app.is_online = node.is_online;
+  app.topics = node.topics;
+  app.services = node.services;
+  app.actions = node.actions;
+  return app;
+}
+
+}  // namespace
+
+// @verifies REQ_INTEROP_003
+TEST_F(RuntimeLinkerTest, UnmatchedManifestAppGivesBackTheSameIdNodeState) {
+  App node = create_runtime_app("temp_sensor", "/other");
+  node.topics.publishes = {"/other/temp_sensor/reading"};
+  node.topics.subscribes = {"/other/temp_sensor/command"};
+  node.services = {{"recalibrate", "/other/temp_sensor/recalibrate", "std_srvs/srv/Trigger", std::nullopt}};
+  node.actions = {{"sweep", "/other/temp_sensor/sweep", "example_interfaces/action/Fibonacci", std::nullopt}};
+
+  App app = with_state_of(create_app("temp_sensor", "temp_sensor", "/powertrain/engine"), node);
+  // Entries another layer contributed under keys the node does not have stay.
+  app.topics.publishes.push_back("/plugin/extra");
+  app.services.push_back({"plugin_op", "/plugin/op", "std_srvs/srv/Trigger", std::nullopt});
+
+  auto result = linker_->link({app}, {node}, {node}, {app.id}, config_);
+
+  ASSERT_EQ(result.linked_apps.size(), 1u);
+  const auto & out = result.linked_apps[0];
+  EXPECT_FALSE(out.bound_fqn.has_value()) << "bound to " << out.bound_fqn.value_or("");
+  EXPECT_FALSE(out.is_online);
+  EXPECT_EQ(out.topics.publishes, std::vector<std::string>{"/plugin/extra"});
+  EXPECT_TRUE(out.topics.subscribes.empty());
+  ASSERT_EQ(out.services.size(), 1u);
+  EXPECT_EQ(out.services[0].full_path, "/plugin/op");
+  EXPECT_TRUE(out.actions.empty());
+  EXPECT_EQ(result.unlinked_app_ids, std::vector<std::string>{"temp_sensor"});
+  EXPECT_EQ(result.orphan_nodes, std::vector<std::string>{"/other/temp_sensor"});
+}
+
+// @verifies REQ_INTEROP_003
+TEST_F(RuntimeLinkerTest, ExternalManifestAppGivesBackOnlyWhatAMergedSameIdNodeSupplied) {
+  App node = create_runtime_app("plc", "/factory");
+  node.topics.publishes = {"/factory/plc/state"};
+
+  App absorbed = with_state_of(create_app("plc", "", "*"), node);
+  absorbed.ros_binding.reset();
+  absorbed.external = true;
+
+  auto absorbed_result = linker_->link({absorbed}, {node}, {node}, {absorbed.id}, config_);
+  ASSERT_EQ(absorbed_result.linked_apps.size(), 1u);
+  EXPECT_FALSE(absorbed_result.linked_apps[0].bound_fqn.has_value())
+      << "the same-id node went into the merge, so the runtime layer put the FQN there";
+  EXPECT_FALSE(absorbed_result.linked_apps[0].is_online) << "the node's status cannot be attributed to the app";
+  EXPECT_TRUE(absorbed_result.linked_apps[0].topics.publishes.empty());
+
+  // The same node kept out of the merge (gap-fill): it supplied nothing, so the
+  // state the plugin serving the external app reported stays - even a FQN or
+  // a topic that happens to be the node's.
+  App served = absorbed;
+  served.bound_fqn = "/factory/plc";
+  served.is_online = true;
+  served.topics.publishes = {"/factory/plc/state", "/plugin/value"};
+
+  auto served_result = linker_->link({served}, {node}, {}, {served.id}, config_);
+  ASSERT_EQ(served_result.linked_apps.size(), 1u);
+  EXPECT_EQ(served_result.linked_apps[0].bound_fqn.value_or(""), "/factory/plc");
+  EXPECT_TRUE(served_result.linked_apps[0].is_online);
+  EXPECT_EQ(served_result.linked_apps[0].topics.publishes,
+            (std::vector<std::string>{"/factory/plc/state", "/plugin/value"}));
+  EXPECT_TRUE(served_result.unlinked_app_ids.empty());
+}
+
+// @verifies REQ_INTEROP_003
+TEST_F(RuntimeLinkerTest, AppsTheManifestDoesNotDeclarePassThroughUnchanged) {
+  // The same app, once declared and once not: only the declared one is the
+  // linker's to unbind, take offline and count as unlinked.
+  App node = create_runtime_app("logger", "/tools");
+  node.topics.publishes = {"/tools/logger/lines"};
+  App app = with_state_of(create_app("logger", "logger", "/elsewhere"), node);
+
+  auto declared = linker_->link({app}, {node}, {node}, {app.id}, config_);
+  ASSERT_EQ(declared.linked_apps.size(), 1u);
+  EXPECT_FALSE(declared.linked_apps[0].bound_fqn.has_value());
+  EXPECT_FALSE(declared.linked_apps[0].is_online);
+  EXPECT_EQ(declared.unlinked_app_ids, std::vector<std::string>{"logger"});
+
+  auto undeclared = linker_->link({app}, {node}, {node}, {}, config_);
+  ASSERT_EQ(undeclared.linked_apps.size(), 1u);
+  const auto & out = undeclared.linked_apps[0];
+  EXPECT_EQ(out.bound_fqn.value_or(""), "/tools/logger");
+  EXPECT_TRUE(out.is_online) << "a heuristic app keeps the status runtime discovery gave it";
+  EXPECT_EQ(out.topics.publishes, std::vector<std::string>{"/tools/logger/lines"});
+  EXPECT_TRUE(undeclared.unlinked_app_ids.empty()) << "only manifest apps can be unlinked";
+  EXPECT_EQ(undeclared.orphan_nodes, std::vector<std::string>{"/tools/logger"})
+      << "the node is still not declared by the manifest";
 }
 
 int main(int argc, char ** argv) {
