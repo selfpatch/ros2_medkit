@@ -2,9 +2,12 @@ LeRobot SO-101 Example
 ======================
 
 A simulated SO-101 arm runs a LeRobot ACT policy over ROS 2 and picks up a cube.
-ros2_medkit, with stock packages and configuration only, reports what goes wrong:
-a failed attempt (``EPISODE_FAILED``, with a rosbag of the attempt), a frozen camera,
-slow policy inference and a dead policy process.
+ros2_medkit, with stock packages and this example's configuration, reports what
+goes wrong: a failed attempt (``EPISODE_FAILED``, with a rosbag of the attempt), a
+frozen camera, slow policy inference and a dead policy process. With
+``lerobot-medkit`` (``src/lerobot-medkit``) attached to the policy, slow inference
+and frozen frames are also reported from inside LeRobot, and with
+``ros2_medkit_policy_bridge`` predicted action chunks that disagree too.
 
 The example lives in the repository, in
 `examples/lerobot-so101 <https://github.com/selfpatch/ros2_medkit/tree/main/examples/lerobot-so101>`_.

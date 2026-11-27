@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Launch the LeRobot SO-101 example with plain ros2_medkit.
+"""Launch the LeRobot SO-101 example.
 
-Robot side: SO-101 simulation, LeRobot policy, camera monitor, episode runner.
-ros2_medkit side, unchanged packages only: gateway with the graph watchdog
+Robot side: SO-101 simulation, LeRobot policy (with lerobot-medkit attached when
+it is installed), camera monitor, episode runner. ros2_medkit side, stock
+packages with this example's configuration: gateway with the graph watchdog
 plugin, fault manager, diagnostic bridge, and ros2_medkit_policy_bridge when it
 is installed.
 

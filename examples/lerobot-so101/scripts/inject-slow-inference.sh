@@ -13,10 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Add a delay to every policy step (default 500 ms), until ./scripts/restore-normal.sh.
-# The policy node reports it on /diagnostics, the diagnostic bridge raises
-# POLICY_INFERENCE_SLOW. The simulation runs in lockstep, so the robot waits for
-# the policy: attempts get slower, their outcome does not change.
+# Slow the policy down (default +500 ms), until ./scripts/restore-normal.sh. With
+# lerobot-medkit the delay is added to each model inference and the plugin raises
+# POLICY_INFERENCE_SLOW; without it, to every step, which the policy node reports
+# on /diagnostics and the diagnostic bridge raises as POLICY_INFERENCE_SLOW. The
+# simulation runs in lockstep, so the robot waits for the policy: attempts get
+# slower, their outcome does not change.
 # Usage: ./scripts/inject-slow-inference.sh [delay_ms]
 set -eu
 DELAY="${1:-500}"

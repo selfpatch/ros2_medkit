@@ -15,7 +15,8 @@
 
 # Freeze one simulated camera from a given step of every following attempt,
 # until ./scripts/restore-normal.sh. The camera monitor reports it on /diagnostics
-# and the diagnostic bridge raises CAMERA_<CAMERA>_FROZEN.
+# and the diagnostic bridge raises CAMERA_<CAMERA>_FROZEN; with lerobot-medkit, the
+# plugin also raises POLICY_CAMERA_<CAMERA>_FROZEN from the frames the policy got.
 # Usage: ./scripts/inject-camera-fault.sh [wrist|overhead] [start_step]
 set -eu
 CAMERA="${1:-overhead}"

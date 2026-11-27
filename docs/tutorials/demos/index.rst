@@ -66,4 +66,4 @@ Choose Your Demo
 - 🔍 **Learn fault management** → :doc:`demo-sensor`
 - 🤖 **Test with realistic robotics** → :doc:`demo-turtlebot3`
 - 🦾 **Diagnose an AI policy** → :doc:`demo-lerobot-so101`
-- 📚 **Understand the full API** → Start with :doc:`/getting_started`, then explore both demos
+- 📚 **Understand the full API** → Start with :doc:`/getting_started`, then explore the demos

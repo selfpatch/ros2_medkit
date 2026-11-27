@@ -1,19 +1,22 @@
 # LeRobot SO-101 example
 
 A simulated SO-101 arm runs a LeRobot ACT policy over ROS 2: it picks up a cube
-and lifts it. ros2_medkit, with **unchanged packages and configuration only**,
-watches the robot and the policy and reports what goes wrong through its REST API.
+and lifts it. ros2_medkit, with **stock packages and this example's
+configuration**, watches the robot and the policy and reports what goes wrong
+through its REST API.
 
-This is the first step of the LeRobot integration: everything here is plain
-ROS 2 plus stock ros2_medkit. A LeRobot-side plugin (`lerobot-medkit`) comes later.
+Without `src/lerobot-medkit`, everything here is plain ROS 2 plus stock
+ros2_medkit. The Dockerfile installs the plugin, and the policy node then also
+reports from inside LeRobot: see "With lerobot-medkit".
 
 ```
  so101_sim (MuJoCo)  --images, joint states-->  lerobot_policy (ACT)
         ^                                              |
         +------------------ joint command -------------+
  camera_monitor --/diagnostics-->  diagnostic_bridge --+
- lerobot_policy --/diagnostics-->                      +--> fault_manager --> gateway (REST, :8080)
- episode_runner --ReportFault (EPISODE_FAILED)-------->+        |              + graph_watchdog plugin
+ lerobot_policy --/diagnostics (no plugin)-->          +--> fault_manager --> gateway (REST, :8080)
+ lerobot_policy --ReportFault (lerobot-medkit)-------->+        |              + graph_watchdog plugin
+ episode_runner --ReportFault (EPISODE_FAILED)-------->+        |
  lerobot_policy --/policy/introspection--> policy_bridge (optional) --> fault_manager
                                                        rosbag of each failed attempt
 ```
@@ -37,7 +40,8 @@ ROS 2 plus stock ros2_medkit. A LeRobot-side plugin (`lerobot-medkit`) comes lat
 |---|---|---|
 | `EPISODE_FAILED` | `episode_runner`, `ReportFault` service | An attempt ends without the cube lifted 5 cm. Saves a rosbag of the attempt. |
 | `CAMERA_WRIST_FROZEN`, `CAMERA_OVERHEAD_FROZEN` | `camera_monitor` on `/diagnostics`, via `diagnostic_bridge` | 10 identical frames in a row |
-| `POLICY_INFERENCE_SLOW` | `lerobot_policy` on `/diagnostics`, via `diagnostic_bridge` | Mean step time over 10 steps above 100 ms |
+| `POLICY_INFERENCE_SLOW` | with lerobot-medkit: the plugin, through `ReportFault`; without: `lerobot_policy` on `/diagnostics`, via `diagnostic_bridge` | with lerobot-medkit: two model inferences in a row above 300 ms; without: mean step time over 10 steps above 100 ms |
+| `POLICY_CAMERA_WRIST_FROZEN`, `POLICY_CAMERA_OVERHEAD_FROZEN` | lerobot-medkit only, through `ReportFault` | 10 identical frames in a row, as the policy received them |
 | `GRAPH_NODE_DISAPPEARED` | gateway `graph_watchdog` plugin (`node_death`) | The policy process dies |
 | `POLICY_CHUNK_DISAGREEMENT` | optional `policy_bridge`, from `/policy/introspection` | Successive action chunks disagree (see "Optional: policy bridge") |
 
@@ -75,6 +79,45 @@ the respawned policy node is back in the graph.
 `EPISODE_FAILED` heals at the start of every attempt, so each failed attempt has its own
 recording. Its `occurrence_count` stays 1: count failed attempts in
 `results/attempts.jsonl` or the recordings list, not in that field.
+
+### With lerobot-medkit
+
+`lerobot_policy` attaches `lerobot_medkit` (`src/lerobot-medkit`,
+`config/lerobot_medkit.yaml`) to the ACT policy. The plugin wraps the policy's
+`reset`, `select_action` and `predict_action_chunk`, the calls LeRobot itself
+makes, so the checks run on what the policy actually got and did, not on the
+ROS topics around it. It then replaces the node's `/diagnostics` path:
+
+- `POLICY_INFERENCE_SLOW`: timed on each model inference
+  (`predict_action_chunk`, `measure: chunk`), raised when two in a row take
+  more than 300 ms, and reported straight to the fault manager. The
+  `/diagnostics` path times whole steps instead (preprocessing, `select_action`,
+  postprocessing; 100 ms mean over 10 steps). The policy re-plans every 50
+  steps, so a mean over steps rises and falls with each inference: the plugin
+  warns when its window is shorter than that. With the plugin
+  `inference_delay_ms` sleeps inside each inference.
+- `POLICY_CAMERA_<NAME>_FROZEN`: identical frames in the batch the policy
+  received. `camera_monitor` still watches the image topics. Both faults
+  appear for a frozen camera, one for each side of the policy.
+- The action chunks on `/policy/introspection` for the policy bridge below.
+
+Set the node parameter `use_lerobot_medkit: false`, or leave the plugin out of
+the image, to get the plain ROS 2 behaviour back.
+
+Measured in the container (plugin and policy bridge built in, CPU), one run each:
+
+| Scenario | What the fault manager showed |
+|---|---|
+| 2 clean attempts | no fault |
+| +500 ms per inference | `POLICY_INFERENCE_SLOW` 15.6 s after the injection (the second slow inference); healed 32 s after `restore-normal.sh` |
+| Overhead camera frozen from step 40 | `POLICY_CAMERA_OVERHEAD_FROZEN` together with `CAMERA_OVERHEAD_FROZEN` |
+| Policy killed while that fault was raised, camera restored | the respawned process passed it on its first frame, 9 s after the respawn |
+| `lerobot_medkit_config` pointing to a missing file | an error naming the file, then the `/diagnostics` path |
+
+One ACT inference took 79-90 ms on this CPU. An earlier campaign of 10 clean
+attempts, with the slow check timing steps instead of inferences, raised no
+plugin fault. Neither the plugin's faults nor the bridge's confirm mid-attempt,
+so the `EPISODE_FAILED` recording still covers the whole attempt.
 
 ### Optional: policy bridge
 

@@ -1,6 +1,7 @@
 # PolicyIntrospection -> faults, used only when ros2_medkit_policy_bridge is built.
 # Fault codes: POLICY_CHUNK_DISAGREEMENT (and POLICY_SLOW_INFERENCE, off here:
-# the step time is already watched through /diagnostics as POLICY_INFERENCE_SLOW).
+# slow inference is already reported as POLICY_INFERENCE_SLOW, by lerobot-medkit
+# or through /diagnostics).
 policy_bridge:
   ros__parameters:
     introspection_topic: "/policy/introspection"
