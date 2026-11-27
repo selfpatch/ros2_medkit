@@ -194,6 +194,31 @@ struct RosbagFileInfo {
   int64_t created_at_ns{0};  ///< Timestamp when bag was created
 };
 
+/// One link between a fault and a recording: the unit a rosbag row stores.
+struct RosbagLink {
+  std::string fault_code;
+  std::string file_path;
+};
+
+/// Rosbag row changes applied together by FaultStorage::apply_rosbag_changes().
+struct RosbagChangeSet {
+  std::vector<RosbagFileInfo> insert;          ///< Upsert on (fault_code, file_path)
+  std::vector<RosbagLink> remove;              ///< Remove these links
+  std::vector<std::string> remove_recordings;  ///< Remove every link of these recording ids
+};
+
+/// What apply_rosbag_changes() reports back.
+struct RosbagApplyResult {
+  /// Each path whose last link the call removed, once, in ascending order. A path another link
+  /// still references is not listed. The caller decides what to do with the directory.
+  std::vector<std::string> orphaned_paths;
+};
+
+/// Check the precondition of FaultStorage::apply_rosbag_changes() the same way in every backend.
+/// @throws std::invalid_argument when @p changes inserts and removes the same link, directly or
+///         through remove_recordings of an inserted row's recording id
+void check_rosbag_change_set(const RosbagChangeSet & changes);
+
 /// Abstract interface for fault storage backends
 class FaultStorage {
  public:
@@ -396,6 +421,18 @@ class FaultStorage {
     }
   }
 
+  /// Apply a set of rosbag row changes in one transaction.
+  ///
+  /// - All or nothing: when anything throws, no row has changed.
+  /// - Applies no per-fault cap.
+  /// - Never unlinks a file or a directory. orphaned_paths names the paths the caller may unlink.
+  /// - Precondition: the set never inserts and removes the same link, directly or through
+  ///   remove_recordings of an inserted row's recording id. A violation throws
+  ///   std::invalid_argument before any row changes. With it, applying a set twice leaves the
+  ///   same rows and the second call returns no orphaned paths.
+  /// An empty recording id in remove_recordings matches nothing.
+  virtual RosbagApplyResult apply_rosbag_changes(const RosbagChangeSet & changes) = 0;
+
   /// The MOST RECENT recording of a fault, or nullopt.
   ///
   /// A fault can hold several recordings, so "the" recording is a choice: newest
@@ -530,6 +567,7 @@ class InMemoryFaultStorage : public FaultStorage {
   /// All-or-nothing, as the base class requires: the batch is built beside the live
   /// map and swapped in, so a throw leaves the store exactly as it was.
   void store_rosbag_files(const std::vector<RosbagFileInfo> & infos) override;
+  RosbagApplyResult apply_rosbag_changes(const RosbagChangeSet & changes) override;
   std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
   std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) const override;
   std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) const override;

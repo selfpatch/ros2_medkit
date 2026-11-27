@@ -1471,6 +1471,78 @@ void SqliteFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> & 
   }
 }
 
+RosbagApplyResult SqliteFaultStorage::apply_rosbag_changes(const RosbagChangeSet & changes) {
+  check_rosbag_change_set(changes);
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  RosbagApplyResult result;
+  exec_or_throw("BEGIN IMMEDIATE");
+  try {
+    std::set<std::string> candidates;
+    for (const auto & link : changes.remove) {
+      SqliteStatement del(db_, "DELETE FROM rosbag_files WHERE fault_code = ? AND file_path = ?");
+      del.bind_text(1, link.fault_code);
+      del.bind_text(2, link.file_path);
+      if (del.step() != SQLITE_DONE) {
+        throw std::runtime_error(std::string("Failed to remove rosbag link: ") + sqlite3_errmsg(db_));
+      }
+      if (sqlite3_changes(db_) > 0) {
+        candidates.insert(link.file_path);
+      }
+    }
+    for (const auto & recording_id : changes.remove_recordings) {
+      if (recording_id.empty()) {
+        continue;
+      }
+      {
+        SqliteStatement select(db_, "SELECT DISTINCT file_path FROM rosbag_files WHERE recording_id = ?");
+        select.bind_text(1, recording_id);
+        while (select.step() == SQLITE_ROW) {
+          candidates.insert(select.column_text(0));
+        }
+      }
+      SqliteStatement del(db_, "DELETE FROM rosbag_files WHERE recording_id = ?");
+      del.bind_text(1, recording_id);
+      if (del.step() != SQLITE_DONE) {
+        throw std::runtime_error(std::string("Failed to remove rosbag recording: ") + sqlite3_errmsg(db_));
+      }
+    }
+    for (const auto & in : changes.insert) {
+      const std::string recording_id = in.recording_id.empty() ? rosbag_recording_id(in.file_path) : in.recording_id;
+      SqliteStatement stmt(db_,
+                           "INSERT INTO rosbag_files "
+                           "(fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns) "
+                           "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                           "ON CONFLICT(fault_code, file_path) DO UPDATE SET "
+                           "recording_id = excluded.recording_id, format = excluded.format, "
+                           "duration_sec = excluded.duration_sec, size_bytes = excluded.size_bytes, "
+                           "created_at_ns = excluded.created_at_ns");
+      stmt.bind_text(1, in.fault_code);
+      stmt.bind_text(2, recording_id);
+      stmt.bind_text(3, in.file_path);
+      stmt.bind_text(4, in.format);
+      if (sqlite3_bind_double(stmt.get(), 5, in.duration_sec) != SQLITE_OK) {
+        throw std::runtime_error(std::string("Failed to bind duration_sec: ") + sqlite3_errmsg(db_));
+      }
+      stmt.bind_int64(6, static_cast<int64_t>(in.size_bytes));
+      stmt.bind_int64(7, in.created_at_ns);
+      if (stmt.step() != SQLITE_DONE) {
+        throw std::runtime_error(std::string("Failed to store rosbag file: ") + sqlite3_errmsg(db_));
+      }
+    }
+    for (const auto & path : candidates) {
+      if (!path_referenced(path)) {
+        result.orphaned_paths.push_back(path);
+      }
+    }
+    exec_or_throw("COMMIT");
+  } catch (...) {
+    sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+    throw;
+  }
+  return result;
+}
+
 std::vector<std::string> SqliteFaultStorage::store_rosbag_file_locked(const RosbagFileInfo & info) {
   RosbagFileInfo row = info;
   if (row.recording_id.empty()) {

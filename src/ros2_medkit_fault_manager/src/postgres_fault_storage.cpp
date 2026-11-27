@@ -1157,6 +1157,53 @@ void PgFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> & info
   }
 }
 
+RosbagApplyResult PgFaultStorage::apply_rosbag_changes(const RosbagChangeSet & changes) {
+  check_rosbag_change_set(changes);
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  RosbagApplyResult result;
+  result.orphaned_paths = run_in_transaction("apply_rosbag_changes", [&](pqxx::work & tx) {
+    std::set<std::string> candidates;
+    for (const auto & link : changes.remove) {
+      auto res = execute(tx, "DELETE FROM rosbag_files WHERE fault_code = $1 AND file_path = $2 RETURNING file_path",
+                         link.fault_code, link.file_path);
+      for (const auto & r : res) {
+        candidates.insert(r["file_path"].as<std::string>());
+      }
+    }
+    for (const auto & recording_id : changes.remove_recordings) {
+      if (recording_id.empty()) {
+        continue;
+      }
+      auto res = execute(tx, "DELETE FROM rosbag_files WHERE recording_id = $1 RETURNING file_path", recording_id);
+      for (const auto & r : res) {
+        candidates.insert(r["file_path"].as<std::string>());
+      }
+    }
+    for (const auto & in : changes.insert) {
+      const std::string recording_id = in.recording_id.empty() ? rosbag_recording_id(in.file_path) : in.recording_id;
+      execute(tx,
+              "INSERT INTO rosbag_files "
+              "(fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns) "
+              "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+              "ON CONFLICT (fault_code, file_path) DO UPDATE SET "
+              "recording_id = EXCLUDED.recording_id, format = EXCLUDED.format, "
+              "duration_sec = EXCLUDED.duration_sec, size_bytes = EXCLUDED.size_bytes, "
+              "created_at_ns = EXCLUDED.created_at_ns",
+              in.fault_code, recording_id, in.file_path, in.format, in.duration_sec,
+              static_cast<int64_t>(in.size_bytes), in.created_at_ns);
+    }
+    std::vector<std::string> orphaned;
+    for (const auto & path : candidates) {
+      if (execute(tx, "SELECT 1 FROM rosbag_files WHERE file_path = $1 LIMIT 1", path).empty()) {
+        orphaned.push_back(path);
+      }
+    }
+    return orphaned;
+  });
+  return result;
+}
+
 std::vector<std::string> PgFaultStorage::store_rosbag_file_locked(const RosbagFileInfo & info, pqxx::work & tx) {
   RosbagFileInfo row = info;
   if (row.recording_id.empty()) {

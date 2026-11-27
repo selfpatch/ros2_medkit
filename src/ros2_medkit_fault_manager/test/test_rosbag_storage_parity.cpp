@@ -27,17 +27,27 @@
 
 #include <gtest/gtest.h>
 
+#include <sqlite3.h>
+
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
+
+#ifdef POSTGRES_SUPPORT
+#include <pqxx/pqxx>
+#endif
 
 #include "rclcpp/rclcpp.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
+#ifdef POSTGRES_SUPPORT
+#include "ros2_medkit_fault_manager/postgres_fault_storage.hpp"
+#endif
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 #include "test_log_sink.hpp"
@@ -47,9 +57,15 @@ namespace {
 using ros2_medkit_fault_manager::FaultStorage;
 using ros2_medkit_fault_manager::InMemoryFaultStorage;
 using ros2_medkit_fault_manager::rosbag_recording_id;
+using ros2_medkit_fault_manager::RosbagApplyResult;
+using ros2_medkit_fault_manager::RosbagChangeSet;
 using ros2_medkit_fault_manager::RosbagFileInfo;
+using ros2_medkit_fault_manager::RosbagLink;
 using ros2_medkit_fault_manager::SnapshotData;
 using ros2_medkit_fault_manager::SqliteFaultStorage;
+#ifdef POSTGRES_SUPPORT
+using ros2_medkit_fault_manager::PgFaultStorage;
+#endif
 
 /// Backends differ only in how they are constructed, so the fixture reaches them
 /// through this rather than through #ifdef-style branching inside the test bodies.
@@ -61,6 +77,8 @@ struct BackendFactory<InMemoryFaultStorage> {
   static std::unique_ptr<FaultStorage> make(const std::filesystem::path & /*dir*/) {
     return std::make_unique<InMemoryFaultStorage>();
   }
+  static void cleanup(const std::filesystem::path & /*dir*/) {
+  }
 };
 
 template <>
@@ -68,7 +86,92 @@ struct BackendFactory<SqliteFaultStorage> {
   static std::unique_ptr<FaultStorage> make(const std::filesystem::path & dir) {
     return std::make_unique<SqliteFaultStorage>((dir / "parity.db").string(), test_log_sink());
   }
+  static void cleanup(const std::filesystem::path & /*dir*/) {
+  }
+
+  /// A trigger that raises on every INSERT or DELETE of a row of `fault_code`.
+  static void add_failing_trigger(const std::filesystem::path & dir, const std::string & event,
+                                  const std::string & fault_code) {
+    const std::string row = event == "INSERT" ? "NEW" : "OLD";
+    const std::string when = row + ".fault_code = '" + fault_code + "'";
+    exec(dir, "CREATE TRIGGER fail_" + event + " BEFORE " + event + " ON rosbag_files WHEN " + when +
+                  " BEGIN SELECT RAISE(ABORT, 'forced failure'); END");
+  }
+
+  static void exec(const std::filesystem::path & dir, const std::string & sql) {
+    sqlite3 * db = nullptr;
+    ASSERT_EQ(sqlite3_open((dir / "parity.db").c_str(), &db), SQLITE_OK);
+    char * err = nullptr;
+    const int rc = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &err);
+    const std::string message = err ? err : "";
+    sqlite3_free(err);
+    sqlite3_close(db);
+    ASSERT_EQ(rc, SQLITE_OK) << message;
+  }
 };
+
+#ifdef POSTGRES_SUPPORT
+/// One schema per test on the server named by ROS2_MEDKIT_TEST_PG_CONN, as test_postgres_storage does.
+template <>
+struct BackendFactory<PgFaultStorage> {
+  static std::string base_conn_info() {
+    if (const char * env = std::getenv("ROS2_MEDKIT_TEST_PG_CONN")) {
+      return env;
+    }
+    return "postgresql://user:password@localhost:5432/ros2_medkit_faults_database";
+  }
+
+  static std::string schema_of(const std::filesystem::path & dir) {
+    return "parity_" + dir.filename().string();
+  }
+
+  static std::string conn_info(const std::filesystem::path & dir) {
+    return base_conn_info() + "?options=-csearch_path%3D" + schema_of(dir);
+  }
+
+  static std::unique_ptr<FaultStorage> make(const std::filesystem::path & dir) {
+    try {
+      pqxx::connection conn(base_conn_info());
+      pqxx::work tx(conn);
+      tx.exec("CREATE SCHEMA " + tx.quote_name(schema_of(dir)));
+      tx.commit();
+    } catch (const std::exception & e) {
+      ADD_FAILURE() << "No PostgreSQL server reachable (set ROS2_MEDKIT_TEST_PG_CONN): " << e.what();
+      return nullptr;
+    }
+    return std::make_unique<PgFaultStorage>(conn_info(dir), test_log_sink());
+  }
+
+  static void cleanup(const std::filesystem::path & dir) {
+    try {
+      pqxx::connection conn(base_conn_info());
+      pqxx::work tx(conn);
+      tx.exec("DROP SCHEMA IF EXISTS " + tx.quote_name(schema_of(dir)) + " CASCADE");
+      tx.commit();
+    } catch (const std::exception &) {
+      // The server is gone; nothing is left to drop.
+    }
+  }
+
+  static void add_failing_trigger(const std::filesystem::path & dir, const std::string & event,
+                                  const std::string & fault_code) {
+    const std::string row = event == "INSERT" ? "NEW" : "OLD";
+    const std::string name = "fail_" + event;
+    const std::string when = row + ".fault_code = '" + fault_code + "'";
+    exec(dir, "CREATE FUNCTION " + name +
+                  "_fn() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'forced failure'; END $$ LANGUAGE plpgsql");
+    exec(dir, "CREATE TRIGGER " + name + " BEFORE " + event + " ON rosbag_files FOR EACH ROW WHEN (" + when +
+                  ") EXECUTE FUNCTION " + name + "_fn()");
+  }
+
+  static void exec(const std::filesystem::path & dir, const std::string & sql) {
+    pqxx::connection conn(conn_info(dir));
+    pqxx::work tx(conn);
+    tx.exec(sql);
+    tx.commit();
+  }
+};
+#endif
 
 template <typename Backend>
 class RosbagRetentionParityTest : public ::testing::Test {
@@ -79,10 +182,12 @@ class RosbagRetentionParityTest : public ::testing::Test {
     std::filesystem::remove_all(dir_);
     std::filesystem::create_directories(dir_);
     storage_ = BackendFactory<Backend>::make(dir_);
+    ASSERT_NE(storage_, nullptr);
   }
 
   void TearDown() override {
     storage_.reset();
+    BackendFactory<Backend>::cleanup(dir_);
     std::error_code ec;
     std::filesystem::remove_all(dir_, ec);
   }
@@ -112,7 +217,13 @@ class RosbagRetentionParityTest : public ::testing::Test {
   std::unique_ptr<FaultStorage> storage_;
 };
 
+#ifdef POSTGRES_SUPPORT
+using Backends = ::testing::Types<InMemoryFaultStorage, SqliteFaultStorage, PgFaultStorage>;
+using SqlBackends = ::testing::Types<SqliteFaultStorage, PgFaultStorage>;
+#else
 using Backends = ::testing::Types<InMemoryFaultStorage, SqliteFaultStorage>;
+using SqlBackends = ::testing::Types<SqliteFaultStorage>;
+#endif
 TYPED_TEST_SUITE(RosbagRetentionParityTest, Backends);
 
 TYPED_TEST(RosbagRetentionParityTest, RecordingIdIsTheBasenameOfEveryStoredRow) {
@@ -393,6 +504,225 @@ TYPED_TEST(RosbagRetentionParityTest, GetAllRosbagFilesListsEveryRecordingOldest
   EXPECT_EQ(rows[2].recording_id, "fault_ALL_1");
 }
 
+// apply_rosbag_changes: the one write primitive. Same body over every backend.
+
+TYPED_TEST(RosbagRetentionParityTest, ApplyTwiceIsIdempotent) {
+  const auto a = this->row("TWICE_A", "fault_TWICE_1", 1000);
+  const auto b = this->row("TWICE_B", "fault_TWICE_2", 2000);
+  this->storage_->set_max_rosbags_per_fault(0);
+  this->storage_->store_rosbag_file(a);
+  this->storage_->store_rosbag_file(b);
+
+  RosbagChangeSet set;
+  set.insert.push_back(this->row("TWICE_C", "fault_TWICE_3", 3000));
+  set.remove.push_back({"TWICE_A", a.file_path});
+
+  const auto first = this->storage_->apply_rosbag_changes(set);
+  EXPECT_EQ(first.orphaned_paths, std::vector<std::string>{a.file_path});
+  const auto after_first = this->storage_->get_all_rosbag_files();
+
+  const auto second = this->storage_->apply_rosbag_changes(set);
+  EXPECT_TRUE(second.orphaned_paths.empty());
+  const auto after_second = this->storage_->get_all_rosbag_files();
+
+  ASSERT_EQ(after_first.size(), 2u);
+  ASSERT_EQ(after_second.size(), after_first.size());
+  for (size_t i = 0; i < after_first.size(); ++i) {
+    EXPECT_EQ(after_second[i].fault_code, after_first[i].fault_code);
+    EXPECT_EQ(after_second[i].file_path, after_first[i].file_path);
+    EXPECT_EQ(after_second[i].size_bytes, after_first[i].size_bytes);
+    EXPECT_EQ(after_second[i].created_at_ns, after_first[i].created_at_ns);
+  }
+}
+
+TYPED_TEST(RosbagRetentionParityTest, OrphanedPathOnlyWhenLastLinkRemoved) {
+  this->storage_->set_max_rosbags_per_fault(0);
+  auto shared = this->row("ORPHAN_A", "fault_ORPHAN_1", 1000);
+  this->storage_->store_rosbag_file(shared);
+  shared.fault_code = "ORPHAN_B";
+  this->storage_->store_rosbag_file(shared);
+
+  RosbagChangeSet first;
+  first.remove.push_back({"ORPHAN_A", shared.file_path});
+  EXPECT_TRUE(this->storage_->apply_rosbag_changes(first).orphaned_paths.empty())
+      << "ORPHAN_B still references the bag";
+
+  RosbagChangeSet unknown;
+  unknown.remove.push_back({"ORPHAN_NONE", shared.file_path});
+  unknown.remove.push_back({"ORPHAN_B", "/no/such/bag"});
+  EXPECT_TRUE(this->storage_->apply_rosbag_changes(unknown).orphaned_paths.empty())
+      << "a link that was not there frees nothing";
+
+  RosbagChangeSet last;
+  last.remove.push_back({"ORPHAN_B", shared.file_path});
+  last.remove.push_back({"ORPHAN_B", shared.file_path});
+  EXPECT_EQ(this->storage_->apply_rosbag_changes(last).orphaned_paths, std::vector<std::string>{shared.file_path})
+      << "listed once, however often the set names the link";
+}
+
+TYPED_TEST(RosbagRetentionParityTest, ASetThatMovesTheLastLinkToAnotherFaultOrphansNothing) {
+  this->storage_->set_max_rosbags_per_fault(0);
+  const auto old_link = this->row("MOVE_A", "fault_MOVE_1", 1000);
+  this->storage_->store_rosbag_file(old_link);
+
+  RosbagChangeSet set;
+  set.remove.push_back({"MOVE_A", old_link.file_path});
+  auto moved = old_link;
+  moved.fault_code = "MOVE_B";
+  set.insert.push_back(moved);
+
+  EXPECT_TRUE(this->storage_->apply_rosbag_changes(set).orphaned_paths.empty());
+  EXPECT_EQ(this->storage_->get_rosbag_files("MOVE_B").size(), 1u);
+  EXPECT_TRUE(this->storage_->get_rosbag_files("MOVE_A").empty());
+}
+
+TYPED_TEST(RosbagRetentionParityTest, UpsertOnLinkKeepsOneRow) {
+  this->storage_->set_max_rosbags_per_fault(0);
+  auto info = this->row("APPLY_UPSERT", "fault_APPLY_UPSERT_1", 1000);
+  const auto sibling = this->row("APPLY_UPSERT", "fault_APPLY_UPSERT_2", 1000);
+
+  RosbagChangeSet first;
+  first.insert.push_back(info);
+  first.insert.push_back(sibling);
+  this->storage_->apply_rosbag_changes(first);
+
+  info.size_bytes = 4096;
+  RosbagChangeSet refresh;
+  refresh.insert.push_back(info);
+  this->storage_->apply_rosbag_changes(refresh);
+
+  const auto rows = this->storage_->get_rosbag_files("APPLY_UPSERT");
+  ASSERT_EQ(rows.size(), 2u);
+  EXPECT_EQ(rows[0].recording_id, "fault_APPLY_UPSERT_2") << "a refresh keeps the row's place in a tie group";
+  EXPECT_EQ(rows[1].recording_id, "fault_APPLY_UPSERT_1");
+  EXPECT_EQ(rows[1].size_bytes, 4096u);
+}
+
+TYPED_TEST(RosbagRetentionParityTest, RemoveRecordingsRemovesEveryLink) {
+  this->storage_->set_max_rosbags_per_fault(0);
+  auto burst = this->row("RECS_A", "fault_RECS_1", 1000);
+  this->storage_->store_rosbag_file(burst);
+  burst.fault_code = "RECS_B";
+  this->storage_->store_rosbag_file(burst);
+  const auto other = this->row("RECS_A", "fault_RECS_2", 2000);
+  this->storage_->store_rosbag_file(other);
+
+  RosbagChangeSet set;
+  set.remove_recordings = {"fault_RECS_1", "fault_RECS_1", "fault_RECS_UNKNOWN", ""};
+  const auto result = this->storage_->apply_rosbag_changes(set);
+
+  EXPECT_EQ(result.orphaned_paths, std::vector<std::string>{burst.file_path});
+  EXPECT_TRUE(this->storage_->get_rosbag_files_by_recording("fault_RECS_1").empty());
+  const auto survivors = this->storage_->get_rosbag_files("RECS_A");
+  ASSERT_EQ(survivors.size(), 1u);
+  EXPECT_EQ(survivors[0].recording_id, "fault_RECS_2");
+}
+
+TYPED_TEST(RosbagRetentionParityTest, ApplyNeverUnlinks) {
+  this->storage_->set_max_rosbags_per_fault(0);
+  const auto a = this->row("KEEP_A", "fault_KEEP_1", 1000);
+  const auto b = this->row("KEEP_B", "fault_KEEP_2", 2000);
+  this->storage_->store_rosbag_file(a);
+  this->storage_->store_rosbag_file(b);
+
+  RosbagChangeSet set;
+  set.remove.push_back({"KEEP_A", a.file_path});
+  set.remove_recordings.push_back("fault_KEEP_2");
+  const auto result = this->storage_->apply_rosbag_changes(set);
+
+  EXPECT_EQ(result.orphaned_paths.size(), 2u);
+  EXPECT_TRUE(std::filesystem::exists(a.file_path)) << "unlinking is the caller's decision";
+  EXPECT_TRUE(std::filesystem::exists(b.file_path));
+  EXPECT_TRUE(this->storage_->get_all_rosbag_files().empty());
+}
+
+TYPED_TEST(RosbagRetentionParityTest, ApplyAppliesNoCap) {
+  this->storage_->set_max_rosbags_per_fault(1);
+  RosbagChangeSet set;
+  for (int i = 1; i <= 3; ++i) {
+    set.insert.push_back(this->row("NOCAP", "fault_NOCAP_" + std::to_string(i), i * 1000));
+  }
+  const auto result = this->storage_->apply_rosbag_changes(set);
+
+  EXPECT_TRUE(result.orphaned_paths.empty());
+  EXPECT_EQ(this->storage_->get_rosbag_files("NOCAP").size(), 3u);
+}
+
+TYPED_TEST(RosbagRetentionParityTest, RejectsInsertAndRemoveOfTheSameLink) {
+  this->storage_->set_max_rosbags_per_fault(0);
+  const auto kept = this->row("REJECT_A", "fault_REJECT_1", 1000);
+  this->storage_->store_rosbag_file(kept);
+  const auto before = this->storage_->get_all_rosbag_files();
+
+  auto fresh = this->row("REJECT_B", "fault_REJECT_2", 2000);
+
+  RosbagChangeSet direct;
+  direct.remove.push_back({"REJECT_A", kept.file_path});  // would apply on its own
+  direct.insert.push_back(fresh);
+  direct.remove.push_back({"REJECT_B", fresh.file_path});
+  EXPECT_THROW(this->storage_->apply_rosbag_changes(direct), std::invalid_argument);
+
+  RosbagChangeSet by_recording;
+  by_recording.remove.push_back({"REJECT_A", kept.file_path});
+  by_recording.insert.push_back(fresh);
+  by_recording.remove_recordings.push_back("fault_REJECT_2");
+  EXPECT_THROW(this->storage_->apply_rosbag_changes(by_recording), std::invalid_argument);
+
+  fresh.recording_id.clear();  // derived from the path, as the store does
+  RosbagChangeSet derived;
+  derived.insert.push_back(fresh);
+  derived.remove_recordings.push_back("fault_REJECT_2");
+  EXPECT_THROW(this->storage_->apply_rosbag_changes(derived), std::invalid_argument);
+
+  const auto after = this->storage_->get_all_rosbag_files();
+  ASSERT_EQ(after.size(), before.size());
+  EXPECT_EQ(after[0].file_path, kept.file_path);
+}
+
+/// Atomicity needs a failure in the middle of one transaction, which only the SQL backends can be made to produce.
+template <typename Backend>
+class RosbagApplyAtomicityTest : public RosbagRetentionParityTest<Backend> {};
+TYPED_TEST_SUITE(RosbagApplyAtomicityTest, SqlBackends);
+
+TYPED_TEST(RosbagApplyAtomicityTest, ApplyIsAtomicOnInsertFailure) {
+  this->storage_->set_max_rosbags_per_fault(0);
+  const auto a = this->row("ATOM_A", "fault_ATOM_1", 1000);
+  this->storage_->store_rosbag_file(a);
+  BackendFactory<TypeParam>::add_failing_trigger(this->dir_, "INSERT", "ATOM_FAIL");
+
+  RosbagChangeSet set;
+  set.remove.push_back({"ATOM_A", a.file_path});
+  set.insert.push_back(this->row("ATOM_OK", "fault_ATOM_2", 2000));
+  set.insert.push_back(this->row("ATOM_FAIL", "fault_ATOM_3", 3000));
+  EXPECT_THROW(this->storage_->apply_rosbag_changes(set), std::exception);
+
+  const auto rows = this->storage_->get_all_rosbag_files();
+  ASSERT_EQ(rows.size(), 1u) << "the removal ran before the failing insert and must have been undone";
+  EXPECT_EQ(rows[0].fault_code, "ATOM_A");
+  EXPECT_TRUE(this->storage_->get_rosbag_files("ATOM_OK").empty());
+}
+
+TYPED_TEST(RosbagApplyAtomicityTest, ApplyIsAtomicOnDeleteFailure) {
+  this->storage_->set_max_rosbags_per_fault(0);
+  const auto a = this->row("ATOM_A", "fault_ATOM_1", 1000);
+  const auto failing = this->row("ATOM_FAIL", "fault_ATOM_2", 2000);
+  this->storage_->store_rosbag_file(a);
+  this->storage_->store_rosbag_file(failing);
+  BackendFactory<TypeParam>::add_failing_trigger(this->dir_, "DELETE", "ATOM_FAIL");
+
+  RosbagChangeSet set;
+  set.remove.push_back({"ATOM_A", a.file_path});
+  set.remove.push_back({"ATOM_FAIL", failing.file_path});
+  set.insert.push_back(this->row("ATOM_OK", "fault_ATOM_3", 3000));
+  EXPECT_THROW(this->storage_->apply_rosbag_changes(set), std::exception);
+
+  const auto rows = this->storage_->get_all_rosbag_files();
+  ASSERT_EQ(rows.size(), 2u) << "the first removal ran before the failing one and must have been undone";
+  EXPECT_EQ(rows[0].fault_code, "ATOM_A");
+  EXPECT_EQ(rows[1].fault_code, "ATOM_FAIL");
+  EXPECT_TRUE(this->storage_->get_rosbag_files("ATOM_OK").empty());
+}
+
 /// Snapshot retention parity. Same two backends, same reason.
 template <typename Backend>
 class SnapshotRetentionParityTest : public ::testing::Test {
@@ -437,7 +767,8 @@ class SnapshotRetentionParityTest : public ::testing::Test {
   std::unique_ptr<FaultStorage> storage_;
 };
 
-TYPED_TEST_SUITE(SnapshotRetentionParityTest, Backends);
+using SnapshotBackends = ::testing::Types<InMemoryFaultStorage, SqliteFaultStorage>;
+TYPED_TEST_SUITE(SnapshotRetentionParityTest, SnapshotBackends);
 
 TYPED_TEST(SnapshotRetentionParityTest, ACaptureLargerThanTheCapIsKeptWholeRatherThanTorn) {
   // The in-memory trim used to evict the newest set too, leaving the fault with no
