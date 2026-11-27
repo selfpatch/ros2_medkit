@@ -535,3 +535,21 @@ published, the writer is being created - directory creation plus a storage-backe
 Messages arriving in that interval take the buffering path rather than the new bag, so a
 post-fault-only recording can miss its first few milliseconds. They are not lost; they
 stay in the ring buffer and serve the next fault as pre-history.
+
+Rosbag storage primitive
+""""""""""""""""""""""""
+
+``FaultStorage::apply_rosbag_changes(RosbagChangeSet)`` changes the rosbag rows of every backend
+in one transaction: ``insert`` upserts on ``(fault_code, file_path)``, ``remove`` drops links, and
+``remove_recordings`` drops every link of a recording id. It applies no per-fault cap and never
+unlinks a file. ``RosbagApplyResult::orphaned_paths`` lists each path whose last link the call
+removed, once, so the caller decides what happens to the directory. A throw leaves every row as
+it was: ``BEGIN IMMEDIATE`` in SQLite, one ``run_in_transaction`` in PostgreSQL, a copy swapped in
+under the mutex in memory.
+
+A set must not insert and remove the same link, directly or through ``remove_recordings`` of an
+inserted row's recording id. The call throws ``std::invalid_argument`` before it changes a row.
+With that rule, applying a set twice leaves the same rows and the second call returns no
+orphaned paths.
+
+Production code does not call it yet. The six existing rosbag mutators keep serving the node.

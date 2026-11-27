@@ -85,6 +85,7 @@ class SqliteFaultStorage : public FaultStorage {
 
   void store_rosbag_file(const RosbagFileInfo & info) override;
   void store_rosbag_files(const std::vector<RosbagFileInfo> & infos) override;
+  RosbagApplyResult apply_rosbag_changes(const RosbagChangeSet & changes) override;
   std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
   std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) const override;
   std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) const override;

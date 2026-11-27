@@ -18,6 +18,7 @@
 #include <cmath>
 #include <filesystem>
 #include <set>
+#include <stdexcept>
 #include <tuple>
 
 namespace ros2_medkit_fault_manager {
@@ -543,6 +544,26 @@ std::vector<NearMissRecord> InMemoryFaultStorage::get_near_misses(const std::str
   return it->second;
 }
 
+void check_rosbag_change_set(const RosbagChangeSet & changes) {
+  std::set<std::pair<std::string, std::string>> inserted_links;
+  std::set<std::string> inserted_recordings;
+  for (const auto & in : changes.insert) {
+    inserted_links.emplace(in.fault_code, in.file_path);
+    inserted_recordings.insert(in.recording_id.empty() ? rosbag_recording_id(in.file_path) : in.recording_id);
+  }
+  for (const auto & link : changes.remove) {
+    if (inserted_links.count({link.fault_code, link.file_path}) != 0) {
+      throw std::invalid_argument("rosbag change set inserts and removes the link (" + link.fault_code + ", " +
+                                  link.file_path + ")");
+    }
+  }
+  for (const auto & recording_id : changes.remove_recordings) {
+    if (inserted_recordings.count(recording_id) != 0) {
+      throw std::invalid_argument("rosbag change set inserts into and removes the recording " + recording_id);
+    }
+  }
+}
+
 void InMemoryFaultStorage::set_max_rosbags_per_fault(size_t max_count) {
   std::lock_guard<std::mutex> lock(mutex_);
   max_rosbags_per_fault_ = max_count;
@@ -634,6 +655,66 @@ void InMemoryFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> 
     std::filesystem::remove_all(path, ec);
     // Ignore errors - file may already be deleted
   }
+}
+
+RosbagApplyResult InMemoryFaultStorage::apply_rosbag_changes(const RosbagChangeSet & changes) {
+  check_rosbag_change_set(changes);
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  // Built beside the live vector and swapped in, so a throw leaves the rows as they were.
+  auto updated = rosbag_files_;
+  uint64_t next_seq = rosbag_seq_;
+  std::set<std::string> candidates;
+
+  std::set<std::pair<std::string, std::string>> doomed_links;
+  for (const auto & link : changes.remove) {
+    doomed_links.emplace(link.fault_code, link.file_path);
+  }
+  std::set<std::string> doomed_recordings;
+  for (const auto & id : changes.remove_recordings) {
+    if (!id.empty()) {
+      doomed_recordings.insert(id);
+    }
+  }
+  const auto is_doomed = [&](const RosbagRow & r) {
+    const bool by_link = doomed_links.count({r.info.fault_code, r.info.file_path}) != 0;
+    const bool by_recording = doomed_recordings.count(r.info.recording_id) != 0;
+    if (by_link || by_recording) {
+      candidates.insert(r.info.file_path);
+      return true;
+    }
+    return false;
+  };
+  updated.erase(std::remove_if(updated.begin(), updated.end(), is_doomed), updated.end());
+
+  for (const auto & in : changes.insert) {
+    RosbagFileInfo row = in;
+    if (row.recording_id.empty()) {
+      row.recording_id = rosbag_recording_id(row.file_path);
+    }
+    auto it = std::find_if(updated.begin(), updated.end(), [&row](const RosbagRow & r) {
+      return r.info.fault_code == row.fault_code && r.info.file_path == row.file_path;
+    });
+    if (it != updated.end()) {
+      it->info = row;
+    } else {
+      updated.push_back(RosbagRow{row, ++next_seq});
+    }
+  }
+
+  RosbagApplyResult result;
+  for (const auto & path : candidates) {
+    const bool referenced = std::any_of(updated.begin(), updated.end(), [&path](const RosbagRow & r) {
+      return r.info.file_path == path;
+    });
+    if (!referenced) {
+      result.orphaned_paths.push_back(path);
+    }
+  }
+
+  rosbag_files_.swap(updated);
+  rosbag_seq_ = next_seq;
+  return result;
 }
 
 std::optional<RosbagFileInfo> InMemoryFaultStorage::get_rosbag_file(const std::string & fault_code) const {

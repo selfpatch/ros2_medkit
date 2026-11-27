@@ -446,9 +446,9 @@ jobs:
           for pkg_dir in build/ros2_medkit_cmake/ build/ros2_medkit_*/; do
             pkg=$(basename "$pkg_dir")
             if [[ " ${pkgs[*]} " == *" $pkg "* ]]; then continue; fi
-            # graph_watchdog is tested in sanitizer-graph-watchdog, in a job
-            # of its own.
-            if [ "$pkg" = "ros2_medkit_graph_watchdog" ]; then continue; fi
+            # graph_watchdog and fault_manager are tested in their own jobs
+            # (sanitizer-graph-watchdog, sanitizer-fault-manager).
+            if [ "$pkg" = "ros2_medkit_graph_watchdog" ] || [ "$pkg" = "ros2_medkit_fault_manager" ]; then continue; fi
             while [ "$(jobs -rp | wc -l)" -ge "$max_pkgs" ]; do wait -n || true; done
             (cd "$pkg_dir" && run_shard) \
               > "$log_dir/$pkg.log" 2>&1 &
@@ -473,7 +473,7 @@ jobs:
         if: always()
         run: |
           for pkg_dir in build/ros2_medkit_*/; do
-            if [ "$(basename "$pkg_dir")" = "ros2_medkit_graph_watchdog" ]; then continue; fi
+            case "$(basename "$pkg_dir")" in ros2_medkit_graph_watchdog | ros2_medkit_fault_manager) continue ;; esac
             colcon test-result --test-result-base "$pkg_dir" --verbose 2>/dev/null || true
           done
 
@@ -636,9 +636,9 @@ jobs:
           for pkg_dir in build/ros2_medkit_cmake/ build/ros2_medkit_*/; do
             pkg=$(basename "$pkg_dir")
             if [[ " ${pkgs[*]} " == *" $pkg "* ]]; then continue; fi
-            # graph_watchdog is tested in sanitizer-graph-watchdog, in a job
-            # of its own.
-            if [ "$pkg" = "ros2_medkit_graph_watchdog" ]; then continue; fi
+            # graph_watchdog and fault_manager are tested in their own jobs
+            # (sanitizer-graph-watchdog, sanitizer-fault-manager).
+            if [ "$pkg" = "ros2_medkit_graph_watchdog" ] || [ "$pkg" = "ros2_medkit_fault_manager" ]; then continue; fi
             while [ "$(jobs -rp | wc -l)" -ge "$max_pkgs" ]; do wait -n || true; done
             (cd "$pkg_dir" && run_shard) \
               > "$log_dir/$pkg.log" 2>&1 &
@@ -663,7 +663,7 @@ jobs:
         if: always()
         run: |
           for pkg_dir in build/ros2_medkit_*/; do
-            if [ "$(basename "$pkg_dir")" = "ros2_medkit_graph_watchdog" ]; then continue; fi
+            case "$(basename "$pkg_dir")" in ros2_medkit_graph_watchdog | ros2_medkit_fault_manager) continue ;; esac
             colcon test-result --test-result-base "$pkg_dir" --verbose 2>/dev/null || true
           done
 
@@ -841,13 +841,156 @@ jobs:
           colcon test-result --test-result-base build/ros2_medkit_graph_watchdog \
             --verbose 2>/dev/null || true
 
+  # The fault manager's own tests, including the launch tests that start the
+  # node as a process, so a sanitizer report inside it fails the test.
+  sanitizer-fault-manager:
+    name: Sanitizer ${{ matrix.name }} (fault_manager)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [asan, tsan]
+        include:
+          - sanitizer: asan
+            name: ASan + UBSan
+            cmake_sanitizer: asan,ubsan
+            # Both sizes are the ones the matching workspace job argued for.
+            # This job restores that job's cache and must not evict what it
+            # restored, so it cannot be smaller here.
+            ccache_size: 2G
+          - sanitizer: tsan
+            name: TSan
+            cmake_sanitizer: tsan
+            ccache_size: 1.5G
+    container:
+      image: ros:jazzy-ros-base
+      # See sanitizer-asan: the instrumented build tree does not fit the
+      # container overlay on small GitHub runners, so build on /mnt.
+      volumes:
+        - "/mnt:/mnt"
+      options: ${{ matrix.sanitizer == 'tsan' && '--privileged' || '' }}
+    # Covers a cold-cache sanitizer build plus the 45-minute test step.
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # TSan needs at most 28 bits of mmap ASLR entropy. Newer runner kernels use more.
+      - name: Lower mmap ASLR entropy
+        if: matrix.sanitizer == 'tsan'
+        run: |
+          sysctl -w vm.mmap_rnd_bits=28
+          cat /proc/sys/vm/mmap_rnd_bits
+          test "$(cat /proc/sys/vm/mmap_rnd_bits)" = 28
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install ccache
+        run: |
+          apt-get update
+          apt-get install -y ccache
+
+      - name: Restore ccache
+        # Restore, never save. This job compiles a subset of the sources
+        # sanitizer-${{ matrix.sanitizer }} compiles, with the same flags, so
+        # that job's cache is a superset of what this one needs and serves its
+        # misses. A second copy would buy nothing and would spend the
+        # repository's 10 GB Actions cache quota twice for one set of objects.
+        uses: actions/cache/restore@v4
+        with:
+          path: /root/.cache/ccache
+          key: ccache-jazzy-${{ matrix.sanitizer }}-${{ github.sha }}
+          restore-keys: |
+            ccache-jazzy-${{ matrix.sanitizer }}-
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y ros-jazzy-test-msgs
+          source /opt/ros/jazzy/setup.bash
+          for attempt in 1 2 3; do rosdep update && break; [ "$attempt" = 3 ] && exit 1; echo "rosdep update attempt $attempt failed, retrying" >&2; sleep 5; done
+          rosdep install --from-paths src --ignore-src -y
+
+      - name: Redirect heavy build output to /mnt
+        run: |
+          # Build on /mnt, as the workspace sanitizer jobs do. The path must match the
+          # sanitizer job whose ccache this job restores, so ccache can hit.
+          mkdir -p /mnt/${{ matrix.sanitizer }}/build /mnt/${{ matrix.sanitizer }}/tmp
+          ln -sfn /mnt/${{ matrix.sanitizer }}/build build
+          df -h / /mnt
+
+      - name: Build with ${{ matrix.name }}
+        env:
+          CCACHE_DIR: /root/.cache/ccache
+          CCACHE_MAXSIZE: ${{ matrix.ccache_size }}
+          CCACHE_SLOPPINESS: pch_defines,time_macros
+          TMPDIR: /mnt/${{ matrix.sanitizer }}/tmp
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          ccache -z
+          # --packages-up-to builds the fault manager and the packages it
+          # depends on, not the whole workspace.
+          colcon build --symlink-install \
+            --packages-up-to ros2_medkit_fault_manager \
+            --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DSANITIZER=${{ matrix.cmake_sanitizer }} \
+            --event-handlers console_direct+
+          ccache -s
+          ./scripts/ccache_report.sh jazzy-${{ matrix.sanitizer }}-fault-manager
+          df -h / /mnt
+
+      - name: Extend test timeouts for sanitizer overhead
+        run: |
+          # The same generic x3 rewrite the workspace sanitizer jobs apply - see
+          # the comment in sanitizer-asan for why it is not a list of literals.
+          find build/ -name "CTestTestfile.cmake" -exec \
+            perl -pi -e 's/\bTIMEOUT "(\d+)"/sprintf(q{TIMEOUT "%d"}, $1 * 3)/ge' {} +
+          find build/ -name "CTestTestfile.cmake" -exec cat {} + \
+            | grep -oE 'TIMEOUT "[0-9]+"' | sort -t'"' -k2 -n | uniq -c
+
+      - name: Run fault_manager tests with ${{ matrix.name }}
+        timeout-minutes: 45
+        env:
+          # Same factor as the ctest TIMEOUT rewrite above, for the wall-clock
+          # budgets tests assert internally - ctest's clock cannot reach those.
+          MEDKIT_TEST_TIME_SCALE: 3
+          # Lets tests size instrumented-only-expensive resources down.
+          MEDKIT_TEST_SANITIZED: 1
+          # Tests the package's ctest runs at once. Sanitizer builds use more
+          # CPU and memory per test than Release ones.
+          CTEST_PARALLEL_LEVEL: 2
+        run: |
+          if [ "${{ matrix.sanitizer }}" = "tsan" ]; then
+            TSAN_OPTIONS="halt_on_error=0:history_size=4:suppressions=$(pwd)/tsan_suppressions.txt"
+            export TSAN_OPTIONS
+          else
+            # detect_leaks=0: FastDDS allocator leaks on shutdown (not our code)
+            # new_delete_type_mismatch=0: ROS 2 DDS scalar/array new/delete mismatch
+            export ASAN_OPTIONS=halt_on_error=1:detect_leaks=0:new_delete_type_mismatch=0
+            export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+          fi
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          cd build/ros2_medkit_fault_manager
+          ctest -LE "linter" --no-tests=error --output-on-failure
+
+      - name: Show test results
+        if: always()
+        run: |
+          colcon test-result --test-result-base build/ros2_medkit_fault_manager \
+            --verbose 2>/dev/null || true
+
   # The one check branch rules require from this workflow. A matrix job skipped by
   # its `if` does not report its per-entry checks, so the rules cannot require them.
   # always(), not !cancelled(): a skipped gate would count as passed. clang-tidy
   # stays out: it is advisory.
   quality-ok:
     if: always()
-    needs: [changes, format-lint, sanitizer-asan, sanitizer-tsan, sanitizer-graph-watchdog]
+    needs: [changes, format-lint, sanitizer-asan, sanitizer-tsan, sanitizer-graph-watchdog, sanitizer-fault-manager]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
