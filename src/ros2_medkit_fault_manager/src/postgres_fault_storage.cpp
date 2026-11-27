@@ -1106,57 +1106,6 @@ std::vector<NearMissRecord> PgFaultStorage::get_near_misses(const std::string & 
   });
 }
 
-void PgFaultStorage::set_max_rosbags_per_fault(size_t max_count) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  max_rosbags_per_fault_ = max_count;
-}
-
-void PgFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
-  // Routed through the batch path deliberately: with a per-fault cap a single
-  // store is insert + trim, i.e. several statements that must share one
-  // transaction and one post-commit unlink pass.
-  store_rosbag_files({info});
-}
-
-void PgFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> & infos) {
-  if (infos.empty()) {
-    return;
-  }
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  // One transaction for the whole burst: a crash mid-store must not leave some
-  // faults of the shared recording without their lookup row. Evicted bags are
-  // unlinked only after COMMIT - a ROLLBACK (PostgreSQL transaction abort) resurrects the rows, which must keep
-  // pointing at bags that still exist.
-  const std::vector<std::string> evicted = run_in_transaction("store_rosbag_files", [&](pqxx::work & tx) {
-    std::vector<std::string> paths;
-    for (const auto & info : infos) {
-      auto evicted_paths = store_rosbag_file_locked(info, tx);
-      paths.insert(paths.end(), std::make_move_iterator(evicted_paths.begin()),
-                   std::make_move_iterator(evicted_paths.end()));
-    }
-    return paths;
-  });
-
-  // Referencing is re-checked on the committed state, not on the state each
-  // eviction saw: two faults of one burst can link the same bag, and a row-by-row
-  // check inside the loop would find it still held by a sibling that a later
-  // iteration then evicts, leaking the directory.
-  const std::set<std::string> unique_paths(evicted.begin(), evicted.end());
-  for (const auto & path : unique_paths) {
-    try {
-      if (path_referenced(path)) {
-        continue;
-      }
-    } catch (const std::exception & e) {
-      continue;  // The rows are already committed, so keep the directory.
-    }
-
-    std::error_code ec;
-    std::filesystem::remove_all(path, ec);
-  }
-}
-
 RosbagApplyResult PgFaultStorage::apply_rosbag_changes(const RosbagChangeSet & changes) {
   check_rosbag_change_set(changes);
   std::lock_guard<std::mutex> lock(mutex_);
@@ -1204,50 +1153,6 @@ RosbagApplyResult PgFaultStorage::apply_rosbag_changes(const RosbagChangeSet & c
   return result;
 }
 
-std::vector<std::string> PgFaultStorage::store_rosbag_file_locked(const RosbagFileInfo & info, pqxx::work & tx) {
-  RosbagFileInfo row = info;
-  if (row.recording_id.empty()) {
-    row.recording_id = rosbag_recording_id(row.file_path);
-  }
-
-  // Upserts on idx_rosbag_files_fault_path, i.e. on the (fault, recording) link.
-  // Re-storing the SAME link refreshes it; a link to a DIFFERENT recording is a new
-  // row now, which is the feature. Nothing is unlinked here - byte lifetime is the
-  // cap's business below, and the caller's, after the commit.
-  //
-  // ON CONFLICT DO UPDATE keeps the row's identity, so a refresh does not move the
-  // link to the end of the id order. Every read below breaks created_at_ns ties by
-  // id, and the in-memory backend keeps its sequence number across a refresh, so a
-  // delete-and-reinsert would put the two backends in a different order for a
-  // re-stored row inside a tie group.
-  execute(tx,
-          "INSERT INTO rosbag_files "
-          "(fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns) "
-          "VALUES ($1, $2, $3, $4, $5, $6, $7) "
-          "ON CONFLICT (fault_code, file_path) DO UPDATE SET "
-          "recording_id = EXCLUDED.recording_id, format = EXCLUDED.format, "
-          "duration_sec = EXCLUDED.duration_sec, size_bytes = EXCLUDED.size_bytes, "
-          "created_at_ns = EXCLUDED.created_at_ns",
-          row.fault_code, row.recording_id, row.file_path, row.format, row.duration_sec,
-          static_cast<int64_t>(row.size_bytes), row.created_at_ns);
-
-  if (max_rosbags_per_fault_ == 0) {
-    return {};  // unlimited per fault; only the global byte quota bounds this
-  }
-
-  auto res =
-      execute(tx,
-              "DELETE FROM rosbag_files WHERE fault_code = $1 AND id NOT IN "
-              "(SELECT id FROM rosbag_files WHERE fault_code = $1 ORDER BY created_at_ns DESC, id DESC LIMIT $2) "
-              "RETURNING file_path",
-              row.fault_code, static_cast<int64_t>(max_rosbags_per_fault_));
-
-  std::set<std::string> evicted;
-  for (const auto & r : res) {
-    evicted.insert(r["file_path"].as<std::string>());
-  }
-  return {evicted.begin(), evicted.end()};
-}
 namespace {
 
 /// Shared projection so every rosbag read decodes the same column order.
@@ -1302,42 +1207,6 @@ std::vector<RosbagFileInfo> PgFaultStorage::get_rosbag_files_by_recording(const 
   });
 }
 
-size_t PgFaultStorage::delete_rosbag_recording(const std::string & recording_id) {
-  // An empty id is not a recording that happens to be unnamed, it is a row whose
-  // backfill did not finish. Matching on it would take every such row of every
-  // fault with one DELETE, and evict_bags_over_quota calls this with whatever the
-  // row held.
-  if (recording_id.empty()) {
-    return 0;
-  }
-
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  auto outcome =
-      run_in_transaction("delete_rosbag_recording", [&](pqxx::work & tx) -> std::pair<std::set<std::string>, size_t> {
-        // DELETE ... RETURNING reads and deletes the rows in one statement.
-        auto res = execute(tx, "DELETE FROM rosbag_files WHERE recording_id = $1 RETURNING file_path", recording_id);
-        std::set<std::string> paths;
-        for (const auto & r : res) {
-          paths.insert(r["file_path"].as<std::string>());
-        }
-        return {paths, static_cast<size_t>(res.affected_rows())};
-      });
-
-  for (const auto & path : outcome.first) {
-    try {
-      if (path_referenced(path)) {
-        continue;  // another recording writes into the same directory - leave it
-      }
-    } catch (const std::exception & e) {
-      continue;  // The rows are already committed, so keep the directory.
-    }
-    std::error_code ec;
-    std::filesystem::remove_all(path, ec);
-  }
-  return outcome.second;
-}
-
 std::optional<RosbagFileInfo> PgFaultStorage::get_rosbag_file(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
@@ -1355,92 +1224,6 @@ std::optional<RosbagFileInfo> PgFaultStorage::get_rosbag_file(const std::string 
       return std::nullopt;
     }
     return read_rosbag_row(res[0]);
-  });
-}
-
-bool PgFaultStorage::delete_rosbag_file(const std::string & fault_code) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  auto outcome =
-      run_in_transaction("delete_rosbag_file", [&](pqxx::work & tx) -> std::pair<std::set<std::string>, bool> {
-        // Row first, file after. Deleting the bag before its row would, on a failed
-        // DELETE, leave a surviving row pointing at a directory that is gone -
-        // unreadable for good, and still charged against the storage quota, which sums
-        // rows. This way the worst case is an orphaned directory instead.
-        auto res = execute(tx, "DELETE FROM rosbag_files WHERE fault_code = $1 RETURNING file_path", fault_code);
-        // Every path, not the first one: a fault holds as many recordings as its cap
-        // allows, and reading one row would unlink one bag and leak the rest - rows gone,
-        // directories left behind, uncounted by a quota that sums rows.
-        std::set<std::string> paths;
-        for (const auto & r : res) {
-          paths.insert(r["file_path"].as<std::string>());
-        }
-        return {paths, res.affected_rows() > 0};
-      });
-
-  for (const auto & path : outcome.first) {
-    try {
-      if (path_referenced(path)) {
-        continue;
-      }
-    } catch (const std::exception & e) {
-      continue;  // The rows are already committed, so keep the directory.
-    }
-    std::error_code ec;
-    std::filesystem::remove_all(path, ec);
-    // Ignore errors - file may already be deleted
-  }
-
-  return outcome.second;
-}
-
-size_t PgFaultStorage::delete_rosbag_files(const std::vector<std::string> & fault_codes) {
-  if (fault_codes.empty()) {
-    return 0;
-  }
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  // Rows go first, in one transaction, and the files only after the commit: a
-  // crash mid-delete leaves at worst an orphaned directory, never a row whose
-  // bag is already gone.
-  auto outcome =
-      run_in_transaction("delete_rosbag_files", [&](pqxx::work & tx) -> std::pair<std::set<std::string>, size_t> {
-        std::set<std::string> paths;
-        size_t deleted = 0;
-        for (const auto & code : fault_codes) {
-          // RETURNING gives every path this code held, not just the first: one fault
-          // code can name several recordings now, and the sweep must be able to
-          // reclaim every one of their bags.
-          auto res = execute(tx, "DELETE FROM rosbag_files WHERE fault_code = $1 RETURNING file_path", code);
-          for (const auto & r : res) {
-            paths.insert(r["file_path"].as<std::string>());
-          }
-          if (res.affected_rows() > 0) {
-            ++deleted;
-          }
-        }
-        return {paths, deleted};
-      });
-
-  for (const auto & path : outcome.first) {
-    try {
-      if (path_referenced(path)) {
-        continue;
-      }
-    } catch (const std::exception & e) {
-      continue;  // The rows are already committed, so keep the directory.
-    }
-    std::error_code ec;
-    std::filesystem::remove_all(path, ec);
-    // Ignore errors - file may already be deleted
-  }
-  return outcome.second;
-}
-
-bool PgFaultStorage::path_referenced(const std::string & file_path) const {
-  return run_in_transaction("path_referenced", [&](pqxx::work & tx) {
-    auto res = execute(tx, "SELECT COUNT(*) AS n FROM rosbag_files WHERE file_path = $1", file_path);
-    return !res.empty() && res[0]["n"].as<int64_t>() > 0;
   });
 }
 

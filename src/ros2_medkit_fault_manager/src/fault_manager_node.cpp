@@ -134,6 +134,14 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
                                                    wall_clock_, log_sink_);
   storage_ = &core_->storage();
 
+  retention_worker_ = std::make_shared<RetentionWorker>(log_sink_, config_.logger_name, RetentionWorker::Mode::kThread);
+  core::RosbagRetentionLimits retention_limits;
+  retention_limits.max_bags_per_fault = static_cast<size_t>(config_.snapshots_rosbag_max_bags_per_fault);
+  retention_limits.max_total_bytes = static_cast<size_t>(config_.snapshots_rosbag_max_total_storage_mb) * 1024 * 1024;
+  retention_limits.auto_cleanup = config_.snapshots_rosbag_auto_cleanup;
+  rosbag_retention_ =
+      std::make_shared<core::RosbagRetention>(*storage_, retention_limits, log_sink_, config_.logger_name);
+
   // Runs after the override files are loaded, so a code with its own healing_enabled: true keeps
   // its HEALED status. Each flipped fault is audited, or the audit log's verify() would not see it.
   core::reclassify_stale_healed(*storage_, core_->fault_code_resolver(), core_->global_debounce(),
@@ -203,7 +211,8 @@ FaultManagerNode::FaultManagerNode(const rclcpp::NodeOptions & options) : Node("
 
   // Initialize rosbag capture if enabled
   if (snapshot_config.rosbag.enabled) {
-    rosbag_capture_ = std::make_shared<RosbagCapture>(this, storage_, snapshot_config.rosbag, snapshot_config);
+    rosbag_capture_ = std::make_shared<RosbagCapture>(this, storage_, snapshot_config.rosbag, snapshot_config,
+                                                      rosbag_retention_, retention_worker_);
 
     // The recapture cooldown gates the capture job as a whole, bags included, so it
     // puts a floor under how often a history can actually grow: a fault that
@@ -281,6 +290,11 @@ FaultManagerNode::~FaultManagerNode() {
   }
   if (rosbag_capture_) {
     rosbag_capture_->stop();
+  }
+  // After stop(): it finalizes an open post-fault window, and the store of that recording can free
+  // a recording the cap replaced.
+  if (retention_worker_) {
+    retention_worker_->drain_and_stop();
   }
 
   // Close the chain with a "logging deactivated" marker. Best-effort and appended
@@ -865,7 +879,8 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
     // Clean up the stale record BY RECORDING. Deleting by fault code would take the
     // fault's other, healthy recordings with it because one of them vanished.
     try {
-      storage_->delete_rosbag_recording(rosbag_info->recording_id);
+      auto removal = rosbag_retention_->forget_recording(rosbag_info->recording_id);
+      post_unlinks(*retention_worker_, "forget", std::move(removal.unlink_paths));
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
       return;
@@ -915,7 +930,8 @@ void FaultManagerNode::handle_list_rosbags(
       // by fault code would instead take that fault's healthy recordings with it.
       if (reaped.insert(info.recording_id).second) {
         try {
-          storage_->delete_rosbag_recording(info.recording_id);
+          auto removal = rosbag_retention_->forget_recording(info.recording_id);
+          post_unlinks(*retention_worker_, "forget", std::move(removal.unlink_paths));
         } catch (const FaultStorage::IgnorableConnectionException & e) {
           RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
           response->success = false;

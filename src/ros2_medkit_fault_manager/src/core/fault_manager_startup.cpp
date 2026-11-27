@@ -230,12 +230,6 @@ CoreParts build_core_parts(const FaultManagerConfig & config, LogSink & sink) {
   // Independent of the cap: max_per_fault 0 means unlimited.
   parts.storage->set_retain_snapshots_on_clear(config.snapshots_retain_on_clear);
 
-  if (config.snapshots_rosbag_enabled) {
-    // The cap lives in the storage backend: it has to be atomic with the insert, and the unlink
-    // has to happen after the backend's commit.
-    parts.storage->set_max_rosbags_per_fault(static_cast<size_t>(config.snapshots_rosbag_max_bags_per_fault));
-  }
-
   // Applying the near-miss bound also trims a series an earlier run left over it, which deletes
   // history for good. Unreachable storage skips the trim; the bound still applies to new entries.
   size_t evicted_near_misses = 0;

@@ -552,4 +552,38 @@ inserted row's recording id. The call throws ``std::invalid_argument`` before it
 With that rule, applying a set twice leaves the same rows and the second call returns no
 orphaned paths.
 
-Production code does not call it yet. The six existing rosbag mutators keep serving the node.
+It is the only write of the rosbag rows. The retention below makes every decision on top of it.
+
+Rosbag retention
+""""""""""""""""
+
+``core::RosbagRetention`` holds every rosbag retention decision, each under one retention mutex:
+
+- ``store``: drops the rows of faults the storage holds as cleared (``auto_cleanup`` with a
+  ``max_bags_per_fault`` of 1), applies the per-fault cap in the same change set as the insert,
+  then the quota. One hold covers all three, so a clear finds the store either before its check
+  or after its quota step. A new row that loses the cap is not inserted, and its directory is
+  removed like any other the cap frees.
+- ``on_fault_cleared``: removes every row of a cleared fault. ``RosbagCapture`` decides whether a
+  clear removes recordings at all.
+- ``forget_recording``: removes the rows of a recording whose directory is gone, for
+  ``GetRosbag`` and ``ListRosbags``. The node builds the retention also with rosbag capture off,
+  so this cleanup runs then too.
+
+Lock order: the caller's outer locks (the node's rosbag mutex on the inline store path, the core
+mutex on the clear path), then the retention mutex, then the storage's own lock. Under the
+retention mutex only storage calls and logging run. No other lock is taken and no file system
+call runs.
+
+The retention never unlinks. Each call returns the directories no row names any more, and the
+caller posts them to a ``RetentionWorker``. The node's worker is one thread with a FIFO queue, so
+the clear service returns before a large bag is removed. A bag that never got a row is discarded
+where it is stored: on the capture pool or on the store worker. The node shuts down in this order:
+the capture pool, then ``RosbagCapture::stop()``, which finalizes an open post-fault window and
+stores it, then ``RetentionWorker::drain_and_stop()``, which runs the unlinks that store posted. A
+``RosbagCapture`` constructed without a retention builds its own, with an inline worker that runs
+each unlink on the posting thread.
+
+All fault manager service callbacks run on one executor thread (``rclcpp::spin`` in
+``main.cpp``). A change to a multi-threaded executor must revisit which retention decisions need
+the core mutex.

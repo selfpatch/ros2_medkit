@@ -295,20 +295,6 @@ class FaultStorage {
   virtual void set_max_snapshots_per_fault(size_t /*max_count*/) {
   }
 
-  /// Cap on RECORDINGS retained per fault code (0 = unlimited).
-  ///
-  /// Enforced inside store_rosbag_file(s), atomically with the insert: past the cap
-  /// the fault's OLDEST recordings lose their row, and a bag whose last referencing
-  /// row goes is unlinked once the store is durable.
-  ///
-  /// Keep-newest, the same direction as set_max_snapshots_per_fault. The two caps
-  /// differ in unit, not in policy: that one evicts whole capture SETS, this one
-  /// evicts RECORDINGS. A bag is evidence about a machine you are about to inspect,
-  /// so the recent one wins; and keep-newest at 1 is exactly the pre-#620
-  /// behaviour, which is what makes the default a no-op.
-  virtual void set_max_rosbags_per_fault(size_t /*max_count*/) {
-  }
-
   /// Whether acknowledging a fault keeps the value snapshots it captured.
   ///
   /// Off by default, which is the historical behaviour: clear_fault deletes them.
@@ -398,30 +384,8 @@ class FaultStorage {
   /// @return The retained near-miss entries in chronological order
   virtual std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) const = 0;
 
-  /// Store rosbag file metadata for a fault
-  /// @param info The rosbag file info to store (replaces any existing entry for fault_code)
-  virtual void store_rosbag_file(const RosbagFileInfo & info) = 0;
-
-  /// Store one row per fault of a burst that shares a recording.
-  ///
-  /// Implementations MUST be all-or-nothing. The caller treats a throw as "no row
-  /// was written" and discards the recording, so a batch that stored some rows and
-  /// then threw would leave those rows naming a bag that has just been removed:
-  /// unreadable for good, and still charged against the storage quota, which sums
-  /// rows. Both in-tree backends satisfy this - SQLite through a transaction, the
-  /// in-memory one by publishing the whole batch at once.
-  ///
-  /// The default below does NOT satisfy it and exists only so a backend that cannot
-  /// fail per row keeps compiling. Override it in anything that can.
-  ///
-  /// @param infos The rows to store (typically all pointing at one file_path)
-  virtual void store_rosbag_files(const std::vector<RosbagFileInfo> & infos) {
-    for (const auto & info : infos) {
-      store_rosbag_file(info);
-    }
-  }
-
-  /// Apply a set of rosbag row changes in one transaction.
+  /// Apply a set of rosbag row changes in one transaction. The only write of the rosbag rows;
+  /// core::RosbagRetention makes every retention decision on top of it.
   ///
   /// - All or nothing: when anything throws, no row has changed.
   /// - Applies no per-fault cap.
@@ -450,35 +414,6 @@ class FaultStorage {
   /// bulk-data download and the entity authorization scope check, both of which
   /// start from a recording id and need the faults behind it.
   virtual std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) const = 0;
-
-  /// Delete one whole recording: every fault's link to it, and the bag. This is the
-  /// right unit for quota eviction and for a bag that has vanished from disk - both
-  /// are facts about the recording, not about one fault that happens to reference it.
-  /// @return number of rows removed
-  virtual size_t delete_rosbag_recording(const std::string & recording_id) = 0;
-
-  /// Delete rosbag file record and the actual file for a fault. Faults from one
-  /// burst can share a recording; the file is unlinked only with the last record
-  /// that references it.
-  /// @param fault_code The fault code to delete rosbag for
-  /// @return true if record was deleted, false if not found
-  virtual bool delete_rosbag_file(const std::string & fault_code) = 0;
-
-  /// Delete the records of several faults (typically the whole burst behind one
-  /// recording). Backends with real transactions (SQLite) remove the rows
-  /// atomically and unlink the file only after the commit, so a crash mid-delete
-  /// never leaves a row pointing at a removed bag. Default: plain loop.
-  /// @param fault_codes The fault codes to delete rosbag records for
-  /// @return Number of records actually deleted
-  virtual size_t delete_rosbag_files(const std::vector<std::string> & fault_codes) {
-    size_t deleted = 0;
-    for (const auto & code : fault_codes) {
-      if (delete_rosbag_file(code)) {
-        ++deleted;
-      }
-    }
-    return deleted;
-  }
 
   /// Get total size of all stored rosbag files in bytes, counting a shared
   /// recording once regardless of how many faults reference it
@@ -558,21 +493,13 @@ class InMemoryFaultStorage : public FaultStorage {
   void store_freeze_frame(const FreezeFrameData & frame) override;
   std::optional<FreezeFrameData> get_freeze_frame(const std::string & fault_code) const override;
 
-  void set_max_rosbags_per_fault(size_t max_count) override;
-
   size_t set_max_near_misses_per_fault(size_t max_count) override;
   std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) const override;
 
-  void store_rosbag_file(const RosbagFileInfo & info) override;
-  /// All-or-nothing, as the base class requires: the batch is built beside the live
-  /// map and swapped in, so a throw leaves the store exactly as it was.
-  void store_rosbag_files(const std::vector<RosbagFileInfo> & infos) override;
   RosbagApplyResult apply_rosbag_changes(const RosbagChangeSet & changes) override;
   std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
   std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) const override;
   std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) const override;
-  bool delete_rosbag_file(const std::string & fault_code) override;
-  size_t delete_rosbag_recording(const std::string & recording_id) override;
   size_t get_total_rosbag_storage_bytes() const override;
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
@@ -587,13 +514,6 @@ class InMemoryFaultStorage : public FaultStorage {
   /// max_near_misses_per_fault_. Caller holds mutex_ and has already applied the report to @p state.
   void record_near_miss(const FaultState & state, const DebounceConfig & config, uint8_t severity,
                         const std::string & source_id, int64_t timestamp_ns);
-
-  /// Whether a fault other than @p fault_code still references @p file_path.
-  /// One recording can back several faults of the same burst, so the bag must
-  /// only be unlinked once the last of them is gone. Caller holds mutex_.
-
-  /// Whether any row at all still references @p file_path. Caller holds mutex_.
-  bool path_referenced(const std::string & file_path) const;
 
   mutable std::mutex mutex_;
   std::map<std::string, FaultState> faults_;
@@ -614,10 +534,6 @@ class InMemoryFaultStorage : public FaultStorage {
   };
   std::vector<RosbagRow> rosbag_files_;
   uint64_t rosbag_seq_{0};
-  /// Defaults to 1, the pre-#620 behaviour: a new recording replaces the old one.
-  /// A backend constructed directly (tests, embedders) therefore behaves exactly as
-  /// it always did until someone opts into a history. 0 = unlimited.
-  size_t max_rosbags_per_fault_{1};
   std::map<std::string, std::vector<NearMissRecord>> near_misses_;  ///< fault_code -> series (retained across clear)
   DebounceConfig config_;
   size_t max_snapshots_per_fault_{0};  ///< 0 = unlimited

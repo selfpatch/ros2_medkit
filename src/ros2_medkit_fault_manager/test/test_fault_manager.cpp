@@ -48,6 +48,7 @@
 #include "ros2_medkit_msgs/srv/list_rosbags.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 #include "test_log_sink.hpp"
+#include "test_rosbag_rows.hpp"
 
 using ros2_medkit_fault_manager::clamp_debounce_counter;
 using ros2_medkit_fault_manager::compute_debounce_status;
@@ -1676,7 +1677,7 @@ TEST_F(FaultEventPublishingTest, GetFaultReportsARecordingsServedBytesNotItsFoot
   ASSERT_GT(bag.footprint, bag.served) << "metadata.yaml did not land, so there is nothing to tell apart";
 
   ASSERT_TRUE(call_report_fault("SERVED_BYTES_FAULT", Fault::SEVERITY_ERROR, "/test_node"));
-  fault_manager_->get_storage_for_test().store_rosbag_file(bag.row_for("SERVED_BYTES_FAULT"));
+  seed_rosbag_rows(fault_manager_->get_storage_for_test(), {bag.row_for("SERVED_BYTES_FAULT")});
 
   auto response = call_get_fault("SERVED_BYTES_FAULT");
   ASSERT_TRUE(response.has_value());
@@ -1708,7 +1709,7 @@ TEST_F(FaultEventPublishingTest, EveryRosbagServiceReportsTheServedBytes) {
 
   ASSERT_TRUE(call_report_fault("ALL_SERVICES_FAULT", Fault::SEVERITY_ERROR, "/test_node"));
   const auto row = bag.row_for("ALL_SERVICES_FAULT");
-  fault_manager_->get_storage_for_test().store_rosbag_file(row);
+  seed_rosbag_rows(fault_manager_->get_storage_for_test(), {row});
 
   const std::string ns = test_node_->get_namespace();
 
@@ -1769,7 +1770,7 @@ TEST_F(FaultEventPublishingTest, GetSnapshotsDoesNotAdvertiseARouteThatWasRemove
   ReportedBag bag("no_download_url");
 
   ASSERT_TRUE(call_report_fault("NO_URL_FAULT", Fault::SEVERITY_ERROR, "/test_node"));
-  fault_manager_->get_storage_for_test().store_rosbag_file(bag.row_for("NO_URL_FAULT"));
+  seed_rosbag_rows(fault_manager_->get_storage_for_test(), {bag.row_for("NO_URL_FAULT")});
 
   auto client = test_node_->create_client<GetSnapshots>(std::string(test_node_->get_namespace()) +
                                                         "/fault_manager/get_snapshots");
@@ -2037,64 +2038,6 @@ TEST(InMemoryFreezeFrameTest, SurvivesClearFault) {
   auto retrieved = storage.get_freeze_frame("PLC_PRESSURE_HIGH");
   ASSERT_TRUE(retrieved.has_value());
   EXPECT_EQ(retrieved->data, frame.data);
-}
-
-// --- InMemoryFaultStorage shared-rosbag re-store tests ---
-// A fault re-confirming stores a row with a new path; the old bag must be
-// unlinked only when no sibling fault of the burst still references it.
-
-TEST(InMemoryRosbagRestoreTest, RestoreWithNewPathUnlinksTheOldExclusiveBag) {
-  InMemoryFaultStorage storage;
-
-  const auto old_path = (std::filesystem::temp_directory_path() / "medkit_restore_exclusive_bag").string();
-  std::filesystem::create_directories(old_path);
-
-  ros2_medkit_fault_manager::RosbagFileInfo info;
-  info.fault_code = "X";
-  info.file_path = old_path;
-  info.format = "mcap";
-  info.duration_sec = 5.0;
-  info.size_bytes = 100;
-  info.created_at_ns = 1000;
-  storage.store_rosbag_file(info);
-
-  info.file_path = old_path + "_new";
-  storage.store_rosbag_file(info);
-
-  EXPECT_FALSE(std::filesystem::exists(old_path)) << "nobody references the old bag, it must be unlinked";
-  auto row = storage.get_rosbag_file("X");
-  ASSERT_TRUE(row.has_value());
-  EXPECT_EQ(row->file_path, old_path + "_new");
-}
-
-TEST(InMemoryRosbagRestoreTest, RestoreWithNewPathKeepsTheBagASiblingStillReferences) {
-  InMemoryFaultStorage storage;
-
-  const auto shared_path = (std::filesystem::temp_directory_path() / "medkit_restore_shared_bag").string();
-  std::filesystem::create_directories(shared_path);
-
-  ros2_medkit_fault_manager::RosbagFileInfo info;
-  info.file_path = shared_path;
-  info.format = "mcap";
-  info.duration_sec = 5.0;
-  info.size_bytes = 100;
-  info.created_at_ns = 1000;
-  info.fault_code = "X";
-  storage.store_rosbag_file(info);
-  info.fault_code = "Y";
-  storage.store_rosbag_file(info);
-
-  info.fault_code = "X";
-  info.file_path = shared_path + "_new";
-  storage.store_rosbag_file(info);
-
-  EXPECT_TRUE(std::filesystem::exists(shared_path)) << "the sibling fault still owns the shared bag";
-  auto sibling = storage.get_rosbag_file("Y");
-  ASSERT_TRUE(sibling.has_value());
-  EXPECT_EQ(sibling->file_path, shared_path);
-
-  std::error_code ec;
-  std::filesystem::remove_all(shared_path, ec);
 }
 
 // =============================================================================

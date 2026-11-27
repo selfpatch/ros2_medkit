@@ -124,6 +124,7 @@ set(FAULT_MANAGER_FILES
     src/capture_thread_pool.cpp
     src/fault_manager_node.cpp
     src/pending_topic_watcher.cpp
+    src/retention_worker.cpp
     src/snapshot_capture.cpp
     src/rosbag_capture.cpp
     src/ros2/fault_msg_conversions.cpp
@@ -219,6 +220,11 @@ endif()
   medkit_add_gtest(test_rosbag_storage_parity test/test_rosbag_storage_parity.cpp)
   target_link_libraries(test_rosbag_storage_parity fault_manager_lib)
   medkit_target_dependencies(test_rosbag_storage_parity rclcpp ros2_medkit_msgs)
+
+  # Rosbag retention decisions under failing and gated storage. Creates no ROS node.
+  medkit_add_gtest(test_rosbag_retention test/test_rosbag_retention.cpp)
+  target_link_libraries(test_rosbag_retention fault_manager_lib)
+  medkit_test_needs_no_domain(test_rosbag_retention)
 
   # Fault audit log tests (hash chain, verify, rotation, reopen)
   medkit_add_gtest(test_fault_audit_log test/test_fault_audit_log.cpp)
