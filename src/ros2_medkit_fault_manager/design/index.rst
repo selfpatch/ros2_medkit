@@ -575,14 +575,32 @@ mutex on the clear path), then the retention mutex, then the storage's own lock.
 retention mutex only storage calls and logging run. No other lock is taken and no file system
 call runs.
 
-The retention never unlinks. Each call returns the directories no row names any more, and the
-caller posts them to a ``RetentionWorker``. The node's worker is one thread with a FIFO queue, so
-the clear service returns before a large bag is removed. A bag that never got a row is discarded
-where it is stored: on the capture pool or on the store worker. The node shuts down in this order:
-the capture pool, then ``RosbagCapture::stop()``, which finalizes an open post-fault window and
-stores it, then ``RetentionWorker::drain_and_stop()``, which runs the unlinks that store posted. A
-``RosbagCapture`` constructed without a retention builds its own, with an inline worker that runs
-each unlink on the posting thread.
+The retention never unlinks and logs no removal. Each call returns the directories no row names
+any more, each with its recording id and the reason it was freed. Which thread removes them
+depends on the path:
+
+- Store (the store worker, or the capture pool when there is no post-fault window): the store's
+  own thread removes the cap victims, a new recording that lost the cap and the quota evictions,
+  once the retention mutex is released and before "Bag file created" or "Bag file completed" is
+  logged. The executor never runs a store. A bag that never got a row is discarded on the same
+  thread.
+- Clear and stale rows (the executor): the rows go inside the service call. The node's
+  ``RetentionWorker``, one thread with a FIFO queue, removes the directories, so the clear service
+  returns before a large bag is removed.
+
+Every removal is logged by the code that removed it, after the removal succeeded. No line
+announces a removal that has not happened yet:
+
+- a cap victim: ``Recording removed: <recording_id> (max_bags_per_fault)``;
+- a quota eviction: ``Deleted old bag '<path>' to enforce storage limit``;
+- a clear: ``Auto-cleanup: deleted bag file for fault '<code>'``, written by the worker job after the
+  directories are gone, or at once when a sibling of the burst still holds the bag;
+- a removal that failed: a WARN with the path, the reason and the error.
+
+The node shuts down in this order: the capture pool, then ``RosbagCapture::stop()``, which
+finalizes an open post-fault window and stores it, then ``RetentionWorker::drain_and_stop()``,
+which runs the removals the clear and stale-row paths posted. A ``RosbagCapture`` constructed
+without a retention builds its own, with an inline worker that removes on the clearing thread.
 
 All fault manager service callbacks run on one executor thread (``rclcpp::spin`` in
 ``main.cpp``). A change to a multi-threaded executor must revisit which retention decisions need

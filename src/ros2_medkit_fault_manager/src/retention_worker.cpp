@@ -98,15 +98,15 @@ void RetentionWorker::run_job(const Job & job) {
   core::logf(log_sink_, core::LogLevel::kDebug, logger_name_, "retention job done: %s", job.kind.c_str());
 }
 
-void post_unlinks(RetentionWorker & worker, std::string kind, std::vector<std::string> paths) {
-  if (paths.empty()) {
+void post_unlinks(RetentionWorker & worker, std::string kind, std::vector<core::FreedRecording> recordings) {
+  if (recordings.empty()) {
     return;
   }
-  worker.post(std::move(kind), [paths = std::move(paths)]() {
-    for (const auto & path : paths) {
+  worker.post(std::move(kind), [recordings = std::move(recordings)]() {
+    for (const auto & recording : recordings) {
       // A directory that is already gone needs no removal.
       std::error_code ec;
-      std::filesystem::remove_all(path, ec);
+      std::filesystem::remove_all(recording.path, ec);
     }
   });
 }

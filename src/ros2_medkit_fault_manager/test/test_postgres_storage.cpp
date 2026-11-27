@@ -2251,7 +2251,7 @@ TEST_F(PgFaultStorageTest, BulkDeleteRemovesTheBurstAndUnlinksTheBagOnce) {
   const auto root = retention.on_fault_cleared("ROOT_CAUSE");
   expect_unlinkable(root.unlink_paths);
   EXPECT_EQ(root.removed_rows, 1u);
-  EXPECT_EQ(root.unlink_paths, std::vector<std::string>{bag_path});
+  EXPECT_EQ(paths_of(root.unlink_paths), std::vector<std::string>{bag_path});
   EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 0u);
 }
 

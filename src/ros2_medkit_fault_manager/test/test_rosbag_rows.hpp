@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "ros2_medkit_fault_manager/core/rosbag_retention.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 
 /// Store rosbag rows as they are, through the storage primitive: no cap, no quota, no unlink.
@@ -43,4 +44,22 @@ inline void expect_unlinkable(const std::vector<std::string> & paths) {
 
 inline bool listed(const std::vector<std::string> & paths, const std::string & path) {
   return std::find(paths.begin(), paths.end(), path) != paths.end();
+}
+
+inline std::vector<std::string> paths_of(const std::vector<ros2_medkit_fault_manager::core::FreedRecording> & freed) {
+  std::vector<std::string> paths;
+  paths.reserve(freed.size());
+  for (const auto & recording : freed) {
+    paths.push_back(recording.path);
+  }
+  return paths;
+}
+
+inline void expect_unlinkable(const std::vector<ros2_medkit_fault_manager::core::FreedRecording> & freed) {
+  expect_unlinkable(paths_of(freed));
+}
+
+inline bool listed(const std::vector<ros2_medkit_fault_manager::core::FreedRecording> & freed,
+                   const std::string & path) {
+  return listed(paths_of(freed), path);
 }

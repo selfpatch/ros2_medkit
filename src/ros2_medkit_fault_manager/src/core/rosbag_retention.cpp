@@ -27,13 +27,31 @@ namespace ros2_medkit_fault_manager::core {
 
 namespace {
 
-/// Append @p paths to @p out, skipping a path already listed.
-void append_unique(std::vector<std::string> & out, const std::vector<std::string> & paths) {
-  for (const auto & path : paths) {
-    if (std::find(out.begin(), out.end(), path) == out.end()) {
-      out.push_back(path);
+/// Append @p freed to @p out, skipping a path already listed.
+void append_unique(std::vector<FreedRecording> & out, const std::vector<FreedRecording> & freed) {
+  for (const auto & entry : freed) {
+    const bool listed = std::any_of(out.begin(), out.end(), [&entry](const FreedRecording & known) {
+      return known.path == entry.path;
+    });
+    if (!listed) {
+      out.push_back(entry);
     }
   }
+}
+
+/// The freed recordings of @p paths, each with its recording id from @p recording_ids.
+std::vector<FreedRecording> freed(const std::vector<std::string> & paths,
+                                  const std::unordered_map<std::string, std::string> & recording_ids,
+                                  RemovalReason reason) {
+  std::vector<FreedRecording> out;
+  out.reserve(paths.size());
+  for (const auto & path : paths) {
+    const auto known = recording_ids.find(path);
+    const std::string id =
+        known != recording_ids.end() && !known->second.empty() ? known->second : rosbag_recording_id(path);
+    out.push_back({path, id, reason});
+  }
+  return out;
 }
 
 bool is_empty(const RosbagChangeSet & changes) {
@@ -63,10 +81,12 @@ StoreOutcome RosbagRetention::store(std::vector<RosbagFileInfo> rows) {
   }
 
   RosbagChangeSet changes;
+  std::unordered_map<std::string, std::string> recording_ids;
   try {
-    changes = cap_changes(rows);
+    changes = cap_changes(rows, recording_ids);
     if (!is_empty(changes)) {
-      outcome.unlink_paths = storage_.apply_rosbag_changes(changes).orphaned_paths;
+      outcome.unlink_paths =
+          freed(storage_.apply_rosbag_changes(changes).orphaned_paths, recording_ids, RemovalReason::kCap);
     }
   } catch (const std::exception & e) {
     outcome.result = StoreResult::kStoreFailed;
@@ -85,7 +105,7 @@ StoreOutcome RosbagRetention::store(std::vector<RosbagFileInfo> rows) {
   }
   for (const auto & row : rows) {
     if (inserted_paths.count(row.file_path) == 0) {
-      append_unique(outcome.unlink_paths, {row.file_path});
+      append_unique(outcome.unlink_paths, freed({row.file_path}, recording_ids, RemovalReason::kCap));
     }
   }
 
@@ -100,9 +120,6 @@ StoreOutcome RosbagRetention::store(std::vector<RosbagFileInfo> rows) {
       throw;
     }
     append_unique(outcome.unlink_paths, eviction.unlink_paths);
-    for (const auto & path : eviction.evicted_paths) {
-      logf(log_sink_, LogLevel::kInfo, logger_name_, "Deleted old bag '%s' to enforce storage limit", path.c_str());
-    }
     // Everything older is gone by now, so what is left over the quota is the kept recording alone.
     if (!keep_recording_id.empty() && storage_.get_total_rosbag_storage_bytes() > limits_.max_total_bytes) {
       logf(log_sink_, LogLevel::kWarn, logger_name_,
@@ -128,7 +145,12 @@ std::vector<std::string> RosbagRetention::evict_over_quota(size_t max_bytes, con
   std::lock_guard<std::mutex> lock(mutex_);
   Eviction eviction;
   evict(max_bytes, keep_recording_id, eviction);
-  return eviction.unlink_paths;
+  std::vector<std::string> paths;
+  paths.reserve(eviction.unlink_paths.size());
+  for (const auto & entry : eviction.unlink_paths) {
+    paths.push_back(entry.path);
+  }
+  return paths;
 }
 
 RemovalOutcome RosbagRetention::on_fault_cleared(const std::string & fault_code) {
@@ -138,7 +160,7 @@ RemovalOutcome RosbagRetention::on_fault_cleared(const std::string & fault_code)
   for (const auto & row : rows) {
     changes.remove.push_back({row.fault_code, row.file_path});
   }
-  return remove(rows, changes);
+  return remove(rows, changes, RemovalReason::kCleared);
 }
 
 RemovalOutcome RosbagRetention::forget_recording(const std::string & recording_id) {
@@ -150,7 +172,7 @@ RemovalOutcome RosbagRetention::forget_recording(const std::string & recording_i
   const auto rows = storage_.get_rosbag_files_by_recording(recording_id);
   RosbagChangeSet changes;
   changes.remove_recordings.push_back(recording_id);
-  return remove(rows, changes);
+  return remove(rows, changes, RemovalReason::kStale);
 }
 
 bool RosbagRetention::row_still_wanted(const std::string & fault_code) {
@@ -174,7 +196,11 @@ bool RosbagRetention::row_still_wanted(const std::string & fault_code) {
   return !fault.has_value() || fault->status != fd::fault_status::kCleared;
 }
 
-RosbagChangeSet RosbagRetention::cap_changes(const std::vector<RosbagFileInfo> & rows) {
+RosbagChangeSet RosbagRetention::cap_changes(const std::vector<RosbagFileInfo> & rows,
+                                             std::unordered_map<std::string, std::string> & recording_ids) {
+  for (const auto & row : rows) {
+    recording_ids.emplace(row.file_path, row.recording_id);
+  }
   RosbagChangeSet changes;
   const size_t cap = limits_.max_bags_per_fault;
   if (cap == 0) {
@@ -203,6 +229,7 @@ RosbagChangeSet RosbagRetention::cap_changes(const std::vector<RosbagFileInfo> &
     std::vector<Candidate> candidates;
     size_t rank = 0;
     for (auto it = stored.rbegin(); it != stored.rend(); ++it) {
+      recording_ids.emplace(it->file_path, it->recording_id);
       candidates.push_back({it->created_at_ns, rank++, it->file_path, true, false});
     }
     for (const auto & row : rows) {
@@ -274,19 +301,24 @@ void RosbagRetention::evict(size_t max_bytes, const std::string & keep_recording
     // By recording, not by fault code: a fault's newer recordings must stay.
     RosbagChangeSet changes;
     changes.remove_recordings.push_back(recording_by_path[path]);
-    append_unique(out.unlink_paths, storage_.apply_rosbag_changes(changes).orphaned_paths);
+    append_unique(out.unlink_paths, freed(storage_.apply_rosbag_changes(changes).orphaned_paths, recording_by_path,
+                                          RemovalReason::kQuota));
     // Saturate: the quota must never be met by underflow.
     current_bytes -= std::min(current_bytes, bytes_by_path[path]);
-    out.evicted_paths.push_back(path);
   }
 }
 
-RemovalOutcome RosbagRetention::remove(const std::vector<RosbagFileInfo> & rows, const RosbagChangeSet & changes) {
+RemovalOutcome RosbagRetention::remove(const std::vector<RosbagFileInfo> & rows, const RosbagChangeSet & changes,
+                                       RemovalReason reason) {
   RemovalOutcome outcome;
   if (rows.empty()) {
     return outcome;
   }
-  outcome.unlink_paths = storage_.apply_rosbag_changes(changes).orphaned_paths;
+  std::unordered_map<std::string, std::string> recording_ids;
+  for (const auto & row : rows) {
+    recording_ids.emplace(row.file_path, row.recording_id);
+  }
+  outcome.unlink_paths = freed(storage_.apply_rosbag_changes(changes).orphaned_paths, recording_ids, reason);
   outcome.removed_rows = rows.size();
   return outcome;
 }

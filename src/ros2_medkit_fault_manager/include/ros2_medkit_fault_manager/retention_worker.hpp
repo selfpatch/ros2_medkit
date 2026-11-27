@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "ros2_medkit_fault_manager/core/log_sink.hpp"
+#include "ros2_medkit_fault_manager/core/rosbag_retention.hpp"
 
 namespace ros2_medkit_fault_manager {
 
@@ -71,7 +72,8 @@ class RetentionWorker {
   std::thread thread_;
 };
 
-/// Post one job that removes each of @p paths. Posts nothing when @p paths is empty.
-void post_unlinks(RetentionWorker & worker, std::string kind, std::vector<std::string> paths);
+/// Post one job that removes the directory of each of @p recordings, without a log line.
+/// Posts nothing when @p recordings is empty.
+void post_unlinks(RetentionWorker & worker, std::string kind, std::vector<core::FreedRecording> recordings);
 
 }  // namespace ros2_medkit_fault_manager

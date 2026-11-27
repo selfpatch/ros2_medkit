@@ -224,6 +224,33 @@ std::shared_ptr<rosbag2_storage::SerializedBagMessage> create_bag_message(const 
   return bag_msg;
 }
 
+/// The setting behind a removal, as an operator configures it.
+const char * removal_reason_name(core::RemovalReason reason) {
+  switch (reason) {
+    case core::RemovalReason::kCap:
+      return "max_bags_per_fault";
+    case core::RemovalReason::kQuota:
+      return "max_total_storage_mb";
+    case core::RemovalReason::kCleared:
+      return "auto_cleanup";
+    case core::RemovalReason::kStale:
+      return "directory missing";
+  }
+  return "unknown";
+}
+
+/// Remove the directory of @p recording. Logs a WARN and returns false when it stays on disk.
+bool remove_recording_dir(const rclcpp::Logger & logger, const core::FreedRecording & recording) {
+  std::error_code ec;
+  std::filesystem::remove_all(recording.path, ec);
+  if (ec) {
+    RCLCPP_WARN(logger, "Failed to remove recording '%s' (%s): %s", recording.path.c_str(),
+                removal_reason_name(recording.reason), ec.message().c_str());
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 RosbagCapture::RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const RosbagConfig & config,
@@ -706,13 +733,28 @@ void RosbagCapture::on_fault_cleared(const std::string & fault_code) {
   }
 
   // Called from the clear service, where a throw terminates the process. The retention orders this
-  // removal against a store in progress; the directories go on the retention worker.
+  // removal against a store in progress. The directories go on the retention worker, and the line
+  // is logged once they are gone.
   try {
     auto removal = retention_->on_fault_cleared(fault_code);
-    if (removal.removed_rows > 0) {
-      RCLCPP_INFO(node_->get_logger(), "Auto-cleanup: deleted bag file for fault '%s'", fault_code.c_str());
+    if (removal.removed_rows == 0) {
+      return;
     }
-    post_unlinks(*retention_worker_, "clear", std::move(removal.unlink_paths));
+    if (removal.unlink_paths.empty()) {
+      // A sibling of the burst still names the bag: the rows are gone and no directory is.
+      RCLCPP_INFO(node_->get_logger(), "Auto-cleanup: deleted bag file for fault '%s'", fault_code.c_str());
+      return;
+    }
+    retention_worker_->post(
+        "clear", [logger = node_->get_logger(), fault_code, freed = std::move(removal.unlink_paths)]() {
+          bool removed_all = true;
+          for (const auto & recording : freed) {
+            removed_all = remove_recording_dir(logger, recording) && removed_all;
+          }
+          if (removed_all) {
+            RCLCPP_INFO(logger, "Auto-cleanup: deleted bag file for fault '%s'", fault_code.c_str());
+          }
+        });
   } catch (const std::exception & e) {
     RCLCPP_WARN(node_->get_logger(), "Auto-cleanup of the bag for fault '%s' failed: %s", fault_code.c_str(), e.what());
   }
@@ -1506,7 +1548,18 @@ void RosbagCapture::write_manifest(const std::string & bag_path, int64_t created
 
 bool RosbagCapture::store_rows_or_discard_bag(std::vector<RosbagFileInfo> rows, const std::string & bag_path) {
   auto outcome = retention_->store(std::move(rows));
-  post_unlinks(*retention_worker_, "store", std::move(outcome.unlink_paths));
+  // On this thread, with the retention mutex released, and before the caller logs the stored bag.
+  for (const auto & recording : outcome.unlink_paths) {
+    if (!remove_recording_dir(node_->get_logger(), recording)) {
+      continue;
+    }
+    if (recording.reason == core::RemovalReason::kQuota) {
+      RCLCPP_INFO(node_->get_logger(), "Deleted old bag '%s' to enforce storage limit", recording.path.c_str());
+    } else {
+      RCLCPP_INFO(node_->get_logger(), "Recording removed: %s (%s)", recording.recording_id.c_str(),
+                  removal_reason_name(recording.reason));
+    }
+  }
 
   if (outcome.result == core::StoreResult::kAllFaultsCleared) {
     // Every fault of the recording was cleared before its row was stored; nothing

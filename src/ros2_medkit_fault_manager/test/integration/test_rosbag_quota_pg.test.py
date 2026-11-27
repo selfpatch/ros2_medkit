@@ -83,7 +83,12 @@ class TestRosbagQuotaPostgres(RetentionCase):
         with self.fm_run() as fm:
             bag = self.record(fm, 'PG_A', 1)
             self.assert_recording_present('PG_A', bag)
+            mark = fm.mark()
             self.assertTrue(self.client.clear('PG_A').success)
-            self.assert_recording_gone('PG_A', bag)
             self.assertEqual(self.stored_rows(), [])
+            # The line is logged once the directory is removed.
+            self.assertIsNotNone(
+                fm.wait_line(r"Auto-cleanup: deleted bag file for fault 'PG_A'", since=mark),
+                fm.output()[-3000:])
+            self.assert_recording_gone('PG_A', bag)
             self.assertEqual(bag_dirs(self.storage), [])

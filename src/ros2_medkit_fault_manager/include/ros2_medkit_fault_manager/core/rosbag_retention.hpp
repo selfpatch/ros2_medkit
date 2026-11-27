@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "ros2_medkit_fault_manager/core/log_sink.hpp"
@@ -31,6 +32,21 @@ struct RosbagRetentionLimits {
   bool auto_cleanup{true};                       ///< A cleared fault loses its recordings
 };
 
+/// Why a recording's directory is no longer named by any row.
+enum class RemovalReason {
+  kCap,      ///< The per-fault cap (max_bags_per_fault)
+  kQuota,    ///< The quota (max_total_storage_mb)
+  kCleared,  ///< The fault was cleared (auto_cleanup)
+  kStale,    ///< The directory was already missing
+};
+
+/// A directory no row names any more: the caller removes it and logs the removal.
+struct FreedRecording {
+  std::string path;
+  std::string recording_id;
+  RemovalReason reason{RemovalReason::kCap};
+};
+
 enum class StoreResult {
   kStored,            ///< The rows were applied. Also when the cap removed every new row.
   kAllFaultsCleared,  ///< Every fault of the recording is cleared. Nothing was stored.
@@ -42,22 +58,22 @@ struct StoreOutcome {
   /// The quota read or an eviction threw. The rows stay stored, and so do the evictions before it.
   bool quota_failed{false};
   std::string error;  ///< Exception text of the store failure or of the quota failure
-  /// Directories no row names any more, each once. Never the path of a recording that
+  /// Directories no row names any more, each path once. Never the path of a recording that
   /// kAllFaultsCleared or kStoreFailed left without rows: the caller discards that one.
-  std::vector<std::string> unlink_paths;
+  std::vector<FreedRecording> unlink_paths;
 };
 
 struct RemovalOutcome {
   size_t removed_rows{0};
-  std::vector<std::string> unlink_paths;  ///< Directories no row names any more, each once
+  std::vector<FreedRecording> unlink_paths;  ///< Directories no row names any more, each path once
 };
 
 /// Every rosbag retention decision of the fault manager, on FaultStorage::apply_rosbag_changes().
 ///
 /// Each public method holds one mutex for its whole decision. Lock order: the caller's outer
 /// locks -> this mutex -> the storage's own lock. Under it only storage calls and logging run:
-/// no other lock and no file system call. Nothing here unlinks a file. Each method returns the
-/// paths the caller may remove.
+/// no other lock and no file system call. Nothing here unlinks a file or logs a removal. Each
+/// method returns the directories the caller removes, with the reason it logs after each removal.
 class RosbagRetention {
  public:
   RosbagRetention(FaultStorage & storage, RosbagRetentionLimits limits, LogSink & log_sink, std::string logger_name);
@@ -90,23 +106,26 @@ class RosbagRetention {
 
  private:
   struct Eviction {
-    std::vector<std::string> evicted_paths;
-    std::vector<std::string> unlink_paths;
+    std::vector<FreedRecording> unlink_paths;
   };
 
   /// Whether a fault keeps its row: false only under auto_cleanup with a cap of exactly 1, for a
   /// fault the storage holds as cleared. A fault that cannot be read keeps its row.
   bool row_still_wanted(const std::string & fault_code);
 
-  /// The insert and the per-fault cap removals of @p rows, as one change set.
+  /// The insert and the per-fault cap removals of @p rows, as one change set. Fills
+  /// @p recording_ids with the recording id of every path it read or was given.
   /// @throws a failure of the cap read
-  RosbagChangeSet cap_changes(const std::vector<RosbagFileInfo> & rows);
+  RosbagChangeSet cap_changes(const std::vector<RosbagFileInfo> & rows,
+                              std::unordered_map<std::string, std::string> & recording_ids);
 
   /// Quota eviction. @p out holds what was applied, also when this throws.
   void evict(size_t max_bytes, const std::string & keep_recording_id, Eviction & out);
 
-  /// Apply @p changes and count @p rows as removed.
-  RemovalOutcome remove(const std::vector<RosbagFileInfo> & rows, const RosbagChangeSet & changes);
+  /// Apply @p changes and count @p rows as removed. Each freed path takes its recording id from
+  /// @p rows and the reason @p reason.
+  RemovalOutcome remove(const std::vector<RosbagFileInfo> & rows, const RosbagChangeSet & changes,
+                        RemovalReason reason);
 
   FaultStorage & storage_;
   const RosbagRetentionLimits limits_;

@@ -291,8 +291,7 @@ FaultManagerNode::~FaultManagerNode() {
   if (rosbag_capture_) {
     rosbag_capture_->stop();
   }
-  // After stop(): it finalizes an open post-fault window, and the store of that recording can free
-  // a recording the cap replaced.
+  // Last: runs the directory removals the clear and stale-row paths posted before exit.
   if (retention_worker_) {
     retention_worker_->drain_and_stop();
   }

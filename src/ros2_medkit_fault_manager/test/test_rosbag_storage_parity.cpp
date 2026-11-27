@@ -217,7 +217,8 @@ class RosbagRetentionParityTest : public ::testing::Test {
   }
 
   /// Keep the paths of one retention call. Each is listed once across the whole test.
-  void hand_over(const std::vector<std::string> & paths) {
+  void hand_over(const std::vector<ros2_medkit_fault_manager::core::FreedRecording> & freed) {
+    const auto paths = paths_of(freed);
     expect_unlinkable(paths);
     for (const auto & path : paths) {
       EXPECT_FALSE(unlinked(path)) << path << " was handed over twice";

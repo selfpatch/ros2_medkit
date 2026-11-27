@@ -225,8 +225,8 @@ class FaultManagerNode : public rclcpp::Node {
   /// shared_ptr to allow safe capture-by-value in the pool's capture jobs.
   std::shared_ptr<SnapshotCapture> snapshot_capture_;
 
-  /// Runs the unlinks that follow a rosbag row change. Drained at shutdown after rosbag_capture_->stop(),
-  /// whose last store can free a recording.
+  /// Removes the directories a clear or a stale-row cleanup frees, off the executor. Drained at shutdown
+  /// after rosbag_capture_->stop().
   std::shared_ptr<RetentionWorker> retention_worker_;
 
   /// Rosbag retention decisions. Built also with rosbag capture off: the stale-row cleanup of

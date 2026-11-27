@@ -91,7 +91,7 @@ class RosbagCapture {
   /// Create rosbag capture on a retention and a worker the caller owns, as the fault manager
   /// node does. The caller drains @p retention_worker after stop().
   /// @param retention Retention decisions over @p storage
-  /// @param retention_worker Runs the unlinks that follow a row change
+  /// @param retention_worker Removes the directories a clear frees
   RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const RosbagConfig & config,
                 const SnapshotConfig & snapshot_config, std::shared_ptr<core::RosbagRetention> retention,
                 std::shared_ptr<RetentionWorker> retention_worker, StorageProbeFn storage_probe = {});
@@ -325,7 +325,8 @@ class RosbagCapture {
   /// every fault of it is cleared or the store failed, and nothing else. A failed quota
   /// keeps it: by then the rows are committed, and removing the directory would strand
   /// them - unreadable for good, and still charged against max_total_storage_mb. The
-  /// directories the store freed go to the retention worker.
+  /// directories the store freed are removed here, before the caller logs the stored
+  /// bag, and each removal is logged once it is done.
   ///
   /// Never throws. One caller runs on the store worker, where an escaping exception
   /// would terminate; the other runs on the capture pool, which would swallow it

@@ -41,6 +41,7 @@ using ros2_medkit_fault_manager::RosbagApplyResult;
 using ros2_medkit_fault_manager::RosbagChangeSet;
 using ros2_medkit_fault_manager::RosbagFileInfo;
 using ros2_medkit_fault_manager::SqliteFaultStorage;
+using ros2_medkit_fault_manager::core::RemovalReason;
 using ros2_medkit_fault_manager::core::RosbagRetention;
 using ros2_medkit_fault_manager::core::RosbagRetentionLimits;
 using ros2_medkit_fault_manager::core::StoreResult;
@@ -316,6 +317,16 @@ TEST_F(RosbagRetentionStore, QuotaRunsWhenTheCapRemovedEveryNewRow) {
   EXPECT_TRUE(storage.get_rosbag_files("OTHER").empty()) << "the quota did not run";
   EXPECT_TRUE(listed(outcome.unlink_paths, other.file_path));
   EXPECT_FALSE(listed(outcome.unlink_paths, newer.file_path));
+  // Each freed directory carries the reason its removal is logged with.
+  for (const auto & recording : outcome.unlink_paths) {
+    if (recording.path == loser.file_path) {
+      EXPECT_EQ(recording.reason, RemovalReason::kCap);
+      EXPECT_EQ(recording.recording_id, "fault_CAPPED_2000");
+    } else {
+      EXPECT_EQ(recording.reason, RemovalReason::kQuota);
+      EXPECT_EQ(recording.recording_id, "fault_OTHER_1000");
+    }
+  }
 }
 
 TEST_F(RosbagRetentionStore, QuotaStopsAtTheLimit) {
@@ -335,7 +346,7 @@ TEST_F(RosbagRetentionStore, QuotaStopsAtTheLimit) {
   const auto over = retention.store({row("N2", "fault_N2_4000", 4000, 300)});
   EXPECT_EQ(over.result, StoreResult::kStored);
   expect_unlinkable(over.unlink_paths);
-  EXPECT_EQ(over.unlink_paths, std::vector<std::string>{o1.file_path});
+  EXPECT_EQ(paths_of(over.unlink_paths), std::vector<std::string>{o1.file_path});
   EXPECT_TRUE(storage.get_rosbag_files("O1").empty());
   EXPECT_EQ(storage.get_rosbag_files("O2").size(), 1u) << "the eviction went past the limit";
 }
@@ -352,7 +363,8 @@ TEST_F(RosbagRetentionStore, AutoCleanupCountsRemovedRows) {
   const auto removal = retention.on_fault_cleared("CLEARED");
   EXPECT_EQ(removal.removed_rows, 2u);
   expect_unlinkable(removal.unlink_paths);
-  EXPECT_EQ(removal.unlink_paths, std::vector<std::string>{own.file_path}) << "SIBLING still names the shared bag";
+  EXPECT_EQ(paths_of(removal.unlink_paths), std::vector<std::string>{own.file_path})
+      << "SIBLING still names the shared bag";
   EXPECT_TRUE(storage.get_rosbag_files("CLEARED").empty());
   EXPECT_EQ(storage.get_rosbag_files("SIBLING").size(), 1u);
 
