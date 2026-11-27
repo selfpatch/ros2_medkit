@@ -879,7 +879,7 @@ void FaultManagerNode::handle_get_rosbag(const std::shared_ptr<ros2_medkit_msgs:
     // fault's other, healthy recordings with it because one of them vanished.
     try {
       auto removal = rosbag_retention_->forget_recording(rosbag_info->recording_id);
-      post_unlinks(*retention_worker_, "forget", std::move(removal.unlink_paths));
+      retention_worker_->post_removals("forget", std::move(removal.unlink_paths));
     } catch (const FaultStorage::IgnorableConnectionException & e) {
       RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
       return;
@@ -930,7 +930,7 @@ void FaultManagerNode::handle_list_rosbags(
       if (reaped.insert(info.recording_id).second) {
         try {
           auto removal = rosbag_retention_->forget_recording(info.recording_id);
-          post_unlinks(*retention_worker_, "forget", std::move(removal.unlink_paths));
+          retention_worker_->post_removals("forget", std::move(removal.unlink_paths));
         } catch (const FaultStorage::IgnorableConnectionException & e) {
           RCLCPP_WARN(get_logger(), "Failed to connect with the fault storage server: %s", e.what());
           response->success = false;

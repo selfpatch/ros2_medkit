@@ -588,14 +588,18 @@ depends on the path:
   ``RetentionWorker``, one thread with a FIFO queue, removes the directories, so the clear service
   returns before a large bag is removed.
 
-Every removal is logged by the code that removed it, after the removal succeeded. No line
-announces a removal that has not happened yet:
+Every path removes a directory through ``RetentionWorker::remove_recording()``, which logs the
+removal after it succeeded. No line announces a removal that has not happened yet:
 
 - a cap victim: ``Recording removed: <recording_id> (max_bags_per_fault)``;
+- a recording of a cleared fault: ``Recording removed: <recording_id> (fault cleared)``;
 - a quota eviction: ``Deleted old bag '<path>' to enforce storage limit``;
-- a clear: ``Auto-cleanup: deleted bag file for fault '<code>'``, written by the worker job after the
-  directories are gone, or at once when a sibling of the burst still holds the bag;
+- a stale row: no line, because its directory was already missing;
 - a removal that failed: a WARN with the path, the reason and the error.
+
+A clear logs ``Auto-cleanup: deleted bag file for fault '<code>'`` once, after the lines of its
+recordings, when all of them are gone. It logs it at once when a sibling of the burst still holds
+the bag.
 
 The node shuts down in this order: the capture pool, then ``RosbagCapture::stop()``, which
 finalizes an open post-fault window and stores it, then ``RetentionWorker::drain_and_stop()``,

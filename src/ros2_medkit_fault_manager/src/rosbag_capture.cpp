@@ -224,33 +224,6 @@ std::shared_ptr<rosbag2_storage::SerializedBagMessage> create_bag_message(const 
   return bag_msg;
 }
 
-/// The setting behind a removal, as an operator configures it.
-const char * removal_reason_name(core::RemovalReason reason) {
-  switch (reason) {
-    case core::RemovalReason::kCap:
-      return "max_bags_per_fault";
-    case core::RemovalReason::kQuota:
-      return "max_total_storage_mb";
-    case core::RemovalReason::kCleared:
-      return "auto_cleanup";
-    case core::RemovalReason::kStale:
-      return "directory missing";
-  }
-  return "unknown";
-}
-
-/// Remove the directory of @p recording. Logs a WARN and returns false when it stays on disk.
-bool remove_recording_dir(const rclcpp::Logger & logger, const core::FreedRecording & recording) {
-  std::error_code ec;
-  std::filesystem::remove_all(recording.path, ec);
-  if (ec) {
-    RCLCPP_WARN(logger, "Failed to remove recording '%s' (%s): %s", recording.path.c_str(),
-                removal_reason_name(recording.reason), ec.message().c_str());
-    return false;
-  }
-  return true;
-}
-
 }  // namespace
 
 RosbagCapture::RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const RosbagConfig & config,
@@ -733,8 +706,8 @@ void RosbagCapture::on_fault_cleared(const std::string & fault_code) {
   }
 
   // Called from the clear service, where a throw terminates the process. The retention orders this
-  // removal against a store in progress. The directories go on the retention worker, and the line
-  // is logged once they are gone.
+  // removal against a store in progress. The directories go on the retention worker: one line per
+  // removed recording, then one line for the fault once all of them are gone.
   try {
     auto removal = retention_->on_fault_cleared(fault_code);
     if (removal.removed_rows == 0) {
@@ -745,16 +718,17 @@ void RosbagCapture::on_fault_cleared(const std::string & fault_code) {
       RCLCPP_INFO(node_->get_logger(), "Auto-cleanup: deleted bag file for fault '%s'", fault_code.c_str());
       return;
     }
-    retention_worker_->post(
-        "clear", [logger = node_->get_logger(), fault_code, freed = std::move(removal.unlink_paths)]() {
-          bool removed_all = true;
-          for (const auto & recording : freed) {
-            removed_all = remove_recording_dir(logger, recording) && removed_all;
-          }
-          if (removed_all) {
-            RCLCPP_INFO(logger, "Auto-cleanup: deleted bag file for fault '%s'", fault_code.c_str());
-          }
-        });
+    // The job runs on the worker, so the worker outlives it.
+    retention_worker_->post("clear", [worker = retention_worker_.get(), logger = node_->get_logger(), fault_code,
+                                      freed = std::move(removal.unlink_paths)]() {
+      bool removed_all = true;
+      for (const auto & recording : freed) {
+        removed_all = worker->remove_recording(recording) && removed_all;
+      }
+      if (removed_all) {
+        RCLCPP_INFO(logger, "Auto-cleanup: deleted bag file for fault '%s'", fault_code.c_str());
+      }
+    });
   } catch (const std::exception & e) {
     RCLCPP_WARN(node_->get_logger(), "Auto-cleanup of the bag for fault '%s' failed: %s", fault_code.c_str(), e.what());
   }
@@ -1550,15 +1524,7 @@ bool RosbagCapture::store_rows_or_discard_bag(std::vector<RosbagFileInfo> rows, 
   auto outcome = retention_->store(std::move(rows));
   // On this thread, with the retention mutex released, and before the caller logs the stored bag.
   for (const auto & recording : outcome.unlink_paths) {
-    if (!remove_recording_dir(node_->get_logger(), recording)) {
-      continue;
-    }
-    if (recording.reason == core::RemovalReason::kQuota) {
-      RCLCPP_INFO(node_->get_logger(), "Deleted old bag '%s' to enforce storage limit", recording.path.c_str());
-    } else {
-      RCLCPP_INFO(node_->get_logger(), "Recording removed: %s (%s)", recording.recording_id.c_str(),
-                  removal_reason_name(recording.reason));
-    }
+    retention_worker_->remove_recording(recording);
   }
 
   if (outcome.result == core::StoreResult::kAllFaultsCleared) {

@@ -20,6 +20,25 @@
 
 namespace ros2_medkit_fault_manager {
 
+namespace {
+
+/// Why a recording went, as its log lines name it.
+const char * removal_reason_name(core::RemovalReason reason) {
+  switch (reason) {
+    case core::RemovalReason::kCap:
+      return "max_bags_per_fault";
+    case core::RemovalReason::kQuota:
+      return "max_total_storage_mb";
+    case core::RemovalReason::kCleared:
+      return "fault cleared";
+    case core::RemovalReason::kStale:
+      return "directory missing";
+  }
+  return "unknown";
+}
+
+}  // namespace
+
 RetentionWorker::RetentionWorker(core::LogSink & log_sink, std::string logger_name, Mode mode)
   : log_sink_(log_sink), logger_name_(std::move(logger_name)), mode_(mode) {
   if (mode_ == Mode::kThread) {
@@ -98,15 +117,39 @@ void RetentionWorker::run_job(const Job & job) {
   core::logf(log_sink_, core::LogLevel::kDebug, logger_name_, "retention job done: %s", job.kind.c_str());
 }
 
-void post_unlinks(RetentionWorker & worker, std::string kind, std::vector<core::FreedRecording> recordings) {
+bool RetentionWorker::remove_recording(const core::FreedRecording & recording) {
+  std::error_code ec;
+  std::filesystem::remove_all(recording.path, ec);
+  if (ec) {
+    core::logf(log_sink_, core::LogLevel::kWarn, logger_name_, "Failed to remove recording '%s' (%s): %s",
+               recording.path.c_str(), removal_reason_name(recording.reason), ec.message().c_str());
+    return false;
+  }
+  switch (recording.reason) {
+    case core::RemovalReason::kQuota:
+      core::logf(log_sink_, core::LogLevel::kInfo, logger_name_, "Deleted old bag '%s' to enforce storage limit",
+                 recording.path.c_str());
+      break;
+    case core::RemovalReason::kStale:
+      // The directory was already missing: there was nothing to remove.
+      break;
+    case core::RemovalReason::kCap:
+    case core::RemovalReason::kCleared:
+      core::logf(log_sink_, core::LogLevel::kInfo, logger_name_, "Recording removed: %s (%s)",
+                 recording.recording_id.c_str(), removal_reason_name(recording.reason));
+      break;
+  }
+  return true;
+}
+
+void RetentionWorker::post_removals(std::string kind, std::vector<core::FreedRecording> recordings) {
   if (recordings.empty()) {
     return;
   }
-  worker.post(std::move(kind), [recordings = std::move(recordings)]() {
+  // The job runs on this worker, so the worker outlives it.
+  post(std::move(kind), [this, recordings = std::move(recordings)]() {
     for (const auto & recording : recordings) {
-      // A directory that is already gone needs no removal.
-      std::error_code ec;
-      std::filesystem::remove_all(recording.path, ec);
+      remove_recording(recording);
     }
   });
 }

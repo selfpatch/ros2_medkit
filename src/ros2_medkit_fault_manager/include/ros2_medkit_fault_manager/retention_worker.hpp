@@ -50,6 +50,17 @@ class RetentionWorker {
 
   void post(std::string kind, std::function<void()> job);
 
+  /// Remove the directory of @p recording on the calling thread, then log the removal with its
+  /// reason: `Recording removed: <id> (max_bags_per_fault)` or `(fault cleared)`, main's
+  /// `Deleted old bag '<path>' to enforce storage limit` for the quota, nothing for a directory
+  /// that was already missing. A failure logs a WARN with the path, the reason and the error.
+  /// @return true when the directory is gone
+  bool remove_recording(const core::FreedRecording & recording);
+
+  /// Post one job that runs remove_recording() for each of @p recordings. Posts nothing when
+  /// @p recordings is empty.
+  void post_removals(std::string kind, std::vector<core::FreedRecording> recordings);
+
   /// Run every job posted so far, then stop the thread. Idempotent.
   void drain_and_stop();
 
@@ -71,9 +82,5 @@ class RetentionWorker {
   bool stopping_{false};
   std::thread thread_;
 };
-
-/// Post one job that removes the directory of each of @p recordings, without a log line.
-/// Posts nothing when @p recordings is empty.
-void post_unlinks(RetentionWorker & worker, std::string kind, std::vector<core::FreedRecording> recordings);
 
 }  // namespace ros2_medkit_fault_manager
