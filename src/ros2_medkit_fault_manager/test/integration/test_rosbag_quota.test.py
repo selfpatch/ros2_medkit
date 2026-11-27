@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Rosbag retention against a real fault_manager_node on a SQLite file.
+"""
+Rosbag retention against a real fault_manager_node on a SQLite file.
 
 Each test starts the fault manager as its own process, feeds it sized payloads, confirms faults
 over the ROS services and reads the outcome from the services, the database file and the bag

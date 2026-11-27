@@ -13,7 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Rosbag retention against a real fault_manager_node on a real PostgreSQL server.
+"""
+Rosbag retention against a real fault_manager_node on a real PostgreSQL server.
 
 ROS2_MEDKIT_TEST_PG_CONN names the server, as `postgresql://user:password@host:port/database`.
 Each test creates its own database on it. An unreachable server fails the test.

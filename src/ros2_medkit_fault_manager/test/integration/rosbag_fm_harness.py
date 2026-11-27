@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Harness for the rosbag retention tests: a real fault_manager_node and a ROS client for it.
+"""
+Harness for the rosbag retention tests: a real fault_manager_node and a ROS client for it.
 
 The fault manager runs as its own process, started with debug logging, and its output is read on a
 thread. A test waits on output lines or on polled service state, each with a deadline.
@@ -162,7 +163,8 @@ class FaultManager:
 
 @contextlib.contextmanager
 def running_fault_manager(params, wait_for_subscription=True):
-    """Start a fault manager, yield it once ready, end it with SIGTERM and assert exit code 0.
+    """
+    Start a fault manager, yield it once ready, end it with SIGTERM and assert exit code 0.
 
     A sanitizer report inside the process shows as a non-zero exit code. The body may end the
     process itself (a SIGTERM inside it); the exit code is checked either way.
@@ -262,7 +264,8 @@ class FaultManagerClient:
                                           'the fault manager never subscribed to ')
 
     def wait_for_no_payload_subscriber(self):
-        """Block until the subscription of an earlier fault manager is gone.
+        """
+        Block until the subscription of an earlier fault manager is gone.
 
         A new fault manager is matched only once the old reader is unmatched, so a stale reader
         cannot stand in for it and let messages go out before it is listening.
@@ -440,7 +443,8 @@ class RetentionCase(unittest.TestCase):
                         f' plus at most {SIZE_SLACK}')
 
     def record(self, fm, code, mib, burst=()):
-        """Publish `mib` MiB, confirm `code` and `burst`, and return the bag path.
+        """
+        Publish `mib` MiB, confirm `code` and `burst`, and return the bag path.
 
         The `burst` faults confirm inside the post-fault window of `code`.
         """
