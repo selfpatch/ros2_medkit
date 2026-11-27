@@ -249,13 +249,25 @@ class FaultManagerClient:
         request.entity_fqn = entity
         return self._call(ListRosbags, 'list_rosbags', request)
 
+    def _wait_for_subscription_count(self, reached, what):
+        deadline = time.monotonic() + STARTUP_TIMEOUT_SEC
+        while not reached(self.publisher.get_subscription_count()):
+            if time.monotonic() > deadline:
+                raise AssertionError(what + PAYLOAD_TOPIC)
+            rclpy.spin_once(self.node, timeout_sec=0.1)
+
     def wait_for_payload_subscriber(self):
         """Block until the fault manager's subscription on the payload topic is matched."""
-        deadline = time.monotonic() + STARTUP_TIMEOUT_SEC
-        while self.publisher.get_subscription_count() == 0:
-            if time.monotonic() > deadline:
-                raise AssertionError('the fault manager never subscribed to ' + PAYLOAD_TOPIC)
-            rclpy.spin_once(self.node, timeout_sec=0.1)
+        self._wait_for_subscription_count(lambda n: n > 0,
+                                          'the fault manager never subscribed to ')
+
+    def wait_for_no_payload_subscriber(self):
+        """Block until the subscription of an earlier fault manager is gone.
+
+        A new fault manager is matched only once the old reader is unmatched, so a stale reader
+        cannot stand in for it and let messages go out before it is listening.
+        """
+        self._wait_for_subscription_count(lambda n: n == 0, 'a subscriber stayed on ')
 
     def publish_bytes(self, count, size):
         """Publish `count` messages of `size` random bytes and wait for every reader to ack."""
@@ -264,8 +276,8 @@ class FaultManagerClient:
             msg.data = list(os.urandom(size))
             self.publisher.publish(msg)
         wait = getattr(self.publisher, 'wait_for_all_acked', None)
-        if wait is not None:
-            wait(Duration(seconds=SERVICE_TIMEOUT_SEC))
+        if wait is not None and not wait(Duration(seconds=SERVICE_TIMEOUT_SEC)):
+            raise AssertionError('the payload was not acknowledged by every reader')
 
 
 class Ticker:
@@ -413,6 +425,7 @@ class RetentionCase(unittest.TestCase):
         params = base_params(self.db, self.storage, **overrides)
         params.update(self.storage_params())
         self.client.reset_clients()
+        self.client.wait_for_no_payload_subscriber()
         with running_fault_manager(params) as fm:
             self.client.wait_for_services()
             if params.get('snapshots.rosbag.enabled'):
