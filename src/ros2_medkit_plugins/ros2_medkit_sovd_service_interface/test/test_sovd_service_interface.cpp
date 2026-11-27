@@ -433,7 +433,17 @@ TEST_F(SovdServiceInterfaceTest, ListEntityFaults) {
                     {"description", "Motor temperature exceeds threshold"},
                     {"status", "CONFIRMED"},
                     {"occurrence_count", 3},
-                    {"reporting_sources", {"temp_sensor"}}});
+                    {"reporting_sources", {"temp_sensor"}},
+                    {"owner", "temp_sensor"}});
+  // A shared record: the fault manager's owner is "*".
+  faults.push_back(
+      {{"fault_code", "BUS_OFF"}, {"status", "CONFIRMED"}, {"reporting_sources", {"temp_sensor"}}, {"owner", "*"}});
+  // A peer gateway's item of one per_source record names it in x-medkit.records.
+  faults.push_back(
+      {{"fault_code", "PEER_FAULT"},
+       {"status", "CONFIRMED"},
+       {"reporting_sources", {"peer_sensor"}},
+       {"x-medkit", {{"records", nlohmann::json::array({{{"source_id", "peer_sensor"}, {"status", "CONFIRMED"}}})}}}});
   context_->set_entity_faults("temp_sensor", faults);
 
   auto client = node_->create_client<ros2_medkit_msgs::srv::ListFaultsForEntity>("/test_medkit/list_entity_faults");
@@ -447,11 +457,15 @@ TEST_F(SovdServiceInterfaceTest, ListEntityFaults) {
   auto response = future.get();
 
   ASSERT_TRUE(response->success);
-  ASSERT_EQ(response->faults.size(), 1u);
+  ASSERT_EQ(response->faults.size(), 3u);
   EXPECT_EQ(response->faults[0].fault_code, "MOTOR_OVERHEAT");
   EXPECT_EQ(response->faults[0].severity, 2u);
   EXPECT_EQ(response->faults[0].status, "CONFIRMED");
   EXPECT_EQ(response->faults[0].occurrence_count, 3u);
+  // Each Fault names its record, as the fault manager's Fault does.
+  EXPECT_EQ(response->faults[0].owner, "temp_sensor");
+  EXPECT_EQ(response->faults[1].owner, "*");
+  EXPECT_EQ(response->faults[2].owner, "peer_sensor");
 }
 
 TEST_F(SovdServiceInterfaceTest, ListEntityFaultsNotFound) {

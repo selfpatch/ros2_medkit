@@ -16,11 +16,14 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <linux/capability.h>
+#include <map>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <set>
 #include <string>
@@ -39,7 +42,9 @@
 #include "ros2_medkit_gateway/core/http/handlers/bulkdata_handlers.hpp"
 #include "ros2_medkit_gateway/core/http/http_utils.hpp"
 #include "ros2_medkit_gateway/core/managers/bulk_data_store.hpp"
+#include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
+#include "ros2_medkit_gateway/core/transports/fault_service_transport.hpp"
 
 using namespace ros2_medkit_gateway;
 // No `using json = nlohmann::json` here: the namespace pulled in above already
@@ -120,13 +125,26 @@ TEST_F(BulkDataHandlersTest, RecordingIdToleratesTrailingSlashAndEmptyPath) {
 
 namespace {
 
-json rosbag_row(const std::string & fault_code, const std::string & recording_id, uint64_t size_bytes = 1024) {
-  return json{{"fault_code", fault_code}, {"recording_id", recording_id}, {"file_path", "/var/bags/" + recording_id},
-              {"format", "mcap"},         {"duration_sec", 5.0},          {"size_bytes", size_bytes}};
+/// The listing stamps each row with the scope source it was listed under, which
+/// keys the record that dates it.
+json rosbag_row(const std::string & fault_code, const std::string & recording_id, uint64_t size_bytes = 1024,
+                const std::string & owner = "app_a") {
+  return json{{"fault_code", fault_code},
+              {"recording_id", recording_id},
+              {"file_path", "/var/bags/" + recording_id},
+              {"format", "mcap"},
+              {"duration_sec", 5.0},
+              {"size_bytes", size_bytes},
+              {"owner", owner}};
 }
 
 json fault_at(double first_occurred) {
   return json{{"first_occurred", first_occurred}};
+}
+
+/// Key one record for the date lookup the same way the handler does.
+std::string record_key(const std::string & owner, const std::string & fault_code) {
+  return handlers::detail::record_map_key(owner, fault_code);
 }
 
 /// A row carrying the recording's own timestamp, which is what the fault manager
@@ -188,8 +206,8 @@ TEST_F(BulkDataHandlersTest, ARecordingIsDatedByTheEarliestFaultOfItsBurst) {
   // Downstream faults confirm after the root cause, and the recording covers
   // the whole burst, so the earliest is the honest creation date.
   const std::vector<json> rows{rosbag_row("DOWNSTREAM", "fault_ROOT_9"), rosbag_row("ROOT", "fault_ROOT_9")};
-  const std::unordered_map<std::string, json> faults{{"DOWNSTREAM", fault_at(1700000900.0)},
-                                                     {"ROOT", fault_at(1700000000.0)}};
+  const std::unordered_map<std::string, json> faults{{record_key("app_a", "DOWNSTREAM"), fault_at(1700000900.0)},
+                                                     {record_key("app_a", "ROOT"), fault_at(1700000000.0)}};
 
   const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors(rows, faults);
   ASSERT_EQ(descriptors.size(), 1u);
@@ -202,13 +220,30 @@ TEST_F(BulkDataHandlersTest, EachRecordingOfOneFaultIsDatedByItsOwnCapture) {
   // is exactly what tells the occurrences apart.
   const std::vector<json> rows{rosbag_row_made_at("FLAP", "fault_FLAP_2", int64_t{1700000900} * 1'000'000'000),
                                rosbag_row_made_at("FLAP", "fault_FLAP_1", int64_t{1700000000} * 1'000'000'000)};
-  const std::unordered_map<std::string, json> faults{{"FLAP", fault_at(1700000000.0)}};
+  const std::unordered_map<std::string, json> faults{{record_key("app_a", "FLAP"), fault_at(1700000000.0)}};
 
   const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors(rows, faults);
   ASSERT_EQ(descriptors.size(), 2u);
   EXPECT_EQ(descriptors[0].creation_date, format_timestamp_ns(int64_t{1700000900} * 1'000'000'000));
   EXPECT_EQ(descriptors[1].creation_date, format_timestamp_ns(int64_t{1700000000} * 1'000'000'000));
   EXPECT_NE(descriptors[0].creation_date, descriptors[1].creation_date);
+}
+
+// Two sources reporting one code are two records with their own first_occurred.
+// Keying the date lookup on the code alone let whichever record was listed last
+// date the other owner's recordings.
+TEST_F(BulkDataHandlersTest, ARecordingIsDatedByItsOwnOwnersRecord) {
+  const std::vector<json> rows{rosbag_row("SHARED_CODE", "rec_a", 1024, "app_a"),
+                               rosbag_row("SHARED_CODE", "rec_b", 1024, "app_b")};
+  const std::unordered_map<std::string, json> faults{{record_key("app_a", "SHARED_CODE"), fault_at(1700000000.0)},
+                                                     {record_key("app_b", "SHARED_CODE"), fault_at(1700009999.0)}};
+
+  const auto descriptors = handlers::detail::fold_rosbag_rows_into_descriptors(rows, faults);
+
+  ASSERT_EQ(descriptors.size(), 2u);
+  EXPECT_EQ(descriptors[0].creation_date, format_timestamp_ns(int64_t{1700000000} * 1'000'000'000));
+  EXPECT_EQ(descriptors[1].creation_date, format_timestamp_ns(int64_t{1700009999} * 1'000'000'000))
+      << "app_b's recording was dated from app_a's record of the same code";
 }
 
 TEST_F(BulkDataHandlersTest, AnAcknowledgedFaultsRecordingsKeepTheirRealDate) {
@@ -1645,42 +1680,13 @@ TEST_F(BulkDataSourceFiltersTest, FunctionWithComponentHostResolvesComponentApps
 // get_fault(code, source) semantics) would let app id "plc" claim the bag of
 // "plc_line1".
 // === Download authorization tests ===
-// A recording is shared by a whole burst, so ownership is the union over its
-// attached faults. The scope matcher itself is unchanged and pinned below; what
-// is new is which codes get fed to it.
-
-TEST_F(BulkDataSourceFiltersTest, AttachedFaultCodesComeFromTheRecordingNotTheUrl) {
-  const nlohmann::json rosbag = {{"file_path", "/var/bags/fault_ROOT_1"},
-                                 {"recording_id", "fault_ROOT_1"},
-                                 {"fault_codes", {"ROOT", "DOWNSTREAM_A", "DOWNSTREAM_B"}}};
-
-  EXPECT_EQ(handlers::detail::rosbag_attached_fault_codes(rosbag, "fault_ROOT_1"),
-            (std::vector<std::string>{"ROOT", "DOWNSTREAM_A", "DOWNSTREAM_B"}));
-}
-
-TEST_F(BulkDataSourceFiltersTest, AttachedFaultCodesFallBackToTheRequestedIdOnAnOlderPeer) {
-  // The compatibility path: the id addressed was the fault code, and a peer
-  // that predates the field sends no list. Authorizing against the requested id
-  // is exactly the check that shipped before.
-  const nlohmann::json rosbag = {{"file_path", "/var/bags/fault_MOTOR_1"}};
-  EXPECT_EQ(handlers::detail::rosbag_attached_fault_codes(rosbag, "MOTOR_OVERHEAT"),
-            (std::vector<std::string>{"MOTOR_OVERHEAT"}));
-}
-
-TEST_F(BulkDataSourceFiltersTest, AttachedFaultCodesFallBackOnAnEmptyOrMalformedList) {
-  // Never return empty: an empty list makes any_of vacuously false, which would
-  // 404 a download the entity owns.
-  const nlohmann::json empty_list = {{"fault_codes", nlohmann::json::array()}};
-  EXPECT_EQ(handlers::detail::rosbag_attached_fault_codes(empty_list, "X"), (std::vector<std::string>{"X"}));
-
-  const nlohmann::json not_an_array = {{"fault_codes", "X"}};
-  EXPECT_EQ(handlers::detail::rosbag_attached_fault_codes(not_an_array, "X"), (std::vector<std::string>{"X"}));
-}
+// A recording is shared by a whole burst, so ownership is the union over the
+// records it is attached to, each a (fault code, owner) pair. The scope matcher
+// is pinned below.
 
 TEST_F(BulkDataSourceFiltersTest, AFaultCodeUrlIsRecognisedAsTheCompatibilityPath) {
   // The segment named a fault; the answer is that fault's newest recording, whose
-  // id is something else. Authorizing on the union alone would 200 a code the
-  // entity does not own, so this path also demands the requested code in scope.
+  // id is something else. The download then picks from the entity's own listing.
   const nlohmann::json resolved_by_code = {{"recording_id", "fault_MOTOR_OVERHEAT_1738664999000"},
                                            {"fault_codes", {"MOTOR_OVERHEAT", "MOTOR_STALL"}}};
   EXPECT_TRUE(handlers::detail::rosbag_resolved_by_fault_code(resolved_by_code, "MOTOR_OVERHEAT"));
@@ -1694,8 +1700,7 @@ TEST_F(BulkDataSourceFiltersTest, ARecordingIdUrlIsNotTheCompatibilityPath) {
 
 TEST_F(BulkDataSourceFiltersTest, APeerWithoutRecordingIdsIsNotTreatedAsCompatibilityPath) {
   // An older peer answers by fault code only and sends no recording id. The
-  // attached-codes fallback already reduces to the pre-#620 check there, so
-  // demanding a second one would 404 a download such a peer can serve.
+  // download authorizes on the requested code there.
   const nlohmann::json older_peer = {{"file_path", "/var/bags/fault_MOTOR_1"}};
   EXPECT_FALSE(handlers::detail::rosbag_resolved_by_fault_code(older_peer, "MOTOR_OVERHEAT"));
 }
@@ -1787,4 +1792,274 @@ TEST_F(BulkDataSourceFiltersTest, DownloadOwnershipScopeRejectsPrefixSiblingApp)
 
   nlohmann::json child_fault = {{"reporting_sources", {"plc/axis1"}}};
   EXPECT_TRUE(faults::fault_in_source_scope(child_fault, scope));
+}
+
+// =============================================================================
+// list_scoped_rosbag_descriptors: which recordings an entity lists, and what a
+// failing fault manager turns the listing into.
+// =============================================================================
+
+namespace {
+
+/// Fault manager stand-in answering list_faults and list_rosbags from fixed
+/// records. list_rosbags matches a reporting source equal to the one asked for
+/// or below it on path segments, like the fault manager.
+class ListingTransport : public FaultServiceTransport {
+ public:
+  ListingTransport() = default;
+  ~ListingTransport() override = default;
+  ListingTransport(const ListingTransport &) = delete;
+  ListingTransport & operator=(const ListingTransport &) = delete;
+  ListingTransport(ListingTransport &&) = delete;
+  ListingTransport & operator=(ListingTransport &&) = delete;
+
+  FaultResult report_fault(const std::string & /*fault_code*/, uint8_t /*severity*/,
+                           const std::string & /*description*/, const std::string & /*source_id*/) override {
+    return {};
+  }
+  FaultResult list_faults(const std::string & /*source_id*/, bool prefailed, bool confirmed, bool cleared, bool healed,
+                          bool muted, bool /*include_clusters*/) override {
+    ++list_faults_calls;
+    asked_all_states = prefailed && confirmed && cleared && healed && muted;
+    FaultResult r;
+    r.success = faults_ok;
+    r.data = {{"faults", faults}};
+    r.error_message = faults_ok ? "" : "list_faults timed out";
+    return r;
+  }
+  FaultWithEnvJsonResult get_fault_with_env(const std::string & /*fault_code*/,
+                                            const std::string & /*source_id*/) override {
+    return {};
+  }
+  FaultResult get_fault(const std::string & /*fault_code*/, const std::string & /*source_id*/) override {
+    return {};
+  }
+  FaultResult clear_fault(const std::string & /*fault_code*/, const std::string & /*source_id*/,
+                          bool /*skip_correlation_auto_clear*/) override {
+    return {};
+  }
+  FaultResult get_snapshots(const std::string & /*fault_code*/, const std::string & /*source_id*/,
+                            const std::string & /*topic*/) override {
+    return {};
+  }
+  FaultResult get_rosbag(const std::string & /*id*/, const std::string & /*source_id*/) override {
+    FaultResult r;
+    r.success = !served.is_null();
+    r.data = served;
+    if (!r.success) {
+      r.failure = rosbag_failure;
+    }
+    return r;
+  }
+  FaultResult list_rosbags(const std::string & owner) override {
+    ++list_rosbags_calls[owner];
+    FaultResult r;
+    r.success = owner != failing_owner;
+    r.error_message = r.success ? "" : "list_rosbags timed out";
+    nlohmann::json rows = nlohmann::json::array();
+    for (const auto & [row_source, row] : rosbags) {
+      if (row_source == owner || row_source.rfind(owner + "/", 0) == 0) {
+        rows.push_back(row);
+      }
+    }
+    r.data = {{"rosbags", rows}};
+    return r;
+  }
+  bool wait_for_services(std::chrono::duration<double> /*timeout*/) override {
+    return true;
+  }
+  bool is_available() const override {
+    return true;
+  }
+
+  bool faults_ok{true};
+  bool asked_all_states{false};
+  int list_faults_calls{0};
+  std::string failing_owner;
+  /// ListRosbags calls per owner.
+  std::map<std::string, int> list_rosbags_calls;
+  nlohmann::json faults = nlohmann::json::array();
+  /// (reporting source, row) pairs; a row of the wire format does not carry its source.
+  std::vector<std::pair<std::string, nlohmann::json>> rosbags;
+  /// GetRosbag's answer; null fails the call with `rosbag_failure`.
+  nlohmann::json served;
+  FaultFailure rosbag_failure{FaultFailure::Declined};
+};
+
+nlohmann::json listing_record(const std::string & code, const std::string & owner) {
+  return {{"fault_code", code}, {"reporting_sources", {owner}}};
+}
+
+std::pair<std::string, nlohmann::json> listing_row(const std::string & code, const std::string & owner) {
+  return {owner,
+          {{"fault_code", code}, {"recording_id", "fault_" + code + "_1"}, {"file_path", "/tmp/fault_" + code + "_1"}}};
+}
+
+std::set<std::string> listed_codes(const std::vector<dto::BulkDataDescriptor> & descriptors) {
+  std::set<std::string> codes;
+  for (const auto & d : descriptors) {
+    for (const auto & code : d.x_medkit->at("fault_codes")) {
+      codes.insert(code.get<std::string>());
+    }
+  }
+  return codes;
+}
+
+}  // namespace
+
+TEST(ListScopedRosbagDescriptorsTest, ListsBagsOfRecordsWithASourceInScope) {
+  auto transport = std::make_shared<ListingTransport>();
+  transport->faults = nlohmann::json::array({
+      listing_record("EXACT", "/x/detector"),
+      listing_record("SUB", "/x/detector/diag"),
+      listing_record("SUB_TOO", "/x/detector/diag"),
+      listing_record("DEEP", "/x/detector/diag/deep"),
+      listing_record("FOREIGN", "/z/other"),
+      listing_record("PREFIX", "/x/detector_extra"),
+  });
+  transport->rosbags = {
+      listing_row("EXACT", "/x/detector"),        listing_row("SUB", "/x/detector/diag"),
+      listing_row("SUB_TOO", "/x/detector/diag"), listing_row("DEEP", "/x/detector/diag/deep"),
+      listing_row("FOREIGN", "/z/other"),         listing_row("PREFIX", "/x/detector_extra"),
+  };
+  FaultManager mgr(transport);
+
+  auto result = handlers::detail::list_scoped_rosbag_descriptors(mgr, {"/x/detector"});
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  EXPECT_EQ(listed_codes(*result), (std::set<std::string>{"DEEP", "EXACT", "SUB", "SUB_TOO"}));
+  EXPECT_TRUE(transport->asked_all_states);
+  EXPECT_EQ(transport->list_rosbags_calls, (std::map<std::string, int>{{"/x/detector", 1}}))
+      << "each scope source is asked once";
+}
+
+TEST(ListScopedRosbagDescriptorsTest, FaultListFailureIsAnErrorNotAnEmptyList) {
+  auto transport = std::make_shared<ListingTransport>();
+  transport->faults_ok = false;
+  FaultManager mgr(transport);
+
+  auto result = handlers::detail::list_scoped_rosbag_descriptors(mgr, {"/x/detector"});
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 503);
+  EXPECT_EQ(result.error().code, ERR_SERVICE_UNAVAILABLE);
+}
+
+TEST(ListScopedRosbagDescriptorsTest, EmptyScopeListsNothingWithoutAskingTheFaultManager) {
+  // A function that hosts nothing: its listing is empty whether or not the fault manager answers.
+  auto transport = std::make_shared<ListingTransport>();
+  transport->faults_ok = false;
+  FaultManager mgr(transport);
+
+  auto result = handlers::detail::list_scoped_rosbag_descriptors(mgr, {});
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  EXPECT_TRUE(result->empty());
+  EXPECT_EQ(transport->list_faults_calls, 0);
+  EXPECT_TRUE(transport->list_rosbags_calls.empty());
+}
+
+TEST(ListScopedRosbagDescriptorsTest, OneFailedRosbagQueryIsAnErrorNotAPartialList) {
+  auto transport = std::make_shared<ListingTransport>();
+  transport->faults = nlohmann::json::array({
+      listing_record("EXACT", "/x/detector"),
+      listing_record("SUB", "/x/detector/diag"),
+  });
+  transport->rosbags = {listing_row("EXACT", "/x/detector"), listing_row("SUB", "/x/detector/diag")};
+  transport->failing_owner = "/x/detector";
+  FaultManager mgr(transport);
+
+  auto result = handlers::detail::list_scoped_rosbag_descriptors(mgr, {"/x/camera", "/x/detector"});
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 503);
+  EXPECT_EQ(result.error().code, ERR_SERVICE_UNAVAILABLE);
+}
+
+// =============================================================================
+// resolve_scoped_rosbag: which recording a download serves, and what a failing
+// fault manager turns the download into.
+// =============================================================================
+
+namespace {
+
+/// GetRosbag's answer for recording `fault_<code>_1`, attached to `code`.
+nlohmann::json served_recording(const std::string & code) {
+  return {{"fault_codes", {code}},
+          {"recording_id", "fault_" + code + "_1"},
+          {"file_path", "/tmp/fault_" + code + "_1"},
+          {"format", "mcap"}};
+}
+
+/// A transport where `code` has one record per owner, and each owner holds the recording.
+std::shared_ptr<ListingTransport> transport_holding(const std::string & code, const std::vector<std::string> & owners) {
+  auto transport = std::make_shared<ListingTransport>();
+  for (const auto & owner : owners) {
+    transport->faults.push_back(listing_record(code, owner));
+    transport->rosbags.push_back(listing_row(code, owner));
+  }
+  transport->served = served_recording(code);
+  return transport;
+}
+
+}  // namespace
+
+TEST(ResolveScopedRosbagTest, ServesARecordingASubPathOwnerHolds) {
+  auto transport = transport_holding("SUB", {"/x/detector/diag"});
+  FaultManager mgr(transport);
+
+  auto result = handlers::detail::resolve_scoped_rosbag(mgr, {"/x/detector"}, "fault_SUB_1", "detector");
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  EXPECT_EQ(result->value("recording_id", ""), "fault_SUB_1");
+}
+
+TEST(ResolveScopedRosbagTest, ARecordingNoOwnerInScopeHoldsIsNotFound) {
+  auto transport = transport_holding("FOREIGN", {"/z/other"});
+  FaultManager mgr(transport);
+
+  auto result = handlers::detail::resolve_scoped_rosbag(mgr, {"/x/detector"}, "fault_FOREIGN_1", "detector");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
+}
+
+TEST(ResolveScopedRosbagTest, FaultListFailureIsUnavailableNotNotFound) {
+  auto transport = transport_holding("SUB", {"/x/detector/diag"});
+  transport->faults_ok = false;
+  FaultManager mgr(transport);
+
+  auto result = handlers::detail::resolve_scoped_rosbag(mgr, {"/x/detector"}, "fault_SUB_1", "detector");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 503);
+  EXPECT_EQ(result.error().code, ERR_SERVICE_UNAVAILABLE);
+}
+
+TEST(ResolveScopedRosbagTest, ARosbagListFailureOnTheFaultCodePathIsUnavailable) {
+  // A fault code picks from the entity's listing, so a failed listing settles nothing.
+  auto transport = transport_holding("SUB", {"/x/detector/diag"});
+  transport->failing_owner = "/x/detector";
+  FaultManager mgr(transport);
+
+  auto result = handlers::detail::resolve_scoped_rosbag(mgr, {"/x/detector"}, "SUB", "detector");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 503);
+  EXPECT_EQ(result.error().code, ERR_SERVICE_UNAVAILABLE);
+}
+
+TEST(ResolveScopedRosbagTest, GetRosbagWithoutAnAnswerIsUnavailable) {
+  auto transport = transport_holding("SUB", {"/x/detector/diag"});
+  transport->served = nullptr;
+  transport->rosbag_failure = FaultFailure::Unavailable;
+  FaultManager mgr(transport);
+
+  auto result = handlers::detail::resolve_scoped_rosbag(mgr, {"/x/detector"}, "fault_SUB_1", "detector");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 503);
+  EXPECT_EQ(result.error().code, ERR_SERVICE_UNAVAILABLE);
+}
+
+TEST(ResolveScopedRosbagTest, GetRosbagDeclinedIsNotFound) {
+  auto transport = transport_holding("SUB", {"/x/detector/diag"});
+  transport->served = nullptr;
+  transport->rosbag_failure = FaultFailure::Declined;
+  FaultManager mgr(transport);
+
+  auto result = handlers::detail::resolve_scoped_rosbag(mgr, {"/x/detector"}, "fault_SUB_1", "detector");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().http_status, 404);
 }

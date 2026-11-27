@@ -14,8 +14,12 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -438,6 +442,75 @@ TEST_F(TriggerManagerTest, Hierarchy_NoMatchForUnrelatedEntity) {
 
   auto event = manager_->consume_pending_event(created->id);
   EXPECT_FALSE(event.has_value());
+}
+
+// ===========================================================================
+// Collection scope function
+// ===========================================================================
+
+namespace {
+
+TriggerCreateRequest make_fault_trigger(const std::string & entity_type, const std::string & entity_id) {
+  TriggerCreateRequest req;
+  req.entity_id = entity_id;
+  req.entity_type = entity_type;
+  req.resource_uri = "/api/v1/" + entity_type + "/" + entity_id + "/faults";
+  req.collection = "faults";
+  req.condition_type = "OnChange";
+  req.protocol = "sse";
+  req.multishot = true;
+  return req;
+}
+
+}  // namespace
+
+TEST_F(TriggerManagerTest, CollectionScope_DecidesFromPayloadNotFromEntityId) {
+  // The hierarchy would route a change for "goal_status" to "plant" and to the
+  // app itself; with a scope function only the payload decides.
+  manager_->set_entity_children_fn(
+      [](const std::string & entity_id, const std::string & /*entity_type*/) -> std::vector<std::string> {
+        return entity_id == "plant" ? std::vector<std::string>{"goal_status"} : std::vector<std::string>{};
+      });
+  manager_->set_collection_scope_fn(
+      "faults", [](const std::string & entity_type, const std::string & entity_id, const json & value) {
+        return value.value("owner_type", "") == entity_type && value.value("owner_id", "") == entity_id;
+      });
+
+  auto area = manager_->create(make_fault_trigger("areas", "plant"));
+  auto app = manager_->create(make_fault_trigger("apps", "goal_status"));
+  ASSERT_TRUE(area.has_value());
+  ASSERT_TRUE(app.has_value());
+
+  notifier_.notify("faults", "goal_status", "/F1", json{{"owner_type", "areas"}, {"owner_id", "plant"}});
+  // A later change for the app proves the earlier one was already judged:
+  // the notifier delivers in order on one worker.
+  notifier_.notify("faults", "", "/F2", json{{"owner_type", "apps"}, {"owner_id", "goal_status"}});
+
+  ASSERT_TRUE(manager_->wait_for_event(app->id, std::chrono::milliseconds(2000)));
+  auto app_event = manager_->consume_pending_event(app->id);
+  ASSERT_TRUE(app_event.has_value());
+  EXPECT_EQ((*app_event)["payload"]["owner_id"], "goal_status");
+  EXPECT_FALSE(manager_->consume_pending_event(app->id).has_value());
+
+  auto area_event = manager_->consume_pending_event(area->id);
+  ASSERT_TRUE(area_event.has_value());
+  EXPECT_EQ((*area_event)["payload"]["owner_id"], "plant");
+  EXPECT_FALSE(manager_->consume_pending_event(area->id).has_value());
+}
+
+TEST_F(TriggerManagerTest, CollectionScope_LeavesOtherCollectionsOnIdMatching) {
+  manager_->set_collection_scope_fn("faults", [](const std::string &, const std::string &, const json &) {
+    return false;
+  });
+
+  auto req = make_request("sensor", "OnChange");
+  req.multishot = true;
+  auto created = manager_->create(req);
+  ASSERT_TRUE(created.has_value());
+
+  notifier_.notify("data", "sensor", "/temperature", json(42.0));
+  ASSERT_TRUE(manager_->wait_for_event(created->id, std::chrono::milliseconds(2000)));
+  EXPECT_TRUE(manager_->consume_pending_event(created->id).has_value());
 }
 
 // ===========================================================================
@@ -1177,6 +1250,264 @@ TEST(LoadPersistentTriggers, SweepRemovesRestoredTriggerAfterItsEntityIsDiscover
 
   manager.shutdown();
   notifier.shutdown();
+}
+
+// ===========================================================================
+// Restore replay
+// ===========================================================================
+
+namespace {
+
+TriggerInfo make_persistent_logs_trigger(const std::string & id, bool multishot = true) {
+  auto info = make_persistent_trigger(id, "late_app");
+  info.resource_uri = "/api/v1/apps/late_app/logs";
+  info.collection = "logs";
+  info.resource_path = "";
+  info.resolved_topic_name = "";
+  info.multishot = multishot;
+  return info;
+}
+
+json log_item(int n) {
+  return json{{"id", "log_" + std::to_string(n)}, {"message", "m" + std::to_string(n)}};
+}
+
+std::vector<std::string> drain_event_ids(TriggerManager & manager, const std::string & trigger_id) {
+  std::vector<std::string> ids;
+  while (auto event = manager.consume_pending_event(trigger_id)) {
+    ids.push_back((*event)["payload"].value("id", ""));
+  }
+  return ids;
+}
+
+/// OnChange that records the id of every value it evaluates.
+class RecordingOnChange : public OnChangeEvaluator {
+ public:
+  bool evaluate(const std::optional<json> & previous, const json & current, const json & params) const override {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      seen_.push_back(current.is_object() ? current.value("id", "") : std::string{});
+    }
+    return OnChangeEvaluator::evaluate(previous, current, params);
+  }
+
+  std::vector<std::string> seen() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return seen_;
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  mutable std::vector<std::string> seen_;
+};
+
+/// Restored logs trigger whose entity the test "discovers" by flipping a flag.
+struct RestoredLogsTrigger {
+  explicit RestoredLogsTrigger(bool multishot = true, bool with_gone_trigger = false) : store(":memory:") {
+    registry.register_condition("OnChange", evaluator);
+    EXPECT_TRUE(store.save(make_persistent_logs_trigger("trig_logs", multishot)).has_value());
+    if (with_gone_trigger) {
+      EXPECT_TRUE(store.save(make_persistent_trigger("trig_gone", "gone_app")).has_value());
+    }
+    TriggerConfig config;
+    config.max_triggers = 100;
+    config.on_restart_behavior = "restore";
+    manager = std::make_unique<TriggerManager>(notifier, registry, store, config);
+    manager->set_collection_scope_fn("logs", [this](const std::string &, const std::string &, const json &) {
+      return discovered.load();
+    });
+    manager->set_restore_replay_fn(
+        "logs",
+        [this](const std::string & entity_type, const std::string & entity_id) -> std::optional<std::vector<json>> {
+          ++replay_calls;
+          if (!discovered.load()) {
+            return std::nullopt;
+          }
+          if (failing_listings.load() > 0) {
+            --failing_listings;
+            return std::nullopt;
+          }
+          EXPECT_EQ(entity_type, "apps");
+          EXPECT_EQ(entity_id, "late_app");
+          return listed;
+        });
+    manager->set_entity_exists_fn([this](const std::string & id, const std::string &) {
+      return id == "gone_app" ? gone_present.load() : discovered.load();
+    });
+    manager->load_persistent_triggers();
+  }
+
+  ~RestoredLogsTrigger() {
+    manager->shutdown();
+    notifier.shutdown();
+  }
+  RestoredLogsTrigger(const RestoredLogsTrigger &) = delete;
+  RestoredLogsTrigger & operator=(const RestoredLogsTrigger &) = delete;
+  RestoredLogsTrigger(RestoredLogsTrigger &&) = delete;
+  RestoredLogsTrigger & operator=(RestoredLogsTrigger &&) = delete;
+
+  /// Event ids drained until the one for `last_id`. The notifier delivers in
+  /// order, so every earlier change was judged by then.
+  std::vector<std::string> events_through(const std::string & last_id) {
+    std::vector<std::string> ids;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::find(ids.begin(), ids.end(), last_id) == ids.end() && std::chrono::steady_clock::now() < deadline) {
+      manager->wait_for_event("trig_logs", std::chrono::milliseconds(100));
+      auto more = drain_event_ids(*manager, "trig_logs");
+      ids.insert(ids.end(), more.begin(), more.end());
+    }
+    return ids;
+  }
+
+  ResourceChangeNotifier notifier;
+  std::shared_ptr<RecordingOnChange> evaluator = std::make_shared<RecordingOnChange>();
+  ConditionRegistry registry;
+  SqliteTriggerStore store;
+  std::unique_ptr<TriggerManager> manager;
+  std::atomic<bool> discovered{false};
+  std::atomic<bool> gone_present{true};
+  std::atomic<int> replay_calls{0};
+  /// Replay listings that fail before one succeeds.
+  std::atomic<int> failing_listings{0};
+  std::vector<json> listed;
+};
+
+}  // namespace
+
+TEST(RestoreReplay, SweepReplaysWhatTheEntityListsOnceItIsDiscovered) {
+  RestoredLogsTrigger t;
+  t.listed = {log_item(1), log_item(2)};
+
+  t.manager->sweep_orphaned_triggers();
+  EXPECT_TRUE(drain_event_ids(*t.manager, "trig_logs").empty()) << "nothing to replay before discovery";
+
+  t.discovered = true;
+  t.manager->sweep_orphaned_triggers();
+  EXPECT_EQ(drain_event_ids(*t.manager, "trig_logs"), (std::vector<std::string>{"log_1", "log_2"}));
+
+  // Replays once; a replayed entry arriving live is not delivered again.
+  t.manager->sweep_orphaned_triggers();
+  t.notifier.notify("logs", "", "", log_item(2), ChangeType::CREATED);
+  t.notifier.notify("logs", "", "", log_item(3), ChangeType::CREATED);
+  EXPECT_EQ(t.events_through("log_3"), (std::vector<std::string>{"log_3"}));
+  EXPECT_EQ(t.replay_calls.load(), 1) << "the sweep asks only once the entity exists";
+}
+
+TEST(RestoreReplay, FirstLiveChangeReplaysBeforeItIsEvaluated) {
+  RestoredLogsTrigger t;
+  t.listed = {log_item(1), log_item(2)};
+  t.discovered = true;
+
+  // No sweep yet: the live change for entry 2 makes the trigger replay first.
+  t.notifier.notify("logs", "", "", log_item(2), ChangeType::CREATED);
+  t.notifier.notify("logs", "", "", log_item(3), ChangeType::CREATED);
+  EXPECT_EQ(t.events_through("log_3"), (std::vector<std::string>{"log_1", "log_2", "log_3"}));
+
+  t.manager->sweep_orphaned_triggers();
+  EXPECT_TRUE(drain_event_ids(*t.manager, "trig_logs").empty());
+}
+
+TEST(RestoreReplay, LiveReplayBetweenSweepPhasesIsNotRepeated) {
+  // trig_gone's entity goes away, so the sweep calls the warn function
+  // between collecting trig_logs and replaying it.
+  RestoredLogsTrigger t(/*multishot=*/true, /*with_gone_trigger=*/true);
+  t.listed = {log_item(1), log_item(2)};
+  t.manager->sweep_orphaned_triggers();  // sees gone_app once
+
+  std::vector<std::string> during;
+  t.manager->set_warn_log_fn([&](const std::string &) {
+    // The worker replays for the live change before the sweep's own replay.
+    t.notifier.notify("logs", "", "", log_item(2), ChangeType::CREATED);
+    during = t.events_through("log_2");
+  });
+  t.discovered = true;
+  t.gone_present = false;
+  t.manager->sweep_orphaned_triggers();
+
+  EXPECT_EQ(during, (std::vector<std::string>{"log_1", "log_2"}));
+  EXPECT_TRUE(drain_event_ids(*t.manager, "trig_logs").empty()) << "the sweep replayed a second time";
+}
+
+TEST(RestoreReplay, LiveReplayMarksTheEntitySeenForTheOrphanSweep) {
+  RestoredLogsTrigger t;
+  t.listed = {log_item(1)};
+  t.discovered = true;
+
+  // A live change finds the entity and replays; no sweep runs while it exists.
+  t.notifier.notify("logs", "", "", log_item(2), ChangeType::CREATED);
+  EXPECT_EQ(t.events_through("log_2"), (std::vector<std::string>{"log_1", "log_2"}));
+
+  t.discovered = false;
+  t.manager->sweep_orphaned_triggers();
+  EXPECT_FALSE(t.manager->get("trig_logs").has_value()) << "an entity that was found and then lost is an orphan";
+  auto loaded = t.store.load_all();
+  ASSERT_TRUE(loaded.has_value());
+  EXPECT_TRUE(loaded->empty()) << "sweeping an orphan drops its store row as well";
+}
+
+// GET lists an entry before it is dispatched, so a replay after a failed one
+// covers the live entry the failed attempt was triggered by.
+TEST(RestoreReplay, LiveChangeAfterAFailedReplayWaitsForTheReplay) {
+  RestoredLogsTrigger t;
+  t.discovered = true;
+  t.failing_listings = 1;
+  t.listed = {log_item(1), log_item(2), log_item(3)};
+
+  t.notifier.notify("logs", "", "", log_item(2), ChangeType::CREATED);
+  t.notifier.notify("logs", "", "", log_item(3), ChangeType::CREATED);
+
+  EXPECT_EQ(t.events_through("log_3"), (std::vector<std::string>{"log_1", "log_2", "log_3"}));
+  EXPECT_EQ(t.evaluator->seen(), (std::vector<std::string>{"log_1", "log_2", "log_3"}))
+      << "each entry is judged once, in log order";
+}
+
+TEST(RestoreReplay, OneShotTriggerAfterAFailedReplayFiresOnTheEarliestEntry) {
+  RestoredLogsTrigger t(/*multishot=*/false);
+  t.discovered = true;
+  t.failing_listings = 1;
+  t.listed = {log_item(1), log_item(2), log_item(3)};
+
+  t.notifier.notify("logs", "", "", log_item(2), ChangeType::CREATED);
+  t.notifier.notify("logs", "", "", log_item(3), ChangeType::CREATED);
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (t.manager->get("trig_logs").has_value() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_FALSE(t.manager->get("trig_logs").has_value()) << "a one-shot trigger ends when it fires";
+  EXPECT_EQ(t.evaluator->seen(), (std::vector<std::string>{"log_1"})) << "it fires on the earliest entry";
+}
+
+TEST(RestoreReplay, OneShotTriggerEndsAtTheFirstReplayedEvent) {
+  RestoredLogsTrigger t(/*multishot=*/false);
+  t.listed = {log_item(1), log_item(2)};
+  t.discovered = true;
+
+  t.manager->sweep_orphaned_triggers();
+  EXPECT_FALSE(t.manager->get("trig_logs").has_value()) << "a one-shot trigger ends when it fires";
+  auto loaded = t.store.load_all();
+  ASSERT_TRUE(loaded.has_value());
+  EXPECT_TRUE(loaded->empty());
+}
+
+TEST(RestoreReplay, TriggerCreatedThroughTheApiDoesNotReplay) {
+  RestoredLogsTrigger t;
+  t.listed = {log_item(1)};
+  t.discovered = true;
+  TriggerCreateRequest req;
+  req.entity_id = "late_app";
+  req.entity_type = "apps";
+  req.resource_uri = "/api/v1/apps/late_app/logs";
+  req.collection = "logs";
+  req.condition_type = "OnChange";
+  req.protocol = "sse";
+  req.multishot = true;
+  auto created = t.manager->create(req);
+  ASSERT_TRUE(created.has_value());
+
+  t.notifier.notify("logs", "", "", log_item(2), ChangeType::CREATED);
+  ASSERT_TRUE(t.manager->wait_for_event(created->id, std::chrono::milliseconds(2000)));
+  EXPECT_EQ(drain_event_ids(*t.manager, created->id), (std::vector<std::string>{"log_2"}));
 }
 
 // ===========================================================================

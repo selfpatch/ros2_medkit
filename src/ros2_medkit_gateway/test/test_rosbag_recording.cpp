@@ -60,13 +60,13 @@ class FakeFaultTransport : public FaultServiceTransport {
   bool get_rosbag_unavailable{false};
   /// Stands for a store that could not be read: an answer, but not about the recording.
   bool get_rosbag_declines_everything{false};
-  bool get_fault_unavailable{false};
+  bool list_faults_fails{false};
   bool list_rosbags_fails{false};
   /// Filters whose listing fails while the others answer.
   std::set<std::string> list_rosbags_fails_for;
   int list_rosbags_calls{0};
 
-  FaultResult get_rosbag(const std::string & id) override {
+  FaultResult get_rosbag(const std::string & id, const std::string & /*source_id*/) override {
     FaultResult r;
     r.success = false;
     if (get_rosbag_unavailable) {
@@ -123,10 +123,6 @@ class FakeFaultTransport : public FaultServiceTransport {
   FaultResult get_fault(const std::string & fault_code, const std::string & /*source_id*/) override {
     FaultResult r;
     r.success = false;
-    if (get_fault_unavailable) {
-      r.failure = FaultFailure::Unavailable;
-      return r;
-    }
     const auto found = faults.find(fault_code);
     if (found == faults.end()) {
       return r;
@@ -140,19 +136,33 @@ class FakeFaultTransport : public FaultServiceTransport {
                            const std::string & /*description*/, const std::string & /*source_id*/) override {
     return {};
   }
+  /// One confirmed record per fault, owned by its first reporting source.
   FaultResult list_faults(const std::string & /*source_id*/, bool /*include_prefailed*/, bool /*include_confirmed*/,
                           bool /*include_cleared*/, bool /*include_healed*/, bool /*include_muted*/,
                           bool /*include_clusters*/) override {
-    return {};
+    FaultResult r;
+    r.success = !list_faults_fails;
+    if (!r.success) {
+      r.failure = FaultFailure::Unavailable;
+      return r;
+    }
+    json items = json::array();
+    for (const auto & [code, sources] : faults) {
+      items.push_back({{"fault_code", code}, {"status", "CONFIRMED"}, {"reporting_sources", sources}});
+    }
+    r.data = {{"faults", items}};
+    return r;
   }
   FaultWithEnvJsonResult get_fault_with_env(const std::string & /*fault_code*/,
                                             const std::string & /*source_id*/) override {
     return {};
   }
-  FaultResult clear_fault(const std::string & /*fault_code*/, bool /*skip_correlation_auto_clear*/) override {
+  FaultResult clear_fault(const std::string & /*fault_code*/, const std::string & /*source_id*/,
+                          bool /*skip_correlation_auto_clear*/) override {
     return {};
   }
-  FaultResult get_snapshots(const std::string & /*fault_code*/, const std::string & /*topic*/) override {
+  FaultResult get_snapshots(const std::string & /*fault_code*/, const std::string & /*source_id*/,
+                            const std::string & /*topic*/) override {
     return {};
   }
   bool wait_for_services(std::chrono::duration<double> /*timeout*/) override {
@@ -246,8 +256,8 @@ TEST_F(FindRecordingTest, ADeclinedLookupOfAnEntityWithNoSourceProvesNoAbsence) 
 }
 
 // @verifies REQ_INTEROP_073
-TEST_F(FindRecordingTest, AnUnansweredFaultReadIsNotARefusal) {
-  transport_->get_fault_unavailable = true;
+TEST_F(FindRecordingTest, AnUnansweredFaultListIsNotARefusal) {
+  transport_->list_faults_fails = true;
   EXPECT_EQ(find("fault_LIDAR_1000").status, RecordingLookupStatus::kUnavailable);
 }
 
@@ -750,6 +760,13 @@ TEST_F(RecordingHandlersTest, AListingThatCouldNotReadEverySourceIs503) {
   const auto down = handlers_.list_descriptors(http::TypedRequest(single));
   ASSERT_FALSE(down.has_value());
   EXPECT_EQ(down.error().http_status, 503);
+
+  // The fault list says which owners are in scope, so without it nothing is listed.
+  transport_->list_rosbags_fails = false;
+  transport_->list_faults_fails = true;
+  const auto no_records = handlers_.list_descriptors(http::TypedRequest(single));
+  ASSERT_FALSE(no_records.has_value());
+  EXPECT_EQ(no_records.error().http_status, 503);
 }
 
 }  // namespace

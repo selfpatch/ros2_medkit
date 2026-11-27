@@ -17,11 +17,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/managers/fault_manager.hpp"
 #include "ros2_medkit_gateway/dto/bulkdata.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/response_types.hpp"
@@ -159,8 +161,7 @@ namespace detail {
  * deployments grouping topics rather than nodes); FUNCTION never falls back
  * (pure aggregated view).
  *
- * @param cache Entity cache to resolve hosted apps in (used for FUNCTION /
- *              COMPONENT only)
+ * @param cache Entity cache the entity's owned sources resolve in
  * @param entity Entity information
  * @return Vector of source filter strings (empty if no valid filters)
  */
@@ -183,35 +184,13 @@ std::vector<std::string> compute_bulkdata_source_filters(const ThreadSafeEntityC
 std::string rosbag_recording_id(const std::string & file_path);
 
 /**
- * @brief Fault codes a rosbag download is authorized against.
- *
- * A recording is shared by every fault of a burst, so ownership is the union
- * over those faults rather than a single code: the entity that owns any one of
- * them may download the bag. That grants nothing new - before recordings had
- * their own identity, each of those faults already addressed its own copy of
- * the same bytes - it only renames the door.
- *
- * When the wire carries no ``fault_codes`` the response came from a peer that
- * predates the field, where the addressed id *was* the fault code; authorizing
- * against the requested id then reproduces the previous check exactly.
- *
- * @param rosbag_data Rosbag response from the fault manager
- * @param requested_id The ``{file_id}`` path segment the client asked for
- * @return Non-empty list of fault codes to test against the entity's scope
- */
-std::vector<std::string> rosbag_attached_fault_codes(const nlohmann::json & rosbag_data,
-                                                     const std::string & requested_id);
-
-/**
  * @brief Did the fault manager read the URL segment as a FAULT CODE rather than a
  *        recording id?
  *
- * True on the pre-#620 compatibility path, where the segment named a fault and the
- * answer is that fault's newest recording. It matters for authorization: a burst
- * shares one bag, so the union over attached faults would answer 200 for a fault
- * code the entity does not own. The bytes are ones it could already fetch under its
- * own code, but the 200 itself discloses that another fault shares its recording.
- * On this path the requested code has to be in scope as well.
+ * True when the served recording id is not the segment that was asked for. A
+ * segment that is a fault code addresses the newest recording among the entity's
+ * records of that code, which ``resolve_scoped_rosbag`` picks from the entity's
+ * own listing instead.
  *
  * @param rosbag_data Rosbag response from the fault manager
  * @param requested_id The ``{file_id}`` path segment the client asked for
@@ -280,13 +259,74 @@ std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path);
  * ``x-medkit.storage_files`` is ``rosbag_storage().file_count``, omitted when
  * that is nullopt. Each row's metadata is read once.
  *
- * @param rows Rosbag rows as returned by the fault manager
- * @param faults_by_code Faults keyed by code, for timestamp enrichment
+ * @param rows Rosbag rows as returned by the fault manager, each stamped with
+ *        the scope source it was listed under as ``owner``
+ * @param faults_by_record Fault records keyed by ``record_map_key``, which date
+ *        a row that carries no ``created_at_ns``
  * @return One descriptor per distinct recording
  */
 std::vector<dto::BulkDataDescriptor>
 fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
-                                  const std::unordered_map<std::string, nlohmann::json> & faults_by_code);
+                                  const std::unordered_map<std::string, nlohmann::json> & faults_by_record);
+
+/**
+ * @brief Key the record that dates a rosbag row: the scope source the row was
+ *        listed under and the fault code.
+ *
+ * The two owners of one per_source code have their own ``first_occurred``.
+ */
+std::string record_map_key(const std::string & owner, const std::string & fault_code);
+
+/**
+ * @brief The ListRosbags rows of every record in ``scope``.
+ *
+ * ListRosbags answers the rows of the records with a reporting source equal to
+ * the source asked for or below it on path segments, the rule of
+ * ``faults::fault_in_source_scope``, whatever the record's status and muted or
+ * not. Each source of ``scope`` is asked once, and a row reached twice is kept
+ * once, stamped with the first source that reached it as ``owner``.
+ *
+ * @return The rows, or a 503 when a ListRosbags call fails
+ */
+tl::expected<std::vector<nlohmann::json>, ErrorInfo> list_scoped_rosbag_rows(FaultManager & fault_mgr,
+                                                                             const std::set<std::string> & scope);
+
+/**
+ * @brief Rosbag descriptors for ``GET /{entity}/bulk-data/rosbags``.
+ *
+ * A recording is listed when one of the records it was captured for is in
+ * ``scope``: the rows of ``list_scoped_rosbag_rows``, one descriptor per
+ * recording.
+ *
+ * @param fault_mgr Fault manager to list faults and rosbags from
+ * @param scope The entity's rosbag scope (``compute_bulkdata_source_filters``)
+ * @return Descriptors, or a 503 when any fault manager call fails: an empty or
+ *         partial list would misreport the recordings that exist
+ */
+tl::expected<std::vector<dto::BulkDataDescriptor>, ErrorInfo>
+list_scoped_rosbag_descriptors(FaultManager & fault_mgr, const std::set<std::string> & scope);
+
+/**
+ * @brief The recording ``GET /{entity}/bulk-data/rosbags/{id}`` serves.
+ *
+ * ``bulk_data_id`` is a recording id, served when one of the records it is
+ * attached to (GetRosbag's ``fault_codes`` and ``owners``) is in ``scope``. Or
+ * it is a fault code, which serves the newest recording among the rows of
+ * ``list_scoped_rosbag_rows`` for that code: the same recordings the entity
+ * lists.
+ *
+ * @param fault_mgr Fault manager to read records and recordings from
+ * @param scope The entity's rosbag scope (``compute_bulkdata_source_filters``)
+ * @param bulk_data_id The ``{id}`` path segment
+ * @param entity_id Entity id for the error parameters
+ * @return GetRosbag's answer for the served recording, or the error: 404 when
+ *         no record in scope holds it, 503 when GetRosbag, the record list or a
+ *         rosbag list gets no answer
+ */
+tl::expected<nlohmann::json, ErrorInfo> resolve_scoped_rosbag(FaultManager & fault_mgr,
+                                                              const std::set<std::string> & scope,
+                                                              const std::string & bulk_data_id,
+                                                              const std::string & entity_id);
 
 }  // namespace detail
 

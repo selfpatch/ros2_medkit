@@ -15,12 +15,15 @@
 #pragma once
 
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_types.hpp"
 #include "ros2_medkit_gateway/core/faults/freeze_frame_source.hpp"
 #include "ros2_medkit_gateway/dto/faults.hpp"
@@ -142,7 +145,9 @@ class FaultHandlers {
    *   the handler appends `bulk_data_uri = entity_path + "/bulk-data/rosbags/" + fault_code`.
    * - "x-medkit" extensions with occurrence_count, severity_label, etc.
    *
-   * @param fault_json Per-fault JSON (as produced by the transport adapter).
+   * @param fault_json A fault item, `faults::record_item` or `faults::entry_item`.
+   *        Its `x-medkit.records` is kept; the source of a single per_source
+   *        record becomes `x-medkit.owner`.
    * @param env_data_json Environment-data JSON (as produced by the transport).
    * @param entity_path Entity path used to construct rosbag bulk_data_uri.
    * @return SOVD-compliant FaultDetail DTO
@@ -159,22 +164,15 @@ class FaultHandlers {
    * or is a strict path-child (i.e. `<fqn>/<...>`), so similarly named nodes
    * like `/ns/node` and `/ns/node_extra` are not conflated.
    *
-   * The "all sources must match" semantic (rather than "any source") is
-   * deliberate: it blocks two cross-entity escalation paths.
-   *
-   * 1. GET would otherwise return a response whose `reporting_sources` and
-   *    environment data carry identities of nodes the caller has no
-   *    business reading.
-   * 2. DELETE would otherwise let a viewer of entity A clear the aggregated
-   *    fault record for a fault that entity B also reports, because the
-   *    underlying `ClearFault.srv` has no scope argument.
+   * A per_source record names one reporting source; a shared record names
+   * every source that reported it, and is in the entity's scope only when all
+   * of them are.
    *
    * An empty scope set, an empty `reporting_sources` array, a missing
    * `reporting_sources` field, or any non-string source entry all return
    * false - there is no vacuous "all match" case.
    *
-   * Public for direct unit testing; called by `get_fault`, `clear_fault`,
-   * and indirectly via the per-entity collection routes.
+   * Public for direct unit testing. Called through the per-entity routes.
    */
   static bool fault_in_source_scope(const nlohmann::json & fault, const std::set<std::string> & source_fqns);
 
@@ -219,8 +217,55 @@ class FaultHandlers {
   static nlohmann::json merge_entity_freeze_frames(nlohmann::json env_data,
                                                    const std::vector<FreezeFrameSource::Frame> & frames);
 
+  /**
+   * @brief Map every owned source to every entity that owns it, for the clears'
+   * lock check: each app's source (an external app's bare id) and each external
+   * component's bare id. Two apps can bind one node path. A clear matches each
+   * reporting source of a record against each key and its path children.
+   *
+   * Public static for direct unit testing. Called by `record_lock_refusal`'s callers.
+   */
+  static std::unordered_map<std::string, std::set<std::string>>
+  build_source_entity_map(const ThreadSafeEntityCache & cache);
+
  private:
+  /**
+   * @brief The lock refusal for clearing `fault`, or nullopt when there is none.
+   *
+   * Every entity of `source_to_entities` that holds the record by the scope rule
+   * (one of its reporting sources is the entity's source or a path child of it)
+   * is checked as `validate_lock_access` checks a route's entity, its parent
+   * chain included. The refusal is the first denial, in entity id order.
+   */
+  std::optional<ErrorInfo>
+  record_lock_refusal(const http::TypedRequest & req, const nlohmann::json & fault,
+                      const std::unordered_map<std::string, std::set<std::string>> & source_to_entities);
+
+  /**
+   * @brief Every record of `fault_code` in `entity`'s scope, ordered by owner.
+   *
+   * Lists every status with muted records included: the per-code routes act
+   * on the code's records whatever their status. An empty result is not an
+   * error; the caller answers 404. A fault manager that cannot be read is the
+   * error, classified with `failure_summary`.
+   */
+  tl::expected<std::vector<nlohmann::json>, ErrorInfo>
+  records_of_code(const EntityInfo & entity_info, const std::string & fault_code, const std::string & failure_summary);
+
+  /**
+   * @brief The detail of the entry `records` form (not empty, one code): the
+   * record itself, or their merge with the environment data of
+   * `faults::representative_record`. Fails as the fault manager's read fails.
+   */
+  tl::expected<dto::FaultDetailResult, FaultResult> fault_detail(const std::vector<nlohmann::json> & records,
+                                                                 const std::string & fault_code,
+                                                                 const std::string & entity_path);
+
+  /// Names the app whose scope holds a reporting source, for `x-medkit.records`.
+  faults::AppOfSource app_of_source();
+
   HandlerContext & ctx_;
+  faults::AppSourceIndex app_index_;
 };
 
 }  // namespace handlers

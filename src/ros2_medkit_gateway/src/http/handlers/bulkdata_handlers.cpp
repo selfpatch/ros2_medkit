@@ -255,38 +255,21 @@ std::optional<uint64_t> rosbag_served_bytes(const std::string & bag_path) {
   return rosbag_served_bytes(rosbag_storage(bag_path));
 }
 
-std::vector<std::string> rosbag_attached_fault_codes(const nlohmann::json & rosbag_data,
-                                                     const std::string & requested_id) {
-  if (rosbag_data.contains("fault_codes") && rosbag_data["fault_codes"].is_array()) {
-    // Element by element rather than get<vector<string>>(): the array is built
-    // from a ROS string vector today and cannot hold anything else, but this
-    // function exists to tolerate a peer that predates the field, and a
-    // whole-array conversion throws on the first non-string it meets.
-    std::vector<std::string> codes;
-    for (const auto & code : rosbag_data["fault_codes"]) {
-      if (code.is_string()) {
-        codes.push_back(code.get<std::string>());
-      }
-    }
-    if (!codes.empty()) {
-      return codes;
-    }
-  }
-  // No list on the wire: a peer that predates the field, where the addressed id
-  // was the fault code itself. Authorizing against it reproduces the old check.
-  return {requested_id};
-}
-
 bool rosbag_resolved_by_fault_code(const nlohmann::json & rosbag_data, const std::string & requested_id) {
   const std::string resolved = rosbag_data.value("recording_id", "");
-  // An absent id means a peer that predates the field; it answers by fault code
-  // only, and the attached-codes fallback already reduces to the old check there.
+  // An absent id means a peer that predates the field. It answers by fault code
+  // only, and the download then authorizes on the requested code.
   return !resolved.empty() && resolved != requested_id;
+}
+
+std::string record_map_key(const std::string & owner, const std::string & fault_code) {
+  // '\0' cannot appear in either id, so the two halves cannot run together.
+  return owner + '\0' + fault_code;
 }
 
 std::vector<dto::BulkDataDescriptor>
 fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
-                                  const std::unordered_map<std::string, nlohmann::json> & faults_by_code) {
+                                  const std::unordered_map<std::string, nlohmann::json> & faults_by_record) {
   struct RecordingEntry {
     std::string recording_id;
     std::string format;
@@ -320,7 +303,8 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
     // fault only for a row that predates the field.
     int64_t created_at_ns = row.value("created_at_ns", int64_t{0});
     if (created_at_ns == 0) {
-      if (auto it = faults_by_code.find(fault_code); it != faults_by_code.end()) {
+      const auto key = record_map_key(row.value("owner", std::string{}), fault_code);
+      if (auto it = faults_by_record.find(key); it != faults_by_record.end()) {
         const double first_occurred = it->second.value("first_occurred", 0.0);
         created_at_ns = static_cast<int64_t>(first_occurred * 1'000'000'000);
       }
@@ -387,12 +371,163 @@ fold_rosbag_rows_into_descriptors(const std::vector<nlohmann::json> & rows,
   return descriptors;
 }
 
+tl::expected<std::vector<nlohmann::json>, ErrorInfo> list_scoped_rosbag_rows(FaultManager & fault_mgr,
+                                                                             const std::set<std::string> & scope) {
+  // ListRosbags lists the rows of every record with a reporting source equal to the source asked
+  // for or below it on path segments, the rule of faults::fault_in_source_scope. So each source of
+  // the scope is asked once, and a row reached through two of them is kept once.
+  std::vector<nlohmann::json> rows;
+  std::set<std::string> seen;
+  for (const auto & source : scope) {
+    // The fault manager refuses an empty entity_fqn, and an empty source holds no record.
+    if (source.empty()) {
+      continue;
+    }
+    auto listed = fault_mgr.list_rosbags(source);
+    if (!listed.success) {
+      return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "Recordings could not be listed",
+                                       nlohmann::json{{"details", listed.error_message}}));
+    }
+    for (auto row : listed.data.value("rosbags", nlohmann::json::array())) {
+      if (!row.is_object()) {
+        continue;
+      }
+      row["owner"] = source;
+      const std::string key = row.value("recording_id", std::string{}) + '\0' + row.value("file_path", std::string{}) +
+                              '\0' + row.value("fault_code", std::string{});
+      if (seen.insert(key).second) {
+        rows.push_back(std::move(row));
+      }
+    }
+  }
+  return rows;
+}
+
+tl::expected<std::vector<dto::BulkDataDescriptor>, ErrorInfo>
+list_scoped_rosbag_descriptors(FaultManager & fault_mgr, const std::set<std::string> & scope) {
+  // An empty scope holds no record, so the fault manager is not asked.
+  if (scope.empty()) {
+    return std::vector<dto::BulkDataDescriptor>{};
+  }
+  // The records in scope, every status and muted ones, date a row that predates created_at_ns:
+  // the earliest record of its code with a reporting source at or below the source it was listed under.
+  auto faults_result = fault_mgr.list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
+                                             /*include_cleared=*/true, /*include_healed=*/true,
+                                             /*include_muted=*/true);
+  if (!faults_result.success) {
+    return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "Failed to get faults",
+                                     nlohmann::json{{"details", faults_result.error_message}}));
+  }
+  std::unordered_map<std::string, nlohmann::json> faults_by_record;
+  for (const auto & fault_json : faults_result.data.value("faults", nlohmann::json::array())) {
+    if (!fault_json.is_object() || !fault_json.contains("fault_code") || !fault_json["fault_code"].is_string()) {
+      continue;
+    }
+    const auto code = fault_json["fault_code"].get<std::string>();
+    const auto sources = fault_json.value("reporting_sources", nlohmann::json::array());
+    for (const auto & source : scope) {
+      const bool holds =
+          sources.is_array() && std::any_of(sources.begin(), sources.end(), [&source](const nlohmann::json & s) {
+            return s.is_string() && faults::source_in_scope(s.get<std::string>(), source);
+          });
+      if (!holds) {
+        continue;
+      }
+      auto [it, inserted] = faults_by_record.emplace(record_map_key(source, code), fault_json);
+      if (!inserted && fault_json.value("first_occurred", 0.0) < it->second.value("first_occurred", 0.0)) {
+        it->second = fault_json;
+      }
+    }
+  }
+
+  auto rows = list_scoped_rosbag_rows(fault_mgr, scope);
+  if (!rows) {
+    return tl::unexpected(rows.error());
+  }
+  for (auto & row : *rows) {
+    row["manifest"] = faults::recording_has_manifest(row.value("file_path", std::string{}));
+  }
+  return fold_rosbag_rows_into_descriptors(*rows, faults_by_record);
+}
+
+tl::expected<nlohmann::json, ErrorInfo> resolve_scoped_rosbag(FaultManager & fault_mgr,
+                                                              const std::set<std::string> & scope,
+                                                              const std::string & bulk_data_id,
+                                                              const std::string & entity_id) {
+  const auto not_for_entity = [&entity_id]() {
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found for this entity", json{{"entity_id", entity_id}}));
+  };
+
+  // A recording id first. The fault manager reads an id it holds no recording under as a
+  // fault code, which the entity's own records resolve below.
+  auto rosbag_result = fault_mgr.get_rosbag(bulk_data_id);
+  if (!rosbag_result.success && rosbag_result.failure == FaultFailure::Unavailable) {
+    return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "Failed to get rosbag",
+                                     json{{"details", rosbag_result.error_message}}));
+  }
+  if (rosbag_result.success && rosbag_result.data.contains("file_path") &&
+      !rosbag_resolved_by_fault_code(rosbag_result.data, bulk_data_id)) {
+    // The recording is the entity's when one of the records it is attached to is in scope,
+    // whatever the record's status and muted or not. A failed read is 503, not 404.
+    auto held = fault_mgr.list_faults("", /*include_prefailed=*/true, /*include_confirmed=*/true,
+                                      /*include_cleared=*/true, /*include_healed=*/true, /*include_muted=*/true);
+    if (!held.success) {
+      return tl::unexpected(
+          make_error(503, ERR_SERVICE_UNAVAILABLE, "Failed to get faults", json{{"details", held.error_message}}));
+    }
+    auto records = faults::attached_records(rosbag_result.data);
+    if (records.empty()) {
+      // An answer without fault_codes comes from a fault manager that was asked by fault code.
+      records.push_back(faults::AttachedRecord{bulk_data_id, ""});
+    }
+    if (faults::attached_record_in_scope(records, held.data.value("faults", json::array()), scope)) {
+      return tl::expected<json, ErrorInfo>{rosbag_result.data};
+    }
+    return not_for_entity();
+  }
+
+  // A fault code: the newest recording among the entity's records of that code.
+  auto rows = list_scoped_rosbag_rows(fault_mgr, scope);
+  if (!rows) {
+    return tl::unexpected(rows.error());
+  }
+  std::optional<std::pair<int64_t, std::string>> newest;
+  for (const auto & row : *rows) {
+    if (row.value("fault_code", std::string{}) != bulk_data_id) {
+      continue;
+    }
+    std::string recording_id = row.value("recording_id", std::string{});
+    if (recording_id.empty()) {
+      recording_id = rosbag_recording_id(row.value("file_path", std::string{}));
+    }
+    std::pair<int64_t, std::string> candidate{row.value("created_at_ns", int64_t{0}), std::move(recording_id)};
+    if (!candidate.second.empty() && (!newest || candidate > *newest)) {
+      newest = std::move(candidate);
+    }
+  }
+  if (!newest) {
+    return tl::unexpected(
+        make_error(404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found", json{{"bulk_data_id", bulk_data_id}}));
+  }
+  auto served = fault_mgr.get_rosbag(newest->second);
+  if (!served.success && served.failure == FaultFailure::Unavailable) {
+    return tl::unexpected(
+        make_error(503, ERR_SERVICE_UNAVAILABLE, "Failed to get rosbag", json{{"details", served.error_message}}));
+  }
+  if (!served.success || !served.data.contains("file_path") ||
+      rosbag_resolved_by_fault_code(served.data, newest->second)) {
+    return not_for_entity();
+  }
+  return tl::expected<json, ErrorInfo>{served.data};
+}
+
 std::vector<std::string> compute_bulkdata_source_filters(const ThreadSafeEntityCache & cache,
                                                          const EntityInfo & entity) {
   // One rule for every entity type: the same fault-scope resolution that drives
   // GET /{entity}/faults (external app -> bare id, external component also owns
   // its own id, AREA recurses subareas, FUNCTION follows component hosts).
-  // Rosbags are keyed by exact reporting source, so any private variant here
+  // Rosbags are listed by reporting source, so any private variant here
   // makes a fault the entity lists advertise a bag that 404s - e.g. an
   // area-scoped bulk_data_uri resolved through the area namespace never
   // matched a bag stored under a hosted app's bare id.
@@ -489,45 +624,16 @@ BulkDataHandlers::list_descriptors(const http::TypedRequest & req) {
 
   if (category == "rosbags" && rosbags_served(ctx_)) {
     // === Rosbags: served via FaultManager ===
-    auto fault_mgr = ctx_.services().fault_manager();
-
-    // Get source filters for this entity (single for most, multiple for functions).
-    // Functions aggregate rosbags from all hosting apps.
     auto source_filters = get_source_filters(entity);
-
-    // Collect faults across all source filters for timestamp enrichment
-    std::unordered_map<std::string, json> fault_map;
-    for (const auto & source_filter : source_filters) {
-      auto faults_result = fault_mgr->list_faults(source_filter);
-      if (faults_result.success && faults_result.data.contains("faults")) {
-        for (const auto & fault_json : faults_result.data["faults"]) {
-          if (fault_json.contains("fault_code")) {
-            std::string fc = fault_json["fault_code"].get<std::string>();
-            fault_map[fc] = fault_json;
-          }
-        }
-      }
+    auto items = detail::list_scoped_rosbag_descriptors(
+        *ctx_.services().fault_manager(), std::set<std::string>(source_filters.begin(), source_filters.end()));
+    if (!items) {
+      auto err = items.error();
+      err.params[entity.id_field] = entity.id;
+      return tl::unexpected(std::move(err));
     }
-
-    // Collect rosbags across all source filters. A listing that could not read every
-    // one of them is refused rather than served short: a 200 here is a complete list.
-    std::vector<json> all_rosbags;
-    for (const auto & source_filter : source_filters) {
-      auto rosbags_result = fault_mgr->list_rosbags(source_filter);
-      if (!rosbags_result.success) {
-        return tl::unexpected(make_error(503, ERR_SERVICE_UNAVAILABLE, "Recordings could not be listed",
-                                         json{{"details", rosbags_result.error_message}}));
-      }
-      if (rosbags_result.data.contains("rosbags")) {
-        for (auto rosbag : rosbags_result.data["rosbags"]) {
-          rosbag["manifest"] = faults::recording_has_manifest(rosbag.value("file_path", std::string{}));
-          all_rosbags.push_back(std::move(rosbag));
-        }
-      }
-    }
-
     dto::Collection<dto::BulkDataDescriptor> rosbag_response;
-    rosbag_response.items = detail::fold_rosbag_rows_into_descriptors(all_rosbags, fault_map);
+    rosbag_response.items = std::move(*items);
     return rosbag_response;
   }
 
@@ -599,63 +705,25 @@ http::Result<http::BinaryResponse> BulkDataHandlers::download(const http::TypedR
   if (category == "rosbags" && rosbags_served(ctx_)) {
     // === Rosbags: served via FaultManager ===
     //
-    // The id is a recording id. A pre-#620 URL carrying a fault code still resolves:
-    // the fault manager tries the recording first and falls back to "the newest
-    // recording of this fault", which is what a fault-code URL has always returned.
-    // Both routes end up holding a recording before anything is authorized, so there
-    // is exactly one authorization semantic, not two.
-    auto fault_mgr = ctx_.services().fault_manager();
-
-    auto rosbag_result = fault_mgr->get_rosbag(bulk_data_id);
-    if (!rosbag_result.success || !rosbag_result.data.contains("file_path")) {
-      return tl::unexpected(
-          make_error(404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found", json{{"bulk_data_id", bulk_data_id}}));
-    }
-
-    // Security check: the bag belongs to this entity when ANY fault it was captured
-    // for is within the entity's source scope. Union rather than a single code
-    // because a burst shares one recording, and each of those faults already had its
-    // own downloadable copy of it before - so this grants nothing new, it only
-    // renames the door. Tested with the shared boundary-aware matcher: the
-    // transport's get_fault(code, source) check is a raw prefix match, so app id
-    // "plc" would otherwise claim the assets of "plc_line1".
+    // The id is a recording id, or a fault code on the address that predates recording
+    // ids, which serves the newest recording among the entity's records of that code.
     auto source_filters = get_source_filters(entity);
-    std::set<std::string> scope(source_filters.begin(), source_filters.end());
-
-    // The compatibility path needs the REQUESTED code in scope, not just some code
-    // the recording is attached to. A burst shares one bag, so authorizing on the
-    // union alone answers 200 for a fault code this entity does not own - the bytes
-    // are ones it could already fetch under its own code, but the 200 itself tells
-    // the caller that another fault shares its recording. build_sovd_fault_response
-    // refuses to mix sources for the same reason. When the id really was a recording
-    // id there is no requested code and the union is the whole answer.
-    if (detail::rosbag_resolved_by_fault_code(rosbag_result.data, bulk_data_id)) {
-      auto requested = fault_mgr->get_fault(bulk_data_id, "");
-      if (!requested.success || !faults::fault_in_source_scope(requested.data, scope)) {
-        return tl::unexpected(make_error(404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found for this entity",
-                                         json{{"entity_id", path_info->entity_id}}));
-      }
+    auto served = detail::resolve_scoped_rosbag(*ctx_.services().fault_manager(),
+                                                std::set<std::string>(source_filters.begin(), source_filters.end()),
+                                                bulk_data_id, path_info->entity_id);
+    if (!served) {
+      return tl::unexpected(served.error());
     }
+    const json & rosbag_data = *served;
 
-    const auto attached_codes = detail::rosbag_attached_fault_codes(rosbag_result.data, bulk_data_id);
-
-    const bool authorized = std::any_of(attached_codes.begin(), attached_codes.end(), [&](const std::string & code) {
-      auto fault_result = fault_mgr->get_fault(code, "");
-      return fault_result.success && faults::fault_in_source_scope(fault_result.data, scope);
-    });
-    if (!authorized) {
-      return tl::unexpected(make_error(404, ERR_RESOURCE_NOT_FOUND, "Bulk-data not found for this entity",
-                                       json{{"entity_id", path_info->entity_id}}));
-    }
-
-    std::string file_path = rosbag_result.data["file_path"].get<std::string>();
+    std::string file_path = rosbag_data.at("file_path").get<std::string>();
     // Default to sqlite3 (the historical FaultManager default) for bags predating the
     // format field; metadata normally carries the real one persisted at capture time.
-    std::string format = rosbag_result.data.value("format", "sqlite3");
+    std::string format = rosbag_data.value("format", "sqlite3");
     mimetype = get_rosbag_mimetype(format);
     // Named after the recording that was actually served, which for a compatibility
     // URL is not the segment the client sent.
-    filename = rosbag_result.data.value("recording_id", bulk_data_id) + "." + format;
+    filename = rosbag_data.value("recording_id", bulk_data_id) + "." + format;
 
     // Only the storage file is served, not metadata.yaml. When the listing size differs from
     // Content-Length, see "One recording, one size" in docs/api/rest.rst.

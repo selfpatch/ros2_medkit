@@ -228,12 +228,31 @@ against a hand-maintained list, which catches the document losing a marker but
 cannot catch a *new* lock-checking handler that was never added to the list.
 Adding a lock check to a handler means updating that list too.
 
+Fault Records Held by Several Entities
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A fault clear checks more than the addressed entity. A record belongs to every
+entity whose fault scope holds one of its reporting sources (see the per-entity
+fault scope in :doc:`rest`), so a shared record that apps A and B reported is
+B's record too when it is cleared through A or through the component hosting
+both. While another client's lock protects the ``faults`` of any entity holding
+the record, ``DELETE /{entity}/faults/{fault_code}`` answers the ``409`` that
+entity's own route answers, with that entity in ``parameters.entity_id``, and
+clears nothing. ``DELETE /{entity}/faults`` skips such a record and clears the
+rest.
+
 The One Exception: Global Fault Clear
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``DELETE /api/v1/faults`` reads ``X-Client-Id`` like the writes above but never
-answers ``409``. It walks every fault, **skips** the ones whose reporting
-entity is locked by another client, clears the rest, and answers ``204``.
+answers ``409``. It walks every fault RECORD, **skips** the ones whose owning
+entity is locked by another client, clears the rest one record at a time with
+its owner, and answers ``204``. A record belongs to an app when one of its
+reporting sources is the app's node FQN (the app's own id for an external app)
+or a path child of it, and to an external component when one of its reporting
+sources is the component's id or a path child of it. The record is skipped when it belongs to an entity whose ``faults``
+this client may not write, counting the locks of that entity's parent component
+and area as a per-entity ``DELETE`` does.
 Nothing on the response says which faults were skipped - the
 ``X-Medkit-Local-Only: true`` header that 204 also carries is set
 unconditionally and reports that aggregated *peers* were not cleared, not that

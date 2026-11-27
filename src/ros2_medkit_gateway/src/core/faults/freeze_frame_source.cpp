@@ -61,8 +61,15 @@ bool FreezeFrameSource::content_has_live_data(const nlohmann::json & content) {
 }
 
 bool FreezeFrameSource::content_reports_disconnected(const nlohmann::json & content) {
-  return content.is_object() && content.contains("connected") && content["connected"].is_boolean() &&
-         !content["connected"].get<bool>();
+  if (!content.is_object()) {
+    return false;
+  }
+  // A route payload carries the flag at the top level, a provider payload in its `x-medkit` block.
+  const nlohmann::json * link = &content;
+  if (!content.contains("connected") && content.contains("x-medkit") && content["x-medkit"].is_object()) {
+    link = &content["x-medkit"];
+  }
+  return link->contains("connected") && (*link)["connected"].is_boolean() && !(*link)["connected"].get<bool>();
 }
 
 bool FreezeFrameSource::values_have_data(const nlohmann::json & values) {

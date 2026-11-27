@@ -97,10 +97,9 @@ inline constexpr std::string_view dto_name<TriggerEventFrame> = "TriggerEventFra
 // -----------------------------------------------------------------------------
 // FaultStreamXMedkit - the `x-medkit` object on a fault-stream frame.
 //
-// Present only when the fault's reporting source resolves to a known entity.
-// It is a hint for addressing the fault's bulk-data, not an ownership claim:
-// a debounced fault can have several co-reporters and this names the
-// lexicographically first.
+// Names the entity whose fault scope holds the record's owner, resolved when
+// the event arrives: the app, else the external component. Absent when no
+// entity owns it.
 // -----------------------------------------------------------------------------
 struct FaultStreamXMedkit {
   std::string entity_type;
@@ -108,11 +107,12 @@ struct FaultStreamXMedkit {
 };
 
 template <>
-inline constexpr auto dto_fields<FaultStreamXMedkit> = std::make_tuple(
-    field("entity_type", &FaultStreamXMedkit::entity_type, "`areas`, `components`, `apps` or `functions`."),
-    field("entity_id", &FaultStreamXMedkit::entity_id,
-          "Entity to address for this fault's rosbag: "
-          "`GET /{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}`."));
+inline constexpr auto dto_fields<FaultStreamXMedkit> =
+    std::make_tuple(field("entity_type", &FaultStreamXMedkit::entity_type,
+                          "`apps`, or `components` for an external component that owns the record."),
+                    field("entity_id", &FaultStreamXMedkit::entity_id,
+                          "Entity to address for this fault's rosbag: "
+                          "`GET /{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}`."));
 
 template <>
 inline constexpr std::string_view dto_name<FaultStreamXMedkit> = "FaultStreamXMedkit";
@@ -145,8 +145,8 @@ inline constexpr auto dto_fields<FaultStreamEvent> = std::make_tuple(
           "Event time as seconds since the Unix epoch, with nanosecond precision in the fraction. Note this "
           "is a number, where the subscription and trigger frames send an ISO 8601 string."),
     field("x-medkit", &FaultStreamEvent::x_medkit,
-          "Where to fetch this fault's bulk-data. Absent when the reporting source resolves to no known "
-          "entity."));
+          "The entity whose fault scope holds the record's owner, where the record's bulk-data lives. "
+          "Absent when no entity owns it."));
 
 template <>
 inline constexpr std::string_view dto_name<FaultStreamEvent> = "FaultStreamEvent";

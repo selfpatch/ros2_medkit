@@ -33,13 +33,12 @@
 #include "ros2_medkit_gateway/core/log_types.hpp"
 #include "ros2_medkit_gateway/core/providers/log_provider.hpp"
 #include "ros2_medkit_gateway/core/providers/log_provider_registry.hpp"
+#include "ros2_medkit_gateway/core/resource_change_notifier.hpp"
 #include "ros2_medkit_gateway/core/transports/log_source.hpp"
 
 namespace ros2_medkit_gateway {
 
 using json = nlohmann::json;
-
-class ResourceChangeNotifier;  // forward declaration
 
 /**
  * @brief Manages log collection via the default ring-buffer backend.
@@ -81,6 +80,9 @@ class LogManager {
   /// when the gateway adapter forwards to /rosout. May be null in tests.
   using LogSink = std::function<void(int level, std::string_view message)>;
 
+  /// Maps a logger name to the entity id its "logs" change carries.
+  using LoggerOwnerFn = std::function<std::string(const std::string & logger_name)>;
+
   /**
    * @brief Construct LogManager
    *
@@ -120,11 +122,14 @@ class LogManager {
    * @param min_severity Additional severity filter from query parameter. Empty = no override.
    * @param context_filter Substring filter applied to log entry's name (logger name). Empty = no filter.
    * @param entity_id    Entity ID for config lookup. Empty = use defaults.
+   * @param marker_ids   Optional out: receives the ids of the returned entries that add_log_entry()
+   *                     wrote. A LogProvider plugin's entries are never markers.
    * @return JSON array of LogEntry objects sorted by id ascending, capped at entity config max_entries.
    */
   tl::expected<json, std::string> get_logs(const std::vector<std::string> & node_fqns, bool prefix_match,
                                            const std::string & min_severity, const std::string & context_filter,
-                                           const std::string & entity_id);
+                                           const std::string & entity_id,
+                                           std::unordered_set<std::string> * marker_ids = nullptr);
 
   /// Get current log configuration for entity (returns defaults if unconfigured)
   tl::expected<LogConfig, std::string> get_config(const std::string & entity_id) const;
@@ -137,32 +142,40 @@ class LogManager {
                             const std::optional<size_t> & max_entries);
 
   /**
-   * @brief Programmatically add a log entry (e.g. from trigger log_settings)
+   * @brief Add the marker entry of a trigger's log_settings
    *
    * Creates a LogEntry and pushes it to the internal ring buffer using the
-   * same path as on_log_entry(). If a ResourceChangeNotifier is set, emits a
-   * "logs" CREATED notification so triggers can observe log changes.
+   * same path as on_log_entry(). If a ResourceChangeNotifier is set, emits the
+   * same "logs" CREATED change a source entry does, to every subscription but
+   * `skipped_subscription`. get_logs() reports the entry as a marker.
    *
    * @param entity_id  Entity to associate the log with (used as logger name)
    * @param severity   SOVD severity string (debug, info, warning, error, fatal)
    * @param message    Human-readable log message
    * @param metadata   Additional JSON metadata stored in the message (appended)
+   * @param skipped_subscription Notifier subscription the change skips; 0 = none
    */
   void add_log_entry(const std::string & entity_id, const std::string & severity, const std::string & message,
-                     const nlohmann::json & metadata);
+                     const nlohmann::json & metadata, NotifierSubscriptionId skipped_subscription = 0);
 
   /// Set the ResourceChangeNotifier for emitting log change events.
   /// Called by GatewayNode after both LogManager and the notifier are available.
+  /// Each stored entry emits one "logs" CREATED change: entity_id from the
+  /// logger owner function, the entry as value, its logger name in
+  /// value.context.node. An entry the buffer cap drops emits none.
   void set_notifier(ResourceChangeNotifier * notifier);
 
-  /// Callback that maps a logger FQN to a manifest entity ID.
-  /// Returns empty string if the FQN cannot be resolved.
-  using NodeToEntityFn = std::function<std::string(const std::string &)>;
+  /// Set the function that gives a "logs" change its entity_id from the logger
+  /// name. Without one the entity_id is "". Call before set_notifier().
+  void set_logger_owner_fn(LoggerOwnerFn fn);
 
-  /// Set the node-to-entity resolver for trigger notifications.
-  /// When set, on_log_entry() resolves logger names to manifest entity IDs before
-  /// notifying the ResourceChangeNotifier.
-  void set_node_to_entity_resolver(NodeToEntityFn resolver);
+  /// Numeric level of the entry in a "logs" change value. The value names the
+  /// severity only, so for an entry logged at a level between the named ones
+  /// the level is looked up by entry id. The lookup keeps as many such entries
+  /// as the notifier can hold waiting for dispatch
+  /// (ResourceChangeNotifier::max_in_flight), counting changes the queue drops;
+  /// an older one falls back to the severity name. 0 without a severity.
+  uint8_t entry_level(const nlohmann::json & entry) const;
 
   // ---- Static utilities (no middleware required - safe in unit tests) ----
 
@@ -180,6 +193,10 @@ class LogManager {
 
   /// Strip leading '/' from a node FQN for ring-buffer key normalization
   static std::string normalize_fqn(const std::string & fqn);
+
+  /// True when get_logs() with `node_fqn` covers entries of `logger_name`: the
+  /// FQN in slash or dot form, and with `prefix_match` any logger below it.
+  static bool logger_matches(const std::string & logger_name, const std::string & node_fqn, bool prefix_match);
 
   // ---- Test injection (for unit tests - do not use in production code) ----
 
@@ -209,6 +226,15 @@ class LogManager {
   /// dispatch.
   void on_log_entry(const LogEntry & entry);
 
+  /// Emit the "logs" CREATED change for a stored entry, if a notifier is set.
+  void notify_entry(const LogEntry & entry, NotifierSubscriptionId skipped_subscription = 0);
+
+  /// Drop the oldest entry of `buf`. Caller holds buffers_mutex_.
+  void pop_oldest_locked(std::deque<LogEntry> & buf);
+
+  /// Keep the level of an entry whose level has no severity name.
+  void remember_unnamed_level(const LogEntry & entry);
+
   /// Get the effective LogProvider: plugin if registered, else nullptr (use local buffer)
   LogProvider * effective_provider() const;
 
@@ -223,9 +249,7 @@ class LogManager {
   std::shared_ptr<LogSource> source_;
   LogProviderRegistry * provider_registry_;
   ResourceChangeNotifier * notifier_ = nullptr;
-  /// Write-once: must be set before the source starts delivering entries.
-  /// After that, only read from source callbacks (no mutex needed).
-  NodeToEntityFn node_to_entity_resolver_;
+  LoggerOwnerFn logger_owner_fn_;
   size_t max_buffer_size_;
   LogSink log_sink_;
 
@@ -239,6 +263,8 @@ class LogManager {
   // Total number of entries that were rejected because adding a new node
   // would exceed the buffer cap. Guarded by buffers_mutex_.
   std::size_t dropped_total_{0};
+  // Ids of buffered entries that add_log_entry() wrote. Guarded by buffers_mutex_.
+  std::unordered_set<int64_t> marker_ids_;
   mutable std::mutex buffers_mutex_;
 
   // Per-entity configuration keyed by entity_id
@@ -247,6 +273,11 @@ class LogManager {
 
   // Monotonically increasing entry ID (never resets; starts at 1)
   std::atomic<int64_t> next_id_{1};
+
+  // Exact levels of notified entries with no severity name, oldest first.
+  std::unordered_map<int64_t, uint8_t> unnamed_levels_;
+  std::deque<int64_t> unnamed_level_order_;
+  mutable std::mutex unnamed_levels_mutex_;
 };
 
 }  // namespace ros2_medkit_gateway

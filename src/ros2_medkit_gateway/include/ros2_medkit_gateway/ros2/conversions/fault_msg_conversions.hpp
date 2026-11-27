@@ -27,7 +27,8 @@ namespace ros2_medkit_gateway::ros2::conversions {
 ros2_medkit::fault_detection::FaultRecord from_msg(const ros2_medkit_msgs::msg::Fault & msg);
 ros2_medkit::fault_detection::FaultEventRecord from_msg(const ros2_medkit_msgs::msg::FaultEvent & msg);
 
-/// Fault message to JSON through fault_record_to_json.
+/// Fault message to JSON through fault_record_to_json, plus the record's `owner`
+/// ("*" for a shared record) when the message names one.
 nlohmann::json fault_to_json(const ros2_medkit_msgs::msg::Fault & fault);
 
 /// Convert a ros2_medkit_msgs::msg::EnvironmentData to JSON.

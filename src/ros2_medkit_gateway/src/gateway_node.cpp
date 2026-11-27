@@ -39,6 +39,7 @@
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/faults/sqlite_entity_freeze_frame_store.hpp"
+#include "ros2_medkit_gateway/core/logs/log_scope.hpp"
 #include "ros2_medkit_gateway/core/thread_pool_config.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
 #include "ros2_medkit_gateway/param_utils.hpp"
@@ -1008,6 +1009,12 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
 
     // Wire LogManager <-> TriggerManager for log_settings integration
     if (log_mgr_) {
+      // A "logs" change names the one app whose log scope holds the logger, or
+      // no entity.
+      auto owners = std::make_shared<logs::LoggerOwnerIndex>();
+      log_mgr_->set_logger_owner_fn([this, owners](const std::string & logger_name) {
+        return owners->find_owner(get_thread_safe_cache(), logger_name);
+      });
       log_mgr_->set_notifier(resource_change_notifier_.get());
     }
 
@@ -1018,19 +1025,8 @@ GatewayNode::GatewayNode(const rclcpp::NodeOptions & options) : Node("ros2_medki
       trigger_host_.manager->retry_unresolved_triggers();
     });
 
-    // Wire node-to-entity resolver for trigger notifications (#305).
-    // The resolver looks up node FQNs in the ThreadSafeEntityCache's node_to_app
-    // mapping (populated from linking result). Captures 'this' - the lambda is
-    // called from ROS subscription callbacks on the same node's executor.
-    auto node_resolver = [this](const std::string & ros_fqn) -> std::string {
-      return resolve_trigger_entity(thread_safe_cache_, ros_fqn);
-    };
-
     if (trigger_fault_subscriber_) {
-      trigger_fault_subscriber_->set_node_to_entity_resolver(node_resolver);
-    }
-    if (log_mgr_) {
-      log_mgr_->set_node_to_entity_resolver(node_resolver);
+      trigger_fault_subscriber_->set_fault_owner_resolver(make_fault_owner_resolver(thread_safe_cache_));
     }
 
     RCLCPP_INFO(get_logger(), "Trigger subsystem: enabled (max=%d, storage=%s)", trigger_host_.max_triggers,

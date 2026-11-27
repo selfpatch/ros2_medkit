@@ -37,7 +37,7 @@ enum class ChangeType { CREATED, UPDATED, DELETED };
 /// Describes a single resource change event.
 struct ResourceChange {
   std::string collection;     ///< "faults", "updates", "data", "x-custom"
-  std::string entity_id;      ///< "temp_sensor"
+  std::string entity_id;      ///< "temp_sensor"; for "logs" the one owning app, or ""
   std::string resource_path;  ///< "fault_003" or "temperature"
   nlohmann::json value;       ///< The changed item (not full collection)
   ChangeType change_type;
@@ -90,6 +90,11 @@ class ResourceChangeNotifier {
   void notify(const std::string & collection, const std::string & entity_id, const std::string & resource_path,
               const nlohmann::json & value, ChangeType change_type = ChangeType::UPDATED);
 
+  /// notify() for every subscription except `skipped`. 0 skips none.
+  void notify_except(NotifierSubscriptionId skipped, const std::string & collection, const std::string & entity_id,
+                     const std::string & resource_path, const nlohmann::json & value,
+                     ChangeType change_type = ChangeType::UPDATED);
+
   /// Shut down the worker thread. After this, notify() is a no-op.
   /// Safe to call multiple times.
   void shutdown();
@@ -101,10 +106,19 @@ class ResourceChangeNotifier {
   /// Must be called before concurrent use (typically from GatewayNode init).
   void set_max_queue_size(size_t max_size);
 
+  /// Most changes that can wait for dispatch at once: the worker takes the
+  /// whole queue as one batch, and the queue refills while it dispatches.
+  size_t max_in_flight() const;
+
  private:
   struct SubscriptionEntry {
     NotifierFilter filter;
     NotifierCallback callback;
+  };
+
+  struct QueuedChange {
+    ResourceChange change;
+    NotifierSubscriptionId skipped{0};  ///< Subscription not called; 0 = none.
   };
 
   /// Check if a change matches a filter.
@@ -126,9 +140,9 @@ class ResourceChangeNotifier {
   std::condition_variable running_cv_;
 
   // Async work queue
-  std::mutex queue_mutex_;
+  mutable std::mutex queue_mutex_;
   std::condition_variable queue_cv_;
-  std::deque<ResourceChange> queue_;
+  std::deque<QueuedChange> queue_;
   size_t max_queue_size_{kDefaultMaxQueueSize};
   size_t overflow_drop_count_{0};  ///< Accumulated drops since last overflow log
 

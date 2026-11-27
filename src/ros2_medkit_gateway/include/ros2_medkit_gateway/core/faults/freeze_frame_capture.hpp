@@ -46,8 +46,8 @@ class PluginManager;
 struct FreezeFrameCaptureConfig {
   /// `entity_freeze_frame.enabled`: capture at all.
   bool enabled{true};
-  /// Retained-frame bound: past it, the frames of the fault captured longest ago are
-  /// evicted. Reloaded and captured frames count together. Not a node parameter.
+  /// Retained-frame bound, in records: past it, the frames of the record captured longest
+  /// ago are evicted. Reloaded and captured frames count together. Not a node parameter.
   size_t max_faults{256};
   /// Wait between two startup fault-list attempts while none has succeeded. Not a node
   /// parameter.
@@ -67,15 +67,22 @@ struct FreezeFrameCaptureConfig {
 /// next confirmation replaces it, or drops it with a warning when the read gets no values
 /// and the occurrence is another one.
 ///
-/// With an `EntityFreezeFrameStore`, each capture is written through with the fault's
+/// Frames belong to a fault record: its code and its owner, the reporting source of a
+/// per_source record or "*" for a shared one. A record that names no owner belongs to its
+/// first reporting source, the owner the fault routes address it by
+/// (`faults::stored_owner`). A record's frames are read from each of
+/// its reporting sources. `frames_for` answers for one record, and two records of one
+/// code keep their frames, occurrences, muting and stored rows apart.
+///
+/// With an `EntityFreezeFrameStore`, each capture is written through with the record's
 /// occurrence, and the stored frames load on construction. With a lister, no reloaded
 /// frame is served before a list has succeeded. A failed list is retried every
 /// `list_retry_interval`, and live confirms are captured in between; a capture replaces
-/// the reloaded frame of its code. The first list that succeeds drops a frame of another
-/// occurrence, or of a fault the list does not hold. An unknown occurrence or an empty
-/// list keeps the frame. With no lister, every reloaded frame is kept and served at once.
-/// Then each confirmed, unmuted fault with no frame is read and marked startup, while the
-/// bound has room.
+/// the reloaded frame of its record. The first list that succeeds drops a frame of another
+/// occurrence of its record, or of a record the list does not hold. An unknown occurrence
+/// or an empty list keeps the frame. With no lister, every reloaded frame is kept and
+/// served at once. Then each record of a confirmed, unmuted fault with no frame is read
+/// and marked startup, while the bound has room.
 ///
 /// The reads run on a thread of this object, never on the thread that delivers
 /// the event.
@@ -109,8 +116,8 @@ class FreezeFrameCapture : public FreezeFrameSource {
     }
   };
 
-  /// One fault of a ListFaults reply: its code, the entities that reported it, its
-  /// status, its occurrence and whether correlation mutes it.
+  /// One fault record of a ListFaults reply: its code and owner, the entities that
+  /// reported it, its status, its occurrence and whether correlation mutes it.
   struct StandingFault {
     std::string fault_code;
     std::vector<std::string> reporting_sources;
@@ -119,6 +126,9 @@ class FreezeFrameCapture : public FreezeFrameSource {
     Occurrence occurrence{};
     /// A muted fault publishes no confirm event, so it is not framed at start either.
     bool muted{false};
+    /// "*" for a shared record. A reply that names no owner is addressed as the fault
+    /// routes address it: by its first reporting source.
+    std::string owner{"*"};
   };
 
   /// Every fault the fault manager holds when the capture starts, in any status and
@@ -147,7 +157,7 @@ class FreezeFrameCapture : public FreezeFrameSource {
     /// Optional persistence. Null keeps the frames in memory only.
     std::shared_ptr<EntityFreezeFrameStore> store;
     /// Optional. A source that yields no frame gets one frame per hosted entity with data,
-    /// one level deep. An entity gets at most one frame per fault.
+    /// one level deep. An entity gets at most one frame per record.
     HostedEntitiesResolver hosted;
   };
 
@@ -161,12 +171,12 @@ class FreezeFrameCapture : public FreezeFrameSource {
   FreezeFrameCapture(FreezeFrameCapture &&) = delete;
   FreezeFrameCapture & operator=(FreezeFrameCapture &&) = delete;
 
-  std::vector<Frame> frames_for(const std::string & fault_code) const override;
+  std::vector<Frame> frames_for(const std::string & fault_code, const std::string & owner) const override;
 
   /// Parses a ListFaults reply body into standing faults. Nullopt when the body has no
   /// "faults" array. Items that lack a string "fault_code" or an array "reporting_sources"
-  /// are skipped, and non-string source entries are dropped. A fault named in
-  /// "muted_faults" is marked muted. A "first_occurred" that is
+  /// are skipped, and non-string source entries are dropped. A record that "muted_faults"
+  /// names by its fault_code and source_id is marked muted. A "first_occurred" that is
   /// not a positive number of seconds within int64 nanoseconds, or an "occurrence_count"
   /// that is not a positive uint32, leaves that part of `occurrence` at 0. Never throws.
   static std::optional<std::vector<StandingFault>> standing_faults_from_list_reply(const nlohmann::json & data);
@@ -180,6 +190,8 @@ class FreezeFrameCapture : public FreezeFrameSource {
   /// Captures the confirms that arrive until @p deadline. False when the capture stops.
   bool capture_confirms_until(std::chrono::steady_clock::time_point deadline);
   void capture_standing_faults(const std::vector<StandingFault> & listed);
+  /// Captures the record @p event names, from each of its reporting sources. False when
+  /// it got no frame.
   bool capture_for_event(const ros2_medkit::fault_detection::FaultEventRecord & event, const Occurrence & occurrence,
                          bool startup_catchup = false);
   /// The occurrence of @p record, through the ListFaults reply's encoding.
@@ -191,21 +203,22 @@ class FreezeFrameCapture : public FreezeFrameSource {
   std::optional<Frame> capture_from_entity(const std::string & entity_id, const std::string & fault_code);
   void log_fallback_failure_once(const std::string & fault_code, const std::string & message);
 
-  /// Fills frames_ from the store, keeping the newest codes under max_faults_.
+  /// Fills frames_ from the store, keeping the newest records under max_faults_.
   void load_persisted_frames();
-  static StoredEntityFreezeFrame to_stored(const std::string & fault_code, const Frame & frame,
-                                           const Occurrence & occurrence);
+  static StoredEntityFreezeFrame to_stored(const std::string & fault_code, const std::string & owner,
+                                           const Frame & frame, const Occurrence & occurrence);
   /// Nullopt for a row whose blob is not shaped like a frame.
   static std::optional<Frame> from_stored(const StoredEntityFreezeFrame & row);
-  /// Replaces the code's rows in the store. The caller does not hold mutex_.
-  void write_persisted(const std::string & fault_code, const std::vector<StoredEntityFreezeFrame> & rows);
-  /// Deletes the rows of each code from the store. The caller does not hold mutex_.
-  void erase_persisted(const std::vector<std::string> & fault_codes);
+  /// Replaces the record's rows in the store. The caller does not hold mutex_.
+  void write_persisted(const std::string & fault_code, const std::string & owner,
+                       const std::vector<StoredEntityFreezeFrame> & rows);
+  /// Deletes the rows of each record from the store. The caller does not hold mutex_.
+  void erase_persisted(const std::vector<std::string> & record_keys);
   /// Keeps or discards each reloaded frame against @p listed, then lets frames_for serve
   /// the ones kept.
   void judge_reloaded_frames(const std::vector<StandingFault> & listed);
-  /// Erases a code's frames from memory. The caller holds mutex_.
-  void forget_locked(const std::string & fault_code);
+  /// Erases a record's frames from memory. The caller holds mutex_.
+  void forget_locked(const std::string & key);
 
   PluginDataReaders readers_;
   StandingFaultLister standing_lister_;
@@ -216,18 +229,18 @@ class FreezeFrameCapture : public FreezeFrameSource {
   const size_t max_faults_;
   const std::chrono::milliseconds list_retry_interval_;
 
-  /// Guards frames_, insertion_order_, fallback_logged_, reloaded_codes_, occurrences_,
+  /// Guards frames_, insertion_order_, fallback_logged_, reloaded_records_, occurrences_,
   /// reloaded_judged_ and store_write_warned_.
   mutable std::mutex mutex_;
-  /// Keyed by fault code only: cross-entity isolation rests on the fault manager keeping
-  /// reporting_sources append-only for a code and on `get_fault` gating by source scope.
+  /// Keyed by the record the frames belong to, `(fault_code, owner)`, rendered as
+  /// `fault_code + '\0' + owner`, which no id can contain.
   std::unordered_map<std::string, std::vector<Frame>> frames_;
-  std::deque<std::string> insertion_order_;          ///< eviction order (FIFO)
+  std::deque<std::string> insertion_order_;          ///< record keys in eviction order (FIFO)
   std::unordered_set<std::string> fallback_logged_;  ///< fault codes already warned about (bounded)
-  /// Codes whose frames came from the store and were not captured again since. Only
+  /// Records whose frames came from the store and were not captured again since. Only
   /// these are judged at start.
-  std::unordered_set<std::string> reloaded_codes_;
-  /// The occurrence of every code in frames_, reloaded or captured.
+  std::unordered_set<std::string> reloaded_records_;
+  /// The occurrence of every record in frames_, reloaded or captured.
   std::unordered_map<std::string, Occurrence> occurrences_;
   /// False until a startup fault list has judged the reloaded frames: until then
   /// frames_for serves none of them.

@@ -38,10 +38,12 @@
 #include "ros2_medkit_gateway/core/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/function.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
 #include "ros2_medkit_gateway/core/models/error_info.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/gateway_node.hpp"
+#include "ros2_medkit_gateway/http/handlers/fault_handlers.hpp"
 #include "ros2_medkit_gateway/http/handlers/handler_context.hpp"
 #include "ros2_medkit_gateway/http/typed_router.hpp"
 #include "ros2_medkit_gateway/test_support/refused_port.hpp"
@@ -2055,6 +2057,89 @@ TEST(ResolveEntitySourceFqnsTest, ExternalAppWithStrayRosBindingOwnsFaultsByBare
   EXPECT_EQ(fqns, std::set<std::string>{"process"});
 }
 
+// =============================================================================
+// build_source_entity_map - whose lock the global fault clear consults
+//
+// `DELETE /api/v1/faults` skips a record whose owning entity is locked by
+// another client. It finds that entity by looking the record's reporting source
+// up in this map, so a source the map cannot attribute is a lock the route
+// silently walks through.
+// =============================================================================
+TEST(BuildSourceEntityMapTest, BoundAppIsFoundByItsFqn) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_app_with_binding("temp_sensor", "temp_sensor", "/powertrain/engine")});
+
+  const auto map = handlers::FaultHandlers::build_source_entity_map(cache);
+
+  ASSERT_EQ(map.count("/powertrain/engine/temp_sensor"), 1u);
+  EXPECT_EQ(map.at("/powertrain/engine/temp_sensor"), std::set<std::string>{"temp_sensor"});
+}
+
+// Two apps can bind one node path (a namespace spelled with and without a
+// trailing slash). Keeping one of them let a lock on the other go unhonoured.
+TEST(BuildSourceEntityMapTest, EveryAppBoundToOneNodePathIsFound) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps(
+      {make_app_with_binding("twin-a", "twin", "/scope/t"), make_app_with_binding("twin-b", "twin", "/scope/t/")});
+
+  const auto map = handlers::FaultHandlers::build_source_entity_map(cache);
+
+  ASSERT_EQ(map.count("/scope/t/twin"), 1u);
+  EXPECT_EQ(map.at("/scope/t/twin"), (std::set<std::string>{"twin-a", "twin-b"}));
+}
+
+// An external app has no ROS binding, so its effective_fqn() is empty and the
+// old map held nothing for it. It reports under its bare id, which is the value
+// that arrives on the wire, so the lock of every plugin-owned app went
+// unhonoured on this route.
+TEST(BuildSourceEntityMapTest, ExternalAppIsFoundByItsBareId) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_external_app("plc_line1", "plc_hw")});
+
+  const auto map = handlers::FaultHandlers::build_source_entity_map(cache);
+
+  ASSERT_EQ(map.count("plc_line1"), 1u) << "an external app's bare id must resolve to its entity";
+  EXPECT_EQ(map.at("plc_line1"), std::set<std::string>{"plc_line1"});
+}
+
+// A protocol bridge raises its link faults under the component's own id, and
+// the map was built from apps only, so it never held a component at all.
+TEST(BuildSourceEntityMapTest, ExternalComponentIsFoundByItsBareId) {
+  ThreadSafeEntityCache cache;
+  Component device;
+  device.id = "line_controller";
+  device.external = true;
+  cache.update_components({device});
+
+  const auto map = handlers::FaultHandlers::build_source_entity_map(cache);
+
+  ASSERT_EQ(map.count("line_controller"), 1u) << "an external component's bare id must resolve to its entity";
+  EXPECT_EQ(map.at("line_controller"), std::set<std::string>{"line_controller"});
+}
+
+// The #516 guardrail, restated for the lock map: a runtime host component never
+// claims its bare id, so attributing a record to it would let an unrelated
+// lock block a clear.
+TEST(BuildSourceEntityMapTest, InternalComponentClaimsNoBareId) {
+  ThreadSafeEntityCache cache;
+  Component host;
+  host.id = "runtime_host";
+  cache.update_components({host});
+
+  EXPECT_EQ(handlers::FaultHandlers::build_source_entity_map(cache).count("runtime_host"), 0u);
+}
+
+// An unbound non-external app owns no reporting source at all: granting it its
+// bare id would let it claim records it never reported.
+TEST(BuildSourceEntityMapTest, UnboundInternalAppContributesNothing) {
+  ThreadSafeEntityCache cache;
+  App unbound;
+  unbound.id = "manifest_only";
+  cache.update_apps({unbound});
+
+  EXPECT_TRUE(handlers::FaultHandlers::build_source_entity_map(cache).empty());
+}
+
 TEST(ResolveEntitySourceFqnsTest, ExternalComponentWithNoAppsOwnsFaultsUnderItsOwnId) {
   // The #516 case: a PLC modeled as an external Component with no child App.
   // It reports faults under its own component id; the scope must be exactly
@@ -2131,6 +2216,95 @@ TEST(ResolveEntitySourceFqnsTest, AreaHostingExternalComponentOwnsItsFaults) {
 
   auto fqns = HandlerContext::resolve_entity_source_fqns(cache, make_entity_info(EntityType::AREA, "cell_a"));
   EXPECT_EQ(fqns, std::set<std::string>{"s7_1500"});
+}
+
+// =============================================================================
+// AppSourceIndex: the app whose GET /apps/{id}/faults lists a record. It names
+// the owner in the fault stream's x-medkit and the entity of a fault trigger
+// notification, so it must follow the scope rule and never the last path
+// segment of the owner.
+// =============================================================================
+
+TEST(AppSourceIndexTest, SubPathSourceResolvesToOwnerNotNamesake) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({
+      make_app_with_binding("detector-app", "detector", "/x"),
+      make_app_with_binding("goal_status", "goal_status", "/z"),
+  });
+  faults::AppSourceIndex index;
+  EXPECT_EQ(index.find_owner(cache, "/x/detector/goal_status"), "detector-app");
+  EXPECT_EQ(index.find_owner(cache, "/x/detector/diag/goal_status"), "detector-app");
+  EXPECT_EQ(index.find_owner(cache, "/x/detector"), "detector-app");
+  EXPECT_EQ(index.find_owner(cache, "/z/goal_status"), "goal_status");
+}
+
+TEST(AppSourceIndexTest, SourceOwnedByNoAppHasNoOwner) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_app_with_binding("goal_status", "goal_status", "/z")});
+  faults::AppSourceIndex index;
+  // The last segment names an app, the path does not.
+  EXPECT_EQ(index.find_owner(cache, "/w/solo/goal_status"), "");
+  EXPECT_EQ(index.find_owner(cache, ""), "");
+}
+
+TEST(AppSourceIndexTest, PrefixCollidingNodeIsNotTheOwner) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_app_with_binding("node", "node", "/ns")});
+  faults::AppSourceIndex index;
+  EXPECT_EQ(index.find_owner(cache, "/ns/node_extra"), "");
+}
+
+TEST(AppSourceIndexTest, MostSpecificOwnerWinsForNestedNodes) {
+  // Node /a/b and node /a/b/c both own /a/b/c/x; the nearer one names it.
+  ThreadSafeEntityCache cache;
+  cache.update_apps({
+      make_app_with_binding("outer", "b", "/a"),
+      make_app_with_binding("inner", "c", "/a/b"),
+  });
+  faults::AppSourceIndex index;
+  EXPECT_EQ(index.find_owner(cache, "/a/b/c/x"), "inner");
+  EXPECT_EQ(index.find_owner(cache, "/a/b/other"), "outer");
+}
+
+TEST(AppSourceIndexTest, EqualOwnersResolveToSmallestId) {
+  // Two apps bound to one node both list its faults; the pick is stable.
+  ThreadSafeEntityCache cache;
+  cache.update_apps({
+      make_app_with_binding("manifest-bridge", "diagnostic_bridge", "/bridge"),
+      make_app_with_binding("diagnostic_bridge", "diagnostic_bridge", "/bridge"),
+  });
+  faults::AppSourceIndex index;
+  EXPECT_EQ(index.find_owner(cache, "/bridge/diagnostic_bridge"), "diagnostic_bridge");
+}
+
+TEST(AppSourceIndexTest, ExternalAppOwnsItsBareId) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_external_app("plc-app", "plc-unit")});
+  faults::AppSourceIndex index;
+  EXPECT_EQ(index.find_owner(cache, "plc-app"), "plc-app");
+  EXPECT_EQ(index.find_owner(cache, "plc-app/channel_1"), "plc-app");
+  EXPECT_EQ(index.find_owner(cache, "plc-app-2"), "");
+}
+
+TEST(AppSourceIndexTest, FollowsCacheChanges) {
+  ThreadSafeEntityCache cache;
+  cache.update_apps({make_app_with_binding("first", "detector", "/x")});
+  faults::AppSourceIndex index;
+  EXPECT_EQ(index.find_owner(cache, "/x/detector/sub"), "first");
+
+  cache.update_apps({make_app_with_binding("second", "detector", "/x")});
+  EXPECT_EQ(index.find_owner(cache, "/x/detector/sub"), "second");
+
+  cache.update_apps({});
+  EXPECT_EQ(index.find_owner(cache, "/x/detector/sub"), "");
+}
+
+TEST(SourceInScopeTest, ExactOrPathChildOnly) {
+  EXPECT_TRUE(faults::source_in_scope("/ns/node", "/ns/node"));
+  EXPECT_TRUE(faults::source_in_scope("/ns/node/sub", "/ns/node"));
+  EXPECT_FALSE(faults::source_in_scope("/ns/node_extra", "/ns/node"));
+  EXPECT_FALSE(faults::source_in_scope("/ns", "/ns/node"));
+  EXPECT_FALSE(faults::source_in_scope("/ns/node", ""));
 }
 
 int main(int argc, char ** argv) {

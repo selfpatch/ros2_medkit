@@ -265,15 +265,20 @@ them. The file belongs to one gateway. Do not share
 it between gateways: at start, each gateway drops the frames of faults its own
 fault manager does not hold.
 
-Each stored frame carries the fault manager's occurrence of the fault at
-capture: the fault's ``occurrence_count`` and ``first_occurred``. The fault
-manager changes both only when a cleared fault fails again. At startup the
+Frames belong to a fault record: the fault code and its owner, the reporting
+source of a ``per_source`` record or ``*`` for a shared one. A record's frame
+holds the values of each of its reporting sources. A ``per_source`` code
+reported by two entities has two records, and each keeps its own frame,
+occurrence, muting and stored rows. Everything below works per record. Each stored frame carries the fault manager's
+occurrence of its record at capture: the record's ``occurrence_count`` and
+``first_occurred``. The fault manager changes both only when a cleared record
+fails again. At startup the
 gateway asks the fault manager once for its faults of every status, muted ones
 included, and judges every reloaded frame by that one answer. Until then the
 fault detail serves no reloaded frame. When the fault manager does not answer,
 the gateway logs the first failure as a warning and asks again every 5 s. Live confirmations are
 captured in the meantime, and a live capture replaces the reloaded frame of its
-fault. So after a restart, a client that polls the fault detail first sees no
+record. So after a restart, a client that polls the fault detail first sees no
 ``freeze_frame`` for a reloaded fault, from about 10 s to as long as the fault
 manager is down, and then the frame with its original ``captured_at``, older
 than the restart.
@@ -281,9 +286,10 @@ than the restart.
 - The fault lists the stored occurrence: the frame is kept as it is, with no
   read. Clocks play no part, so a gateway clock that differs from the fault
   manager's changes nothing.
-- The fault lists another occurrence (it cleared and failed again while the
-  gateway was down): the frame is discarded, and the gateway logs a warning
-  with the fault code, the entity, both occurrence counts and the status. A
+- The record lists another occurrence (it cleared and failed again while the
+  gateway was down): its frame is discarded, and the gateway logs a warning
+  with the fault code, the entity, both occurrence counts and the status. The
+  other records of the code keep their frames. A
   confirmed fault then gets a startup frame from the catch-up below; any other
   fault has no frame, since a read now would not show the values at that
   occurrence's confirmation.

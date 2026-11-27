@@ -19,7 +19,7 @@ BulkData
    The endpoint shall list all bulk-data items available in the addressed bulk-data category on the entity.
 
    Returns BulkDataDescriptor array with id, name, mimetype, size, creation_date fields.
-   Includes ``x-medkit`` extensions with fault_code, duration_sec, format.
+   Includes ``x-medkit`` extensions with fault_codes, duration_sec, format.
 
 .. req:: GET /{entity}/bulk-data/{category}/{bulk-data-id}
    :id: REQ_INTEROP_073
@@ -54,4 +54,3 @@ BulkData
 
    Returns 204 No Content on success. Supported for components and apps.
    The ``rosbags`` category is managed by the fault manager and cannot be deleted.
-

@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -44,6 +45,7 @@
 #include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -57,9 +59,24 @@
 
 namespace ros2_medkit_gateway {
 
+// What the route tests hand the stubs below. The provider tests never build a
+// request or a response, so a null impl answers empty and records nothing.
+struct StubRequest {
+  std::vector<std::string> path_params;  // index 0 is the full match
+};
+struct StubResponse {
+  int status = 0;
+  std::string error_code;
+  nlohmann::json body;
+};
+
 PluginRequest::PluginRequest(const void * impl) : impl_(impl) {
 }
-std::string PluginRequest::path_param(size_t /*index*/) const {
+std::string PluginRequest::path_param(size_t index) const {
+  const auto * req = static_cast<const StubRequest *>(impl_);
+  if (req != nullptr && index < req->path_params.size()) {
+    return req->path_params[index];
+  }
   return {};
 }
 std::string PluginRequest::header(const std::string & /*name*/) const {
@@ -79,10 +96,21 @@ std::string PluginRequest::query_param(const std::string & /*name*/) const {
 
 PluginResponse::PluginResponse(void * impl) : impl_(impl) {
 }
-void PluginResponse::send_json(const nlohmann::json & /*data*/) {
+void PluginResponse::send_json(const nlohmann::json & data) {
+  auto * res = static_cast<StubResponse *>(impl_);
+  if (res != nullptr) {
+    res->status = 200;
+    res->body = data;
+  }
 }
-void PluginResponse::send_error(int /*status*/, const std::string & /*error_code*/, const std::string & /*message*/,
+void PluginResponse::send_error(int status, const std::string & error_code, const std::string & message,
                                 const nlohmann::json & /*parameters*/) {
+  auto * res = static_cast<StubResponse *>(impl_);
+  if (res != nullptr) {
+    res->status = status;
+    res->error_code = error_code;
+    res->body = {{"message", message}};
+  }
 }
 
 // -- FakePluginContext --
@@ -229,6 +257,21 @@ nodes:
 };
 
 // -- DataProvider tests --
+
+// The provider's list envelope carries link state in its x-medkit block. Without it
+// the fault-trigger engine's link-down guard (content_reports_disconnected) never
+// fires for a provider-served entity, and a threshold rule evaluates on a stale
+// number for the whole outage. The fixture endpoint never connects.
+TEST_F(OpcuaPluginTest, ListDataEnvelopeCarriesLinkState) {
+  auto result = plugin_.list_data("tank");
+
+  ASSERT_TRUE(result.has_value());
+  ASSERT_TRUE(result->content.contains("x-medkit")) << "the list envelope must report link state";
+  const auto & x_medkit = result->content["x-medkit"];
+  ASSERT_TRUE(x_medkit.contains("connected")) << "the list envelope must report link state";
+  EXPECT_FALSE(x_medkit["connected"].get<bool>()) << "the fixture endpoint never connects";
+  ASSERT_TRUE(x_medkit.contains("timestamp")) << "the list envelope must date its values";
+}
 
 TEST_F(OpcuaPluginTest, ListDataReturnsItems) {
   auto result = plugin_.list_data("tank");
@@ -655,6 +698,55 @@ TEST_F(OpcuaPluginAlarmsFitnessTest, IntrospectSkipsXPlcDataForAlarmsFallbackEnt
   EXPECT_TRUE(tank_got_x_plc_data) << "data-bearing entities must keep x-plc-data";
 }
 
+// -- Route tests --
+
+namespace {
+
+// Calls the plugin's GET route under components/ for ``component_id`` and
+// returns what the handler sent.
+StubResponse get_component_status(OpcuaPlugin & plugin, const std::string & component_id) {
+  StubResponse recorded;
+  const auto routes = plugin.get_routes();
+  const auto route = std::find_if(routes.begin(), routes.end(), [](const GatewayPlugin::PluginRoute & r) {
+    return r.method == "GET" && r.pattern.rfind("components/", 0) == 0;
+  });
+  if (route == routes.end()) {
+    ADD_FAILURE() << "the plugin registers no GET route under components/";
+    return recorded;
+  }
+  // The handler reads capture group 1 only.
+  StubRequest request{{"", component_id}};
+  PluginRequest req(&request);
+  PluginResponse res(&recorded);
+  route->handler(req, res);
+  return recorded;
+}
+
+}  // namespace
+
+// The status route describes this plugin's own OPC UA session: its endpoint,
+// its mode and whether it is connected. In a gateway that loads several
+// plugins, other components share the entity tree, and that session says
+// nothing about them. So the route serves the plugin's own component and
+// answers any other one with the 404 the data route gives an entity with no
+// mapped points. The own component is asked on the same plugin first, which
+// shows that this harness does record a served status.
+TEST_F(OpcuaPluginTest, StatusRouteServesOnlyThePluginsOwnComponent) {
+  ctx_.entities["other_device"] = {SovdEntityType::COMPONENT, "other_device", "/other_area",
+                                   "/other_area/other_device"};
+
+  const StubResponse own = get_component_status(plugin_, "test_runtime");
+  ASSERT_EQ(own.status, 200) << own.body.dump();
+  EXPECT_EQ(own.body.value("component_id", ""), "test_runtime");
+  ASSERT_TRUE(own.body.contains("connected")) << "the plugin's own component must report link state";
+  EXPECT_FALSE(own.body["connected"].get<bool>()) << "the fixture endpoint never connects";
+
+  const StubResponse other = get_component_status(plugin_, "other_device");
+  EXPECT_EQ(other.status, 404) << "a component the plugin does not own was answered with " << other.body.dump();
+  EXPECT_EQ(other.error_code, ERR_RESOURCE_NOT_FOUND);
+  EXPECT_FALSE(other.body.contains("endpoint_url")) << "the plugin's session must not be reported under another id";
+}
+
 // -- FaultProvider tests --
 
 TEST_F(OpcuaPluginTest, ListFaultsEmpty) {
@@ -724,6 +816,27 @@ TEST_F(OpcuaPluginTest, GetFaultFound) {
   auto result = plugin_.get_fault("tank", "PLC_LOW_LEVEL");
   ASSERT_TRUE(result.has_value());
   EXPECT_EQ(result->content.value("fault_code", ""), "PLC_LOW_LEVEL");
+}
+
+// A fault code is half of a record's identity, so a detail read on entity A must
+// not serve entity B's record of the same code. What keeps them apart is the
+// entity-scoped list this scan runs over, not a comparison inside the scan, and
+// that is what this pins: two owners of one code, and only the addressed
+// entity's record comes back.
+TEST_F(OpcuaPluginTest, GetFaultServesOnlyTheAddressedEntitysRecordOfASharedCode) {
+  ctx_.all_faults = {{"faults",
+                      {{{"fault_code", "SHARED_CODE"}, {"source_id", "other_tank"}, {"severity", 2}},
+                       {{"fault_code", "SHARED_CODE"}, {"source_id", "tank"}, {"severity", 3}}}}};
+
+  auto result = plugin_.get_fault("tank", "SHARED_CODE");
+
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->content.value("source_id", ""), "tank") << "served another owner's record of the same code";
+  EXPECT_EQ(result->content.value("severity", 0), 3);
+
+  auto other = plugin_.get_fault("other_tank", "SHARED_CODE");
+  ASSERT_TRUE(other.has_value());
+  EXPECT_EQ(other->content.value("source_id", ""), "other_tank");
 }
 
 // -- configure() validation (issue #481) --
@@ -2525,8 +2638,369 @@ struct ScopedExecutorSpin {
   ScopedExecutorSpin & operator=(ScopedExecutorSpin &&) = delete;
 };
 
-// The SOVD DELETE /faults/{code} route lands on FaultProvider::clear_fault(),
-// which buffers a dispatch into pending_reports_ - the SAME vector the poll
+// The plugin raises under the entity it polled, so its clear has to name the
+// same owner: a record is (fault_code, source_id), and a clear carrying no
+// source reaches whichever record the store resolves - on a box running a second
+// plugin instance against another device, that is the other device's still-active
+// fault.
+TEST(OpcuaPluginFaultIdentity, ClearFaultSendsTheOwningEntityAsSourceId) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_clear_owner_plugin");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_clear_owner_faultmgr");
+
+  std::mutex seen_mutex;
+  std::vector<std::pair<std::string, std::string>> cleared;  // (fault_code, source_id)
+  auto report_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ReportFault>(
+      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> &,
+                                        const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & res) {
+        res->accepted = true;
+      });
+  auto clear_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ClearFault>(
+      "/fault_manager/clear_fault",
+      [&cleared, &seen_mutex](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & req,
+                              const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & res) {
+        {
+          std::lock_guard<std::mutex> lock(seen_mutex);
+          cleared.emplace_back(req->fault_code, req->source_id);
+        }
+        res->success = true;
+      });
+
+  const std::string yaml_path = "/tmp/test_opcua_clear_owner_nodemap.yaml";
+  {
+    std::ofstream f(yaml_path);
+    f << R"(
+area_id: owner_plc
+component_id: owner_runtime
+nodes:
+  - node_id: "ns=2;i=1"
+    entity_id: tank
+    data_name: level
+    data_type: float
+)";
+  }
+
+  OpcuaPlugin plugin;
+  nlohmann::json config;
+  config["node_map_path"] = yaml_path;
+  config["endpoint_url"] = "opc.tcp://127.0.0.1:1";  // nothing listening, the fault sink drives the drain
+  config["poll_interval_ms"] = 100;
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  ctx.entities["tank"] = {SovdEntityType::APP, "tank", "/owner_plc", "/owner_plc/owner_runtime/tank"};
+  plugin.set_context(ctx);
+
+  ScopedExecutorSpin spinner({node, fault_manager});
+
+  auto probe = node->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
+  const auto ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!probe->service_is_ready() && std::chrono::steady_clock::now() < ready_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_TRUE(probe->service_is_ready()) << "stub ReportFault server never became discoverable";
+
+  // The addressed entity is the COMPONENT, the resolved owner is the hosted app.
+  // A record is (fault_code, owner), so the owner is what has to travel: sending
+  // the component id addresses a record no source owns and the fault manager
+  // declines it.
+  // Through the FaultProvider interface, which is how the gateway reaches it: a
+  // plugin that did not override clear_fault_record would land on the default,
+  // which clears by code with the addressed entity and drops the owner.
+  ros2_medkit_gateway::FaultProvider & provider = plugin;
+  static_cast<void>(provider.clear_fault_record("owner_runtime", "SHARED_CODE", "tank"));
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (std::chrono::steady_clock::now() < deadline) {
+    {
+      std::lock_guard<std::mutex> lock(seen_mutex);
+      if (!cleared.empty()) {
+        break;
+      }
+    }
+    static_cast<void>(provider.clear_fault_record("owner_runtime", "SHARED_CODE", "tank"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  spinner.stop();
+  plugin.shutdown();
+  std::remove(yaml_path.c_str());
+
+  std::lock_guard<std::mutex> lock(seen_mutex);
+  ASSERT_FALSE(cleared.empty()) << "no ClearFault reached the stub fault manager";
+  EXPECT_EQ(cleared.front().first, "SHARED_CODE");
+  EXPECT_EQ(cleared.front().second, "tank")
+      << "the clear must name the record's owner the gateway resolved, not the addressed entity";
+}
+
+// The gateway wires every plugin's log sink through PluginManager, which this
+// suite does not link. This subclass wires one the test owns instead.
+class SinkedOpcuaPlugin : public OpcuaPlugin {
+ public:
+  using GatewayPlugin::set_logger;
+};
+
+// Records the warnings a plugin log sink receives. The state is shared with the
+// sink it hands out, so a sink copied into a callback stays valid on its own.
+class WarningLog {
+ public:
+  std::function<void(PluginLogLevel, const std::string &)> sink() const {
+    return [state = state_](PluginLogLevel level, const std::string & msg) {
+      if (level == PluginLogLevel::kWarn) {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->warnings.push_back(msg);
+      }
+    };
+  }
+
+  /// The first warning containing `needle`, or "" when none arrives in time.
+  std::string wait_for(const std::string & needle, std::chrono::milliseconds timeout) const {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    do {
+      if (auto found = find(needle); !found.empty()) {
+        return found;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    } while (std::chrono::steady_clock::now() < deadline);
+    return find(needle);
+  }
+
+  std::string find(const std::string & needle) const {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    for (const auto & warning : state_->warnings) {
+      if (warning.find(needle) != std::string::npos) {
+        return warning;
+      }
+    }
+    return "";
+  }
+
+ private:
+  struct State {
+    std::mutex mutex;
+    std::vector<std::string> warnings;
+  };
+  std::shared_ptr<State> state_ = std::make_shared<State>();
+};
+
+// A clear the fault manager declined used to leave no trace: the dispatch never
+// read its reply, so the REST route answered as though it had worked while the
+// record stayed CONFIRMED. The reply is read now, and a refusal is logged as a
+// warning that names the code and the owner the clear was addressed to.
+TEST(OpcuaPluginFaultIdentity, ARefusedClearIsReadAndNotSilent) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_refused_clear_plugin");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_refused_clear_faultmgr");
+
+  auto report_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ReportFault>(
+      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> &,
+                                        const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & res) {
+        res->accepted = true;
+      });
+  auto clear_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ClearFault>(
+      "/fault_manager/clear_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Request> & req,
+                                       const std::shared_ptr<ros2_medkit_msgs::srv::ClearFault::Response> & res) {
+        res->success = false;
+        res->message = "Fault not found: " + req->fault_code + " (source " + req->source_id + ")";
+      });
+
+  const std::string yaml_path = "/tmp/test_opcua_refused_clear_nodemap.yaml";
+  {
+    std::ofstream f(yaml_path);
+    f << R"(
+area_id: refused_plc
+component_id: refused_runtime
+nodes:
+  - node_id: "ns=2;i=1"
+    entity_id: tank
+    data_name: level
+    data_type: float
+)";
+  }
+
+  WarningLog log;
+  SinkedOpcuaPlugin plugin;
+  plugin.set_logger(log.sink());  // before any plugin thread starts
+  nlohmann::json config;
+  config["node_map_path"] = yaml_path;
+  config["endpoint_url"] = "opc.tcp://127.0.0.1:1";
+  config["poll_interval_ms"] = 100;
+  plugin.configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  ctx.entities["tank"] = {SovdEntityType::APP, "tank", "/refused_plc", "/refused_plc/refused_runtime/tank"};
+  plugin.set_context(ctx);
+
+  ScopedExecutorSpin spinner({node, fault_manager});
+
+  auto probe = node->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
+  const auto ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!probe->service_is_ready() && std::chrono::steady_clock::now() < ready_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_TRUE(probe->service_is_ready()) << "stub ReportFault server never became discoverable";
+
+  // Addressed to the component, owned by the app: the warning has to name the
+  // owner the clear carried, which is not the entity in the request.
+  std::string warning;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (warning.empty() && std::chrono::steady_clock::now() < deadline) {
+    static_cast<void>(plugin.clear_fault_record("refused_runtime", "SHARED_CODE", "tank"));
+    warning = log.wait_for("ClearFault refused", std::chrono::milliseconds(200));
+  }
+
+  spinner.stop();
+  plugin.shutdown();
+  std::remove(yaml_path.c_str());
+
+  ASSERT_FALSE(warning.empty()) << "a refused clear left no warning in the plugin's log";
+  EXPECT_NE(warning.find("'SHARED_CODE'"), std::string::npos) << warning;
+  EXPECT_NE(warning.find("source 'tank'"), std::string::npos) << "the warning must name the owner: " << warning;
+}
+
+// A ClearFault reply that comes back after the plugin is gone must not reach
+// the plugin. shutdown() joins the plugin's fault-client executor and drops the
+// clients with their pending requests, so a reply in flight at shutdown is
+// dropped. The test holds one clear in flight, shuts the plugin down, destroys
+// it, then has the stub answer: the sink the plugin had receives nothing. Two
+// controls: a refusal answered while the plugin lives reaches that sink, and a
+// test-owned request answered after the dropped one gets its reply, so the stub
+// did send it.
+TEST(OpcuaPluginFaultIdentity, AClearReplyNeverReadsThePluginAgain) {
+  ScopedRclcpp rclcpp_scope;
+  auto node = std::make_shared<rclcpp::Node>("opcua_reply_lifetime_plugin");
+  auto fault_manager = std::make_shared<rclcpp::Node>("opcua_reply_lifetime_faultmgr");
+
+  using ClearFault = ros2_medkit_msgs::srv::ClearFault;
+  struct Pending {
+    std::shared_ptr<rmw_request_id_t> header;
+    std::string fault_code;
+  };
+  std::mutex pending_mutex;
+  std::vector<Pending> pending;
+
+  auto report_srv = fault_manager->create_service<ros2_medkit_msgs::srv::ReportFault>(
+      "/fault_manager/report_fault", [](const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Request> &,
+                                        const std::shared_ptr<ros2_medkit_msgs::srv::ReportFault::Response> & res) {
+        res->accepted = true;
+      });
+  // Deferred: the request is held and answered by the test.
+  auto clear_srv = fault_manager->create_service<ClearFault>(
+      "/fault_manager/clear_fault",
+      [&pending, &pending_mutex](const std::shared_ptr<rclcpp::Service<ClearFault>> & /*service*/,
+                                 const std::shared_ptr<rmw_request_id_t> & header,
+                                 const std::shared_ptr<ClearFault::Request> & req) {
+        std::lock_guard<std::mutex> lock(pending_mutex);
+        pending.push_back(Pending{header, req->fault_code});
+      });
+  // A refusal for the held request of `fault_code`. The requester may be gone:
+  // the response is sent all the same.
+  auto answer = [&](const std::string & fault_code) {
+    std::lock_guard<std::mutex> lock(pending_mutex);
+    for (auto it = pending.begin(); it != pending.end(); ++it) {
+      if (it->fault_code == fault_code) {
+        ClearFault::Response response;
+        response.success = false;
+        response.message = "Fault not found: " + fault_code;
+        try {
+          clear_srv->send_response(*it->header, response);
+        } catch (const std::exception &) {
+          // A requester that is gone can make the send fail. That is a dropped reply too.
+        }
+        pending.erase(it);
+        return true;
+      }
+    }
+    return false;
+  };
+  auto wait_received = [&](const std::string & fault_code) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline) {
+      {
+        std::lock_guard<std::mutex> lock(pending_mutex);
+        for (const auto & p : pending) {
+          if (p.fault_code == fault_code) {
+            return true;
+          }
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
+  };
+  // The control requester, on the test's executor. Created before it spins.
+  auto control = node->create_client<ClearFault>("/fault_manager/clear_fault");
+
+  const std::string yaml_path = "/tmp/test_opcua_reply_lifetime_nodemap.yaml";
+  {
+    std::ofstream f(yaml_path);
+    f << R"(
+area_id: lifetime_plc
+component_id: lifetime_runtime
+nodes:
+  - node_id: "ns=2;i=1"
+    entity_id: tank
+    data_name: level
+    data_type: float
+)";
+  }
+
+  WarningLog log;
+  auto plugin = std::make_unique<SinkedOpcuaPlugin>();
+  plugin->set_logger(log.sink());  // before any plugin thread starts
+  nlohmann::json config;
+  config["node_map_path"] = yaml_path;
+  config["endpoint_url"] = "opc.tcp://127.0.0.1:1";
+  config["poll_interval_ms"] = 100;
+  plugin->configure(config);
+
+  RealNodePluginContext ctx(node.get());
+  ctx.entities["tank"] = {SovdEntityType::APP, "tank", "/lifetime_plc", "/lifetime_plc/lifetime_runtime/tank"};
+  plugin->set_context(ctx);
+
+  ScopedExecutorSpin spinner({node, fault_manager});
+
+  auto probe = node->create_client<ros2_medkit_msgs::srv::ReportFault>("/fault_manager/report_fault");
+  const auto ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (!probe->service_is_ready() && std::chrono::steady_clock::now() < ready_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  ASSERT_TRUE(probe->service_is_ready()) << "stub ReportFault server never became discoverable";
+
+  // Control: while the plugin lives, a refusal reaches its sink.
+  static_cast<void>(plugin->clear_fault_record("tank", "LIVE_CODE", "tank"));
+  ASSERT_TRUE(wait_received("LIVE_CODE")) << "the live clear never reached the stub";
+  ASSERT_TRUE(answer("LIVE_CODE"));
+  ASSERT_FALSE(log.wait_for("'LIVE_CODE'", std::chrono::seconds(10)).empty())
+      << "positive control: a refusal answered while the plugin lives never reached its sink";
+
+  // The clear under test is in flight when the plugin goes.
+  static_cast<void>(plugin->clear_fault_record("tank", "LATE_CODE", "tank"));
+  ASSERT_TRUE(wait_received("LATE_CODE")) << "the late clear never reached the stub";
+  plugin->shutdown();
+  plugin.reset();
+
+  // Control: a request answered after LATE_CODE's reply gets its own, so the stub
+  // sent LATE_CODE's reply before this one.
+  auto control_request = std::make_shared<ClearFault::Request>();
+  control_request->fault_code = "CONTROL_CODE";
+  control_request->source_id = "tank";
+  auto control_reply = control->async_send_request(control_request);
+  ASSERT_TRUE(wait_received("CONTROL_CODE")) << "the control request never reached the stub";
+  ASSERT_TRUE(answer("LATE_CODE"));
+  ASSERT_TRUE(answer("CONTROL_CODE"));
+  ASSERT_EQ(control_reply.wait_for(std::chrono::seconds(10)), std::future_status::ready)
+      << "the stub's reply to the control request never arrived";
+
+  spinner.stop();
+  std::remove(yaml_path.c_str());
+
+  EXPECT_TRUE(log.find("'LATE_CODE'").empty())
+      << "a reply that arrived after the plugin was destroyed reached the plugin's sink";
+}
+
+// The SOVD DELETE /faults/{code} route lands on FaultProvider::clear_fault_record(),
+// which buffers a dispatch into pending_reports_, the SAME vector the poll
 // thread drains in publish_values()/flush_pending_reports(). Before the fix the
 // buffer had no lock, so a push_back that reallocated the vector while another
 // thread iterated/swapped it corrupted the heap (the crash observed in
@@ -2536,10 +3010,10 @@ struct ScopedExecutorSpin {
 // in send_or_buffer() and the batch.swap(pending_reports_) drain in
 // flush_pending_reports(). The drain only runs once report->service_is_ready()
 // is true, so the test stands up a real ReportFault/ClearFault server (a stub
-// fault_manager) to open that gate; only then does every clear_fault() both push
+// fault_manager) to open that gate. Only then does every clear both push
 // into the buffer AND swap it out under concurrent pushes from the other worker
 // threads. It must complete without heap corruption and is clean under
-// ThreadSanitizer - the DDS/rclcpp machinery it drives is covered by
+// ThreadSanitizer. The DDS/rclcpp machinery it drives is covered by
 // tsan_suppressions.txt, the same paths the gateway service tests exercise.
 TEST(OpcuaPluginConcurrency, ClearFaultBufferIsThreadSafe) {
   ScopedRclcpp rclcpp_scope;
@@ -2621,7 +3095,8 @@ nodes:
         // push_back against swap on the shared buffer.
         // The result is deliberately dropped: this test races the shared
         // pending-report buffer, it does not assert on any single clear.
-        static_cast<void>(plugin.clear_fault("tank", "RACE_" + std::to_string(t) + "_" + std::to_string(i++ & 0x3f)));
+        static_cast<void>(
+            plugin.clear_fault_record("tank", "RACE_" + std::to_string(t) + "_" + std::to_string(i++ & 0x3f), "tank"));
       }
     });
   }

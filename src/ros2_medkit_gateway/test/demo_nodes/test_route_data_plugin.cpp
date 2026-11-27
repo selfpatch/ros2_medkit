@@ -81,6 +81,8 @@ class TestRouteDataPlugin : public GatewayPlugin, public IntrospectionProvider {
     comp.fqn = "/test_route_plc_area/test_route_plc";
     comp.area = "test_route_plc_area";
     comp.source = "plugin";
+    // A PLC runtime reports its own faults under its bare id, like the OPC UA plugin's.
+    comp.external = true;
     result.new_entities.components.push_back(std::move(comp));
 
     App app;

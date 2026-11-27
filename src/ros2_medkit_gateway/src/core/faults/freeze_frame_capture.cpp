@@ -19,9 +19,11 @@
 #include <exception>
 #include <limits>
 #include <memory>
+#include <set>
 #include <utility>
 
 #include "ros2_medkit_gateway/core/faults/fault_json.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
 #include "ros2_medkit_gateway/core/plugins/plugin_manager.hpp"
 
 namespace ros2_medkit_gateway {
@@ -62,6 +64,31 @@ FreezeFrameCapture::Occurrence occurrence_from_item(const nlohmann::json & item)
     }
   }
   return occurrence;
+}
+
+/// The key of one record. '\0' cannot appear in a fault code or in a reporting source,
+/// so no pair of ids can collide with another pair.
+std::string record_key(const std::string & fault_code, const std::string & owner) {
+  return fault_code + '\0' + owner;
+}
+
+/// The owner of a shared record, and of a record that names neither an owner nor a source.
+constexpr const char * kSharedOwner = "*";
+
+/// The owner the fault routes address a record by (faults::stored_owner), "*" when it names none.
+std::string addressed_owner(const nlohmann::json & fault) {
+  auto owner = faults::stored_owner(fault);
+  return owner.empty() ? kSharedOwner : owner;
+}
+
+std::string owner_of(const fd::FaultRecord & record) {
+  return addressed_owner({{"owner", record.owner}, {"reporting_sources", record.reporting_sources}});
+}
+
+/// The fault code and the owner of a `record_key`.
+std::pair<std::string, std::string> split_record_key(const std::string & key) {
+  const auto at = key.find('\0');
+  return {key.substr(0, at), at == std::string::npos ? std::string{} : key.substr(at + 1)};
 }
 
 std::string join(const std::vector<std::string> & items) {
@@ -112,13 +139,15 @@ FreezeFrameCapture::~FreezeFrameCapture() {
   }
 }
 
-std::vector<FreezeFrameCapture::Frame> FreezeFrameCapture::frames_for(const std::string & fault_code) const {
+std::vector<FreezeFrameCapture::Frame> FreezeFrameCapture::frames_for(const std::string & fault_code,
+                                                                      const std::string & owner) const {
+  const auto key = record_key(fault_code, owner);
   std::lock_guard<std::mutex> lock(mutex_);
-  // Until judged, a reloaded frame may belong to an earlier occurrence of the fault.
-  if (!reloaded_judged_ && reloaded_codes_.count(fault_code) != 0) {
+  // Until judged, a reloaded frame may belong to an earlier occurrence of the record.
+  if (!reloaded_judged_ && reloaded_records_.count(key) != 0) {
     return {};
   }
-  auto it = frames_.find(fault_code);
+  auto it = frames_.find(key);
   return it != frames_.end() ? it->second : std::vector<Frame>{};
 }
 
@@ -132,12 +161,21 @@ FreezeFrameCapture::standing_faults_from_list_reply(const nlohmann::json & data)
   if (faults == data.end() || !faults->is_array()) {
     return std::nullopt;
   }
+  // Muting is per record: a muted entry names its record by fault_code and source_id.
+  // An entry that names no source mutes every record of its code.
   std::unordered_set<std::string> muted;
+  std::unordered_set<std::string> muted_codes;
   const auto muted_faults = data.find("muted_faults");
   if (muted_faults != data.end() && muted_faults->is_array()) {
     for (const auto & item : *muted_faults) {
       if (item.is_object() && item.contains("fault_code") && item["fault_code"].is_string()) {
-        muted.insert(item["fault_code"].get<std::string>());
+        const auto code = item["fault_code"].get<std::string>();
+        const auto source = item.find("source_id");
+        if (source != item.end() && source->is_string() && !source->get<std::string>().empty()) {
+          muted.insert(record_key(code, source->get<std::string>()));
+        } else {
+          muted_codes.insert(code);
+        }
       }
     }
   }
@@ -162,8 +200,10 @@ FreezeFrameCapture::standing_faults_from_list_reply(const nlohmann::json & data)
     if (status != item.end() && status->is_string()) {
       fault.status = status->get<std::string>();
     }
+    fault.owner = addressed_owner(item);
     fault.occurrence = occurrence_from_item(item);
-    fault.muted = muted.count(fault.fault_code) != 0;
+    fault.muted =
+        muted.count(record_key(fault.fault_code, fault.owner)) != 0 || muted_codes.count(fault.fault_code) != 0;
     standing.push_back(std::move(fault));
   }
   return standing;
@@ -174,10 +214,11 @@ FreezeFrameCapture::Occurrence FreezeFrameCapture::occurrence_of(const fd::Fault
   return occurrence_from_item(fault_record_to_json(record));
 }
 
-StoredEntityFreezeFrame FreezeFrameCapture::to_stored(const std::string & fault_code, const Frame & frame,
-                                                      const Occurrence & occurrence) {
+StoredEntityFreezeFrame FreezeFrameCapture::to_stored(const std::string & fault_code, const std::string & owner,
+                                                      const Frame & frame, const Occurrence & occurrence) {
   StoredEntityFreezeFrame row;
   row.fault_code = fault_code;
+  row.owner = owner;
   row.entity_id = frame.entity_id;
   row.frame = nlohmann::json::object();
   row.frame["values"] = frame.values;
@@ -221,12 +262,12 @@ std::optional<FreezeFrameCapture::Frame> FreezeFrameCapture::from_stored(const S
   return frame;
 }
 
-void FreezeFrameCapture::write_persisted(const std::string & fault_code,
+void FreezeFrameCapture::write_persisted(const std::string & fault_code, const std::string & owner,
                                          const std::vector<StoredEntityFreezeFrame> & rows) {
   if (!store_) {
     return;
   }
-  auto written = store_->replace_frames(fault_code, rows);
+  auto written = store_->replace_frames(fault_code, owner, rows);
   if (!written) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!store_write_warned_) {
@@ -240,12 +281,13 @@ void FreezeFrameCapture::write_persisted(const std::string & fault_code,
   }
 }
 
-void FreezeFrameCapture::erase_persisted(const std::vector<std::string> & fault_codes) {
+void FreezeFrameCapture::erase_persisted(const std::vector<std::string> & record_keys) {
   if (!store_) {
     return;
   }
-  for (const auto & fault_code : fault_codes) {
-    auto erased = store_->erase_frames(fault_code);
+  for (const auto & key : record_keys) {
+    const auto [fault_code, owner] = split_record_key(key);
+    auto erased = store_->erase_frames(fault_code, owner);
     if (!erased) {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!store_write_warned_) {
@@ -267,9 +309,10 @@ void FreezeFrameCapture::load_persisted_frames() {
     return;
   }
 
+  // All keyed by record.
   std::unordered_map<std::string, std::vector<Frame>> loaded;
   std::unordered_map<std::string, int64_t> newest;
-  // One capture writes all rows of a code, so they carry one occurrence.
+  // One capture writes all rows of a record, so they carry one occurrence.
   std::unordered_map<std::string, Occurrence> occurrences;
   size_t unreadable = 0;
   for (const auto & row : *rows) {
@@ -278,44 +321,45 @@ void FreezeFrameCapture::load_persisted_frames() {
       ++unreadable;
       continue;
     }
-    auto it = newest.find(row.fault_code);
+    const auto key = record_key(row.fault_code, row.owner);
+    auto it = newest.find(key);
     if (it == newest.end()) {
-      newest.emplace(row.fault_code, row.captured_at_ns);
+      newest.emplace(key, row.captured_at_ns);
     } else {
       it->second = std::max(it->second, row.captured_at_ns);
     }
-    occurrences[row.fault_code] = Occurrence{row.occurrence_count, row.first_occurred_ns};
-    loaded[row.fault_code].push_back(std::move(*frame));
+    occurrences[key] = Occurrence{row.occurrence_count, row.first_occurred_ns};
+    loaded[key].push_back(std::move(*frame));
   }
 
-  // Oldest code first: past the bound the oldest go, and FIFO eviction keeps that order.
-  std::vector<std::string> codes;
-  codes.reserve(loaded.size());
+  // Oldest record first: past the bound the oldest go, and FIFO eviction keeps that order.
+  std::vector<std::string> keys;
+  keys.reserve(loaded.size());
   for (const auto & entry : loaded) {
-    codes.push_back(entry.first);
+    keys.push_back(entry.first);
   }
-  std::sort(codes.begin(), codes.end(), [&newest](const std::string & a, const std::string & b) {
+  std::sort(keys.begin(), keys.end(), [&newest](const std::string & a, const std::string & b) {
     const int64_t at_a = newest.at(a);
     const int64_t at_b = newest.at(b);
     return at_a != at_b ? at_a < at_b : a < b;
   });
-  const size_t over_cap = codes.size() > max_faults_ ? codes.size() - max_faults_ : 0;
+  const size_t over_cap = keys.size() > max_faults_ ? keys.size() - max_faults_ : 0;
 
   size_t reloaded = 0;
   std::vector<std::string> past_the_bound;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (size_t i = 0; i < codes.size(); ++i) {
-      const auto & code = codes[i];
+    for (size_t i = 0; i < keys.size(); ++i) {
+      const auto & key = keys[i];
       if (i < over_cap) {
         // A row past the bound would be read and dropped again on every start.
-        past_the_bound.push_back(code);
+        past_the_bound.push_back(key);
         continue;
       }
-      insertion_order_.push_back(code);
-      frames_[code] = std::move(loaded[code]);
-      reloaded_codes_.insert(code);
-      occurrences_[code] = occurrences[code];
+      insertion_order_.push_back(key);
+      frames_[key] = std::move(loaded[key]);
+      reloaded_records_.insert(key);
+      occurrences_[key] = occurrences[key];
     }
     reloaded = frames_.size();
   }
@@ -335,12 +379,12 @@ void FreezeFrameCapture::load_persisted_frames() {
 }
 
 void FreezeFrameCapture::judge_reloaded_frames(const std::vector<StandingFault> & listed) {
-  std::unordered_map<std::string, const StandingFault *> by_code;
+  std::unordered_map<std::string, const StandingFault *> by_record;
   for (const auto & fault : listed) {
-    by_code.emplace(fault.fault_code, &fault);
+    by_record.emplace(record_key(fault.fault_code, fault.owner), &fault);
   }
   struct Superseded {
-    std::string fault_code;
+    std::string key;
     std::string entities;
     Occurrence stored;
     const StandingFault * fault;
@@ -352,14 +396,14 @@ void FreezeFrameCapture::judge_reloaded_frames(const std::vector<StandingFault> 
   {
     std::lock_guard<std::mutex> lock(mutex_);
     // A fault manager whose storage is unreachable answers with an empty list, so empty is "cannot tell".
-    kept_for_empty_list = listed.empty() && !reloaded_codes_.empty();
-    for (const auto & code : reloaded_codes_) {
-      const auto held = occurrences_.find(code);
+    kept_for_empty_list = listed.empty() && !reloaded_records_.empty();
+    for (const auto & key : reloaded_records_) {
+      const auto held = occurrences_.find(key);
       const Occurrence stored = held != occurrences_.end() ? held->second : Occurrence{};
-      const auto entry = by_code.find(code);
-      if (entry == by_code.end()) {
+      const auto entry = by_record.find(key);
+      if (entry == by_record.end()) {
         if (!listed.empty()) {
-          orphans.push_back(code);
+          orphans.push_back(key);
         }
         continue;
       }
@@ -369,22 +413,22 @@ void FreezeFrameCapture::judge_reloaded_frames(const std::vector<StandingFault> 
         continue;
       }
       std::vector<std::string> entities;
-      for (const auto & frame : frames_[code]) {
+      for (const auto & frame : frames_[key]) {
         entities.push_back(frame.entity_id);
       }
-      superseded.push_back({code, join(entities), stored, entry->second});
+      superseded.push_back({key, join(entities), stored, entry->second});
     }
-    for (const auto & code : orphans) {
-      forget_locked(code);
-      dropped.push_back(code);
+    for (const auto & key : orphans) {
+      forget_locked(key);
+      dropped.push_back(key);
     }
     for (const auto & entry : superseded) {
-      forget_locked(entry.fault_code);
-      dropped.push_back(entry.fault_code);
+      forget_locked(entry.key);
+      dropped.push_back(entry.key);
     }
     reloaded_judged_ = true;
   }
-  // Outside mutex_, so a fault-detail request does not wait for the deletes. The codes are
+  // Outside mutex_, so a fault-detail request does not wait for the deletes. The records are
   // gone from memory, and the next capture runs on this thread after the deletes.
   erase_persisted(dropped);
   if (kept_for_empty_list) {
@@ -393,35 +437,40 @@ void FreezeFrameCapture::judge_reloaded_frames(const std::vector<StandingFault> 
                     "dropped");
   }
   if (!orphans.empty()) {
-    std::sort(orphans.begin(), orphans.end());
-    const size_t total = orphans.size();
-    if (orphans.size() > kMaxNamedOverCapCodes) {
-      orphans.resize(kMaxNamedOverCapCodes);
+    // Named by code: the records of one code are one fault the fault manager no longer holds.
+    std::set<std::string> codes;
+    for (const auto & key : orphans) {
+      codes.insert(split_record_key(key).first);
+    }
+    std::vector<std::string> named(codes.begin(), codes.end());
+    const size_t total = named.size();
+    if (named.size() > kMaxNamedOverCapCodes) {
+      named.resize(kMaxNamedOverCapCodes);
     }
     MEDKIT_LOG_WARN(logger_,
                     "Entity freeze-frame: dropped the reloaded frames of %zu fault(s) the fault manager no longer "
                     "holds: %s%s",
-                    total, join(orphans).c_str(), total > orphans.size() ? ", ..." : "");
+                    total, join(named).c_str(), total > named.size() ? ", ..." : "");
   }
   std::sort(superseded.begin(), superseded.end(), [](const Superseded & a, const Superseded & b) {
-    return a.fault_code < b.fault_code;
+    return a.key < b.key;
   });
   for (const auto & entry : superseded) {
     // Serving it would present the previous occurrence's values as this one's.
+    const auto fault_code = split_record_key(entry.key).first;
     MEDKIT_LOG_WARN(logger_,
                     "Entity freeze-frame for fault '%s': the stored frame of entity '%s' is from an earlier occurrence "
                     "and was discarded (stored occurrence %u, the fault manager lists occurrence %u, %s).",
-                    entry.fault_code.c_str(), entry.entities.c_str(), entry.stored.count, entry.fault->occurrence.count,
+                    fault_code.c_str(), entry.entities.c_str(), entry.stored.count, entry.fault->occurrence.count,
                     entry.fault->status.c_str());
   }
 }
 
-void FreezeFrameCapture::forget_locked(const std::string & fault_code) {
-  frames_.erase(fault_code);
-  insertion_order_.erase(std::remove(insertion_order_.begin(), insertion_order_.end(), fault_code),
-                         insertion_order_.end());
-  reloaded_codes_.erase(fault_code);
-  occurrences_.erase(fault_code);
+void FreezeFrameCapture::forget_locked(const std::string & key) {
+  frames_.erase(key);
+  insertion_order_.erase(std::remove(insertion_order_.begin(), insertion_order_.end(), key), insertion_order_.end());
+  reloaded_records_.erase(key);
+  occurrences_.erase(key);
 }
 
 std::optional<FreezeFrameCapture::Frame> FreezeFrameCapture::frame_from_content(const std::string & entity_id,
@@ -621,20 +670,22 @@ void FreezeFrameCapture::capture_standing_faults(const std::vector<StandingFault
     std::lock_guard<std::mutex> lock(queue_mutex_);
     return stop_;
   };
-  // Codes with a confirm already queued belong to the drain loop: capturing
-  // them here too would read the plugin twice for one confirm.
-  std::unordered_set<std::string> queued_codes;
+  // Records with a confirm already queued belong to the drain loop: capturing
+  // them here too would read the plugin twice for one confirm. The key is the
+  // record and not the code, because another source's record of the same code
+  // has its own confirm and its own frame.
+  std::unordered_set<std::string> queued_records;
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     if (stop_) {
       return;
     }
     for (const auto & queued : queue_) {
-      queued_codes.insert(queued.fault.fault_code);
+      queued_records.insert(record_key(queued.fault.fault_code, owner_of(queued.fault)));
     }
   }
 
-  // Occupancy is read once, so a fault is admitted only against a free slot and the
+  // Occupancy is read once, so a record is admitted only against a free slot and the
   // FIFO never evicts a frame still wanted.
   std::unordered_set<std::string> already_framed;
   size_t framed = 0;
@@ -659,11 +710,9 @@ void FreezeFrameCapture::capture_standing_faults(const std::vector<StandingFault
     if (fault.fault_code.empty() || fault.reporting_sources.empty()) {
       continue;
     }
-    if (queued_codes.count(fault.fault_code) != 0) {
-      continue;
-    }
-    // A reloaded frame from this occurrence is the one to serve.
-    if (already_framed.count(fault.fault_code) != 0) {
+    const auto key = record_key(fault.fault_code, fault.owner);
+    // A queued confirm frames the record, and a reloaded frame from this occurrence is the one to serve.
+    if (queued_records.count(key) != 0 || already_framed.count(key) != 0) {
       continue;
     }
     if (framed >= max_faults_) {
@@ -676,6 +725,7 @@ void FreezeFrameCapture::capture_standing_faults(const std::vector<StandingFault
     fd::FaultEventRecord event;
     event.event_type = fd::fault_event_type::kConfirmed;
     event.fault.fault_code = fault.fault_code;
+    event.fault.owner = fault.owner;
     event.fault.reporting_sources = fault.reporting_sources;
     if (capture_for_event(event, fault.occurrence, /*startup_catchup=*/true)) {
       ++framed;
@@ -727,9 +777,10 @@ void FreezeFrameCapture::capture_worker() {
 bool FreezeFrameCapture::capture_for_event(const fd::FaultEventRecord & event, const Occurrence & occurrence,
                                            bool startup_catchup) {
   const std::string & fault_code = event.fault.fault_code;
+  const std::string owner = owner_of(event.fault);
 
   std::vector<Frame> frames;
-  // At most one frame per entity: the store keys its rows by (fault code, entity id).
+  // At most one frame per entity: the store keys a record's rows by entity id.
   std::unordered_set<std::string> framed;
   for (const auto & source : event.fault.reporting_sources) {
     if (framed.count(source) != 0) {
@@ -762,26 +813,27 @@ bool FreezeFrameCapture::capture_for_event(const fd::FaultEventRecord & event, c
     }
   }
 
+  const auto key = record_key(fault_code, owner);
   if (frames.empty()) {
     uint32_t dropped_count = 0;
     std::vector<std::string> dropped_entities;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      const auto held = occurrences_.find(fault_code);
+      const auto held = occurrences_.find(key);
       // The same occurrence, or one that cannot be told, keeps the frame from its confirmation.
       if (held == occurrences_.end() || !held->second.known() || !occurrence.known() || held->second == occurrence) {
         return false;
       }
       dropped_count = held->second.count;
-      const auto frames_it = frames_.find(fault_code);
+      const auto frames_it = frames_.find(key);
       if (frames_it != frames_.end()) {
         for (const auto & frame : frames_it->second) {
           dropped_entities.push_back(frame.entity_id);
         }
       }
-      forget_locked(fault_code);
+      forget_locked(key);
     }
-    erase_persisted({fault_code});
+    erase_persisted({key});
     // Serving the held frame would present the previous occurrence's values as this one's.
     MEDKIT_LOG_WARN(logger_,
                     "Entity freeze-frame for fault '%s': occurrence %u confirmed and no entity read for it served "
@@ -800,13 +852,13 @@ bool FreezeFrameCapture::capture_for_event(const fd::FaultEventRecord & event, c
   std::vector<StoredEntityFreezeFrame> rows;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (frames_.find(fault_code) != frames_.end()) {
+    if (frames_.find(key) != frames_.end()) {
       // A recapture is the newest frame, as its captured_at says after a reload.
-      insertion_order_.erase(std::remove(insertion_order_.begin(), insertion_order_.end(), fault_code),
+      insertion_order_.erase(std::remove(insertion_order_.begin(), insertion_order_.end(), key),
                              insertion_order_.end());
-      insertion_order_.push_back(fault_code);
+      insertion_order_.push_back(key);
     } else {
-      insertion_order_.push_back(fault_code);
+      insertion_order_.push_back(key);
       while (frames_.size() >= max_faults_ && !insertion_order_.empty()) {
         const std::string oldest = insertion_order_.front();
         insertion_order_.pop_front();
@@ -815,23 +867,24 @@ bool FreezeFrameCapture::capture_for_event(const fd::FaultEventRecord & event, c
         evicted.push_back(oldest);
       }
     }
-    // A capture on this fault's own edge supersedes what was reloaded for it.
-    reloaded_codes_.erase(fault_code);
-    occurrences_[fault_code] = occurrence;
-    auto & stored = frames_[fault_code];
+    // A capture on this record's own edge supersedes what was reloaded for it.
+    reloaded_records_.erase(key);
+    occurrences_[key] = occurrence;
+    auto & stored = frames_[key];
     stored = std::move(frames);
     if (store_) {
       rows.reserve(stored.size());
       for (const auto & frame : stored) {
-        rows.push_back(to_stored(fault_code, frame, occurrence));
+        rows.push_back(to_stored(fault_code, owner, frame, occurrence));
       }
     }
   }
   // Outside mutex_, so a fault-detail request does not wait for the store.
   erase_persisted(evicted);
-  write_persisted(fault_code, rows);
+  write_persisted(fault_code, owner, rows);
 
-  MEDKIT_LOG_DEBUG(logger_, "Captured entity freeze-frame(s) for fault '%s'", fault_code.c_str());
+  MEDKIT_LOG_DEBUG(logger_, "Captured entity freeze-frame(s) for fault '%s' of '%s'", fault_code.c_str(),
+                   owner.c_str());
   return true;
 }
 

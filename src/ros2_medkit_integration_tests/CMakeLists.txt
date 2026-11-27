@@ -294,6 +294,7 @@ if(BUILD_TESTING)
     test_aggregated_function_hosts
     test_peer_recovery
     test_triggers_restore_before_discovery
+    test_triggers_logs_restore_before_discovery
     test_aggregator_fault_stream
     test_aggregated_colliding_node_names)
   set(_TWO_GATEWAY_DOMAINS 2)
@@ -366,7 +367,12 @@ if(BUILD_TESTING)
   # does - and it costs three startups plus several hundred requests, two of
   # which wait out a fault-service timeout. It does not fit the 120s the
   # feature glob assigns.
+  #
+  # test_fault_recording_ownership waits for six real recordings, each with a
+  # 2 s post-fault window and its finalize, one after another, so that no
+  # confirmation joins another scenario's recording.
   set(_MEDKIT_TEST_TIMEOUT_OVERRIDES
+    test_fault_recording_ownership 240
     test_aggregation_time_budgets 300
     test_peer_failure_reasons 300
     test_relay_peer_credential 300
@@ -382,6 +388,9 @@ if(BUILD_TESTING)
     test_triggers_restore_before_discovery 300
     # Seven cases share one gateway, and their scaled give-up bounds add up past 120s.
     test_graph_leftover_nodes 300
+    # Thirteen cases, most logging for at least five seconds and then settling,
+    # after starting two gateways and a fault manager.
+    test_triggers_logs_markers 300
     # Three discovery budgets in setUpClass before the first case runs, and a
     # broken merge spends all of them. The glob default cuts that short and
     # reports a timeout with no test name, which is the one answer that says

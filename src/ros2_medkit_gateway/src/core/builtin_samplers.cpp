@@ -122,20 +122,7 @@ Sampled sample_logs(GatewayServices & services, const std::string & entity_id) {
   }
   // Same scoping as GET /{entity}/logs via the shared helper (external app -> bare id, external
   // component owns its own id, plus the namespace-prefix merge for COMPONENT / AREA).
-  std::string entity_fqn;
-  if (entity_ref->type == SovdEntityType::COMPONENT) {
-    if (auto comp = cache.get_component(entity_id)) {
-      entity_fqn = comp->fqn;
-    }
-  } else if (entity_ref->type == SovdEntityType::AREA) {
-    if (auto area = cache.get_area(entity_id)) {
-      entity_fqn = area->namespace_path;
-    }
-  } else if (entity_ref->type == SovdEntityType::APP) {
-    if (auto app = cache.get_app(entity_id)) {
-      entity_fqn = app->effective_fqn();
-    }
-  }
+  const auto entity_fqn = logs::entity_log_fqn(cache, entity_ref->type, entity_id);
   auto result = logs::query_entity_logs(*log_mgr, cache, entity_ref->type, entity_id, entity_fqn, "", "");
   if (!result.has_value()) {
     return tl::make_unexpected(result.error());

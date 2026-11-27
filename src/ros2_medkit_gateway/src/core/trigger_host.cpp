@@ -17,11 +17,14 @@
 #include <algorithm>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
 
 #include "ros2_medkit_gateway/core/data/polling_data_item_source.hpp"
+#include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
+#include "ros2_medkit_gateway/core/logs/log_scope.hpp"
 #include "ros2_medkit_gateway/core/sqlite_trigger_store.hpp"
 
 namespace ros2_medkit_gateway {
@@ -50,6 +53,23 @@ std::vector<std::string> apps_under(const ThreadSafeEntityCache & cache, const s
   return {};
 }
 
+/// Entity type of a trigger, which stores it as its route segment ("apps", ...).
+SovdEntityType entity_type_from_collection_segment(const std::string & segment) {
+  if (segment == "apps") {
+    return SovdEntityType::APP;
+  }
+  if (segment == "components") {
+    return SovdEntityType::COMPONENT;
+  }
+  if (segment == "areas") {
+    return SovdEntityType::AREA;
+  }
+  if (segment == "functions") {
+    return SovdEntityType::FUNCTION;
+  }
+  return SovdEntityType::UNKNOWN;
+}
+
 }  // namespace
 
 void register_builtin_conditions(ConditionRegistry & conditions) {
@@ -59,12 +79,11 @@ void register_builtin_conditions(ConditionRegistry & conditions) {
   conditions.register_condition("LeaveRange", std::make_shared<LeaveRangeEvaluator>());
 }
 
-std::string resolve_trigger_entity(const ThreadSafeEntityCache & cache, const std::string & node_fqn) {
-  auto entity_id = cache.resolve_node_to_app(node_fqn);
-  if (entity_id.empty() && !node_fqn.empty() && node_fqn[0] == '/') {
-    entity_id = cache.resolve_node_to_app(node_fqn.substr(1));
-  }
-  return entity_id;
+TriggerFaultFeed::FaultOwnerFn make_fault_owner_resolver(const ThreadSafeEntityCache & cache) {
+  auto owners = std::make_shared<faults::AppSourceIndex>();
+  return [&cache, owners](const std::string & owner) {
+    return owners->find_owner(cache, owner);
+  };
 }
 
 std::string resolve_trigger_topic(const ThreadSafeEntityCache & cache, const std::string & entity_id,
@@ -126,24 +145,53 @@ TriggerHost make_trigger_host(const TriggerHostConfig & config, ResourceChangeNo
   host.manager->set_entity_children_fn([cache](const std::string & entity_id, const std::string & entity_type) {
     return apps_under(*cache, entity_id, entity_type);
   });
-  host.manager->set_entity_exists_fn([cache](const std::string & entity_id, const std::string & /*entity_type*/) {
-    return cache->find_entity(entity_id).has_value();
+  // Orphan sweep: an entity of the trigger's type, not any entity with its id.
+  host.manager->set_entity_exists_fn([cache](const std::string & entity_id, const std::string & entity_type) {
+    return cache->has_entity(entity_type_from_collection_segment(entity_type), entity_id);
   });
   host.manager->set_resolve_topic_fn([cache](const std::string & entity_id, const std::string & resource_path) {
     return resolve_trigger_topic(*cache, entity_id, resource_path);
   });
   host.manager->set_warn_log_fn(warn);
   host.manager->set_unresolved_timeout(wiring.unresolved_timeout);
-  if (wiring.log_manager != nullptr) {
-    host.manager->set_log_manager(wiring.log_manager);
+  LogManager * log_manager = wiring.log_manager;
+  if (log_manager != nullptr) {
+    host.manager->set_log_manager(log_manager);
   }
+  // A fault event matches an entity when its scope holds the record's owner, the rule of
+  // GET /{entity}/faults?status=all. Clear and heal events included.
+  host.manager->set_collection_scope_fn("faults", [cache](const std::string & entity_type,
+                                                          const std::string & entity_id, const nlohmann::json & fault) {
+    return faults::fault_in_source_scope(
+        fault, faults::resolve_entity_source_fqns(*cache, entity_type_from_collection_segment(entity_type), entity_id));
+  });
+  // A log trigger checks each entry by the rule GET /{entity}/logs lists by: the entity's log scope and
+  // severity_filter, read at dispatch, against the logger name and level the entry carries.
+  host.manager->set_collection_scope_fn("logs", [cache, log_manager](const std::string & entity_type,
+                                                                     const std::string & entity_id,
+                                                                     const nlohmann::json & entry) {
+    return log_manager != nullptr &&
+           logs::entity_lists_log_change(*log_manager, *cache, entity_type_from_collection_segment(entity_type),
+                                         entity_id, entry);
+  });
+  // A restored log trigger may wait for its entity's discovery while the entity logs. Once the entity is in the cache
+  // the trigger replays what GET /{entity}/logs lists, less trigger markers, so those entries reach it too. Set before
+  // the restore below.
+  host.manager->set_restore_replay_fn(
+      "logs",
+      [cache, log_manager](const std::string & entity_type,
+                           const std::string & entity_id) -> std::optional<std::vector<nlohmann::json>> {
+        if (log_manager == nullptr) {
+          return std::vector<nlohmann::json>{};
+        }
+        return logs::restore_replay_entries(*log_manager, *cache, entity_type_from_collection_segment(entity_type),
+                                            entity_id);
+      });
   host.restored = host.manager->load_persistent_triggers();
 
   if (wiring.fault_events != nullptr) {
     host.fault_feed =
-        std::make_unique<TriggerFaultFeed>(*wiring.fault_events, notifier, [cache](const std::string & node_fqn) {
-          return resolve_trigger_entity(*cache, node_fqn);
-        });
+        std::make_unique<TriggerFaultFeed>(*wiring.fault_events, notifier, make_fault_owner_resolver(*cache));
   }
   return host;
 }

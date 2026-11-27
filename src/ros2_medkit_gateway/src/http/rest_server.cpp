@@ -1203,8 +1203,8 @@ void RESTServer::setup_routes() {
     // path while the typed router still owns wire framing. The single-fault
     // DELETE uses `del_alternates<NoContent, FaultClearResult>` so the ROS
     // path returns 204 while the plugin path keeps its 200 + ack-body shape.
-    // The bulk-clear DELETE returns NoContent unconditionally - the legacy
-    // plugin branch also emitted 204 after iterating the per-fault clears.
+    // The bulk-clear DELETE returns NoContent, or 500 with `failed_codes` when
+    // the clear of a record fails.
     reg.get<dto::FaultListResult>(entity_path + "/faults",
                                   [this](http::TypedRequest req) -> http::Result<dto::FaultListResult> {
                                     return fault_handlers_->list_faults(req);
@@ -1247,8 +1247,8 @@ void RESTServer::setup_routes() {
         .description(std::string("Clears a specific fault for this ") + et.singular + ".")
         // FaultHandlers::clear_fault -> validate_lock_access("faults").
         .lock_guarded()
-        // 503 when the fault store cannot be read - clear_fault reads the fault
-        // before clearing it, so it answers the same status the read does.
+        // 503 when the fault store cannot be read - clear_fault reads the
+        // records before clearing them, so it answers the status the read does.
         .errors({503})
         .operation_id(std::string("clear") + capitalize(et.singular) + "Fault");
 
@@ -1370,6 +1370,8 @@ void RESTServer::setup_routes() {
         .requires_role(UserRole::VIEWER)
         .summary(std::string("Download bulk-data file for ") + et.singular)
         .description("Downloads a bulk-data file (binary content).")
+        // 503: a rosbag when the fault manager does not answer the ownership check.
+        .errors({503})
         .operation_id(std::string("download") + capitalize(et.singular) + "BulkData");
 
     register_recording_routes(entity_path, et.singular);
@@ -2159,6 +2161,8 @@ void RESTServer::setup_routes() {
       .requires_role(UserRole::VIEWER)
       .summary("Download bulk-data file for subarea")
       .description("Downloads a bulk-data file for a subarea.")
+      // 503, as on the four top-level download routes.
+      .errors({503})
       .operation_id("downloadSubareaBulkData");
 
   register_recording_routes("/areas/{area_id}/subareas/{subarea_id}", "subarea");
@@ -2196,6 +2200,8 @@ void RESTServer::setup_routes() {
       .requires_role(UserRole::VIEWER)
       .summary("Download bulk-data file for subcomponent")
       .description("Downloads a bulk-data file for a subcomponent.")
+      // 503, as on the four top-level download routes.
+      .errors({503})
       .operation_id("downloadSubcomponentBulkData");
 
   register_recording_routes("/components/{component_id}/subcomponents/{subcomponent_id}", "subcomponent");

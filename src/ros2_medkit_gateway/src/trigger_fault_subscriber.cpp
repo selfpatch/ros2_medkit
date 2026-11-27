@@ -26,8 +26,8 @@ TriggerFaultSubscriber::TriggerFaultSubscriber(rclcpp::Node * node, ResourceChan
               build_fault_manager_events_topic(node).c_str());
 }
 
-void TriggerFaultSubscriber::set_node_to_entity_resolver(NodeToEntityFn resolver) {
-  feed_.set_node_to_entity_resolver(std::move(resolver));
+void TriggerFaultSubscriber::set_fault_owner_resolver(FaultOwnerFn resolver) {
+  feed_.set_fault_owner_resolver(std::move(resolver));
 }
 
 }  // namespace ros2_medkit_gateway

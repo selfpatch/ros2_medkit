@@ -112,11 +112,14 @@ SqliteEntityFreezeFrameStore::~SqliteEntityFreezeFrameStore() {
   }
 }
 
-void SqliteEntityFreezeFrameStore::initialize_schema() {
-  // One row per entity of a fault: a fault reported by two entities freezes both.
-  const char * create_table = R"(
+namespace {
+
+// One row per entity of a record. A record is a fault code and its owner: the reporting
+// source of a per-source record, "*" for a shared one.
+constexpr const char * kCreateTable = R"(
     CREATE TABLE IF NOT EXISTS entity_freeze_frames (
       fault_code     TEXT NOT NULL,
+      owner          TEXT NOT NULL,
       entity_id      TEXT NOT NULL,
       frame          TEXT NOT NULL,
       captured_at_ns INTEGER NOT NULL,
@@ -124,18 +127,66 @@ void SqliteEntityFreezeFrameStore::initialize_schema() {
       capture_origin TEXT NOT NULL DEFAULT '',
       occurrence_count  INTEGER NOT NULL DEFAULT 0,
       first_occurred_ns INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (fault_code, entity_id)
+      PRIMARY KEY (fault_code, owner, entity_id)
     );
   )";
+
+}  // namespace
+
+void SqliteEntityFreezeFrameStore::initialize_schema() {
+  migrate_earlier_schema();
   char * err_msg = nullptr;
-  if (sqlite3_exec(db_, create_table, nullptr, nullptr, &err_msg) != SQLITE_OK) {
+  if (sqlite3_exec(db_, kCreateTable, nullptr, nullptr, &err_msg) != SQLITE_OK) {
     throw std::runtime_error("Failed to create entity_freeze_frames table: " + take_error(err_msg));
   }
 }
 
-tl::expected<void, std::string> SqliteEntityFreezeFrameStore::delete_code_locked(const std::string & fault_code) {
-  SqliteStatement del(db_, "DELETE FROM entity_freeze_frames WHERE fault_code = ?");
+void SqliteEntityFreezeFrameStore::migrate_earlier_schema() {
+  bool table = false;
+  bool owner = false;
+  {
+    SqliteStatement columns(db_, "PRAGMA table_info(entity_freeze_frames)");
+    while (columns.step() == SQLITE_ROW) {
+      table = true;
+      owner = owner || columns.column_text(1) == "owner";
+    }
+  }
+  if (!table || owner) {
+    return;
+  }
+  // Every record of the earlier schema was shared, so "*" names each row's record.
+  char * err_msg = nullptr;
+  if (sqlite3_exec(db_, "BEGIN IMMEDIATE", nullptr, nullptr, &err_msg) != SQLITE_OK) {
+    throw std::runtime_error("Failed to migrate entity_freeze_frames: BEGIN failed: " + take_error(err_msg));
+  }
+  const auto run = [this](const char * sql) {
+    char * error = nullptr;
+    if (sqlite3_exec(db_, sql, nullptr, nullptr, &error) != SQLITE_OK) {
+      const std::string message = take_error(error);
+      sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+      throw std::runtime_error("Failed to migrate entity_freeze_frames: " + message);
+    }
+  };
+  run("ALTER TABLE entity_freeze_frames RENAME TO entity_freeze_frames_earlier");
+  run(kCreateTable);
+  run("INSERT INTO entity_freeze_frames (fault_code, owner, entity_id, frame, captured_at_ns, source, "
+      "capture_origin, occurrence_count, first_occurred_ns) "
+      "SELECT fault_code, '*', entity_id, frame, captured_at_ns, source, capture_origin, occurrence_count, "
+      "first_occurred_ns FROM entity_freeze_frames_earlier");
+  const int moved = sqlite3_changes(db_);
+  run("DROP TABLE entity_freeze_frames_earlier");
+  run("COMMIT");
+  MEDKIT_LOG_INFO(logger_,
+                  "Entity freeze-frame store: moved %d row(s) of the earlier schema to the shared record ('*') of "
+                  "their code",
+                  moved);
+}
+
+tl::expected<void, std::string> SqliteEntityFreezeFrameStore::delete_record_locked(const std::string & fault_code,
+                                                                                   const std::string & owner) {
+  SqliteStatement del(db_, "DELETE FROM entity_freeze_frames WHERE fault_code = ? AND owner = ?");
   del.bind_text(1, fault_code);
+  del.bind_text(2, owner);
   if (del.step() != SQLITE_DONE) {
     return tl::make_unexpected(std::string("Failed to delete entity freeze-frames: ") + sqlite3_errmsg(db_));
   }
@@ -143,20 +194,20 @@ tl::expected<void, std::string> SqliteEntityFreezeFrameStore::delete_code_locked
 }
 
 tl::expected<void, std::string>
-SqliteEntityFreezeFrameStore::replace_frames(const std::string & fault_code,
+SqliteEntityFreezeFrameStore::replace_frames(const std::string & fault_code, const std::string & owner,
                                              const std::vector<StoredEntityFreezeFrame> & frames) {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto rollback = [this] {
     sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
   };
   // Delete then insert in one transaction: an entity the new capture no longer
-  // reports loses its row, and no reader sees the code half written.
+  // reports loses its row, and no reader sees the record half written.
   char * err_msg = nullptr;
   if (sqlite3_exec(db_, "BEGIN IMMEDIATE", nullptr, nullptr, &err_msg) != SQLITE_OK) {
     return tl::make_unexpected("replace_frames: BEGIN failed: " + take_error(err_msg));
   }
   try {
-    auto deleted = delete_code_locked(fault_code);
+    auto deleted = delete_record_locked(fault_code, owner);
     if (!deleted) {
       rollback();
       return deleted;
@@ -164,17 +215,18 @@ SqliteEntityFreezeFrameStore::replace_frames(const std::string & fault_code,
     for (const auto & frame : frames) {
       SqliteStatement stmt(db_,
                            "INSERT OR REPLACE INTO entity_freeze_frames "
-                           "(fault_code, entity_id, frame, captured_at_ns, source, capture_origin, "
+                           "(fault_code, owner, entity_id, frame, captured_at_ns, source, capture_origin, "
                            "occurrence_count, first_occurred_ns) "
-                           "VALUES (?,?,?,?,?,?,?,?)");
+                           "VALUES (?,?,?,?,?,?,?,?,?)");
       stmt.bind_text(1, fault_code);
-      stmt.bind_text(2, frame.entity_id);
-      stmt.bind_text(3, frame.frame.dump());
-      stmt.bind_int64(4, frame.captured_at_ns);
-      stmt.bind_text(5, frame.source);
-      stmt.bind_text(6, frame.capture_origin);
-      stmt.bind_int64(7, frame.occurrence_count);
-      stmt.bind_int64(8, frame.first_occurred_ns);
+      stmt.bind_text(2, owner);
+      stmt.bind_text(3, frame.entity_id);
+      stmt.bind_text(4, frame.frame.dump());
+      stmt.bind_int64(5, frame.captured_at_ns);
+      stmt.bind_text(6, frame.source);
+      stmt.bind_text(7, frame.capture_origin);
+      stmt.bind_int64(8, frame.occurrence_count);
+      stmt.bind_int64(9, frame.first_occurred_ns);
       if (stmt.step() != SQLITE_DONE) {
         const std::string error = sqlite3_errmsg(db_);
         rollback();
@@ -193,10 +245,11 @@ SqliteEntityFreezeFrameStore::replace_frames(const std::string & fault_code,
   }
 }
 
-tl::expected<void, std::string> SqliteEntityFreezeFrameStore::erase_frames(const std::string & fault_code) {
+tl::expected<void, std::string> SqliteEntityFreezeFrameStore::erase_frames(const std::string & fault_code,
+                                                                           const std::string & owner) {
   std::lock_guard<std::mutex> lock(mutex_);
   try {
-    return delete_code_locked(fault_code);
+    return delete_record_locked(fault_code, owner);
   } catch (const std::exception & e) {
     return tl::make_unexpected(std::string("erase_frames: ") + e.what());
   }
@@ -206,27 +259,28 @@ tl::expected<std::vector<StoredEntityFreezeFrame>, std::string> SqliteEntityFree
   std::lock_guard<std::mutex> lock(mutex_);
   try {
     SqliteStatement stmt(db_,
-                         "SELECT fault_code, entity_id, frame, captured_at_ns, source, capture_origin, "
+                         "SELECT fault_code, owner, entity_id, frame, captured_at_ns, source, capture_origin, "
                          "occurrence_count, first_occurred_ns "
                          "FROM entity_freeze_frames "
-                         "ORDER BY captured_at_ns ASC, fault_code ASC, entity_id ASC");
+                         "ORDER BY captured_at_ns ASC, fault_code ASC, owner ASC, entity_id ASC");
     std::vector<StoredEntityFreezeFrame> result;
     int rc = SQLITE_ROW;
     while ((rc = stmt.step()) == SQLITE_ROW) {
-      auto parsed = nlohmann::json::parse(stmt.column_text(2), nullptr, false);
+      auto parsed = nlohmann::json::parse(stmt.column_text(3), nullptr, false);
       StoredEntityFreezeFrame row;
       row.fault_code = stmt.column_text(0);
-      row.entity_id = stmt.column_text(1);
+      row.owner = stmt.column_text(1);
+      row.entity_id = stmt.column_text(2);
       // Not JSON: a null frame, so the caller skips and counts it like any unreadable row.
       row.frame = parsed.is_discarded() ? nlohmann::json() : std::move(parsed);
-      row.captured_at_ns = stmt.column_int64(3);
-      row.source = stmt.column_text(4);
-      row.capture_origin = stmt.column_text(5);
+      row.captured_at_ns = stmt.column_int64(4);
+      row.source = stmt.column_text(5);
+      row.capture_origin = stmt.column_text(6);
       // Out of range reads as "not known".
-      const int64_t count = stmt.column_int64(6);
+      const int64_t count = stmt.column_int64(7);
       row.occurrence_count =
           count > 0 && count <= std::numeric_limits<uint32_t>::max() ? static_cast<uint32_t>(count) : 0;
-      row.first_occurred_ns = stmt.column_int64(7);
+      row.first_occurred_ns = stmt.column_int64(8);
       result.push_back(std::move(row));
     }
     if (rc != SQLITE_DONE) {

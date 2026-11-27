@@ -17,8 +17,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace ros2_medkit_gateway {
 
@@ -63,6 +66,23 @@ struct RecordingLookup {
   /// Recording directory. Set when status is kFound.
   std::string path;
 };
+
+/// One fault record a recording is attached to.
+struct AttachedRecord {
+  std::string fault_code;
+  /// The record's owner. Empty when the answer names no owners.
+  std::string owner;
+};
+
+/// The records a GetRosbag answer says its recording is attached to: `fault_codes`,
+/// each with the owner `owners` gives beside it.
+std::vector<AttachedRecord> attached_records(const nlohmann::json & rosbag);
+
+/// True when a record of @p faults (a ListFaults `faults` array) in @p scope is one of
+/// @p records: same code and same owner (`stored_owner`). An attached record with no
+/// owner matches every record of its code.
+bool attached_record_in_scope(const std::vector<AttachedRecord> & records, const nlohmann::json & faults,
+                              const std::set<std::string> & scope);
 
 /// Resolve @p recording_id for an entity whose fault sources are @p source_filters.
 ///

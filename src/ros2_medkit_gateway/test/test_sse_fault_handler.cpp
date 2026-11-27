@@ -29,6 +29,7 @@
 
 #include "ros2_medkit_gateway/core/config.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
+#include "ros2_medkit_gateway/core/discovery/models/component.hpp"
 #include "ros2_medkit_gateway/core/http/sse_client_tracker.hpp"
 #include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 #include "ros2_medkit_gateway/fault_manager_paths.hpp"
@@ -496,6 +497,45 @@ TEST_F(SSEFaultHandlerTest, CoalescedReplayKeepsTransitionsAndEndsOnCurrentState
   release_stream(res);
 }
 
+TEST_F(SSEFaultHandlerTest, AnotherOwnersEventsDoNotSupersedeARecordsLastUpdate) {
+  // A fault code names as many records as there are sources reporting it. A
+  // newer event of one owner's record says nothing about another owner's record
+  // of the same code, so it must not coalesce that record's last update away:
+  // a lagging client would never learn that record's current state, and the
+  // loss would not even be counted.
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);  // cursor open, never drained while the buffer fills
+
+  auto owned_by = [](FaultEvent event, const std::string & owner) {
+    event.fault.reporting_sources = {owner};
+    return event;
+  };
+  enqueue_event(owned_by(make_fault_event(FaultEvent::EVENT_CONFIRMED, "SHARED", 1), "/owner_a"));
+  enqueue_event(owned_by(make_fault_event(FaultEvent::EVENT_UPDATED, "SHARED", 2), "/owner_a"));
+  enqueue_event(owned_by(make_fault_event(FaultEvent::EVENT_CONFIRMED, "SHARED", 3), "/owner_b"));
+  for (int i = 1; i <= 148; ++i) {
+    enqueue_event(owned_by(make_fault_event(FaultEvent::EVENT_UPDATED, "SHARED", 100 + i), "/owner_b"));
+  }
+
+  EXPECT_GT(handler_->coalesced_events(), 0u) << "owner_b's own superseded updates are the ones to coalesce";
+  EXPECT_EQ(handler_->dropped_events(), 0u);
+
+  auto output = read_stream_once(res, 100);
+  int owner_a_updates = 0;
+  for (auto pos = output.find("event: "); pos != std::string::npos; pos = output.find("event: ", pos + 1)) {
+    auto payload = parse_sse_payload(output.substr(pos));
+    if (payload["event_type"] == "fault_updated" &&
+        payload["fault"]["reporting_sources"] == json::array({"/owner_a"})) {
+      ++owner_a_updates;
+      EXPECT_DOUBLE_EQ(payload["timestamp"].get<double>(), 2.0);
+    }
+  }
+  EXPECT_EQ(owner_a_updates, 1) << "owner_a's last update was coalesced away by owner_b's events of the same code";
+
+  release_stream(res);
+}
+
 TEST_F(SSEFaultHandlerTest, OwedDistinctEventsLostUnderPressureAreCountedAndLogged) {
   // The counter this PR is about: a live client is owed events, the buffer
   // overflows with distinct fault codes (nothing to coalesce), so events are
@@ -601,9 +641,8 @@ TEST_F(SSEFaultHandlerTest, NonPositiveKeepaliveOverrideLogsWarning) {
 }
 
 TEST_F(SSEFaultHandlerTest, StreamOmitsXMedkitWhenNoMatchingApp) {
-  // Empty cache: reporting source ("/apps/temp_sensor") has no manifest mapping
-  // and no App with id "temp_sensor" exists in runtime cache, so the
-  // ``x-medkit`` payload extension is not emitted (consumer falls back to
+  // Empty cache: no app owns the reporting source ("/apps/temp_sensor"), so
+  // the ``x-medkit`` payload extension is not emitted (consumer falls back to
   // discovery).
   enqueue_event(make_fault_event(FaultEvent::EVENT_CONFIRMED, "NO_OWNER", 10));
 
@@ -620,9 +659,8 @@ TEST_F(SSEFaultHandlerTest, StreamOmitsXMedkitWhenNoMatchingApp) {
 }
 
 TEST_F(SSEFaultHandlerTest, StreamEmitsXMedkitForRuntimeApp) {
-  // Runtime_only fallback: synthetic App with id matching the reporting
-  // source's last segment exists in the cache, so the ``x-medkit`` payload
-  // extension points consumers straight at
+  // A runtime app bound to the reporting node owns the fault, so the
+  // ``x-medkit`` payload extension points consumers straight at
   // /apps/temp_sensor/bulk-data/rosbags/<fault_code>.
   App app;
   app.id = "temp_sensor";
@@ -649,19 +687,17 @@ TEST_F(SSEFaultHandlerTest, StreamEmitsXMedkitForRuntimeApp) {
 }
 
 TEST_F(SSEFaultHandlerTest, StreamEmitsXMedkitForManifestApp) {
-  // Manifest/hybrid mode: linking populates node_to_app with the ROS FQN ->
-  // manifest app id mapping. The fault's reporting source uses the ROS FQN
-  // form (with leading slash), but the manifest app id can be arbitrary (here
-  // "diagnostic-bridge" with a hyphen, to model the FQN/id naming mismatch
-  // called out in #380).
+  // A manifest app id can differ from its node name (here "diagnostic-bridge"
+  // with a hyphen, the FQN/id naming mismatch called out in #380). Ownership
+  // follows the bound FQN, so no node -> app index is needed: manifest_only
+  // discovery builds none.
   App app;
   app.id = "diagnostic-bridge";
   app.name = "diagnostic_bridge";
   app.source = "manifest";
   app.bound_fqn = "/bridge/diagnostic_bridge";
-  std::unordered_map<std::string, std::string> node_to_app{{"/bridge/diagnostic_bridge", "diagnostic-bridge"}};
   auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
-  cache.update_all({}, {}, {app}, {}, node_to_app);
+  cache.update_apps({app});
 
   auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "BRIDGE_FAULT", 30);
   event.fault.reporting_sources = {"/bridge/diagnostic_bridge"};
@@ -681,31 +717,25 @@ TEST_F(SSEFaultHandlerTest, StreamEmitsXMedkitForManifestApp) {
   release_stream(res);
 }
 
-TEST_F(SSEFaultHandlerTest, StreamPrefersManifestMatchOverRuntimeFallback) {
-  // Manifest match must win over the runtime heuristic when both could apply
-  // to the same FQN. Seed both: (1) a manifest node_to_app entry mapping
-  // "/bridge/diagnostic_bridge" -> "manifest-bridge", and (2) a runtime-style
-  // App whose id matches the FQN's last segment ("diagnostic_bridge"). The
-  // resolver tries manifest first - if anyone ever flips the ordering, the
-  // x-medkit emits the runtime id and this test catches it.
-  App manifest_app;
-  manifest_app.id = "manifest-bridge";
-  manifest_app.name = "diagnostic_bridge";
-  manifest_app.source = "manifest";
-  manifest_app.bound_fqn = "/bridge/diagnostic_bridge";
-
-  App runtime_app;
-  runtime_app.id = "diagnostic_bridge";
-  runtime_app.name = "diagnostic_bridge";
-  runtime_app.source = "heuristic";
-  runtime_app.bound_fqn = "/bridge/diagnostic_bridge";
-
-  std::unordered_map<std::string, std::string> node_to_app{{"/bridge/diagnostic_bridge", "manifest-bridge"}};
+TEST_F(SSEFaultHandlerTest, StreamNamesOwnerOfSubPathSourceNotNamesake) {
+  // "/x/detector/goal_status" is a path child of the detector node, so the
+  // detector app lists the fault. The app named "goal_status" does not, and
+  // its rosbag address would answer 404.
+  App detector;
+  detector.id = "detector-app";
+  detector.name = "detector";
+  detector.source = "manifest";
+  detector.bound_fqn = "/x/detector";
+  App namesake;
+  namesake.id = "goal_status";
+  namesake.name = "goal_status";
+  namesake.source = "heuristic";
+  namesake.bound_fqn = "/z/goal_status";
   auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
-  cache.update_all({}, {}, {manifest_app, runtime_app}, {}, node_to_app);
+  cache.update_apps({detector, namesake});
 
-  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "PRECEDENCE", 35);
-  event.fault.reporting_sources = {"/bridge/diagnostic_bridge"};
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "SUB_PATH", 35);
+  event.fault.reporting_sources = {"/x/detector/goal_status"};
   enqueue_event(event);
 
   auto req = make_stream_request("127.0.0.1");
@@ -716,7 +746,8 @@ TEST_F(SSEFaultHandlerTest, StreamPrefersManifestMatchOverRuntimeFallback) {
   auto payload = parse_sse_payload(output);
 
   ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
-  EXPECT_EQ(payload["x-medkit"]["entity_id"], "manifest-bridge");
+  EXPECT_EQ(payload["x-medkit"]["entity_type"], "apps");
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "detector-app");
 
   release_stream(res);
 }
@@ -755,23 +786,23 @@ TEST_F(SSEFaultHandlerTest, StreamSnapshotsEntityContextAtEnqueue) {
   release_stream(res);
 }
 
-TEST_F(SSEFaultHandlerTest, StreamResolvesManifestFqnWithoutLeadingSlash) {
-  // gateway_node's node_resolver tries both FQN forms; the linking layer may
-  // store keys without the leading '/' (e.g. when the manifest declares
-  // namespace-only FQNs). The handler must try the slash-stripped form so
-  // /bridge/diagnostic_bridge resolves against a node_to_app key of
-  // "bridge/diagnostic_bridge".
-  App app;
-  app.id = "diagnostic-bridge";
-  app.name = "diagnostic_bridge";
-  app.source = "manifest";
-  app.bound_fqn = "/bridge/diagnostic_bridge";
-  std::unordered_map<std::string, std::string> node_to_app{{"bridge/diagnostic_bridge", "diagnostic-bridge"}};
+TEST_F(SSEFaultHandlerTest, StreamOmitsXMedkitForAnOwnerNoAppHolds) {
+  // "/z/goal_status_x" shares a name prefix with "/z/goal_status" but is not
+  // a path child of it, so no app lists the record. Naming one would send the
+  // consumer to a rosbag address that answers 404.
+  App detector;
+  detector.id = "detector-app";
+  detector.name = "detector";
+  detector.bound_fqn = "/x/detector";
+  App goal;
+  goal.id = "goal_status";
+  goal.name = "goal_status";
+  goal.bound_fqn = "/z/goal_status";
   auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
-  cache.update_all({}, {}, {app}, {}, node_to_app);
+  cache.update_apps({detector, goal});
 
-  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "SLASH_STRIP", 60);
-  event.fault.reporting_sources = {"/bridge/diagnostic_bridge"};
+  auto event = make_fault_event(FaultEvent::EVENT_UPDATED, "PREFIX_ONLY", 60);
+  event.fault.reporting_sources = {"/z/goal_status_x"};
   enqueue_event(event);
 
   auto req = make_stream_request("127.0.0.1");
@@ -781,16 +812,15 @@ TEST_F(SSEFaultHandlerTest, StreamResolvesManifestFqnWithoutLeadingSlash) {
   auto output = read_stream_once(res, 1);
   auto payload = parse_sse_payload(output);
 
-  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
-  EXPECT_EQ(payload["x-medkit"]["entity_id"], "diagnostic-bridge");
+  EXPECT_FALSE(payload.contains("x-medkit")) << payload.dump();
 
   release_stream(res);
 }
 
 TEST_F(SSEFaultHandlerTest, StreamResolvesRuntimeCollisionRenamedApp) {
   // Runtime discovery renames collision-prone nodes to <ns_prefix>_<name>
-  // (see ros2_runtime_introspection.cpp). The fallback must also try this
-  // form so faults from those apps still get a usable x-medkit context.
+  // (see ros2_runtime_introspection.cpp). The owner is found by its bound
+  // FQN, so the renamed id needs no rule of its own.
   App app;
   app.id = "bridge_diagnostic_bridge";
   app.name = "diagnostic_bridge";
@@ -812,6 +842,117 @@ TEST_F(SSEFaultHandlerTest, StreamResolvesRuntimeCollisionRenamedApp) {
 
   ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
   EXPECT_EQ(payload["x-medkit"]["entity_id"], "bridge_diagnostic_bridge");
+
+  release_stream(res);
+}
+
+// An external app owns its record under its bare SOVD id, which is not a ROS
+// node FQN. That id is the app's owned source, so the app is named.
+TEST_F(SSEFaultHandlerTest, StreamResolvesABareExternalAppId) {
+  App app;
+  app.id = "plc_process";
+  app.name = "process";
+  app.source = "plugin";
+  app.external = true;
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_apps({app});
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "PROCESS_LEVEL_HIGH", 72);
+  event.fault.reporting_sources = {"plc_process"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto payload = parse_sse_payload(read_stream_once(res, 1));
+
+  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
+  EXPECT_EQ(payload["x-medkit"]["entity_type"], "apps");
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "plc_process");
+
+  release_stream(res);
+}
+
+// A protocol bridge raises its link faults under the component's own id. The
+// hint must name the component, because that is the entity whose fault routes
+// serve the record.
+TEST_F(SSEFaultHandlerTest, StreamResolvesABareExternalComponentId) {
+  ros2_medkit_gateway::Component component;
+  component.id = "line_controller";
+  component.name = "Line Controller";
+  component.source = "plugin";
+  component.external = true;
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_all({}, {component}, {}, {});
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "DEVICE_COMMS_LOST", 73);
+  event.fault.reporting_sources = {"line_controller"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto payload = parse_sse_payload(read_stream_once(res, 1));
+
+  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
+  EXPECT_EQ(payload["x-medkit"]["entity_type"], "components");
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "line_controller");
+
+  release_stream(res);
+}
+
+// A path below an external component's id belongs to the component too, the
+// rule its fault routes list the record by.
+TEST_F(SSEFaultHandlerTest, StreamResolvesASubPathOfAnExternalComponent) {
+  ros2_medkit_gateway::Component component;
+  component.id = "line_controller";
+  component.name = "Line Controller";
+  component.source = "plugin";
+  component.external = true;
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_all({}, {component}, {}, {});
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "SLOT_FAULT", 75);
+  event.fault.reporting_sources = {"line_controller/slot_1"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto payload = parse_sse_payload(read_stream_once(res, 1));
+
+  ASSERT_TRUE(payload.contains("x-medkit")) << payload.dump();
+  EXPECT_EQ(payload["x-medkit"]["entity_type"], "components");
+  EXPECT_EQ(payload["x-medkit"]["entity_id"], "line_controller");
+
+  release_stream(res);
+}
+
+// Only an external component claims its bare id as a reporting source. A
+// runtime host component never does, and naming it would point the consumer at
+// an entity whose own fault routes drop the record.
+TEST_F(SSEFaultHandlerTest, StreamDoesNotNameANonExternalComponent) {
+  ros2_medkit_gateway::Component component;
+  component.id = "runtime_host";
+  component.name = "runtime host";
+  component.source = "heuristic";
+  auto & cache = const_cast<ThreadSafeEntityCache &>(node_->get_thread_safe_cache());
+  cache.update_all({}, {component}, {}, {});
+
+  auto event = make_fault_event(FaultEvent::EVENT_CONFIRMED, "HOST_FAULT", 74);
+  event.fault.reporting_sources = {"runtime_host"};
+  enqueue_event(event);
+
+  auto req = make_stream_request("127.0.0.1");
+  httplib::Response res;
+  handler_->handle_stream(req, res);
+
+  auto payload = parse_sse_payload(read_stream_once(res, 1));
+
+  EXPECT_FALSE(payload.contains("x-medkit")) << payload.dump();
 
   release_stream(res);
 }

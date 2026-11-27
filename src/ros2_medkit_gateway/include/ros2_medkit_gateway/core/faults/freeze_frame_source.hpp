@@ -62,8 +62,9 @@ class FreezeFrameSource {
   FreezeFrameSource(FreezeFrameSource &&) = delete;
   FreezeFrameSource & operator=(FreezeFrameSource &&) = delete;
 
-  /// Frames captured for a fault code (empty when none). Thread-safe.
-  virtual std::vector<Frame> frames_for(const std::string & fault_code) const = 0;
+  /// Frames captured for one fault record, addressed by its code and the
+  /// reporting source that owns it (empty when none). Thread-safe.
+  virtual std::vector<Frame> frames_for(const std::string & fault_code, const std::string & owner) const = 0;
 
   /// Build the compact {resource_id: value} dict from a DataProvider::list_data
   /// response. Items without a "value" field map to null; a response without an
@@ -79,11 +80,11 @@ class FreezeFrameSource {
   /// values_have_data() instead.
   static bool content_has_live_data(const nlohmann::json & content);
 
-  /// True when the payload's top-level `connected` flag reports the link down.
-  /// Consulted only by the gateway's fault-trigger value fetcher: a down link
-  /// serves frozen last-known values, and a threshold rule must hold state on
-  /// them (fetcher yields nullopt) instead of firing on a stale number for the
-  /// whole outage. The freeze-frame paths deliberately ignore this flag.
+  /// True when the payload's `connected` flag reports the link down: the top-level flag
+  /// of a route payload, else the `x-medkit` flag of a provider payload. Consulted only by the gateway's fault-trigger
+  /// value fetcher: a down link serves frozen last-known values, and a threshold rule must hold state on them (fetcher
+  /// yields nullopt) instead of firing on a stale number for the whole outage. The freeze-frame paths deliberately
+  /// ignore this flag.
   static bool content_reports_disconnected(const nlohmann::json & content);
 
   /// True when a compact values dict holds at least one non-null value.
