@@ -2,8 +2,9 @@ Message Definitions
 ===================
 
 This page documents the ROS 2 message and service interfaces provided by
-``ros2_medkit_msgs``. These interfaces are used for fault reporting, querying,
-and real-time event notifications.
+``ros2_medkit_msgs`` and ``ros2_medkit_policy_msgs``. These interfaces are used
+for fault reporting, querying, real-time event notifications, and the signals a
+learned policy publishes about itself.
 
 .. contents:: Table of Contents
    :local:
@@ -173,6 +174,91 @@ Auto-detected fault cluster information.
    builtin_interfaces/Time first_at  # First fault timestamp
    builtin_interfaces/Time last_at   # Last fault timestamp
 
+MedkitDiscoveryHint.msg
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Push-based entity enrichment hints published by ROS 2 nodes to the gateway
+via the ``/ros2_medkit/discovery`` topic. The topic beacon plugin
+(``ros2_medkit_topic_beacon``) subscribes to this topic and enriches the
+discovery merge pipeline with the received metadata.
+
+.. code-block:: text
+
+   # Required
+   string entity_id                        # Target entity (App or Component ID)
+
+   # Identity hints
+   string stable_id                        # Stable ID alias (x-medkit-stable-id metadata)
+   string display_name                     # Human-friendly display name
+
+   # Topology hints
+   string[] function_ids                   # Function membership (entity belongs to these Functions)
+   string[] depends_on                     # IDs of entities this entity depends on
+   string component_id                     # Parent Component binding
+
+   # Transport hints
+   string transport_type                   # "nitros_zero_copy", "shared_memory", "intra_process"
+   string negotiated_format               # "nitros_image_bgr8", etc.
+
+   # Process diagnostics
+   uint32 process_id                       # OS process ID (PID), 0 = not provided
+   string process_name                     # Process name (e.g. "component_container")
+   string hostname                         # Host identifier (for distributed systems)
+
+   # Freeform metadata
+   diagnostic_msgs/KeyValue[] metadata    # Arbitrary key-value pairs
+
+   # Timing
+   builtin_interfaces/Time stamp           # Timestamp for TTL calculation
+
+All fields except ``entity_id`` are optional. Empty strings and empty arrays
+mean "not provided" and are ignored by the plugin.
+
+The same field semantics apply to ``ParameterBeaconPlugin`` via node
+parameters. See :doc:`/config/discovery-options` for parameter naming.
+
+The ``stamp`` field is used by the beacon TTL lifecycle:
+
+- **ACTIVE** - hint is within the configured TTL (enrichment applied)
+- **STALE** - hint is past TTL but within expiry (diagnostic data preserved,
+  enrichment still applied with stale flag)
+- **EXPIRED** - hint is past expiry (removed from enrichment)
+
+**Example publisher (C++):**
+
+.. code-block:: cpp
+
+   #include "ros2_medkit_msgs/msg/medkit_discovery_hint.hpp"
+
+   auto pub = node->create_publisher<ros2_medkit_msgs::msg::MedkitDiscoveryHint>(
+     "/ros2_medkit/discovery", 10);
+
+   ros2_medkit_msgs::msg::MedkitDiscoveryHint hint;
+   hint.entity_id = "my_sensor_node";
+   hint.display_name = "Temperature Sensor";
+   hint.function_ids = {"thermal_monitoring"};
+   hint.process_id = getpid();
+   hint.stamp = node->now();
+   pub->publish(hint);
+
+PolicyIntrospection.msg (ros2_medkit_policy_msgs)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+What a learned robot policy (ACT, diffusion policy, VLA, ...) predicted at one
+inference. A policy publishes one message per inference it runs. The message is
+in its own package, so a policy process depends on this one message and not on
+the fault interfaces.
+
+.. code-block:: text
+
+   std_msgs/Header header  # stamp: when the inference ran
+   uint32 episode        # task attempt counter; a new value is a new attempt
+   uint32 step           # control step within the episode at which the inference ran
+   uint16 chunk_length   # predicted actions in the chunk (1 for one action per inference)
+   uint16 action_dim
+   float32[] chunk       # chunk_length x action_dim, row major, in command units
+   float32 inference_ms  # inference wall time; 0 (the default), negative or non-finite: not measured
+
 Services
 --------
 
@@ -293,73 +379,6 @@ GetSnapshots.srv
 Retrieve diagnostic snapshots captured at fault occurrence time.
 
 See :doc:`/tutorials/snapshots` for detailed usage.
-
-MedkitDiscoveryHint.msg
-~~~~~~~~~~~~~~~~~~~~~~~
-
-Push-based entity enrichment hints published by ROS 2 nodes to the gateway
-via the ``/ros2_medkit/discovery`` topic. The topic beacon plugin
-(``ros2_medkit_topic_beacon``) subscribes to this topic and enriches the
-discovery merge pipeline with the received metadata.
-
-.. code-block:: text
-
-   # Required
-   string entity_id                        # Target entity (App or Component ID)
-
-   # Identity hints
-   string stable_id                        # Stable ID alias (x-medkit-stable-id metadata)
-   string display_name                     # Human-friendly display name
-
-   # Topology hints
-   string[] function_ids                   # Function membership (entity belongs to these Functions)
-   string[] depends_on                     # IDs of entities this entity depends on
-   string component_id                     # Parent Component binding
-
-   # Transport hints
-   string transport_type                   # "nitros_zero_copy", "shared_memory", "intra_process"
-   string negotiated_format               # "nitros_image_bgr8", etc.
-
-   # Process diagnostics
-   uint32 process_id                       # OS process ID (PID), 0 = not provided
-   string process_name                     # Process name (e.g. "component_container")
-   string hostname                         # Host identifier (for distributed systems)
-
-   # Freeform metadata
-   diagnostic_msgs/KeyValue[] metadata    # Arbitrary key-value pairs
-
-   # Timing
-   builtin_interfaces/Time stamp           # Timestamp for TTL calculation
-
-All fields except ``entity_id`` are optional. Empty strings and empty arrays
-mean "not provided" and are ignored by the plugin.
-
-The same field semantics apply to ``ParameterBeaconPlugin`` via node
-parameters. See :doc:`/config/discovery-options` for parameter naming.
-
-The ``stamp`` field is used by the beacon TTL lifecycle:
-
-- **ACTIVE** - hint is within the configured TTL (enrichment applied)
-- **STALE** - hint is past TTL but within expiry (diagnostic data preserved,
-  enrichment still applied with stale flag)
-- **EXPIRED** - hint is past expiry (removed from enrichment)
-
-**Example publisher (C++):**
-
-.. code-block:: cpp
-
-   #include "ros2_medkit_msgs/msg/medkit_discovery_hint.hpp"
-
-   auto pub = node->create_publisher<ros2_medkit_msgs::msg::MedkitDiscoveryHint>(
-     "/ros2_medkit/discovery", 10);
-
-   ros2_medkit_msgs::msg::MedkitDiscoveryHint hint;
-   hint.entity_id = "my_sensor_node";
-   hint.display_name = "Temperature Sensor";
-   hint.function_ids = {"thermal_monitoring"};
-   hint.process_id = getpid();
-   hint.stamp = node->now();
-   pub->publish(hint);
 
 See Also
 --------

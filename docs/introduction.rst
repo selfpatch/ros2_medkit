@@ -68,6 +68,9 @@ ros2_medkit consists of several ROS 2 packages:
 **ros2_medkit_msgs**
    Message and service definitions for fault management.
 
+**ros2_medkit_policy_msgs**
+   ``PolicyIntrospection``, what a learned robot policy predicted at one inference.
+
 **ros2_medkit_integration_tests**
    Integration tests, automotive-themed demo nodes, and shared test utilities.
 
