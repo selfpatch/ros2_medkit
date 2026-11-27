@@ -1,0 +1,15 @@
+# /diagnostics -> faults. Only the names below become faults.
+diagnostic_bridge:
+  ros__parameters:
+    diagnostics_topic: "/diagnostics"
+    auto_generate_codes: false
+    # The example's nodes put their full node name in hardware_id, so each fault
+    # is listed under the node that saw it (camera_monitor, lerobot_policy).
+    use_hardware_id_as_source_id: true
+    # The nodes publish a failing status once, when it starts (see their docstrings).
+    # The reporter's local filter would hold a single WARN back (it forwards after
+    # 3 reports in 10 s), so it is off.
+    fault_reporter.local_filtering.enabled: false
+    "name_to_code.camera_monitor: wrist frozen": "CAMERA_WRIST_FROZEN"
+    "name_to_code.camera_monitor: overhead frozen": "CAMERA_OVERHEAD_FROZEN"
+    "name_to_code.lerobot_policy: inference": "POLICY_INFERENCE_SLOW"

@@ -1,0 +1,45 @@
+# Fault manager settings for the LeRobot SO-101 example.
+#
+# Goal: one complete recording for every failed attempt (EPISODE_FAILED).
+fault_manager:
+  ros__parameters:
+    storage_type: sqlite
+    database_path: /var/lib/ros2_medkit/faults.db
+
+    # A FAILED report confirms at once; the runner's PASSED at the start of the
+    # next attempt heals it, so every failed attempt is its own occurrence.
+    confirmation_threshold: -1
+    healing_enabled: true
+    healing_threshold: 0
+
+    # Camera and inference faults never confirm (fault_thresholds.yaml): a
+    # confirmation mid-attempt would start a recording and cut the start off the
+    # EPISODE_FAILED recording of the same attempt. They are still reported and
+    # listed, and they still heal. The launch file sets
+    # fault_thresholds.config_file to this package's config/fault_thresholds.yaml.
+
+    # Capture on every confirmation, not once per minute per fault code.
+    snapshots.recapture_cooldown_sec: 0.0
+
+    # Black-box recording of the whole attempt. Explicit topics: the default
+    # "entity" mode records only the reporter's own topics, and the broad modes
+    # drop camera images.
+    snapshots.rosbag.enabled: true
+    snapshots.rosbag.topics: explicit
+    snapshots.rosbag.include_topics:
+      - /so101/so101_sim/camera/wrist/image_raw/compressed
+      - /so101/so101_sim/camera/overhead/image_raw/compressed
+      - /so101/so101_sim/joint_states
+      - /so101/so101_sim/joint_command
+      - /so101/so101_sim/task_status
+      - /diagnostics
+    snapshots.rosbag.exclude_sensor_topics: false
+    # Ring buffer longer than the slowest attempt: 300 steps at about 0.4 s a step
+    # with software rendering on a busy laptop CPU is 120 s.
+    snapshots.rosbag.duration_sec: 180.0
+    snapshots.rosbag.duration_after_sec: 1.0
+    snapshots.rosbag.max_buffer_mb: 256
+    # Keep every recording, bounded by total disk use.
+    snapshots.rosbag.max_bags_per_fault: 0
+    snapshots.rosbag.max_total_storage_mb: 2000
+    snapshots.rosbag.storage_path: /var/lib/ros2_medkit/rosbags

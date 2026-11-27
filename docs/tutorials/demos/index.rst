@@ -9,6 +9,7 @@ of increasing complexity.
 
    demo-sensor
    demo-turtlebot3
+   demo-lerobot-so101
 
 Learning Path
 -------------
@@ -48,6 +49,14 @@ Then explore these demos:
    - 🚀 Production-like complexity
    - 🖥️ GPU recommended
 
+3. :doc:`demo-lerobot-so101` — **AI policy diagnostics** 🦾
+
+   A LeRobot policy on a simulated SO-101 arm, diagnosed with stock ros2_medkit.
+
+   - 🐳 Docker Compose deployment
+   - 🧠 LeRobot ACT policy, MuJoCo simulation
+   - 📼 One recording per failed attempt
+
 Choose Your Demo
 ----------------
 
@@ -56,4 +65,5 @@ Choose Your Demo
 - 🚀 **Get started quickly** → :doc:`/getting_started`
 - 🔍 **Learn fault management** → :doc:`demo-sensor`
 - 🤖 **Test with realistic robotics** → :doc:`demo-turtlebot3`
+- 🦾 **Diagnose an AI policy** → :doc:`demo-lerobot-so101`
 - 📚 **Understand the full API** → Start with :doc:`/getting_started`, then explore both demos

@@ -26,3 +26,9 @@ coverage_html/
 
 # Worktrees
 .worktrees/
+
+# Example outputs (the examples build with the repository root as context)
+examples/**/.venv/
+examples/**/outputs/
+examples/**/policy/
+examples/**/results/

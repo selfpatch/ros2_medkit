@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Fast DDS profile for the example (FASTRTPS_DEFAULT_PROFILES_FILE).
+  A process killed with SIGKILL cannot announce that it leaves, so other
+  participants keep it in the graph until its liveliness lease expires: 20 s by
+  default. The launch file respawns the policy within about 15 s, before that, and
+  the graph watchdog would never see it gone. A 3 s lease, announced every second,
+  makes a dead process leave the graph within about 3 s.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <participant profile_name="example_participant" is_default_profile="true">
+    <rtps>
+      <builtin>
+        <discovery_config>
+          <leaseDuration>
+            <sec>3</sec>
+          </leaseDuration>
+          <leaseAnnouncement>
+            <sec>1</sec>
+          </leaseAnnouncement>
+        </discovery_config>
+      </builtin>
+    </rtps>
+  </participant>
+</profiles>

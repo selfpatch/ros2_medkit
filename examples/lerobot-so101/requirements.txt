@@ -1,0 +1,5 @@
+# Python packages for the example image and for training (pinned).
+# torch / torchvision are installed separately (CPU wheels in the image, CUDA for training).
+lerobot==0.7.0
+so101-nexus==0.12.1
+mujoco==3.17.0
