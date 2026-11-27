@@ -70,6 +70,8 @@ struct FaultRecord {
   uint32_t occurrence_count{0};
   std::string status;
   std::vector<std::string> reporting_sources;
+  /// Owner of the record: the reporting source of a per-source record, "*" for a shared one.
+  std::string owner;
 };
 
 /// FaultEvent.msg field for field.

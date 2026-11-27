@@ -47,3 +47,11 @@ builtin_interfaces/Time first_at
 
 # Timestamp of the last fault in the cluster
 builtin_interfaces/Time last_at
+
+# Owner of each member record, one entry per fault_codes entry in the same order. A cluster holds
+# the matching records of any owner, so (fault_codes[i], fault_owners[i]) names a record: pass the
+# owner as source_id to the single-record services.
+string[] fault_owners
+
+# Owner of the representative record: (representative_code, representative_owner) names it.
+string representative_owner

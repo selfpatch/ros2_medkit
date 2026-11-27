@@ -28,6 +28,7 @@ ros2_medkit_integration_tests/
     coverage.py         # GCOV_PREFIX helpers for CI
     gateway_test_case.py  # GatewayTestCase base class
     launch_helpers.py   # create_test_launch(), DEMO_NODE_REGISTRY
+    service_round_trip.py  # answer_once_each(): one answer per client before a test acts
   test/
     features/           # Focused API feature tests
     scenarios/          # End-to-end workflow tests

@@ -341,6 +341,16 @@ void OpcuaPlugin::configure(const nlohmann::json & config) {
     auto ms = std::clamp(config["poll_interval_ms"].get<int>(), 100, 60000);
     poller_config_.poll_interval = std::chrono::milliseconds(ms);
   }
+  if (config.contains("reconnect_interval_ms")) {
+    const auto & raw = config["reconnect_interval_ms"];
+    const auto ceiling = poller_config_.max_reconnect_interval.count();
+    if (raw.is_number_integer() && raw.get<int64_t>() >= 100 && raw.get<int64_t>() <= ceiling) {
+      poller_config_.reconnect_interval = std::chrono::milliseconds(raw.get<int64_t>());
+    } else {
+      log_warn("plugins.opcua.reconnect_interval_ms must be an integer in [100, " + std::to_string(ceiling) +
+               "] - keeping " + std::to_string(poller_config_.reconnect_interval.count()) + " ms");
+    }
+  }
   if (config.contains("condition_replay_strategy")) {
     poller_config_.condition_replay_strategy =
         OpcuaPoller::parse_replay_strategy(config["condition_replay_strategy"].get<std::string>());
@@ -911,8 +921,9 @@ void OpcuaPlugin::set_context(PluginContext & context) {
         poller_config_.reconnect_interval, poller_config_.max_reconnect_interval, rescan_interval_s);
   }
   poller_->start(poller_config_);
+  // Scripts wait for "OPC-UA poller started (mode: <mode>)", so the wait follows it.
   log_info("OPC-UA poller started (mode: " + std::string(poller_->using_subscriptions() ? "subscription" : "poll") +
-           ")");
+           "), first reconnect wait " + std::to_string(poller_config_.reconnect_interval.count()) + " ms");
 }
 
 std::vector<GatewayPlugin::PluginRoute> OpcuaPlugin::get_routes() {
@@ -1372,6 +1383,8 @@ void OpcuaPlugin::on_alarm_change(const std::string & entity_id,
       // before it has processed this report, so the decision that follows earns
       // one more (see comms_lost_raise_since_decision_).
       comms_lost_raise_since_decision_.store(true);
+      std::lock_guard<std::mutex> lock(comms_lost_entity_mutex_);
+      comms_lost_entity_id_ = entity_id;
     }
     send_report_fault(entity_id, signal.fault_code, signal.severity, signal.message);
   } else {
@@ -1386,7 +1399,7 @@ void OpcuaPlugin::on_alarm_change(const std::string & entity_id,
     if (clear_origin_for_signal(signal.fault_code) == ClearOrigin::LinkState) {
       owe_comms_lost_decision();
     } else {
-      send_clear_fault(signal.fault_code, ClearOrigin::DeviceAlarm);
+      send_clear_fault(signal.fault_code, entity_id, ClearOrigin::DeviceAlarm);
     }
   }
 }
@@ -1570,7 +1583,7 @@ void OpcuaPlugin::on_event_alarm(const AlarmEventDelivery & delivery) {
       // this IS a resolution at the source and the correlation engine may act on
       // it. DeviceAlarm is also the default, spelled out here because this is
       // the one call site where the cascade is deliberately kept.
-      send_clear_fault(delivery.fault_code, ClearOrigin::DeviceAlarm);
+      send_clear_fault(delivery.fault_code, delivery.entity_id, ClearOrigin::DeviceAlarm);
       break;
     case AlarmAction::NoOp:
       break;
@@ -1617,21 +1630,23 @@ void OpcuaPlugin::send_report_fault(const std::string & entity_id, const std::st
 }
 
 ros2_medkit_msgs::srv::ClearFault::Request OpcuaPlugin::make_clear_fault_request(const std::string & fault_code,
+                                                                                 const std::string & source_id,
                                                                                  bool skip_correlation_auto_clear) {
   ros2_medkit_msgs::srv::ClearFault::Request request;
   request.fault_code = fault_code;
+  request.source_id = source_id;
   request.skip_correlation_auto_clear = skip_correlation_auto_clear;
   return request;
 }
 
-void OpcuaPlugin::send_clear_fault(const std::string & fault_code, ClearOrigin origin) {
+void OpcuaPlugin::send_clear_fault(const std::string & fault_code, const std::string & source_id, ClearOrigin origin) {
   if (!fault_clients_->clear) {
     log_warn("ClearFault service client not available");
     return;
   }
 
   auto request = std::make_shared<ros2_medkit_msgs::srv::ClearFault::Request>(
-      make_clear_fault_request(fault_code, clear_skips_correlation(origin)));
+      make_clear_fault_request(fault_code, source_id, clear_skips_correlation(origin)));
 
   using ClearFuture = rclcpp::Client<ros2_medkit_msgs::srv::ClearFault>::SharedFuture;
   send_or_buffer({PendingFaultDispatch::Kind::Clear, fault_code, clear_is_link_state(origin), [this, request]() {
@@ -1655,20 +1670,21 @@ bool OpcuaPlugin::link_state_clear_permitted(bool fault_found, const std::vector
 
 std::unordered_set<std::string> OpcuaPlugin::reporting_ids_of_this_process() const {
   std::unordered_set<std::string> ids(placeholder_ids_.begin(), placeholder_ids_.end());
-  // A node map that names no component_id reports under the NodeMap default, so
-  // a fault carrying it is this bridge's.
-  ids.insert(NodeMap::kDefaultComponentId);
+  // A node map that names no component_id reports under the NodeMap default, which
+  // component_id() then returns. A map that names one does not report under the default.
   const std::string current = node_map_.component_id();
   if (!current.empty()) {
     ids.insert(current);
   }
-  // A process that never reached its PLC reported under the stand-in of the
-  // endpoint it started on, or of the one it found and never opened a session
-  // on. This process derives both from the same configuration.
-  for (const std::string & endpoint : {start_endpoint_url_, client_ ? client_->endpoint_url() : std::string{}}) {
-    const std::string stand_in = derive_component_identity(OpcuaClient::DeviceInfo{}, endpoint).id;
-    if (!stand_in.empty()) {
-      ids.insert(stand_in);
+  // A bridge without a node map that never reached its PLC reported under the stand-in of the
+  // endpoint it started on, or of the one it found and never opened a session on. A bridge with a
+  // node map reports under its component_id only.
+  if (node_map_path_.empty()) {
+    for (const std::string & endpoint : {start_endpoint_url_, client_ ? client_->endpoint_url() : std::string{}}) {
+      const std::string stand_in = derive_component_identity(OpcuaClient::DeviceInfo{}, endpoint).id;
+      if (!stand_in.empty()) {
+        ids.insert(stand_in);
+      }
     }
   }
   return ids;
@@ -1681,9 +1697,11 @@ void OpcuaPlugin::owe_comms_lost_decision() {
   comms_lost_decision_owed_.store(true);
 }
 
-void OpcuaPlugin::apply_comms_lost_answer(bool found, const std::vector<std::string> & reporting_sources) {
+void OpcuaPlugin::apply_comms_lost_answer(bool found, const std::vector<std::string> & reporting_sources,
+                                          const std::string & clear_source) {
   if (!found) {
     // No row, so nothing to clear and nothing standing to report.
+    log_info(std::string("no ") + kCommsLostFaultCode + " record held by this bridge; nothing to clear");
     return;
   }
   const std::unordered_set<std::string> my_ids = reporting_ids_of_this_process();
@@ -1704,7 +1722,19 @@ void OpcuaPlugin::apply_comms_lost_answer(bool found, const std::vector<std::str
   // anything, so a correlation rule naming PLC_COMMS_LOST as a root cause must
   // not cascade-clear the symptoms the outage produced.
   log_info(std::string("OPC-UA connection established, clearing this bridge's ") + kCommsLostFaultCode);
-  send_clear_fault(kCommsLostFaultCode, ClearOrigin::LinkState);
+  send_clear_fault(kCommsLostFaultCode, clear_source, ClearOrigin::LinkState);
+  std::lock_guard<std::mutex> lock(comms_lost_entity_mutex_);
+  comms_lost_entity_id_.clear();
+}
+
+std::string OpcuaPlugin::comms_lost_entity_id() const {
+  {
+    std::lock_guard<std::mutex> lock(comms_lost_entity_mutex_);
+    if (!comms_lost_entity_id_.empty()) {
+      return comms_lost_entity_id_;
+    }
+  }
+  return node_map_.component_id();
 }
 
 void OpcuaPlugin::drive_comms_lost_decision() {
@@ -1738,11 +1768,19 @@ void OpcuaPlugin::drive_comms_lost_decision() {
       // the store from before an outage that has since been reported. It is
       // dropped and the decision is taken again on this session.
       comms_lost_decision_owed_.store(true);
+      comms_lost_untried_ids_.clear();
       RCLCPP_DEBUG(opcua_plugin_logger(), "%s answer belongs to an earlier session; asking again on this one",
                    kCommsLostFaultCode);
       return;
     }
-    apply_comms_lost_answer(found, sources);
+    if (!found && !comms_lost_untried_ids_.empty()) {
+      // No record under that id. A per-source record belongs to the id it was raised under, so ask
+      // under the next id this process reports under before concluding there is nothing to clear.
+      comms_lost_decision_owed_.store(true);
+      return;
+    }
+    comms_lost_untried_ids_.clear();
+    apply_comms_lost_answer(found, sources, comms_lost_probe_id_);
     // The store may have answered from before a ReportFault this process had
     // already sent, so a decision with a raise behind it earns one more.
     if (comms_lost_raise_since_decision_.exchange(false)) {
@@ -1769,6 +1807,7 @@ void OpcuaPlugin::drive_comms_lost_decision() {
       }
       comms_lost_probe_in_flight_ = false;
       comms_lost_decision_owed_.store(true);
+      comms_lost_untried_ids_.clear();
       log_warn(std::string("fault store did not answer within ") + std::to_string(fault_service_timeout_.count()) +
                " ms; the " + kCommsLostFaultCode + " decision stays owed");
     }
@@ -1786,6 +1825,19 @@ void OpcuaPlugin::drive_comms_lost_decision() {
     return;
   }
 
+  // The id this probe asks under: the next untried one, else the one the fault is reported under
+  // now, with every other id this process reports under queued behind it.
+  if (!comms_lost_untried_ids_.empty()) {
+    comms_lost_probe_id_ = comms_lost_untried_ids_.back();
+    comms_lost_untried_ids_.pop_back();
+  } else {
+    comms_lost_probe_id_ = comms_lost_entity_id();
+    std::unordered_set<std::string> others = reporting_ids_of_this_process();
+    others.erase(comms_lost_probe_id_);
+    comms_lost_untried_ids_.assign(others.begin(), others.end());
+    std::sort(comms_lost_untried_ids_.begin(), comms_lost_untried_ids_.end());
+  }
+
   uint64_t generation = 0;
   {
     std::lock_guard<std::mutex> lock(comms_lost_probe_state_->mutex);
@@ -1796,6 +1848,9 @@ void OpcuaPlugin::drive_comms_lost_decision() {
   std::weak_ptr<CommsLostProbeState> weak_state = comms_lost_probe_state_;
   auto request = std::make_shared<ros2_medkit_msgs::srv::GetFault::Request>();
   request->fault_code = kCommsLostFaultCode;
+  // The record this bridge reports it under, so a second source that raised the code does not make the
+  // probe ambiguous.
+  request->source_id = comms_lost_probe_id_;
   // rclcpp selects the response-callback overload of async_send_request only for
   // a callable whose parameter list is exactly (SharedFuture); a const reference
   // parameter matches no overload. The future is therefore taken by value.
@@ -1836,6 +1891,7 @@ void OpcuaPlugin::drive_comms_lost_decision() {
     // the poll thread has no catch of its own and a lost owe is a fault left
     // standing for good.
     comms_lost_decision_owed_.store(true);
+    comms_lost_untried_ids_.clear();
     RCLCPP_WARN(opcua_plugin_logger(), "fault store request failed to go out (%s); the %s decision stays owed",
                 e.what(), kCommsLostFaultCode);
   }
@@ -3478,7 +3534,7 @@ tl::expected<dto::FaultClearResult, FaultProviderErrorInfo> OpcuaPlugin::clear_f
   // apps in other entities, and a plugin-owned entity must not be the hole in
   // that rule: the request goes through this provider instead, so the same flag
   // has to be set here.
-  send_clear_fault(fault_code, ClearOrigin::ScopedOperator);
+  send_clear_fault(fault_code, entity_id, ClearOrigin::ScopedOperator);
   return dto::FaultClearResult{
       nlohmann::json{{"status", "cleared"}, {"fault_code", fault_code}, {"entity_id", entity_id}}};
 }

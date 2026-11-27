@@ -109,13 +109,13 @@ class RecordingEventSink : public ros2_medkit_fault_manager::core::EventSink {
 
 class IgnoreCaptureHooks : public ros2_medkit_fault_manager::core::CaptureHooks {
  public:
-  ros2_medkit_fault_manager::core::CaptureResult capture_now(const std::string & code) override {
-    captured.push_back(code);
+  ros2_medkit_fault_manager::core::CaptureResult capture_now(const ros2_medkit_fault_manager::FaultId & id) override {
+    captured.push_back(id.fault_code);
     return {ros2_medkit_fault_manager::core::CaptureEnqueue::kAccepted, {}};
   }
-  void on_prefailed(const std::string & /*code*/) override {
+  void on_prefailed(const ros2_medkit_fault_manager::FaultId & /*id*/) override {
   }
-  void on_cleared(const std::string & /*code*/) override {
+  void on_cleared(const ros2_medkit_fault_manager::FaultId & /*id*/) override {
   }
   std::vector<std::string> captured;
 };
@@ -1524,8 +1524,8 @@ static int run() {
     fm::SqliteFaultStorage storage(db_path.string(), sink);
     fm::DebounceConfig debounce;
     debounce.confirmation_threshold = -1;
-    ok &= check(storage.report_fault_event("NO_ROS_FAULT", fd::ReportKind::kFailed, fd::severity::kError, "d", "/src",
-                                           1000000000LL, debounce),
+    ok &= check(storage.report_fault_event(fm::FaultId{"NO_ROS_FAULT", fm::kSharedOwner}, fd::ReportKind::kFailed,
+                                           fd::severity::kError, "d", "/src", 1000000000LL, debounce),
                 "a FAILED report creates the fault");
     const auto faults = storage.list_faults(false, 0, {});
     ok &= check(faults.size() == 1, "list_faults returns one record");
@@ -1596,7 +1596,7 @@ static int run() {
                   "core list returns the fault CONFIRMED");
       ok &= check(events.types.size() == 1 && events.types[0] == fd::fault_event_type::kConfirmed,
                   "the sink saw exactly one fault_confirmed");
-      const auto cleared = fault_core.clear("CORE_FAULT", false);
+      const auto cleared = fault_core.clear("CORE_FAULT", "", false);
       ok &= check(cleared.success, "core clear succeeds");
       ok &= check(events.types.size() == 2 && events.types[1] == fd::fault_event_type::kCleared,
                   "the sink saw fault_cleared after the clear");

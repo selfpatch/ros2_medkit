@@ -43,6 +43,7 @@ ros2_medkit_msgs::msg::Fault to_msg(const fd::FaultRecord & record) {
   msg.occurrence_count = record.occurrence_count;
   msg.status = record.status;
   msg.reporting_sources = record.reporting_sources;
+  msg.owner = record.owner;
   return msg;
 }
 

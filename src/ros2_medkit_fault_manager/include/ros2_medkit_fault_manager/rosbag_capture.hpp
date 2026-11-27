@@ -31,7 +31,9 @@
 #include <rclcpp/serialized_message.hpp>
 #include <rosbag2_cpp/writer.hpp>
 
+#include "ros2_medkit_fault_manager/core/fault_manager_core.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/ros2/system_wall_clock.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
 
 namespace ros2_medkit_fault_manager {
@@ -41,7 +43,10 @@ struct BufferedMessage {
   std::string topic;
   std::string message_type;
   std::shared_ptr<rclcpp::SerializedMessage> serialized_data;
+  /// Wall-clock receipt time. Written to the bag.
   int64_t timestamp_ns{0};
+  /// Steady-clock receipt time. Ages the message in the ring buffer.
+  int64_t steady_ns{0};
 };
 
 /// Manages rosbag recording with ring buffer for time-window capture
@@ -81,8 +86,11 @@ class RosbagCapture {
   /// @param config Rosbag configuration
   /// @param snapshot_config Snapshot configuration (for topic resolution when topics="config")
   /// @param storage_probe Optional storage-backend probe override (default: real probe)
+  /// @param wall_clock Optional wall clock for message stamps and recording times (default: system clock).
+  ///        Must outlive the capture.
   RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const RosbagConfig & config,
-                const SnapshotConfig & snapshot_config, StorageProbeFn storage_probe = {});
+                const SnapshotConfig & snapshot_config, StorageProbeFn storage_probe = {},
+                const core::WallClock * wall_clock = nullptr);
 
   ~RosbagCapture();
 
@@ -109,22 +117,24 @@ class RosbagCapture {
   /// Check if ring buffer is currently running
   bool is_running() const;
 
-  /// Called when a fault enters PREFAILED state (for lazy_start mode)
-  /// @param fault_code The fault code that entered PREFAILED
-  void on_fault_prefailed(const std::string & fault_code);
+  /// Called when a fault record enters PREFAILED state (for lazy_start mode)
+  /// @param id The record that entered PREFAILED
+  void on_fault_prefailed(const FaultId & id);
 
-  /// Called when a fault is confirmed - flushes buffer to bag file. A fault that
-  /// confirms while the previous fault's post-roll is still running is attached
-  /// to that recording (same burst, same window) rather than losing its bag.
-  /// @param fault_code The fault code that was confirmed
-  void on_fault_confirmed(const std::string & fault_code);
+  /// Called when a fault record is confirmed - flushes buffer to bag file. A record
+  /// that confirms while the previous one's post-roll is still running is attached
+  /// to that recording (same burst, same window) rather than losing its bag. Two
+  /// owners confirming one code in a burst attach to the one in-flight recording,
+  /// and each gets its own rosbag_files row.
+  /// @param id The record that was confirmed
+  void on_fault_confirmed(const FaultId & id);
 
-  /// Called when a fault is cleared - deletes its bag record if auto_cleanup.
-  /// A shared bag survives until its last referencing fault clears; a fault
+  /// Called when a fault record is cleared - deletes its bag record if auto_cleanup.
+  /// A shared bag survives until its last referencing record clears. A record
   /// cleared during its burst's post-roll is dropped from the in-flight
-  /// recording state and never gets a record.
-  /// @param fault_code The fault code that was cleared
-  void on_fault_cleared(const std::string & fault_code);
+  /// recording state and never gets a row.
+  /// @param id The record that was cleared
+  void on_fault_cleared(const FaultId & id);
 
   /// Get current configuration
   const RosbagConfig & config() const {
@@ -167,22 +177,6 @@ class RosbagCapture {
   /// Drop the reservation claim_bag_path() made for @p bag_path.
   static void release_bag_path_claim(const std::string & bag_path);
 
-  /// Buffered history a flush may claim, in nanoseconds: the age of the oldest message
-  /// it wrote, bounded by how long the capture has been running.
-  ///
-  /// The age is a wall-clock difference, because message timestamps are wall-clock, and
-  /// it is applied to a monotonic origin. A clock step between buffering a message and
-  /// flushing it therefore lands in the figure in full. No recording can hold more
-  /// history than the capture has been alive, so that is the bound; it also keeps the
-  /// derived origin above zero, which span_sec_since() reserves for "never started" and
-  /// reports as a duration of 0.
-  ///
-  /// Static + public for the same reason as the quota arithmetic above: a wall-clock
-  /// step cannot be produced through this class's own API, and in ordinary operation the
-  /// oldest buffered message is always younger than the capture, so the bound never
-  /// engages and nothing driving the capture can exercise it.
-  static int64_t bounded_history_ns(int64_t now_wall_ns, int64_t oldest_msg_wall_ns, int64_t now_steady_ns,
-                                    int64_t capture_started_steady_ns);
   /// Build the single path component naming a fault's bag directory.
   ///
   /// `NAME_MAX` caps one path component at 255 bytes, and rosbag2 writes the
@@ -244,10 +238,10 @@ class RosbagCapture {
   /// (falls back to SensorDataQoS when no publisher is known or qos_match is off)
   rclcpp::QoS resolve_topic_qos(const std::string & topic) const;
 
-  /// Compute the entity topic set for a fault (the faulting source node's
+  /// Compute the entity topic set for a fault record (its owning source node's
   /// pub/sub topics + /tf, intersected with the subscribed set). Empty set =
   /// scope unresolved. Never throws; failures degrade to an empty set.
-  std::set<std::string> compute_entity_topics(const std::string & fault_code);
+  std::set<std::string> compute_entity_topics(const FaultId & id);
 
   /// In "entity" mode, compute the set of topics to write for a confirmed fault
   /// (the faulting source node's pub/sub topics + /tf). Empty set = write all.
@@ -256,7 +250,7 @@ class RosbagCapture {
   /// In "entity" mode, union an attached fault's entity topics into the active
   /// capture filter so its data reaches the shared bag from the attach onwards
   /// (empty resolution widens to all topics). Caller holds post_fault_timer_mutex_.
-  void widen_capture_filter_for(const std::string & fault_code, const std::set<std::string> & topics);
+  void widen_capture_filter_for(const FaultId & id, const std::set<std::string> & topics);
 
   /// Whether a topic should be written to the bag given the active entity filter
   bool should_capture_topic(const std::string & topic) const;
@@ -295,9 +289,9 @@ class RosbagCapture {
   /// A post-fault recording whose writer is closed, on its way to the store worker.
   struct ClosedRecording {
     std::string bag_path;
-    /// Empty when the primary fault was cleared during the post-roll.
-    std::string fault_code;
-    std::set<std::string> attached_fault_codes;
+    /// Empty fault_code when the primary record was cleared during the post-roll.
+    FaultId fault_id;
+    std::set<FaultId> attached_ids;
     double duration_sec{0.0};
     int64_t created_at_ns{0};
   };
@@ -317,7 +311,7 @@ class RosbagCapture {
   /// Make @p rows durable for the finished bag at @p bag_path, or discard the bag.
   ///
   /// Both finalisation paths end here, so a bag that cannot be looked up never
-  /// survives on disk: retrieval is keyed by fault code and the quota enumerates
+  /// survives on disk: retrieval goes through the rows and the quota enumerates
   /// rows, so a directory with no row is unreachable, uncounted, and can never be
   /// evicted to make room.
   ///
@@ -339,7 +333,7 @@ class RosbagCapture {
 
   /// Whether the fault still gets a row: false only under auto_cleanup with no history,
   /// for a fault the store holds as cleared. Called under clear_rows_mutex_.
-  bool row_still_wanted(const std::string & code);
+  bool row_still_wanted(const FaultId & id);
 
   /// Whether the operator asked this fault code to keep a recording history.
   ///
@@ -390,9 +384,9 @@ class RosbagCapture {
   /// Cheap, and checked before the entity scope is resolved: a level-triggered
   /// reporter re-confirming the same fault would otherwise pay for a fault-store read
   /// and a full graph enumeration on every repeat, none of which it can use.
-  bool is_current_recording_primary(const std::string & fault_code) const;
+  bool is_current_recording_primary(const FaultId & id) const;
 
-  bool attach_to_active_recording(const std::string & fault_code, const std::set<std::string> & entity_topics);
+  bool attach_to_active_recording(const FaultId & id, const std::set<std::string> & entity_topics);
 
   /// Try to subscribe to a single topic
   /// @param topic The topic to subscribe to
@@ -423,6 +417,10 @@ class RosbagCapture {
 
   rclcpp::Node * node_;
   FaultStorage * storage_;
+  /// Wall clock read when no other is given.
+  ros2::SystemWallClock system_wall_clock_;
+  /// Wall clock for message stamps, bag names and recording times.
+  const core::WallClock * wall_clock_;
   RosbagConfig config_;
   SnapshotConfig snapshot_config_;
 
@@ -443,16 +441,17 @@ class RosbagCapture {
   /// Running state
   std::atomic<bool> running_{false};
 
-  /// Upper bound on how many extra faults one recording is registered for.
+  /// Upper bound on how many extra records one recording is registered for.
   static constexpr size_t kMaxAttachedFaults = 32;
 
   /// Post-fault recording state
-  std::string current_fault_code_;
+  FaultId current_fault_id_;
   std::string current_bag_path_;
-  /// Faults confirmed while the post-roll was already running. They share the
+  /// Records confirmed while the post-roll was already running. They share the
   /// recording window (one root cause, one burst), so each gets a metadata row
-  /// pointing at the same bag when it finalises.
-  std::set<std::string> attached_fault_codes_;
+  /// pointing at the same bag when it finalises. Two owners of one code are two
+  /// entries here and two rows on finalise.
+  std::set<FaultId> attached_fault_ids_;
   /// Protects post_fault_timer_, the recording_post_fault_ transitions and the
   /// state above against concurrent access from on_fault_confirmed() (capture-pool
   /// thread) and post_fault_timer_callback() / stop() (executor thread). The
@@ -491,14 +490,6 @@ class RosbagCapture {
   /// confirmation racing the finalise cannot have its own start time attributed to
   /// the bag being closed.
   std::atomic<int64_t> recording_started_at_ns_{0};
-
-  /// When start() ran, on the monotonic clock. Bounds the buffered history a flush
-  /// may claim: that history is measured on the wall clock (message timestamps are),
-  /// so an NTP step or a VM resync between buffering a message and flushing it lands
-  /// straight in the figure. No recording can hold more history than this capture has
-  /// been running, and the cap also keeps the derived monotonic origin above zero,
-  /// which span_sec_since() reserves for "never started".
-  std::atomic<int64_t> capture_started_at_ns_{0};
 
   /// Active writer for current bag (kept open during post-fault recording)
   std::unique_ptr<rosbag2_cpp::Writer> active_writer_;
