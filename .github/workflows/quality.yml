@@ -934,10 +934,8 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           ccache -z
-          # --packages-up-to rather than the workspace: the chain reaches the
-          # gateway, the fault manager and ros2_medkit_integration_tests, which
-          # is a test dependency and is where the launch helpers and the demo
-          # nodes the end-to-end scenarios start actually live.
+          # --packages-up-to builds the fault manager and the packages it
+          # depends on, not the whole workspace.
           colcon build --symlink-install \
             --packages-up-to ros2_medkit_fault_manager \
             --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -980,7 +978,7 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           cd build/ros2_medkit_fault_manager
-          ctest -LE "linter" --output-on-failure
+          ctest -LE "linter" --no-tests=error --output-on-failure
 
       - name: Show test results
         if: always()

@@ -38,6 +38,7 @@ from rosbag_fm_harness import (  # noqa: E402
 )
 
 RACE_REPETITIONS = 50
+DISCARDED_BEFORE_STORE = 'Bag file discarded (all its faults cleared before it was stored)'
 FUTURE_NS = 4_000_000_000 * 1_000_000_000
 
 
@@ -182,10 +183,14 @@ class TestRosbagQuota(RetentionCase):
                     f'CREATE TRIGGER {name} BEFORE {event} ON rosbag_files{condition} '
                     f"BEGIN SELECT RAISE(ABORT, 'pinned failure'); END")
 
-    def _confirm_expecting_failure(self, fm, code, mib):
+    def _confirm_expecting_failure(self, fm, code, mib, post_roll=False):
         mark = fm.mark()
         self.client.publish_bytes(int(mib * MIB) // (128 * 1024), 128 * 1024)
         self.assertTrue(self.client.report(code).accepted)
+        if post_roll:
+            self.assertIsNotNone(
+                fm.wait_line(r'Recording [\d.]+s more after fault confirmation', since=mark),
+                'the post-fault window never opened:\n' + fm.output()[-3000:])
         failed = fm.wait_line(rf"Failed to store rosbag metadata for '(\S*fault_{code}_\d+)'",
                               since=mark)
         self.assertIsNotNone(failed, fm.output()[-3000:])
@@ -208,7 +213,7 @@ class TestRosbagQuota(RetentionCase):
             self.new_scratch()
             with self.fm_run(**{'snapshots.rosbag.duration_after_sec': 1.0}) as fm:
                 self._trigger('fail_insert', 'INSERT')
-                bag = self._confirm_expecting_failure(fm, 'STORE_A', 1)
+                bag = self._confirm_expecting_failure(fm, 'STORE_A', 1, post_roll=True)
                 self.assertFalse(os.path.exists(bag))
                 self.assertEqual(self.stored_rows(), [])
                 self.assertEqual(bag_dirs(self.storage), [])
@@ -243,6 +248,7 @@ class TestRosbagQuota(RetentionCase):
     def _race(self, **overrides):
         """Confirm and clear fault after fault; none may keep a row or a directory."""
         discarded = 0
+        no_data = 0
         with self.fm_run(**overrides) as fm, Ticker(self.client):
             for i in range(RACE_REPETITIONS):
                 code = f'RACE_{i}'
@@ -254,26 +260,28 @@ class TestRosbagQuota(RetentionCase):
                     rf"|No data buffered for fault '{code}'", since=mark)
                 self.assertIsNotNone(outcome, f'no outcome for {code}:\n' + fm.output()[-3000:])
                 if outcome.group(1) is None:
-                    continue  # the ring buffer was empty at the confirm; nothing was recorded
+                    no_data += 1  # the ring buffer was empty at the confirm
+                    continue
                 bag = outcome.group(1)
-                if 'discarded' in outcome.group(0):
+                if DISCARDED_BEFORE_STORE in outcome.group(0):
                     discarded += 1
                 self.assertFalse(self.client.get_rosbag(code).success)
                 self.assertEqual(self.row_paths(code), [])
                 self.assertTrue(poll(lambda: not os.path.exists(bag)),
                                 f'{bag} was kept for {code}')
-        return discarded
+        return discarded, no_data
 
     def test_clear_racing_store(self):
         """A fault cleared right after it confirms leaves neither a row nor a directory."""
         with self.subTest('inline store'):
             self.new_scratch()
-            discarded = self._race(**{'snapshots.rosbag.duration_after_sec': 0.0})
+            discarded, _ = self._race(**{'snapshots.rosbag.duration_after_sec': 0.0})
             self.assertGreater(discarded, 0,
                                'no clear landed before the store, so the discard path never ran')
         with self.subTest('post-roll store'):
             self.new_scratch()
-            self._race(**{'snapshots.rosbag.duration_after_sec': 0.3})
+            _, no_data = self._race(**{'snapshots.rosbag.duration_after_sec': 0.3})
+            self.assertEqual(no_data, 0, 'a post-roll confirm always opens a recording')
 
     def test_shutdown_during_post_roll(self):
         """SIGTERM inside the post-fault window keeps the recording, with its row."""

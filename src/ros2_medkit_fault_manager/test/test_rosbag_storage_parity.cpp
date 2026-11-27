@@ -591,6 +591,28 @@ TYPED_TEST(RosbagRetentionParityTest, UpsertOnLinkKeepsOneRow) {
   refresh.insert.push_back(info);
   this->storage_->apply_rosbag_changes(refresh);
 
+  // A refresh replaces every field but the link itself.
+  auto full = this->row("APPLY_UPSERT_FULL", "fault_APPLY_UPSERT_3", 3000);
+  RosbagChangeSet seed;
+  seed.insert.push_back(full);
+  this->storage_->apply_rosbag_changes(seed);
+  full.recording_id = "renamed_recording";
+  full.format = "sqlite3";
+  full.duration_sec = 9.5;
+  full.size_bytes = 8192;
+  full.created_at_ns = 7000;
+  RosbagChangeSet replace;
+  replace.insert.push_back(full);
+  this->storage_->apply_rosbag_changes(replace);
+  const auto replaced = this->storage_->get_rosbag_files("APPLY_UPSERT_FULL");
+  ASSERT_EQ(replaced.size(), 1u);
+  EXPECT_EQ(replaced[0].file_path, full.file_path);
+  EXPECT_EQ(replaced[0].recording_id, "renamed_recording");
+  EXPECT_EQ(replaced[0].format, "sqlite3");
+  EXPECT_DOUBLE_EQ(replaced[0].duration_sec, 9.5);
+  EXPECT_EQ(replaced[0].size_bytes, 8192u);
+  EXPECT_EQ(replaced[0].created_at_ns, 7000);
+
   const auto rows = this->storage_->get_rosbag_files("APPLY_UPSERT");
   ASSERT_EQ(rows.size(), 2u);
   EXPECT_EQ(rows[0].recording_id, "fault_APPLY_UPSERT_2") << "a refresh keeps the row's place in a tie group";
