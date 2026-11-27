@@ -418,8 +418,13 @@ classification pass over the full Component set:
   place. Only recorded renames and drops are applied. They come from the
   ``PeerIdIndex`` the refresh builds from the served entities and the merge's
   drops and publishes in the entity cache with the entities
-  (``ThreadSafeEntityCache::update_all``); the rewrite reads one snapshot of
-  it for the whole body. A rewritten body drops the peer's ``ETag``.
+  (``ThreadSafeEntityCache::update_all``). The rewrite reads, for the whole
+  body, the snapshot of the generation the request was validated against,
+  which ``validate_entity_for_route`` reads with the entity and keeps in
+  ``EntityInfo::peer_ids``; so do the fan-outs below. A refresh that lands
+  while the peer answers can rename or drop the entity the request named, and
+  the newest snapshot would then map the peer's id to the local entity that
+  took its place. A rewritten body drops the peer's ``ETag``.
   Responses of the resource collections (data, faults, operations and the
   rest) are passed through as the peer sent them, except for the member IDs a
   fan-out reads off them: a dropped member is removed from a data item's
@@ -427,11 +432,14 @@ classification pass over the full Component set:
   the list.
 
   The body comes from the peer, so the walk is bounded: a body nested deeper
-  than ``kMaxPeerJsonDepth`` (64) levels is judged on its text before it is
-  parsed and refused with ``502`` (``x-medkit-peer-unavailable``, naming the
-  depth). It is not passed through untranslated, which would present the
+  than ``kMaxPeerJsonDepth`` (64) levels, or holding more than
+  ``kMaxPeerJsonValues`` (1,000,000) values, is judged on its text before it
+  is parsed and refused with ``502`` (``x-medkit-peer-unavailable``, naming
+  the bound). It is not passed through untranslated, which would present the
   peer's IDs as this gateway's, and it is never translated in part. No
-  discovery response nests anywhere near that deep.
+  discovery response comes anywhere near either bound. The dropped references of
+  an array are removed in one pass over it, so the work grows with the length
+  of the array and not with its square.
 
 The ``EntityMerger::SEPARATOR`` constant (``__``) is used as the prefix
 separator. The routing table maps ``entity_id -> peer_name`` for
@@ -774,8 +782,16 @@ its first health check) or one that predates the id.
 
 A peer that answers partial makes the result partial too. Its failed peers are
 named ``<peer>/<its peer>`` with the reason it gave, so a dead gateway at the
-end of a chain shows up at the head. ``x-medkit.count`` is the length of the
-merged ``items``.
+end of a chain shows up at the head. The peer writes that list, so one answer
+contributes each name once and at most ``kMaxNestedPeerFailures`` (1024)
+names, and their reasons are read in one pass over its ``peer_failures``, the
+first entry naming a peer giving its reason; matching each name against every
+entry made the work grow with the square of what the peer sent. Every entry
+copies its reason, so a name repeated with one long reason multiplied the
+body: a name past ``kMaxNestedPeerNameLength`` (1024 bytes) is not listed, a
+reason past ``kMaxNestedPeerReasonLength`` (64 bytes) reads ``unreachable``,
+and the entries stop before they add more than ``kMaxNestedPeerFailureBytes``
+(64 KiB). ``x-medkit.count`` is the length of the merged ``items``.
 
 The path does not deduplicate a gateway reached over two different routes in
 the same request (A -> B -> C plus A -> C): C answers both, as it did before.
@@ -909,7 +925,10 @@ refreshes that gateway needs to relink its ROS graph, and then turns true.
 ``PeerClient::fetch_entities()`` reads a peer over several requests and either
 describes it whole or reports failure: a dead connection, a status a route has
 no other meaning for, an oversized body, a body nested deeper than
-``kMaxPeerJsonDepth`` (64) levels or unparsable JSON on any of them fails
+``kMaxPeerJsonDepth`` (64) levels or holding more than ``kMaxPeerJsonValues``
+(1,000,000) values, a request still unanswered at its deadline, unparsable
+JSON or a field of the wrong type on any of them, or a refresh keeping more of
+the peer than ``FetchBudget`` allows (see Refresh Size Limits), fails
 the fetch, because a picture missing a branch is indistinguishable on the wire
 from a peer that does not have that branch. Two statuses carry a meaning of
 their own: a ``404`` on a nested collection route (``/subareas``,
@@ -956,11 +975,16 @@ parent: the list item names none. The top-level ``/areas`` and ``/components``
 lists leave nested entities out, so subareas and subcomponents are read level
 by level, each level from the routes of the one above, down to eight levels
 below the top-level entity. An id already read is not read again, so a tree
-that loops back on itself ends there. A subcomponent takes its parent from its
+that loops back on itself ends there. The 1000-entity limit of the collection
+counts the nested entities with the top-level ones, and it is checked before
+each nested entity is taken, before its detail is asked for: a level is as
+wide as the peer makes it, so a check once the level was done let a peer that
+lists 1000 children under each of 999 parents cost close to a million
+requests in one refresh. A subcomponent takes its parent from its
 detail, and from the route when the detail names none or cannot be read. A
 Function's dependencies come from
 the ``_links["depends-on"]`` references its detail serves, each reduced to the
-Function id it names.
+Function id it names and kept once (see Refresh Size Limits).
 
 Availability travels the same way in the other direction. ``x-medkit.available``
 is emitted only when false, so absence means reachable, and both
@@ -1112,13 +1136,97 @@ Key Classes
     HTTP client for communicating with a single peer gateway. Supports health
     checking, entity fetching, transparent request forwarding (proxy), and
     JSON-parsed responses for fan-out merging. Thread-safe via atomic health
-    flag and mutex-guarded lazy client creation.
+    flag; every call, the health check included, makes its own client.
+    ``shutdown()`` sets a flag after which no call against the peer starts,
+    and stops the per-call clients in flight. A read budget bounds each read,
+    not the answer, so a peer sending its answer a byte at a time would hold
+    a call for as long as it kept sending; the health check once used a
+    shared client that shutdown left alone, and such a peer held the
+    refresh, and the executor running it, past SIGTERM. Each request
+    therefore runs for at most its deadline, ``request_deadline_ms``
+    (``aggregation.request_deadline_ms``, 30 s), and never for less than its
+    own connect, write and read budgets added up; the health check's is its
+    connect and read budgets added up, each capped at 1 s. Starting a call and
+    shutting down are exclusive: a call holds the admission lock shared from
+    its check of the flag until its socket exists, and ``shutdown()`` holds it
+    exclusively while it stops the clients, so a call is either refused
+    (``canceled``) or in flight when its client is stopped. A client stopped
+    between two calls of an entity fetch would otherwise dial the next one,
+    since cpp-httplib's ``stop()`` only closes the socket of the call in
+    progress. ``GatewayNode`` calls
+    ``AggregationHost::shutdown()`` from a pre-shutdown callback on its
+    context as well as from its destructor (only the first call acts): on
+    SIGINT or SIGTERM the destructor runs only after the executor has finished
+    the refresh it is in, and a refresh reading peers would keep calling them
+    until it had read every one. The constructor's own refresh reads no
+    peers: ``main`` keeps the signals blocked until startup is done, so a peer
+    fetch run there held a shutdown requested meanwhile for as long as the
+    slowest peer took to read. It serves the local entities from the first
+    request on, and the first peer merge runs on the executor from a one-shot
+    timer as soon as it spins; peer entities are served once it has read every
+    peer. Until then their ids answer ``404`` and ``/health`` lists each peer
+    as ``offline``, since no health check has run yet.
+
+``PeerCallRegistry``
+    The per-call clients in flight against one peer, each with the deadline
+    of the request it is making. ``send_capped`` arms a request with its
+    deadline before it connects and disarms it when it returns; a reaper
+    thread, one per ``PeerClient``, sleeps until the earliest deadline and
+    stops the client of a request still running then, as ``stop_all()``
+    stops every client at shutdown. The request fails as a timeout naming
+    ``aggregation.request_deadline_ms``: a forward answers ``504``, a fan-out
+    names the peer ``timeout``, a fetch fails. cpp-httplib's ``stop()``
+    takes the client's socket lock, which a request holds while it connects
+    and, over TLS, through the whole handshake, whose timeout restarts on
+    every fragment the peer sends: a peer that sends its handshake a byte at
+    a time holds the ``stop()``, the deadline and shutdown for as long as it
+    keeps sending. A request is therefore
+    cancelled through its socket first. The socket-options callback hands the
+    registry each socket a request creates (``attach_socket``), before
+    admission is released; the registry keeps a ``F_DUPFD_CLOEXEC`` duplicate
+    until the request ends, so the number stays reserved and a cancel never
+    shuts a socket the process reused it for, and cancelling shuts it down,
+    which ends the connect, handshake or read without taking any lock of the
+    client's. A request that passes its deadline before it has a socket has
+    it shut as it is attached. ``stop()`` follows; each one runs on a thread
+    of its own with the registry mutex released, and one that waits keeps no
+    other request from arming, disarming or being stopped at its own
+    deadline. A client is pinned
+    while a ``stop()`` of it runs: ``remove()``, before the client is
+    destroyed, and ``disarm()``, before its next request, wait for it, so no
+    client is freed under a ``stop()`` and no late ``stop()`` lands on the
+    next request. ``stop_all()`` shuts every attached socket, then runs the
+    stops side by side and returns when the slowest has. A request cancelled
+    before it had a socket is cancelled again every 100 ms until it returns. The SSE relay has no deadline: a
+    stream has no last byte.
+
+``PeerResolver``
+    The host name of one peer, resolved by this gateway before a call is
+    admitted rather than by cpp-httplib inside it. cpp-httplib calls
+    ``getaddrinfo`` under the socket lock its ``stop()`` takes, and after the
+    admission lock is taken: a resolver that did not answer held the call,
+    every ``stop()`` of it, and shutdown's exclusive admission for as long as
+    the system resolver retried - ten seconds and more - and a forward to a
+    peer whose resolver had gone silent answered after some 12 s, the refresh
+    stalled with it, and SIGTERM took 10 s. The lookup runs on a detached
+    thread that owns its result, at most one per peer at a time, and a call
+    waits for it at most its connect budget (``aggregation.timeout_ms``,
+    capped at 1 s); ``PeerClient::ScopedClient`` then points the client at the
+    first address, and ``send_capped`` tries the next one when an address
+    refuses or does not accept the connection, as cpp-httplib does when it
+    resolves the name itself. A name that does not resolve in time makes no
+    request: the call fails as the peer being unreachable, naming the host
+    and the budget (a forward answers ``502``, a fetch fails, the health check
+    counts as failed). ``shutdown()`` cancels the wait, and an IP address is
+    not looked up. ``SSEStreamProxy`` resolves the same way before each
+    connect, within its own 5 s connect budget, waiting in 100 ms slices so
+    ``close()`` is noticed.
 
 ``EntityMerger``
     Stateless merge engine that combines local and remote entity sets using
     type-specific rules (merge by ID for Area/Function/Component, prefix on
-    collision for App, prefix for any type whose ID a local entity of another
-    type holds). Produces a provisional routing table mapping remote
+    collision for App, prefix for any type whose ID an entity of another type
+    holds). Produces a provisional routing table mapping remote
     entity IDs to peer names - the Component entries are later refined by
     ``classify_component_routing``.
 
@@ -1204,15 +1312,118 @@ Per-Collection Limits
 ~~~~~~~~~~~~~~~~~~~~~
 
 Each entity collection (areas, components, apps, functions) is limited to 1000
-entities per peer response. If a peer returns more, the entire fetch for that
-peer is rejected. This prevents a malicious peer from causing excessive HTTP
-requests via N+1 detail fetches.
+entities per peer, nested subareas and subcomponents included. If a peer
+returns more, the entire fetch for that peer is rejected, as soon as the
+1001st is read and before any request it would cost. This prevents a
+malicious peer from causing excessive HTTP requests via N+1 detail fetches.
+No entity is built before it is counted: the items of a list that name a
+valid entity id are counted first, a nested item is checked against the
+limit before it is parsed, and an item naming no valid id is never built. An
+empty object costs the peer three bytes and the gateway a whole entity, so a
+list built first and counted after let a body within the size limit allocate
+gigabytes.
 
 Response Size Limits
 ~~~~~~~~~~~~~~~~~~~~
 
-All HTTP responses from peers are limited to 10 MB (``MAX_PEER_RESPONSE_SIZE``).
-Responses exceeding this limit are rejected.
+The body of every HTTP response from a peer is limited to 10 MB
+(``MAX_PEER_RESPONSE_SIZE``), whatever its status: the health check, every
+request of an entity fetch, forwarded requests and fan-out requests. The limit
+is enforced while the body arrives (``send_capped`` counts the bytes in its
+content receiver and stops the read at the limit), so a peer that sends more
+never has more than 10 MB of it buffered here. cpp-httplib's own calls read
+the whole body before they return it, which is why none of them is used
+against a peer. A response past the limit is rejected: a health check counts
+as failed, an entity fetch fails, a forward answers ``502`` and a fan-out
+names the peer ``too-large``.
+
+The limit covers the body and nothing else. The status line, the header
+fields, the chunk-size lines of a chunked body (with any chunk extension) and
+the trailer fields are read by cpp-httplib before the content receiver sees a
+byte, and they are not bounded: cpp-httplib 0.14 grows a line for as long as
+the peer sends it and keeps every header and trailer field it receives, so a
+peer that does not end them grows this gateway's memory for as long as it
+keeps sending.
+
+The SSE relay is not covered by the limit either. ``SSEStreamProxy`` reads a
+peer's event stream with its own cpp-httplib client and no total limit, since
+a stream has no end. It holds at most 1 MB of an event that has not ended
+(``kMaxSSEBufferSize``) and drops the connection past that.
+
+Parsed Size Limits
+~~~~~~~~~~~~~~~~~~
+
+A body within the size limit can still cost far more once parsed: the JSON
+library builds a 16-byte value for every element and member, and every object
+and string allocates on top, so a 9 MB list of three million empty objects
+parsed to some 0.6 GB. Every body a peer sends is therefore judged on its text
+before it is parsed (``judge_peer_json``), in the same scan as its depth: a
+body holding more than ``kMaxPeerJsonValues`` (1,000,000) values - array
+elements and object members, counted at every level - is refused unparsed,
+like one nested deeper than ``kMaxPeerJsonDepth``. The bound is 1000 entities
+(``MAX_ENTITIES_PER_COLLECTION``) of 1000 values each; the largest item of a
+gateway serving the demo nodes holds about 160 values (a data item with its
+message schema), its largest answer about 3000. At the bound a body of the
+costliest values, a million empty objects, parses to some 250 MB. The scan
+runs wherever a peer body is parsed: every request of an entity fetch, the
+health answer (a ``200`` whose body is refused is a failed health check, as an
+oversized one is: the peer is unhealthy), a fan-out, the error body of a
+``404`` or ``504``, a forwarded discovery response before it is rewritten
+(``502`` when refused), and each event the fault stream relays (dropped with
+a warning). Text that is not JSON is judged the same way and fails to parse
+afterwards; a health answer of that kind keeps counting as a healthy ``200``.
+
+Refresh Size Limits
+~~~~~~~~~~~~~~~~~~~
+
+Every answer of a refresh is bounded on its own, but a refresh makes requests
+per entity, so the bounds above multiply: 1000 Apps answering 100000
+operations each stay inside every one of them and would keep some 100 million
+records. ``fetch_entities()`` therefore charges every record it keeps to a
+``FetchBudget`` before keeping it - an entity, with the entries of its tags,
+hosts, dependencies and identity fields, an operation, a topic an App publishes
+or subscribes to - and refuses the fetch past ``MAX_PEER_FETCH_RECORDS``
+(250,000) records or ``MAX_PEER_FETCH_TEXT`` (16 MiB) of text in them. A
+detail that replaces the entity its list named hands the list's charge back.
+One App is also refused past ``MAX_PEER_ENTRIES_PER_APP`` (1000) operations or
+data items naming a topic, which bounds its published and subscribed topics to
+1000 each, and one Component or Function past ``MAX_PEER_DEPENDENCIES`` (1000)
+dependencies. A Function's ``depends-on`` links are kept once each in the order
+the peer listed them, with a set beside the list: searching the list for every
+link cost the square of its length, in a parse that runs after the request's
+deadline is disarmed. So are a Function's hosts and a Component's
+``dependsOn`` (``keep_first_of_each``), and the merge emits each served host and
+dependency once (``resolve_hosts``, ``resolve_references``): a list names
+members, and a member named twice is one member. Kept twice, it is visited
+twice by every collection over the entity's members - a Function hosting one
+App of 1000 operations 200,000 times, inside the record bound, made the first
+``GET /functions/f/operations/docs`` scan those operations 200,000 times under
+the cache's shared lock (1.9 s, against 0.06 s for the App alone). The cache
+indexes each host once per Function as well, whatever declared it (see the
+entity cache's relationship indexes). A refusal is thrown where the bound is reached (``PeerFetchRefused``)
+and turned into the fetch's failure, so the refresh for that peer is discarded
+whole and its last complete declaration stays, as for an oversized answer. A
+gateway serving the demo nodes reports 16 entities, 3 operations and 33 topics
+in under 1 kB of text; a peer of 245 Apps with 1000 operations each, just
+inside the record bound, took the gateway to about 200 MB.
+
+Request Deadlines
+~~~~~~~~~~~~~~~~~
+
+cpp-httplib's timeouts bound each read and write, not an answer, so a peer
+that sends a byte inside every read budget holds a request, and whatever waits
+on it - a refresh, a client - for as long as it keeps sending. Every request to
+a peer therefore has a deadline, ``aggregation.request_deadline_ms`` (30 s), but
+never less than its own connect, write and read budgets added up, so no
+request is cut before its budgets are spent; the health check's deadline is its
+connect and read budgets added up, each capped at 1 s. ``PeerCallRegistry`` stops a request
+still running at its deadline (see Key Classes), and the request fails as a
+timeout: a forward answers ``504 not-responding``, a fan-out names the peer
+``timeout``, an entity fetch fails and the refresh keeps the peer's last
+complete declaration, a health check counts as failed. The SSE relay has no
+deadline: a stream has no last byte. The deadline is armed once the peer's host
+name has resolved, which ``PeerResolver`` bounds by the connect budget (see Key
+Classes), so a call runs for at most that budget plus its deadline.
 
 Per-Peer Entity Limits
 ~~~~~~~~~~~~~~~~~~~~~~

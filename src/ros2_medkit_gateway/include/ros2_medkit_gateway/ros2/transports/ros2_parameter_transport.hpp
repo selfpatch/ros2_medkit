@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <map>
 #include <memory>
@@ -192,9 +193,57 @@ class Ros2ParameterTransport : public ParameterTransport {
   /// Get the service timeout as a chrono duration.
   std::chrono::duration<double> get_service_timeout() const;
 
+  /// A timed mutex on std::mutex and std::condition_variable. ThreadSanitizer of
+  /// GCC 13 does not see a std::timed_mutex taken with a timeout
+  /// (pthread_mutex_clocklock), only its unlock.
+  class SpinGate {
+   public:
+    void lock() {
+      std::unique_lock<std::mutex> state(mutex_);
+      released_.wait(state, [this] {
+        return !held_;
+      });
+      held_ = true;
+    }
+
+    bool try_lock() {
+      std::lock_guard<std::mutex> state(mutex_);
+      if (held_) {
+        return false;
+      }
+      held_ = true;
+      return true;
+    }
+
+    template <class Rep, class Period>
+    bool try_lock_for(const std::chrono::duration<Rep, Period> & timeout) {
+      std::unique_lock<std::mutex> state(mutex_);
+      if (!released_.wait_for(state, timeout, [this] {
+            return !held_;
+          })) {
+        return false;
+      }
+      held_ = true;
+      return true;
+    }
+
+    void unlock() {
+      {
+        std::lock_guard<std::mutex> state(mutex_);
+        held_ = false;
+      }
+      released_.notify_one();
+    }
+
+   private:
+    std::mutex mutex_;
+    std::condition_variable released_;
+    bool held_{false};
+  };
+
   /// Try to acquire spin_mutex_ with timeout.
   /// Returns unique_lock on success, nullopt on timeout (result populated with error).
-  std::optional<std::unique_lock<std::timed_mutex>> try_acquire_spin_lock(ParameterResult & result);
+  std::optional<std::unique_lock<SpinGate>> try_acquire_spin_lock(ParameterResult & result);
 
   /// Throttled WARN emitted when a default-value cache evicts an entry, so the
   /// rare case where a re-seed could rebase "default" is at least observable.
@@ -237,7 +286,7 @@ class Ros2ParameterTransport : public ParameterTransport {
   /// spin_for() drives spin_until_future_complete on param_node_, which is NOT
   /// thread-safe against a concurrent spin on the same node.
   /// Declared BEFORE param_node_ so it outlives the node during destruction.
-  mutable std::timed_mutex spin_mutex_;
+  mutable SpinGate spin_mutex_;
 
   /// Internal node for parameter client operations.
   /// Created once in constructor - must be in DDS graph early for fast service discovery.

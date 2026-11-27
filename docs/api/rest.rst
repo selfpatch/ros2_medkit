@@ -177,7 +177,9 @@ Server Capabilities
 
    - ``peers`` - array of peer status objects for every configured or
      discovered peer. Each carries ``name``, ``url`` and ``status``
-     (``"online"`` or ``"offline"``).
+     (``"online"`` or ``"offline"``). A peer is ``"offline"`` until its first
+     health check, which runs with the first peer merge right after startup;
+     until that merge is done the peer's entities answer ``404``.
 
    The ``discovery`` object carries a ``linking`` sub-object describing
    how manifest apps were bound to runtime ROS nodes: ``linked_count``,
@@ -4230,7 +4232,9 @@ why, one entry per name, with ``reason`` one of:
    * - ``timeout``
      - A budget ran out. Which one is named in the message: the connect budget
        means the peer never accepted the connection, a read or write budget
-       means it did and the gateway stopped waiting.
+       means it did and the gateway stopped waiting, and
+       ``aggregation.request_deadline_ms`` means the peer kept answering but
+       had not finished when the request's deadline came.
    * - ``unreachable``
      - No usable answer arrived: connection refused, no route, TLS or redirect
        failure, or the peer died while the answer was arriving.
@@ -4243,7 +4247,9 @@ why, one entry per name, with ``reason`` one of:
    * - ``invalid-response``
      - The peer answered with something that is not the JSON the route
        promises, including a body that nests arrays and objects more than 64
-       levels deep.
+       levels deep or holds more than 1,000,000 values (array elements and
+       object members, counted at every level). Such a body is refused before
+       it is parsed.
    * - ``too-deep``
      - Global ``GET /faults`` only. The request had already passed through 16
        gateways, so this gateway did not ask the peer.
@@ -4254,7 +4260,11 @@ neither marks the answer partial nor appears in ``failed_peers``.
 
 On the global ``GET /faults`` a peer that could not reach one of its own
 peers is reported partial in turn. The entry names both hops,
-``<peer>/<its peer>``, with the reason the peer gave.
+``<peer>/<its peer>``, with the reason the peer gave. One peer's answer adds
+each name once and at most 1024 of them, and no more than 64 KiB of names and
+reasons. A name longer than 1024 bytes is not listed, and a reason longer than
+64 bytes reads ``unreachable``. A peer that names more still makes the answer
+partial; the names past the bound are not listed.
 
 Without ``peer_failures`` a client cannot tell a busy subsystem from a dead
 one, which is the whole of what a partial answer is asked.

@@ -15,6 +15,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 namespace ros2_medkit_gateway {
@@ -30,15 +31,46 @@ namespace ros2_medkit_gateway {
 /// a gateway serves nests a few levels - an entity detail five - and the
 /// deepest carry ROS message values, which nest as deep as their message
 /// types do; 64 is far above any of them and keeps every walk shallow. The text
-/// is judged before it is parsed (json_nesting_exceeds), so no deep value is
-/// ever built either.
+/// is judged before it is parsed (judge_peer_json), so no deep value is ever
+/// built either.
 inline constexpr size_t kMaxPeerJsonDepth = 64;
 
-/// True when `text` nests arrays and objects deeper than `max_depth`.
+/// Most values - array elements and object members, counted at every level -
+/// accepted in a JSON body a peer sends.
 ///
-/// Scans the text - outside string literals, counting `[` and `{` against
-/// `]` and `}` - so a body is judged before anything is built from it. Text
-/// that is not valid JSON is judged the same way and then fails to parse.
-bool json_nesting_exceeds(const std::string & text, size_t max_depth = kMaxPeerJsonDepth);
+/// The JSON library builds a 16-byte value for each, and an object or a
+/// string costs more on the heap, so a parsed body costs many times its text:
+/// a list of three million empty objects, 9 MB, parsed to some 0.6 GB, and the
+/// size limit alone lets a body hold five million values. The largest answers
+/// a gateway gives are its collections, at most MAX_ENTITIES_PER_COLLECTION
+/// (1000) items a peer, and the largest item of a gateway serving the demo
+/// nodes holds about 160 values (a data item with its message schema), the
+/// largest body (225 parameters) about 3000. 1000 items of 1000 values each
+/// is far above both. A body at the bound made of the costliest values there
+/// are, a million empty objects, parses to some 250 MB, against some 600 MB
+/// for the 9 MB list. Judged on the text before it is parsed
+/// (judge_peer_json), like the depth.
+inline constexpr size_t kMaxPeerJsonValues = 1000 * 1000;
+
+/// What the text of a peer's JSON body was judged to be, before it is parsed.
+enum class PeerJsonShape : uint8_t {
+  kAcceptable,     ///< Within both bounds; it may still fail to parse.
+  kTooDeep,        ///< Nests deeper than the depth bound.
+  kTooManyValues,  ///< Holds more values than the value bound.
+};
+
+/// Judge `text`, a JSON body a peer sent, before anything is built from it.
+///
+/// Scans the text once, outside string literals: `[` and `{` against `]` and
+/// `}` for the depth, and every array element and object member - the first
+/// in a container and each one after a `,` - for the count. Text that is not
+/// valid JSON is judged the same way and then fails to parse.
+PeerJsonShape judge_peer_json(const std::string & text, size_t max_depth = kMaxPeerJsonDepth,
+                              size_t max_values = kMaxPeerJsonValues);
+
+/// What a body judge_peer_json refused does, for an error message that
+/// follows the body's name: "nests deeper than 64 levels" or "holds more than
+/// 1000000 values". Empty for kAcceptable.
+std::string describe_peer_json_shape(PeerJsonShape shape);
 
 }  // namespace ros2_medkit_gateway

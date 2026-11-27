@@ -107,7 +107,7 @@ void Ros2ParameterTransport::shutdown() {
   // rather than tear down under a live spinner: a spin cannot outlive its bounded
   // duration, so this cannot hang in practice, and a bounded hang would be safer
   // than freeing an entity a live spin still references.
-  std::unique_lock<std::timed_mutex> spin_lock(spin_mutex_, std::defer_lock);
+  std::unique_lock<SpinGate> spin_lock(spin_mutex_, std::defer_lock);
   if (!spin_lock.try_lock_for(kShutdownTimeout)) {
     if (node_) {
       RCLCPP_WARN(node_->get_logger(),
@@ -130,11 +130,11 @@ bool Ros2ParameterTransport::is_node_available(const std::string & node_name) co
   return !is_node_unavailable(node_name);
 }
 
-std::optional<std::unique_lock<std::timed_mutex>>
+std::optional<std::unique_lock<Ros2ParameterTransport::SpinGate>>
 Ros2ParameterTransport::try_acquire_spin_lock(ParameterResult & result) {
   auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::duration<double>(service_timeout_sec_ + kSpinLockMarginSec));
-  std::unique_lock<std::timed_mutex> lock(spin_mutex_, std::defer_lock);
+  std::unique_lock<SpinGate> lock(spin_mutex_, std::defer_lock);
   if (!lock.try_lock_for(timeout)) {
     result.success = false;
     result.error_message = "Parameter service temporarily unavailable - timed out after " +

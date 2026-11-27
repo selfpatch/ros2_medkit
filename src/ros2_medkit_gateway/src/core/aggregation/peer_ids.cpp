@@ -22,8 +22,8 @@
 #include <utility>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/aggregation/peer_id_index.hpp"
 #include "ros2_medkit_gateway/core/aggregation/peer_json.hpp"
-#include "ros2_medkit_gateway/core/models/thread_safe_entity_cache.hpp"
 
 namespace ros2_medkit_gateway {
 
@@ -171,19 +171,28 @@ class ServedIdWalk {
     return false;
   }
 
-  /// Remove the entries of the array `value` that `drop` says to.
+  /// Remove the entries of the array `value` that `drop` says to, in one pass:
+  /// each kept entry moves down once. Erasing each dropped entry where it
+  /// stands shifts everything after it, so an array the peer filled with
+  /// dropped references cost the square of its length. `drop` may rewrite the
+  /// entry it is given, and is called once per entry, in order.
   template <class Drop>
   void erase_from(nlohmann::json & value, Drop drop) {
     if (!value.is_array()) {
       return;
     }
-    for (size_t i = 0; i < value.size();) {
-      if (drop(value[i])) {
-        value.erase(i);
-      } else {
-        ++i;
+    auto & entries = value.get_ref<nlohmann::json::array_t &>();
+    size_t kept = 0;
+    for (size_t i = 0; i < entries.size(); ++i) {
+      if (drop(entries[i])) {
+        continue;
       }
+      if (kept != i) {
+        entries[kept] = std::move(entries[i]);
+      }
+      ++kept;
     }
+    entries.resize(kept);
   }
 
   /// The relationship IDs an `x-medkit` block carries, then anything else in it.
@@ -287,22 +296,20 @@ class ServedIdWalk {
 
 }  // namespace
 
-std::optional<std::string> served_entity_id(const ThreadSafeEntityCache & cache, SovdEntityType type,
+std::optional<std::string> served_entity_id(const std::shared_ptr<const PeerIdIndex> & peer_ids, SovdEntityType type,
                                             const std::string & peer, const std::string & peer_id) {
   if (peer.empty() || peer_id.empty()) {
     return peer_id;
   }
-  const auto index = cache.get_peer_id_index();
-  return served(fate_of(peer_ids_of(index, peer).of(type), peer_id), peer_id);
+  return served(fate_of(peer_ids_of(peer_ids, peer).of(type), peer_id), peer_id);
 }
 
-std::optional<std::string> served_member_id(const ThreadSafeEntityCache & cache, const std::string & peer,
-                                            const std::string & member_id) {
+std::optional<std::string> served_member_id(const std::shared_ptr<const PeerIdIndex> & peer_ids,
+                                            const std::string & peer, const std::string & member_id) {
   if (peer.empty() || member_id.empty()) {
     return member_id;
   }
-  const auto index = cache.get_peer_id_index();
-  return served(member_fate_of(peer_ids_of(index, peer), member_id), member_id);
+  return served(member_fate_of(peer_ids_of(peer_ids, peer), member_id), member_id);
 }
 
 bool is_discovery_route(const std::string & path) {
@@ -321,14 +328,13 @@ bool is_discovery_route(const std::string & path) {
 }
 
 ServedIdRewrite rewrite_to_served_ids(nlohmann::json & body, const std::string & peer,
-                                      const ThreadSafeEntityCache & cache) {
+                                      const std::shared_ptr<const PeerIdIndex> & peer_ids) {
   if (peer.empty()) {
     return ServedIdRewrite::kUnchanged;
   }
   // One snapshot for the whole body: every rename and drop it applies is of
   // the same generation.
-  const auto index = cache.get_peer_id_index();
-  return ServedIdWalk(peer_ids_of(index, peer)).run(body);
+  return ServedIdWalk(peer_ids_of(peer_ids, peer)).run(body);
 }
 
 }  // namespace ros2_medkit_gateway

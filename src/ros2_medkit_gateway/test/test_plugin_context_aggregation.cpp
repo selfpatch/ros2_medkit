@@ -24,6 +24,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -47,6 +48,23 @@ using json = nlohmann::json;
 using ros2_medkit_gateway::GatewayNode;
 
 namespace {
+
+/// Run the node's first peer merge. The gateway reads its peers from the
+/// executor once startup is done, so a node no executor spins has only its
+/// local entities.
+void run_first_peer_merge(const std::shared_ptr<GatewayNode> & node) {
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+  executor.spin_some();
+  executor.remove_node(node);
+}
+
+/// True once the merge has named `peer` a contributor of Function braking.
+bool peer_contributes_braking(const GatewayNode & node, const std::string & peer) {
+  const auto braking = node.get_thread_safe_cache().get_function("braking");
+  return braking && std::find(braking->contributors.begin(), braking->contributors.end(), "peer:" + peer) !=
+                        braking->contributors.end();
+}
 
 // ---------------------------------------------------------------------------
 // Port / temp manifest helpers (same pattern as test_plugin_notify_integration)
@@ -388,6 +406,8 @@ class PluginContextWithPeerTest : public ::testing::Test {
     ASSERT_NE(agg, nullptr) << "AggregationManager must be non-null when aggregation.enabled=true";
     agg->check_all_health();
     ASSERT_EQ(agg->healthy_peer_count(), 1u) << "mock peer must be healthy for fan-out to work";
+    run_first_peer_merge(node_);
+    ASSERT_TRUE(peer_contributes_braking(*node_, "mock_peer")) << "the first peer merge must have run";
   }
 
   void TearDown() override {
@@ -481,6 +501,8 @@ class PluginContextFailingPeerTest : public ::testing::Test {
     ASSERT_NE(agg, nullptr);
     agg->check_all_health();
     ASSERT_EQ(agg->healthy_peer_count(), 1u) << "peer must pass /health so the fault request reaches it and 503s";
+    run_first_peer_merge(node_);
+    ASSERT_TRUE(peer_contributes_braking(*node_, "failing_peer")) << "the first peer merge must have run";
   }
 
   void TearDown() override {
