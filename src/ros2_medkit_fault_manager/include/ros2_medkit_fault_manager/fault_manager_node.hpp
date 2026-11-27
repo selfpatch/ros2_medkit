@@ -25,9 +25,11 @@
 #include "ros2_medkit_fault_manager/capture_thread_pool.hpp"
 #include "ros2_medkit_fault_manager/core/fault_manager_config.hpp"
 #include "ros2_medkit_fault_manager/core/fault_manager_core.hpp"
+#include "ros2_medkit_fault_manager/core/rosbag_retention.hpp"
 #include "ros2_medkit_fault_manager/correlation/correlation_engine.hpp"
 #include "ros2_medkit_fault_manager/fault_audit_log.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/retention_worker.hpp"
 #include "ros2_medkit_fault_manager/ros2/ros_capture_hooks.hpp"
 #include "ros2_medkit_fault_manager/ros2/ros_event_sink.hpp"
 #include "ros2_medkit_fault_manager/ros2/ros_log_sink.hpp"
@@ -222,6 +224,14 @@ class FaultManagerNode : public rclcpp::Node {
   /// Snapshot capture for capturing topic data on fault confirmation.
   /// shared_ptr to allow safe capture-by-value in the pool's capture jobs.
   std::shared_ptr<SnapshotCapture> snapshot_capture_;
+
+  /// Removes the directories a clear or a stale-row cleanup frees, off the executor. Drained at shutdown
+  /// after rosbag_capture_->stop().
+  std::shared_ptr<RetentionWorker> retention_worker_;
+
+  /// Rosbag retention decisions. Built also with rosbag capture off: the stale-row cleanup of
+  /// GetRosbag and ListRosbags runs then too.
+  std::shared_ptr<core::RosbagRetention> rosbag_retention_;
 
   /// Rosbag capture for time-window recording (nullptr if disabled).
   /// shared_ptr to allow safe capture-by-value in the pool's capture jobs.

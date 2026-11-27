@@ -51,12 +51,18 @@
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 #include "test_log_sink.hpp"
+#include "test_rosbag_rows.hpp"
 
 using ros2_medkit_fault_manager::FaultStorage;
 using ros2_medkit_fault_manager::InMemoryFaultStorage;
+using ros2_medkit_fault_manager::RetentionWorker;
+using ros2_medkit_fault_manager::RosbagApplyResult;
 using ros2_medkit_fault_manager::RosbagCapture;
+using ros2_medkit_fault_manager::RosbagChangeSet;
 using ros2_medkit_fault_manager::RosbagConfig;
 using ros2_medkit_fault_manager::SnapshotConfig;
+using ros2_medkit_fault_manager::core::RosbagRetention;
+using ros2_medkit_fault_manager::core::RosbagRetentionLimits;
 
 namespace {
 
@@ -958,7 +964,7 @@ TEST_F(RosbagCaptureTest, SharedBagTotalTakesTheLargestRowPerPath) {
     info.duration_sec = 5.0;
     info.size_bytes = bytes;
     info.created_at_ns = 1000;
-    storage_->store_rosbag_file(info);
+    seed_rosbag_rows(*storage_, {info});
   };
 
   store("AAA_BIG", "/tmp/shared_bag_a", 4096);
@@ -986,7 +992,7 @@ TEST_F(RosbagCaptureTest, EvictionFreesASharedBagOnceAndKeepsTheQuotaHonest) {
   shared.created_at_ns = 1000;
   for (const char * code : {"ROOT_CAUSE", "CORRELATED_A", "CORRELATED_B"}) {
     shared.fault_code = code;
-    storage_->store_rosbag_file(shared);
+    seed_rosbag_rows(*storage_, {shared});
   }
 
   ros2_medkit_fault_manager::RosbagFileInfo solo;
@@ -996,24 +1002,26 @@ TEST_F(RosbagCaptureTest, EvictionFreesASharedBagOnceAndKeepsTheQuotaHonest) {
   solo.duration_sec = 5.0;
   solo.size_bytes = 600;
   solo.created_at_ns = 2000;
-  storage_->store_rosbag_file(solo);
+  seed_rosbag_rows(*storage_, {solo});
 
   ASSERT_EQ(storage_->get_total_rosbag_storage_bytes(), 1600u);
 
-  auto evicted = RosbagCapture::evict_bags_over_quota(storage_.get(), 1000);
+  RosbagRetention retention(*storage_, RosbagRetentionLimits{}, test_log_sink(), "test_rosbag_capture");
+  auto evicted = retention.evict_over_quota(1000);
+  expect_unlinkable(evicted);
 
   // The oldest bag goes as a unit, taking all three of its rows with it, and the
   // freed bytes match what actually left the disk.
   EXPECT_EQ(evicted, std::vector<std::string>{shared_path});
   EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 600u);
-  EXPECT_FALSE(std::filesystem::exists(shared_path));
+  EXPECT_TRUE(listed(evicted, shared_path));
   EXPECT_FALSE(storage_->get_rosbag_file("ROOT_CAUSE").has_value());
   EXPECT_FALSE(storage_->get_rosbag_file("CORRELATED_A").has_value());
   EXPECT_FALSE(storage_->get_rosbag_file("CORRELATED_B").has_value());
 
   // The newer bag fits under the quota and must survive.
   EXPECT_TRUE(storage_->get_rosbag_file("UNRELATED").has_value());
-  EXPECT_TRUE(std::filesystem::exists(solo_path));
+  EXPECT_FALSE(listed(evicted, solo_path));
 }
 
 TEST_F(RosbagCaptureTest, EvictionKeepsGoingWhenTheSharedBagIsNotEnough) {
@@ -1035,10 +1043,10 @@ TEST_F(RosbagCaptureTest, EvictionKeepsGoingWhenTheSharedBagIsNotEnough) {
   shared.created_at_ns = 1000;
   shared.fault_code = "ROOT_CAUSE";
   shared.size_bytes = 500;
-  storage_->store_rosbag_file(shared);
+  seed_rosbag_rows(*storage_, {shared});
   shared.fault_code = "CORRELATED_A";
   shared.size_bytes = 400;
-  storage_->store_rosbag_file(shared);
+  seed_rosbag_rows(*storage_, {shared});
 
   ros2_medkit_fault_manager::RosbagFileInfo solo;
   solo.fault_code = "UNRELATED";
@@ -1047,16 +1055,18 @@ TEST_F(RosbagCaptureTest, EvictionKeepsGoingWhenTheSharedBagIsNotEnough) {
   solo.duration_sec = 5.0;
   solo.size_bytes = 400;
   solo.created_at_ns = 2000;
-  storage_->store_rosbag_file(solo);
+  seed_rosbag_rows(*storage_, {solo});
 
   ASSERT_EQ(storage_->get_total_rosbag_storage_bytes(), 900u);
 
-  auto evicted = RosbagCapture::evict_bags_over_quota(storage_.get(), 300);
+  RosbagRetention retention(*storage_, RosbagRetentionLimits{}, test_log_sink(), "test_rosbag_capture");
+  auto evicted = retention.evict_over_quota(300);
+  expect_unlinkable(evicted);
 
   EXPECT_EQ(evicted, (std::vector<std::string>{shared_path, solo_path}));
   EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 0u);
-  EXPECT_FALSE(std::filesystem::exists(shared_path));
-  EXPECT_FALSE(std::filesystem::exists(solo_path));
+  EXPECT_TRUE(listed(evicted, shared_path));
+  EXPECT_TRUE(listed(evicted, solo_path));
 }
 
 // @verifies REQ_INTEROP_088
@@ -1074,7 +1084,7 @@ TEST_F(RosbagCaptureTest, EvictionNeverDeletesTheRecordingJustStored) {
   older.format = "mcap";
   older.size_bytes = 300;
   older.created_at_ns = 1000;
-  storage_->store_rosbag_file(older);
+  seed_rosbag_rows(*storage_, {older});
 
   ros2_medkit_fault_manager::RosbagFileInfo newest;
   newest.fault_code = "NEWEST";
@@ -1082,13 +1092,15 @@ TEST_F(RosbagCaptureTest, EvictionNeverDeletesTheRecordingJustStored) {
   newest.format = "mcap";
   newest.size_bytes = 2000;
   newest.created_at_ns = 2000;
-  storage_->store_rosbag_file(newest);
+  seed_rosbag_rows(*storage_, {newest});
 
-  auto evicted = RosbagCapture::evict_bags_over_quota(storage_.get(), 1000, "fault_NEWEST_2000");
+  RosbagRetention retention(*storage_, RosbagRetentionLimits{}, test_log_sink(), "test_rosbag_capture");
+  auto evicted = retention.evict_over_quota(1000, "fault_NEWEST_2000");
+  expect_unlinkable(evicted);
 
   EXPECT_EQ(evicted, std::vector<std::string>{older_path});
-  EXPECT_FALSE(std::filesystem::exists(older_path));
-  EXPECT_TRUE(std::filesystem::exists(newest_path));
+  EXPECT_TRUE(listed(evicted, older_path));
+  EXPECT_FALSE(listed(evicted, newest_path));
   ASSERT_TRUE(storage_->get_rosbag_file("NEWEST").has_value());
   // Still over the quota: that is the state the caller warns about.
   EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 2000u);
@@ -1108,7 +1120,7 @@ TEST_F(RosbagCaptureTest, EvictionSkipsTheKeptRecordingWhereverItSorts) {
   kept.format = "mcap";
   kept.size_bytes = 900;
   kept.created_at_ns = 1000;
-  storage_->store_rosbag_file(kept);
+  seed_rosbag_rows(*storage_, {kept});
 
   ros2_medkit_fault_manager::RosbagFileInfo later;
   later.fault_code = "LATER";
@@ -1116,12 +1128,14 @@ TEST_F(RosbagCaptureTest, EvictionSkipsTheKeptRecordingWhereverItSorts) {
   later.format = "mcap";
   later.size_bytes = 900;
   later.created_at_ns = 2000;
-  storage_->store_rosbag_file(later);
+  seed_rosbag_rows(*storage_, {later});
 
-  auto evicted = RosbagCapture::evict_bags_over_quota(storage_.get(), 1000, "fault_KEPT_1000");
+  RosbagRetention retention(*storage_, RosbagRetentionLimits{}, test_log_sink(), "test_rosbag_capture");
+  auto evicted = retention.evict_over_quota(1000, "fault_KEPT_1000");
+  expect_unlinkable(evicted);
 
   EXPECT_EQ(evicted, std::vector<std::string>{later_path});
-  EXPECT_TRUE(std::filesystem::exists(kept_path));
+  EXPECT_FALSE(listed(evicted, kept_path));
   EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 900u);
 }
 
@@ -1232,53 +1246,6 @@ TEST_F(RosbagCaptureTest, TheDerivedOriginStaysPositiveOnALowUptimeMachine) {
   EXPECT_GT(now_steady - history, 0) << "the recording's origin is non-positive, so its duration reports as zero";
 }
 
-TEST_F(RosbagCaptureTest, ABatchStoreUnlinksASharedReplacedBagExactlyOnce) {
-  // The in-memory backend now publishes a batch in one step rather than row by row,
-  // because the caller reads a throw as "nothing was stored" and removes the
-  // recording. The replaced-bag rule has to survive that rewrite: two faults of one
-  // burst can share the bag being replaced, and whether it is still referenced has
-  // to be judged on the finished batch. Judged row by row beforehand, each row sees
-  // its sibling still pointing at the old bag and neither unlinks it.
-  using ros2_medkit_fault_manager::RosbagFileInfo;
-
-  const auto old_bag = temp_dir_ / "shared_old_bag";
-  const auto new_bag = temp_dir_ / "shared_new_bag";
-  std::filesystem::create_directories(old_bag);
-  std::filesystem::create_directories(new_bag);
-
-  RosbagFileInfo shared;
-  shared.file_path = old_bag.string();
-  shared.format = "mcap";
-  shared.duration_sec = 1.0;
-  shared.size_bytes = 10;
-  shared.created_at_ns = 1000;
-  shared.fault_code = "SHARED_A";
-  storage_->store_rosbag_file(shared);
-  shared.fault_code = "SHARED_B";
-  storage_->store_rosbag_file(shared);
-  ASSERT_TRUE(std::filesystem::exists(old_bag));
-
-  RosbagFileInfo moved = shared;
-  moved.file_path = new_bag.string();
-  moved.created_at_ns = 2000;
-  std::vector<RosbagFileInfo> rows;
-  rows.reserve(2);
-  moved.fault_code = "SHARED_A";
-  rows.push_back(moved);
-  moved.fault_code = "SHARED_B";
-  rows.push_back(moved);
-  storage_->store_rosbag_files(rows);
-
-  EXPECT_FALSE(std::filesystem::exists(old_bag)) << "the replaced bag leaked: nothing references it any more";
-  EXPECT_TRUE(std::filesystem::exists(new_bag)) << "the bag the batch points at was removed";
-  auto row_a = storage_->get_rosbag_file("SHARED_A");
-  auto row_b = storage_->get_rosbag_file("SHARED_B");
-  ASSERT_TRUE(row_a.has_value());
-  ASSERT_TRUE(row_b.has_value());
-  EXPECT_EQ(row_a->file_path, new_bag.string());
-  EXPECT_EQ(row_b->file_path, new_bag.string());
-}
-
 TEST_F(RosbagCaptureTest, TheHistoryBoundHoldsForClockValuesFarApart) {
   // A public entry point taking two clocks it does not control. The pair below would
   // overflow a signed subtraction, which is undefined - the result has to stay inside
@@ -1308,19 +1275,15 @@ TEST_F(RosbagCaptureTest, NoStartTimeYieldsNoClaimedHistory) {
 
 // Integration tests (simplified without actual message publishing)
 
-/// Storage whose rosbag metadata writes fail, the way a full, read-only or busy
+/// Storage whose rosbag row inserts fail, the way a full, read-only or busy
 /// SQLite database does at finalize time - that is, after the bag itself has
 /// already been created on disk.
 class RosbagMetadataFailingStorage : public InMemoryFaultStorage {
  public:
-  void store_rosbag_files(const std::vector<ros2_medkit_fault_manager::RosbagFileInfo> & /*infos*/) override {
-    ++store_attempts;
-    throw std::runtime_error("metadata store unavailable");
-  }
-
-  // Both entry points, or the double silently stops failing for whichever call the
-  // code under test happens to use - the immediate path used the single-row one.
-  void store_rosbag_file(const ros2_medkit_fault_manager::RosbagFileInfo & /*info*/) override {
+  RosbagApplyResult apply_rosbag_changes(const RosbagChangeSet & changes) override {
+    if (changes.insert.empty()) {
+      return InMemoryFaultStorage::apply_rosbag_changes(changes);
+    }
     ++store_attempts;
     throw std::runtime_error("metadata store unavailable");
   }
@@ -1333,11 +1296,14 @@ class RosbagMetadataFailingStorage : public InMemoryFaultStorage {
 /// Storage whose metadata writes SUCCEED and whose quota sweep then fails, the way
 /// a busy or full SQLite database does on the eviction transaction's BEGIN IMMEDIATE.
 /// The distinction from the double above is the whole point: by the time the sweep
-/// runs, store_rosbag_files() has committed, so the rows of the finished recording
-/// are durable and the bag they name must survive the failure.
+/// runs, the insert has committed, so the rows of the finished recording are durable
+/// and the bag they name must survive the failure.
 class RosbagQuotaSweepFailingStorage : public InMemoryFaultStorage {
  public:
-  size_t delete_rosbag_recording(const std::string & /*recording_id*/) override {
+  RosbagApplyResult apply_rosbag_changes(const RosbagChangeSet & changes) override {
+    if (changes.remove_recordings.empty()) {
+      return InMemoryFaultStorage::apply_rosbag_changes(changes);
+    }
     ++sweep_attempts;
     throw std::runtime_error("quota sweep unavailable");
   }
@@ -1350,7 +1316,10 @@ class RosbagQuotaSweepFailingStorage : public InMemoryFaultStorage {
 /// through stop(), where an escape terminates the process.
 class RosbagNonStandardThrowStorage : public InMemoryFaultStorage {
  public:
-  void store_rosbag_files(const std::vector<ros2_medkit_fault_manager::RosbagFileInfo> & /*infos*/) override {
+  RosbagApplyResult apply_rosbag_changes(const RosbagChangeSet & changes) override {
+    if (changes.insert.empty()) {
+      return InMemoryFaultStorage::apply_rosbag_changes(changes);
+    }
     ++store_attempts;
     throw 42;  // NOLINT(hicpp-exception-baseclass) - deliberately not a std::exception
   }
@@ -1383,7 +1352,10 @@ class RosbagFaultLookupFailingStorage : public InMemoryFaultStorage {
 /// Storage whose bag cleanup fails, as the PostgreSQL backend does while its server is down.
 class RosbagCleanupFailingStorage : public InMemoryFaultStorage {
  public:
-  bool delete_rosbag_file(const std::string & /*fault_code*/) override {
+  RosbagApplyResult apply_rosbag_changes(const RosbagChangeSet & changes) override {
+    if (changes.remove.empty() && changes.remove_recordings.empty()) {
+      return InMemoryFaultStorage::apply_rosbag_changes(changes);
+    }
     ++delete_attempts;
     throw FaultStorage::IgnorableConnectionException("database unreachable");
   }
@@ -1398,9 +1370,11 @@ class RosbagCleanupFailingStorage : public InMemoryFaultStorage {
 /// outgoing finalise is still running.
 class SlowMetadataStorage : public InMemoryFaultStorage {
  public:
-  void store_rosbag_files(const std::vector<ros2_medkit_fault_manager::RosbagFileInfo> & infos) override {
-    std::this_thread::sleep_for(std::chrono::milliseconds(400));
-    InMemoryFaultStorage::store_rosbag_files(infos);
+  RosbagApplyResult apply_rosbag_changes(const RosbagChangeSet & changes) override {
+    if (!changes.insert.empty()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    }
+    return InMemoryFaultStorage::apply_rosbag_changes(changes);
   }
 };
 
@@ -1409,17 +1383,17 @@ class SlowMetadataStorage : public InMemoryFaultStorage {
 /// bag path it was handed, so the test can look at the directory while the store waits.
 class GatedMetadataStorage : public InMemoryFaultStorage {
  public:
-  void store_rosbag_files(const std::vector<ros2_medkit_fault_manager::RosbagFileInfo> & infos) override {
-    {
+  RosbagApplyResult apply_rosbag_changes(const RosbagChangeSet & changes) override {
+    if (!changes.insert.empty()) {
       std::unique_lock<std::mutex> lock(gate_mutex);
-      bag_path = infos.empty() ? std::string() : infos.front().file_path;
+      bag_path = changes.insert.front().file_path;
       entered = true;
       gate_cv.notify_all();
       gate_cv.wait_for(lock, std::chrono::seconds(30), [this]() {
         return released;
       });
     }
-    InMemoryFaultStorage::store_rosbag_files(infos);
+    return InMemoryFaultStorage::apply_rosbag_changes(changes);
   }
 
   void release() {
@@ -1466,16 +1440,20 @@ class RosbagCaptureIntegrationTest : public RosbagCaptureTest {
     }
   }
 
-  /// Spin until the post-roll finalises and @p fault_code has its metadata row.
-  bool wait_for_row(const std::string & fault_code, std::chrono::milliseconds timeout) {
+  /// Spin until the post-roll finalises and @p fault_code has its metadata row in @p storage.
+  bool wait_for_row(const FaultStorage & storage, const std::string & fault_code, std::chrono::milliseconds timeout) {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
-      if (storage_->get_rosbag_file(fault_code).has_value()) {
+      if (storage.get_rosbag_file(fault_code).has_value()) {
         return true;
       }
       spin_for(std::chrono::milliseconds(100));
     }
     return false;
+  }
+
+  bool wait_for_row(const std::string & fault_code, std::chrono::milliseconds timeout) {
+    return wait_for_row(*storage_, fault_code, timeout);
   }
 
   /// Publish on @p pub for @p duration, spinning so the capture receives it.
@@ -1587,14 +1565,13 @@ TEST_F(RosbagCaptureIntegrationTest, AcknowledgingKeepsAHistoryTheOperatorConfig
   rosbag_config.duration_after_sec = 0.0;
   rosbag_config.auto_cleanup = true;
   rosbag_config.max_bags_per_fault = 3;
-  storage.set_max_rosbags_per_fault(rosbag_config.max_bags_per_fault);
 
   auto snapshot_config = create_snapshot_config();
   RosbagCapture capture(node_.get(), &storage, rosbag_config, snapshot_config);
   capture.start();
   fill_buffer("/keep_history_probe");
+  // No post-fault window: the row is stored before on_fault_confirmed() returns.
   capture.on_fault_confirmed("KEEPS_HISTORY");
-  spin_for(std::chrono::milliseconds(300));
 
   ASSERT_FALSE(storage.get_rosbag_files("KEEPS_HISTORY").empty()) << "nothing was recorded to keep";
   const auto before = storage.get_rosbag_files("KEEPS_HISTORY").size();
@@ -1618,7 +1595,6 @@ TEST_F(RosbagCaptureIntegrationTest, AcknowledgingDuringThePostRollKeepsAConfigu
   rosbag_config.duration_after_sec = 0.3;  // still open when the clear lands
   rosbag_config.auto_cleanup = true;
   rosbag_config.max_bags_per_fault = 3;
-  storage.set_max_rosbags_per_fault(rosbag_config.max_bags_per_fault);
 
   rclcpp::Clock clock;
   storage.report_fault_event("ACK_MID_ROLL", fd::ReportKind::kFailed, ros2_medkit_msgs::msg::Fault::SEVERITY_ERROR,
@@ -1636,7 +1612,7 @@ TEST_F(RosbagCaptureIntegrationTest, AcknowledgingDuringThePostRollKeepsAConfigu
   ASSERT_TRUE(storage.clear_fault("ACK_MID_ROLL"));
   capture.on_fault_cleared("ACK_MID_ROLL");
 
-  spin_for(std::chrono::milliseconds(900));  // past the post-roll and the finalize
+  EXPECT_TRUE(wait_for_row(storage, "ACK_MID_ROLL", std::chrono::milliseconds(8000)));
   capture.wait_for_stored_recordings();
 
   EXPECT_FALSE(storage.get_rosbag_files("ACK_MID_ROLL").empty())
@@ -1793,6 +1769,46 @@ TEST_F(RosbagCaptureIntegrationTest, AClearWhileTheRowIsStoredTakesTheRowWithIt)
   capture.stop();
 }
 
+TEST_F(RosbagCaptureIntegrationTest, ClearLeavesTheUnlinkToTheWorker) {
+  // The clear runs on the fault manager's executor. Its rows go inside the call; the
+  // directory, which can be large, goes on the retention worker.
+  auto rosbag_config = create_rosbag_config();
+  rosbag_config.duration_after_sec = 0.0;  // stored inside on_fault_confirmed()
+  auto snapshot_config = create_snapshot_config();
+  auto worker =
+      std::make_shared<RetentionWorker>(test_log_sink(), "test_rosbag_capture", RetentionWorker::Mode::kThread);
+  auto retention =
+      std::make_shared<RosbagRetention>(*storage_, RosbagRetentionLimits{}, test_log_sink(), "test_rosbag_capture");
+  RosbagCapture capture(node_.get(), storage_.get(), rosbag_config, snapshot_config, retention, worker);
+
+  // Declared after the capture: a failed assertion destroys it first, which releases the job.
+  std::promise<void> unblock;
+  worker->post("block", [blocked = unblock.get_future().share()]() {
+    blocked.wait();
+  });
+
+  capture.start();
+  fill_buffer("/clear_on_worker_probe");
+  capture.on_fault_confirmed("CLEARED_ON_WORKER");
+  const auto row = storage_->get_rosbag_file("CLEARED_ON_WORKER");
+  ASSERT_TRUE(row.has_value()) << "fill_buffer() buffered nothing, so no recording was stored";
+
+  capture.on_fault_cleared("CLEARED_ON_WORKER");
+  EXPECT_FALSE(storage_->get_rosbag_file("CLEARED_ON_WORKER").has_value()) << "the clear left its row";
+  EXPECT_TRUE(std::filesystem::exists(row->file_path)) << "the clear removed the directory on its own thread";
+
+  unblock.set_value();
+  std::promise<void> barrier;
+  auto reached = barrier.get_future();
+  worker->post("barrier", [&barrier]() {
+    barrier.set_value();
+  });
+  ASSERT_EQ(reached.wait_for(std::chrono::seconds(10)), std::future_status::ready) << "the worker is stuck";
+  EXPECT_FALSE(std::filesystem::exists(row->file_path)) << "the worker did not remove the directory";
+
+  capture.stop();
+}
+
 TEST_F(RosbagCaptureIntegrationTest, FaultConfirmedDuringPostRollGetsTheSameBag) {
   // Correlated faults arrive in a burst. The one that confirms while the first
   // fault's post-roll is still running used to be skipped outright and ended up
@@ -1909,12 +1925,24 @@ TEST_F(RosbagCaptureIntegrationTest, PostRollKeepsTheRowWhenTheFaultCannotBeRead
 
 TEST_F(RosbagCaptureIntegrationTest, ClearSurvivesAFailingBagCleanup) {
   RosbagCleanupFailingStorage storage;
+  // A row to remove, so the clear reaches the failing removal.
+  const auto bag_dir = temp_dir_ / "fault_UNREACHABLE_1000";
+  std::filesystem::create_directories(bag_dir);
+  ros2_medkit_fault_manager::RosbagFileInfo row;
+  row.fault_code = "UNREACHABLE";
+  row.file_path = bag_dir.string();
+  row.format = "mcap";
+  row.size_bytes = 1;
+  row.created_at_ns = 1000;
+  seed_rosbag_rows(storage, {row});
   auto rosbag_config = create_rosbag_config();
   auto snapshot_config = create_snapshot_config();
   RosbagCapture capture(node_.get(), &storage, rosbag_config, snapshot_config);
 
   EXPECT_NO_THROW(capture.on_fault_cleared("UNREACHABLE"));
   EXPECT_EQ(storage.delete_attempts, 1u) << "the cleanup never reached the store";
+  EXPECT_TRUE(storage.get_rosbag_file("UNREACHABLE").has_value()) << "the failed removal took the row";
+  EXPECT_TRUE(std::filesystem::exists(bag_dir)) << "the failed removal took the directory";
 }
 
 TEST_F(RosbagCaptureIntegrationTest, PrimaryClearedDuringPostRollLeavesTheBagToItsAttachedFault) {
@@ -2542,7 +2570,7 @@ TEST_F(RosbagCaptureIntegrationTest, ABoundaryRecordingKeepsItsScopeWhileTheOldF
   EXPECT_FALSE(bag_has_topic(row_b->file_path, "/scope_race_a"))
       << "the finalise of the previous recording cleared B's entity filter, and B recorded everything";
 
-  // Read this for what it is. The storage double delays store_rosbag_files() by
+  // Read this for what it is. The storage double delays the row insert by
   // 400 ms, and the measurement has always been taken before that call - so this
   // does NOT discriminate the change that moved it, and the commit that added it
   // would pass with that change reverted. What it does pin is that the measurement
@@ -2692,7 +2720,7 @@ TEST_F(RosbagCaptureIntegrationTest, MetadataStoreFailureDiscardsTheBagInsteadOf
 
 TEST_F(RosbagCaptureIntegrationTest, AFailingQuotaSweepKeepsTheBagItJustStored) {
   // The mirror image of the test above, and the case its double cannot reach. The
-  // sweep runs AFTER store_rosbag_files() has committed, so a failure there says
+  // sweep runs AFTER the insert has committed, so a failure there says
   // nothing about this recording. Discarding the bag then strands the rows just
   // written: unreadable for good, because retrieval is keyed by fault code, and
   // still charged against max_total_storage_mb, which sums rows - the very pressure
@@ -2714,13 +2742,14 @@ TEST_F(RosbagCaptureIntegrationTest, AFailingQuotaSweepKeepsTheBagItJustStored) 
   older.format = "mcap";
   older.size_bytes = 1;
   older.created_at_ns = 1000;
-  sweep_failing_storage.store_rosbag_file(older);
+  seed_rosbag_rows(sweep_failing_storage, {older});
   RosbagCapture capture(node_.get(), &sweep_failing_storage, rosbag_config, snapshot_config);
 
   capture.start();
   fill_buffer("/sweep_failure_probe");
   capture.on_fault_confirmed("SWEEP_FAILS");
-  spin_for(std::chrono::milliseconds(1200));  // past the window, finalise ran
+  EXPECT_TRUE(wait_for_row(sweep_failing_storage, "SWEEP_FAILS", std::chrono::milliseconds(8000)));
+  // The sweep runs in the same store as the insert, which this waits out.
   capture.wait_for_stored_recordings();
 
   auto row = sweep_failing_storage.get_rosbag_file("SWEEP_FAILS");

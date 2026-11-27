@@ -390,7 +390,7 @@ void InMemoryFaultStorage::store_snapshots(const std::vector<SnapshotData> & sna
 
   const std::string fault_code = snapshots.front().fault_code;
 
-  // Built beside the live vector and swapped in, the shape store_rosbag_files
+  // Built beside the live vector and swapped in, the shape apply_rosbag_changes
   // uses: a capture is all-or-nothing, so a throw partway must not leave half of
   // it stored.
   auto updated = snapshots_;
@@ -564,99 +564,6 @@ void check_rosbag_change_set(const RosbagChangeSet & changes) {
   }
 }
 
-void InMemoryFaultStorage::set_max_rosbags_per_fault(size_t max_count) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  max_rosbags_per_fault_ = max_count;
-}
-
-void InMemoryFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
-  // Through the batch path deliberately: with a per-fault cap a single store is
-  // insert + trim, and both must publish together.
-  store_rosbag_files({info});
-}
-
-void InMemoryFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> & infos) {
-  if (infos.empty()) {
-    return;
-  }
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  // Built beside the live vector and swapped in, because swap cannot throw. The
-  // caller reads a throw here as "no row was written" and removes the recording, so
-  // a batch that stored half a burst and then threw would leave those rows naming a
-  // bag that is gone. Copying costs one allocation per stored recording, not per
-  // message. std::vector::swap is noexcept for the default allocator, exactly as
-  // std::map::swap was.
-  auto updated = rosbag_files_;
-  uint64_t next_seq = rosbag_seq_;
-  std::set<std::string> evicted;
-
-  for (const auto & in : infos) {
-    RosbagFileInfo row = in;
-    if (row.recording_id.empty()) {
-      row.recording_id = rosbag_recording_id(row.file_path);
-    }
-
-    // Upsert on the (fault, recording) LINK - the same grain as the SQLite unique
-    // index. Re-storing the same link refreshes it; a link to a different recording
-    // appends, which is the feature.
-    auto it = std::find_if(updated.begin(), updated.end(), [&row](const RosbagRow & r) {
-      return r.info.fault_code == row.fault_code && r.info.file_path == row.file_path;
-    });
-    if (it != updated.end()) {
-      it->info = row;
-    } else {
-      updated.push_back(RosbagRow{row, ++next_seq});
-    }
-
-    if (max_rosbags_per_fault_ == 0) {
-      continue;
-    }
-
-    // Keep the newest N recordings of this fault, oldest evicted first - the same
-    // direction as evict_bags_over_quota, so the two eviction owners never need a
-    // tiebreak. At N = 1 this is the pre-#620 behaviour exactly.
-    std::vector<size_t> mine;
-    for (size_t i = 0; i < updated.size(); ++i) {
-      if (updated[i].info.fault_code == row.fault_code) {
-        mine.push_back(i);
-      }
-    }
-    if (mine.size() <= max_rosbags_per_fault_) {
-      continue;
-    }
-    std::sort(mine.begin(), mine.end(), [&updated](size_t a, size_t b) {
-      return std::tie(updated[a].info.created_at_ns, updated[a].seq) <
-             std::tie(updated[b].info.created_at_ns, updated[b].seq);
-    });
-    std::vector<size_t> doomed(mine.begin(),
-                               mine.begin() + static_cast<std::ptrdiff_t>(mine.size() - max_rosbags_per_fault_));
-    std::sort(doomed.rbegin(), doomed.rend());  // descending, so erase stays valid
-    for (size_t idx : doomed) {
-      evicted.insert(updated[idx].info.file_path);
-      updated.erase(updated.begin() + static_cast<std::ptrdiff_t>(idx));
-    }
-  }
-
-  rosbag_files_.swap(updated);
-  rosbag_seq_ = next_seq;
-
-  // Unlinked only once every row is in, the way the SQLite backend unlinks after its
-  // COMMIT: a throw above must leave the old rows pointing at bags that still exist.
-  // Referencing is decided on the finished batch, not on the state before it - two
-  // faults of one burst can share the bag being evicted, and checking row by row
-  // beforehand would find it still held by a sibling that a later iteration then
-  // evicts, leaking the directory.
-  for (const auto & path : evicted) {
-    if (path_referenced(path)) {
-      continue;
-    }
-    std::error_code ec;
-    std::filesystem::remove_all(path, ec);
-    // Ignore errors - file may already be deleted
-  }
-}
-
 RosbagApplyResult InMemoryFaultStorage::apply_rosbag_changes(const RosbagChangeSet & changes) {
   check_rosbag_change_set(changes);
   std::lock_guard<std::mutex> lock(mutex_);
@@ -771,72 +678,6 @@ InMemoryFaultStorage::get_rosbag_files_by_recording(const std::string & recordin
     return a.fault_code < b.fault_code;
   });
   return result;
-}
-
-bool InMemoryFaultStorage::delete_rosbag_file(const std::string & fault_code) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  // ALL recordings of this fault. Used by auto_cleanup on clear, where dropping the
-  // fault's whole black-box history is the intent.
-  std::set<std::string> touched;
-  const size_t before = rosbag_files_.size();
-  for (auto it = rosbag_files_.begin(); it != rosbag_files_.end();) {
-    if (it->info.fault_code == fault_code) {
-      touched.insert(it->info.file_path);
-      it = rosbag_files_.erase(it);
-    } else {
-      ++it;
-    }
-  }
-  if (rosbag_files_.size() == before) {
-    return false;
-  }
-
-  for (const auto & path : touched) {
-    if (path_referenced(path)) {
-      continue;  // a sibling fault of the burst still holds it
-    }
-    std::error_code ec;
-    std::filesystem::remove_all(path, ec);
-    // Ignore errors - file may already be deleted
-  }
-  return true;
-}
-
-size_t InMemoryFaultStorage::delete_rosbag_recording(const std::string & recording_id) {
-  // Mirrors SqliteFaultStorage: an empty id addresses a set, not a recording.
-  if (recording_id.empty()) {
-    return 0;
-  }
-
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  std::set<std::string> touched;
-  size_t removed = 0;
-  for (auto it = rosbag_files_.begin(); it != rosbag_files_.end();) {
-    if (it->info.recording_id == recording_id) {
-      touched.insert(it->info.file_path);
-      it = rosbag_files_.erase(it);
-      ++removed;
-    } else {
-      ++it;
-    }
-  }
-
-  for (const auto & path : touched) {
-    if (path_referenced(path)) {
-      continue;
-    }
-    std::error_code ec;
-    std::filesystem::remove_all(path, ec);
-  }
-  return removed;
-}
-
-bool InMemoryFaultStorage::path_referenced(const std::string & file_path) const {
-  return std::any_of(rosbag_files_.begin(), rosbag_files_.end(), [&](const RosbagRow & row) {
-    return row.info.file_path == file_path;
-  });
 }
 
 size_t InMemoryFaultStorage::get_total_rosbag_storage_bytes() const {

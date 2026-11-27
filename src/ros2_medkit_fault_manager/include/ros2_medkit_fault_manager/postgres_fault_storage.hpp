@@ -83,8 +83,6 @@ class PgFaultStorage : public FaultStorage {
   void set_retain_snapshots_on_clear(bool retain) override;
   bool retains_snapshots_on_clear() const override;
 
-  void set_max_rosbags_per_fault(size_t max_count) override;
-
   void store_snapshot(const SnapshotData & snapshot) override;
   void store_snapshots(const std::vector<SnapshotData> & snapshots) override;
   std::vector<SnapshotData> get_snapshots(const std::string & fault_code,
@@ -96,15 +94,10 @@ class PgFaultStorage : public FaultStorage {
   size_t set_max_near_misses_per_fault(size_t max_count) override;
   std::vector<NearMissRecord> get_near_misses(const std::string & fault_code) const override;
 
-  void store_rosbag_file(const RosbagFileInfo & info) override;
-  void store_rosbag_files(const std::vector<RosbagFileInfo> & infos) override;
   RosbagApplyResult apply_rosbag_changes(const RosbagChangeSet & changes) override;
   std::optional<RosbagFileInfo> get_rosbag_file(const std::string & fault_code) const override;
   std::vector<RosbagFileInfo> get_rosbag_files(const std::string & fault_code) const override;
   std::vector<RosbagFileInfo> get_rosbag_files_by_recording(const std::string & recording_id) const override;
-  bool delete_rosbag_file(const std::string & fault_code) override;
-  size_t delete_rosbag_recording(const std::string & recording_id) override;
-  size_t delete_rosbag_files(const std::vector<std::string> & fault_codes) override;
   size_t get_total_rosbag_storage_bytes() const override;
   std::vector<RosbagFileInfo> get_all_rosbag_files() const override;
   std::vector<RosbagFileInfo> list_rosbags_for_entity(const std::string & entity_fqn) const override;
@@ -143,13 +136,6 @@ class PgFaultStorage : public FaultStorage {
 
   /// Drop the connection and start the backoff after a failed round. Caller holds mutex_.
   void fail_round(const std::string & error) const;
-
-  /// Whether any fault at all still references @p file_path. Caller holds mutex_.
-  bool path_referenced(const std::string & file_path) const;
-
-  /// store_rosbag_file body without taking mutex_. Caller holds mutex_ and
-  /// manages transaction scope. Returns replaced bag path if applicable.
-  std::vector<std::string> store_rosbag_file_locked(const RosbagFileInfo & info, pqxx::work & tx);
 
   /// report_fault_event body without taking mutex_ or opening a transaction. Caller holds mutex_
   /// and supplies the transaction, so the fault row and any near-miss row commit together.
@@ -198,9 +184,6 @@ class PgFaultStorage : public FaultStorage {
   size_t max_snapshots_per_fault_{0};    ///< 0 = unlimited
   size_t max_near_misses_per_fault_{0};  ///< 0 = unlimited
   bool retain_snapshots_on_clear_{false};
-  /// Defaults to 1, the pre-#620 behaviour: a new recording replaces the old one.
-  /// 0 = unlimited, bounded only by max_total_storage_mb.
-  size_t max_rosbags_per_fault_{1};
   int max_retries_{1};  ///< Attempts after the first one. Must be >= 0.
   unsigned reconnection_delay_{500};
 };

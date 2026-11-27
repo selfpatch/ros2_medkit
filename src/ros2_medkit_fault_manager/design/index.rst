@@ -552,4 +552,62 @@ inserted row's recording id. The call throws ``std::invalid_argument`` before it
 With that rule, applying a set twice leaves the same rows and the second call returns no
 orphaned paths.
 
-Production code does not call it yet. The six existing rosbag mutators keep serving the node.
+It is the only write of the rosbag rows. The retention below makes every decision on top of it.
+
+Rosbag retention
+""""""""""""""""
+
+``core::RosbagRetention`` holds every rosbag retention decision, each under one retention mutex:
+
+- ``store``: drops the rows of faults the storage holds as cleared (``auto_cleanup`` with a
+  ``max_bags_per_fault`` of 1), applies the per-fault cap in the same change set as the insert,
+  then the quota. One hold covers all three, so a clear finds the store either before its check
+  or after its quota step. A new row that loses the cap is not inserted, and its directory is
+  removed like any other the cap frees.
+- ``on_fault_cleared``: removes every row of a cleared fault. ``RosbagCapture`` decides whether a
+  clear removes recordings at all.
+- ``forget_recording``: removes the rows of a recording whose directory is gone, for
+  ``GetRosbag`` and ``ListRosbags``. The node builds the retention also with rosbag capture off,
+  so this cleanup runs then too.
+
+Lock order: the caller's outer locks (the node's rosbag mutex on the inline store path, the core
+mutex on the clear path), then the retention mutex, then the storage's own lock. Under the
+retention mutex only storage calls and logging run. No other lock is taken and no file system
+call runs.
+
+The retention never unlinks and logs no removal. Each call returns the directories no row names
+any more, each with its recording id and the reason it was freed. Which thread removes them
+depends on the path:
+
+- Store (the store worker, or the capture pool when there is no post-fault window): the store's
+  own thread removes the cap victims, a new recording that lost the cap and the quota evictions,
+  once the retention mutex is released and before "Bag file created" or "Bag file completed" is
+  logged. The executor never runs a store. A bag that never got a row is discarded on the same
+  thread.
+- Clear and stale rows (the executor): the rows go inside the service call. The node's
+  ``RetentionWorker``, one thread with a FIFO queue, removes the directories, so the clear service
+  returns before a large bag is removed.
+
+Every path removes a directory through ``RetentionWorker::remove_recording()``, which logs the
+removal after it succeeded. No line announces a removal that has not happened yet:
+
+- a cap victim: ``Recording removed: <recording_id> (max_bags_per_fault)``;
+- a recording of a cleared fault: ``Recording removed: <recording_id> (fault cleared)``;
+- a quota eviction: ``Deleted old bag '<path>' to enforce storage limit``;
+- a stale row: no line, because its directory was already missing;
+- a removal that failed: a WARN with the path, the reason and the error.
+
+A removal that found no directory removed nothing and logs no line.
+
+A clear logs ``Auto-cleanup: deleted bag file for fault '<code>'`` once, after the lines of its
+recordings, when all of them are gone. It logs it at once when a sibling of the burst still holds
+the bag.
+
+The node shuts down in this order: the capture pool, then ``RosbagCapture::stop()``, which
+finalizes an open post-fault window and stores it, then ``RetentionWorker::drain_and_stop()``,
+which runs the removals the clear and stale-row paths posted. A ``RosbagCapture`` constructed
+without a retention builds its own, with an inline worker that removes on the clearing thread.
+
+All fault manager service callbacks run on one executor thread (``rclcpp::spin`` in
+``main.cpp``). A change to a multi-threaded executor must revisit which retention decisions need
+the core mutex.

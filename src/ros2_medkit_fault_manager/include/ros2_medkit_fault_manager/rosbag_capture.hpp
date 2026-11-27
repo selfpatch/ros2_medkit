@@ -31,7 +31,10 @@
 #include <rclcpp/serialized_message.hpp>
 #include <rosbag2_cpp/writer.hpp>
 
+#include "ros2_medkit_fault_manager/core/rosbag_retention.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
+#include "ros2_medkit_fault_manager/retention_worker.hpp"
+#include "ros2_medkit_fault_manager/ros2/ros_log_sink.hpp"
 #include "ros2_medkit_fault_manager/snapshot_capture.hpp"
 
 namespace ros2_medkit_fault_manager {
@@ -75,7 +78,8 @@ class RosbagCapture {
   /// backend unavailable without depending on which plugins CI happens to install.
   using StorageProbeFn = std::function<std::optional<std::string>(const std::string & format)>;
 
-  /// Create rosbag capture
+  /// Create rosbag capture with its own retention, limited by @p config, and an inline worker:
+  /// every unlink runs on the thread whose call caused it.
   /// @param node ROS 2 node for creating subscriptions and timers
   /// @param storage Fault storage for persisting bag file metadata
   /// @param config Rosbag configuration
@@ -83,6 +87,14 @@ class RosbagCapture {
   /// @param storage_probe Optional storage-backend probe override (default: real probe)
   RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const RosbagConfig & config,
                 const SnapshotConfig & snapshot_config, StorageProbeFn storage_probe = {});
+
+  /// Create rosbag capture on a retention and a worker the caller owns, as the fault manager
+  /// node does. The caller drains @p retention_worker after stop().
+  /// @param retention Retention decisions over @p storage
+  /// @param retention_worker Removes the directories a clear frees
+  RosbagCapture(rclcpp::Node * node, FaultStorage * storage, const RosbagConfig & config,
+                const SnapshotConfig & snapshot_config, std::shared_ptr<core::RosbagRetention> retention,
+                std::shared_ptr<RetentionWorker> retention_worker, StorageProbeFn storage_probe = {});
 
   ~RosbagCapture();
 
@@ -140,18 +152,6 @@ class RosbagCapture {
   /// auto-excluded from broad-mode capture. Static + public so it is directly testable.
   static bool is_high_bandwidth_topic(const std::string & topic);
 
-  /// Delete oldest bags from @p storage until its accounted total fits @p max_bytes.
-  /// A bag shared by a burst of correlated faults is evicted as one unit: every row
-  /// referencing it goes together and its bytes are freed once, so the running total
-  /// tracks what is really on disk instead of drifting below it.
-  /// @p keep_recording_id, when set, is never evicted: the recording that was just
-  /// stored must not be the one its own quota sweep deletes, even when it alone is
-  /// over @p max_bytes.
-  /// @return Paths of the evicted bags, oldest first.
-  /// Static + public so the quota arithmetic is testable without a live recording.
-  static std::vector<std::string> evict_bags_over_quota(FaultStorage * storage, size_t max_bytes,
-                                                        const std::string & keep_recording_id = "");
-
   /// Suffix of the directory that reserves a bag path while its writer opens.
   static constexpr const char * kBagPathClaimSuffix = ".claim";
 
@@ -177,10 +177,10 @@ class RosbagCapture {
   /// derived origin above zero, which span_sec_since() reserves for "never started" and
   /// reports as a duration of 0.
   ///
-  /// Static + public for the same reason as the quota arithmetic above: a wall-clock
-  /// step cannot be produced through this class's own API, and in ordinary operation the
-  /// oldest buffered message is always younger than the capture, so the bound never
-  /// engages and nothing driving the capture can exercise it.
+  /// Static + public because a wall-clock step cannot be produced through this class's
+  /// own API, and in ordinary operation the oldest buffered message is always younger
+  /// than the capture, so the bound never engages and nothing driving the capture can
+  /// exercise it.
   static int64_t bounded_history_ns(int64_t now_wall_ns, int64_t oldest_msg_wall_ns, int64_t now_steady_ns,
                                     int64_t capture_started_steady_ns);
   /// Build the single path component naming a fault's bag directory.
@@ -226,6 +226,9 @@ class RosbagCapture {
     FlushStatus status{FlushStatus::kEmptyBuffer};
     std::string bag_path;  ///< Set only when status == kOk.
   };
+
+  /// The constructor body both constructors share: storage backend resolution and the start.
+  void init(StorageProbeFn storage_probe);
 
   /// Initialize subscriptions for configured topics
   void init_subscriptions();
@@ -286,9 +289,6 @@ class RosbagCapture {
   /// Calculate total size of a bag directory
   size_t calculate_bag_size(const std::string & bag_path) const;
 
-  /// Enforce storage limits by deleting oldest bags, never @p keep_recording_id
-  void enforce_storage_limits(const std::string & keep_recording_id);
-
   /// Write manifest.json into a closed recording. Logs and carries on when it cannot.
   void write_manifest(const std::string & bag_path, int64_t created_at_ns);
 
@@ -321,33 +321,27 @@ class RosbagCapture {
   /// rows, so a directory with no row is unreachable, uncounted, and can never be
   /// evicted to make room.
   ///
-  /// The discard covers a failure of the store and nothing else. Quota enforcement
-  /// runs afterwards under its own handler: by then the rows are committed, so a
-  /// failing eviction says nothing about this bag, and removing the directory there
-  /// would strand the rows just written - unreadable for good, and still charged
-  /// against max_total_storage_mb.
+  /// The decisions are core::RosbagRetention::store(). The bag is discarded here when
+  /// every fault of it is cleared or the store failed, and nothing else. A failed quota
+  /// keeps it: by then the rows are committed, and removing the directory would strand
+  /// them - unreadable for good, and still charged against max_total_storage_mb. The
+  /// directories the store freed are removed here, before the caller logs the stored
+  /// bag, and each removal is logged once it is done.
   ///
   /// Never throws. One caller runs on the store worker, where an escaping exception
   /// would terminate; the other runs on the capture pool, which would swallow it
   /// into a log with the bag already orphaned.
   ///
-  /// Rows of faults the store reports cleared are dropped first (row_still_wanted()),
-  /// and with none left the bag is discarded.
-  ///
   /// @return True when the rows are durable.
   bool store_rows_or_discard_bag(std::vector<RosbagFileInfo> rows, const std::string & bag_path);
-
-  /// Whether the fault still gets a row: false only under auto_cleanup with no history,
-  /// for a fault the store holds as cleared. Called under clear_rows_mutex_.
-  bool row_still_wanted(const std::string & code);
 
   /// Whether the operator asked this fault code to keep a recording history.
   ///
   /// A cap of exactly 1 is the pre-#620 single-recording behaviour, where
   /// auto_cleanup deleting the recording on acknowledgement is right. Anything
   /// else - including 0, which means unlimited - is a history someone configured,
-  /// and acknowledgement must not be what takes it away. Both places that act on
-  /// auto_cleanup ask this, or the two disagree about the same fault: one keeps
+  /// and acknowledgement must not be what takes it away. The store applies the same
+  /// rule (core::RosbagRetention), or the two disagree about the same fault: one keeps
   /// the rows and the other deletes the bag out from under them.
   bool keeps_history() const {
     return config_.max_bags_per_fault != 1;
@@ -425,6 +419,11 @@ class RosbagCapture {
   FaultStorage * storage_;
   RosbagConfig config_;
   SnapshotConfig snapshot_config_;
+
+  /// Log sink of the retention and the worker this capture builds itself; null otherwise.
+  std::unique_ptr<ros2::RosLogSink> own_log_sink_;
+  std::shared_ptr<core::RosbagRetention> retention_;
+  std::shared_ptr<RetentionWorker> retention_worker_;
 
   /// Ring buffer for messages
   mutable std::mutex buffer_mutex_;
@@ -542,13 +541,10 @@ class RosbagCapture {
 
   /// Store worker. Owned by the capture and joined in the destructor. The queue is
   /// FIFO, so the quota sweeps run in the order the recordings closed. It takes no
-  /// other lock of this class, so it adds nothing to the lock order above.
+  /// other lock of this class, so it adds nothing to the lock order above. The
+  /// retention's mutex is taken with no lock of this class held.
   std::mutex store_mutex_;
   std::condition_variable store_cv_;
-  /// Orders storing a recording's rows against on_fault_cleared()'s delete: held for
-  /// the cleared check plus the insert, and for the delete. Hashing stays outside it.
-  /// Only storage calls run under it, so it is innermost in the lock order.
-  std::mutex clear_rows_mutex_;
   std::deque<ClosedRecording> store_queue_;
   bool store_busy_{false};
   bool store_stopping_{false};

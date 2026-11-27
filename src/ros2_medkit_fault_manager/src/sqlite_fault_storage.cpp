@@ -512,8 +512,8 @@ void SqliteFaultStorage::migrate_rosbag_files_add_recording_id() {
       update.bind_text(1, rosbag_recording_id(file_path));
       update.bind_int64(2, row_id);
       // A dropped result here (SQLITE_BUSY, SQLITE_FULL) would leave the row with an
-      // empty recording_id while COMMIT still reported success, and an empty id is
-      // what delete_rosbag_recording refuses to act on.
+      // empty recording_id while COMMIT still reported success, and a removal by
+      // recording id matches no row with an empty id.
       if (update.step() != SQLITE_DONE) {
         throw std::runtime_error(std::string("Failed to backfill recording_id: ") + sqlite3_errmsg(db_));
       }
@@ -1422,55 +1422,6 @@ void SqliteFaultStorage::exec_or_throw(const char * sql) {
   }
 }
 
-void SqliteFaultStorage::set_max_rosbags_per_fault(size_t max_count) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  max_rosbags_per_fault_ = max_count;
-}
-
-void SqliteFaultStorage::store_rosbag_file(const RosbagFileInfo & info) {
-  // Routed through the batch path deliberately: with a per-fault cap a single
-  // store is insert + trim, i.e. several statements that must share one
-  // transaction and one post-commit unlink pass.
-  store_rosbag_files({info});
-}
-
-void SqliteFaultStorage::store_rosbag_files(const std::vector<RosbagFileInfo> & infos) {
-  if (infos.empty()) {
-    return;
-  }
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  // One transaction for the whole burst: a crash mid-store must not leave some
-  // faults of the shared recording without their lookup row. Evicted bags are
-  // unlinked only after COMMIT - a ROLLBACK resurrects the rows, which must keep
-  // pointing at bags that still exist.
-  std::vector<std::string> evicted;
-  exec_or_throw("BEGIN IMMEDIATE");
-  try {
-    for (const auto & info : infos) {
-      auto paths = store_rosbag_file_locked(info);
-      evicted.insert(evicted.end(), std::make_move_iterator(paths.begin()), std::make_move_iterator(paths.end()));
-    }
-    exec_or_throw("COMMIT");
-  } catch (...) {
-    sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
-    throw;
-  }
-
-  // Referencing is re-checked on the committed state, not on the state each
-  // eviction saw: two faults of one burst can link the same bag, and a row-by-row
-  // check inside the loop would find it still held by a sibling that a later
-  // iteration then evicts, leaking the directory.
-  std::set<std::string> unique_paths(evicted.begin(), evicted.end());
-  for (const auto & path : unique_paths) {
-    if (path_referenced(path)) {
-      continue;
-    }
-    std::error_code ec;
-    std::filesystem::remove_all(path, ec);
-  }
-}
-
 RosbagApplyResult SqliteFaultStorage::apply_rosbag_changes(const RosbagChangeSet & changes) {
   check_rosbag_change_set(changes);
   std::lock_guard<std::mutex> lock(mutex_);
@@ -1543,81 +1494,6 @@ RosbagApplyResult SqliteFaultStorage::apply_rosbag_changes(const RosbagChangeSet
   return result;
 }
 
-std::vector<std::string> SqliteFaultStorage::store_rosbag_file_locked(const RosbagFileInfo & info) {
-  RosbagFileInfo row = info;
-  if (row.recording_id.empty()) {
-    row.recording_id = rosbag_recording_id(row.file_path);
-  }
-
-  // Upserts on idx_rosbag_files_fault_path, i.e. on the (fault, recording) link.
-  // Re-storing the SAME link refreshes it; a link to a DIFFERENT recording is a new
-  // row now, which is the feature. Nothing is unlinked here - byte lifetime is the
-  // cap's business below, and the caller's, after the commit.
-  //
-  // ON CONFLICT DO UPDATE, not INSERT OR REPLACE: the latter deletes the row and
-  // inserts a fresh one, so a refresh silently moves the link to the end of the id
-  // order. Every read below breaks created_at_ns ties by id, and the in-memory
-  // backend keeps its sequence number across a refresh, so REPLACE would put the
-  // two backends in a different order for a re-stored row inside a tie group.
-  SqliteStatement stmt(db_,
-                       "INSERT INTO rosbag_files "
-                       "(fault_code, recording_id, file_path, format, duration_sec, size_bytes, created_at_ns) "
-                       "VALUES (?, ?, ?, ?, ?, ?, ?) "
-                       "ON CONFLICT(fault_code, file_path) DO UPDATE SET "
-                       "recording_id = excluded.recording_id, format = excluded.format, "
-                       "duration_sec = excluded.duration_sec, size_bytes = excluded.size_bytes, "
-                       "created_at_ns = excluded.created_at_ns");
-
-  stmt.bind_text(1, row.fault_code);
-  stmt.bind_text(2, row.recording_id);
-  stmt.bind_text(3, row.file_path);
-  stmt.bind_text(4, row.format);
-  // Bind duration_sec as a double using sqlite3_bind_double directly
-  if (sqlite3_bind_double(stmt.get(), 5, row.duration_sec) != SQLITE_OK) {
-    throw std::runtime_error(std::string("Failed to bind duration_sec: ") + sqlite3_errmsg(db_));
-  }
-  stmt.bind_int64(6, static_cast<int64_t>(row.size_bytes));
-  stmt.bind_int64(7, row.created_at_ns);
-
-  if (stmt.step() != SQLITE_DONE) {
-    throw std::runtime_error(std::string("Failed to store rosbag file: ") + sqlite3_errmsg(db_));
-  }
-
-  if (max_rosbags_per_fault_ == 0) {
-    return {};  // unlimited per fault; only the global byte quota bounds this
-  }
-
-  // Keep the newest N recordings of this fault. Oldest-first eviction, the same
-  // direction as evict_bags_over_quota, so the two eviction owners never need a
-  // tiebreak. At N = 1 this reproduces the pre-#620 behaviour exactly: the new
-  // recording replaces the old and the old bag is unlinked.
-  const char * const doomed_sql =
-      "FROM rosbag_files WHERE fault_code = ?1 AND id NOT IN "
-      "(SELECT id FROM rosbag_files WHERE fault_code = ?1 "
-      " ORDER BY created_at_ns DESC, id DESC LIMIT ?2)";
-
-  std::vector<std::string> evicted;
-  {
-    SqliteStatement select(db_, (std::string("SELECT DISTINCT file_path ") + doomed_sql).c_str());
-    select.bind_text(1, row.fault_code);
-    select.bind_int64(2, static_cast<int64_t>(max_rosbags_per_fault_));
-    while (select.step() == SQLITE_ROW) {
-      evicted.push_back(select.column_text(0));
-    }
-  }
-  if (evicted.empty()) {
-    return {};
-  }
-
-  SqliteStatement del(db_, (std::string("DELETE ") + doomed_sql).c_str());
-  del.bind_text(1, row.fault_code);
-  del.bind_int64(2, static_cast<int64_t>(max_rosbags_per_fault_));
-  if (del.step() != SQLITE_DONE) {
-    throw std::runtime_error(std::string("Failed to trim rosbag rows: ") + sqlite3_errmsg(db_));
-  }
-  return evicted;
-}
-
 namespace {
 
 /// Shared projection so every rosbag read decodes the same column order.
@@ -1668,54 +1544,6 @@ std::vector<RosbagFileInfo> SqliteFaultStorage::get_rosbag_files_by_recording(co
   return result;
 }
 
-size_t SqliteFaultStorage::delete_rosbag_recording(const std::string & recording_id) {
-  // An empty id is not a recording that happens to be unnamed, it is a row whose
-  // backfill did not finish. Matching on it would take every such row of every
-  // fault with one DELETE, and evict_bags_over_quota calls this with whatever the
-  // row held.
-  if (recording_id.empty()) {
-    return 0;
-  }
-
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  std::set<std::string> paths;
-  {
-    SqliteStatement select(db_, "SELECT DISTINCT file_path FROM rosbag_files WHERE recording_id = ?");
-    select.bind_text(1, recording_id);
-    while (select.step() == SQLITE_ROW) {
-      paths.insert(select.column_text(0));
-    }
-  }
-  if (paths.empty()) {
-    return 0;
-  }
-
-  size_t removed = 0;
-  exec_or_throw("BEGIN IMMEDIATE");
-  try {
-    SqliteStatement del(db_, "DELETE FROM rosbag_files WHERE recording_id = ?");
-    del.bind_text(1, recording_id);
-    if (del.step() != SQLITE_DONE) {
-      throw std::runtime_error(std::string("Failed to delete rosbag recording: ") + sqlite3_errmsg(db_));
-    }
-    removed = static_cast<size_t>(sqlite3_changes(db_));
-    exec_or_throw("COMMIT");
-  } catch (...) {
-    sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
-    throw;
-  }
-
-  for (const auto & path : paths) {
-    if (path_referenced(path)) {
-      continue;  // another recording writes into the same directory - leave it
-    }
-    std::error_code ec;
-    std::filesystem::remove_all(path, ec);
-  }
-  return removed;
-}
-
 std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_file(const std::string & fault_code) const {
   std::lock_guard<std::mutex> lock(mutex_);
 
@@ -1744,96 +1572,6 @@ std::optional<RosbagFileInfo> SqliteFaultStorage::get_rosbag_file(const std::str
   info.created_at_ns = stmt.column_int64(6);
 
   return info;
-}
-
-bool SqliteFaultStorage::delete_rosbag_file(const std::string & fault_code) {
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  // Every path, not the first one: a fault holds as many recordings as its cap
-  // allows, and stepping once would unlink one bag and leak the rest - rows gone,
-  // directories left behind, uncounted by a quota that sums rows.
-  std::set<std::string> paths;
-  {
-    SqliteStatement select_stmt(db_, "SELECT file_path FROM rosbag_files WHERE fault_code = ?");
-    select_stmt.bind_text(1, fault_code);
-    while (select_stmt.step() == SQLITE_ROW) {
-      paths.insert(select_stmt.column_text(0));
-    }
-  }
-
-  // Row first, file after, exactly as delete_rosbag_files() does it. The step()
-  // below throws on a busy, full or unwritable database; with the unlink already
-  // done, that would leave a surviving row pointing at a bag that is gone -
-  // unreadable for good, and still charged against the storage quota, which sums
-  // rows. This way the worst case is an orphaned directory instead.
-  SqliteStatement delete_stmt(db_, "DELETE FROM rosbag_files WHERE fault_code = ?");
-  delete_stmt.bind_text(1, fault_code);
-
-  if (delete_stmt.step() != SQLITE_DONE) {
-    throw std::runtime_error(std::string("Failed to delete rosbag file record: ") + sqlite3_errmsg(db_));
-  }
-
-  const bool deleted = sqlite3_changes(db_) > 0;
-
-  // Unlink only once no fault references the bag any more. These rows are already
-  // gone, so path_referenced() sees exactly the siblings of a shared recording.
-  for (const auto & path : paths) {
-    if (!path_referenced(path)) {
-      std::error_code ec;
-      std::filesystem::remove_all(path, ec);
-      // Ignore errors - file may already be deleted
-    }
-  }
-
-  return deleted;
-}
-
-size_t SqliteFaultStorage::delete_rosbag_files(const std::vector<std::string> & fault_codes) {
-  if (fault_codes.empty()) {
-    return 0;
-  }
-  std::lock_guard<std::mutex> lock(mutex_);
-
-  // Rows go first, in one transaction, and the file only after the commit: a
-  // crash mid-delete leaves at worst an orphaned directory, never a row whose
-  // bag is already gone.
-  std::set<std::string> paths;
-  size_t deleted = 0;
-  exec_or_throw("BEGIN IMMEDIATE");
-  try {
-    for (const auto & code : fault_codes) {
-      {
-        // while, not if: one fault code can name several recordings now, and the
-        // sweep must be able to reclaim every one of their bags.
-        SqliteStatement select_stmt(db_, "SELECT file_path FROM rosbag_files WHERE fault_code = ?");
-        select_stmt.bind_text(1, code);
-        while (select_stmt.step() == SQLITE_ROW) {
-          paths.insert(select_stmt.column_text(0));
-        }
-      }
-      SqliteStatement delete_stmt(db_, "DELETE FROM rosbag_files WHERE fault_code = ?");
-      delete_stmt.bind_text(1, code);
-      if (delete_stmt.step() != SQLITE_DONE) {
-        throw std::runtime_error(std::string("Failed to delete rosbag file record: ") + sqlite3_errmsg(db_));
-      }
-      if (sqlite3_changes(db_) > 0) {
-        ++deleted;
-      }
-    }
-    exec_or_throw("COMMIT");
-  } catch (...) {
-    sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
-    throw;
-  }
-
-  for (const auto & path : paths) {
-    if (!path_referenced(path)) {
-      std::error_code ec;
-      std::filesystem::remove_all(path, ec);
-      // Ignore errors - file may already be deleted
-    }
-  }
-  return deleted;
 }
 
 bool SqliteFaultStorage::path_referenced(const std::string & file_path) const {

@@ -43,6 +43,7 @@
 #endif
 
 #include "rclcpp/rclcpp.hpp"
+#include "ros2_medkit_fault_manager/core/rosbag_retention.hpp"
 #include "ros2_medkit_fault_manager/fault_storage.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #ifdef POSTGRES_SUPPORT
@@ -51,6 +52,7 @@
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 #include "test_log_sink.hpp"
+#include "test_rosbag_rows.hpp"
 
 namespace {
 
@@ -63,6 +65,9 @@ using ros2_medkit_fault_manager::RosbagFileInfo;
 using ros2_medkit_fault_manager::RosbagLink;
 using ros2_medkit_fault_manager::SnapshotData;
 using ros2_medkit_fault_manager::SqliteFaultStorage;
+using ros2_medkit_fault_manager::core::RosbagRetention;
+using ros2_medkit_fault_manager::core::RosbagRetentionLimits;
+using ros2_medkit_fault_manager::core::StoreResult;
 #ifdef POSTGRES_SUPPORT
 using ros2_medkit_fault_manager::PgFaultStorage;
 #endif
@@ -186,10 +191,44 @@ class RosbagRetentionParityTest : public ::testing::Test {
   }
 
   void TearDown() override {
+    retention_.reset();
     storage_.reset();
     BackendFactory<Backend>::cleanup(dir_);
     std::error_code ec;
     std::filesystem::remove_all(dir_, ec);
+  }
+
+  static RosbagRetentionLimits cap(size_t max_bags_per_fault) {
+    RosbagRetentionLimits limits;
+    limits.max_bags_per_fault = max_bags_per_fault;
+    return limits;
+  }
+
+  /// The retention every store() below goes through, over this backend.
+  void use_retention(RosbagRetentionLimits limits) {
+    retention_ = std::make_unique<RosbagRetention>(*storage_, limits, test_log_sink(), "rosbag_retention_parity");
+  }
+
+  /// Store one recording through the retention and keep the paths it hands over.
+  void store(std::vector<RosbagFileInfo> rows) {
+    const auto outcome = retention_->store(std::move(rows));
+    EXPECT_EQ(outcome.result, StoreResult::kStored) << outcome.error;
+    hand_over(outcome.unlink_paths);
+  }
+
+  /// Keep the paths of one retention call. Each is listed once across the whole test.
+  void hand_over(const std::vector<ros2_medkit_fault_manager::core::FreedRecording> & freed) {
+    const auto paths = paths_of(freed);
+    expect_unlinkable(paths);
+    for (const auto & path : paths) {
+      EXPECT_FALSE(unlinked(path)) << path << " was handed over twice";
+      unlink_paths_.push_back(path);
+    }
+  }
+
+  /// Whether a retention call of this test handed @p path over for removal.
+  bool unlinked(const std::string & path) const {
+    return listed(unlink_paths_, path);
   }
 
   /// Create a real bag directory so unlink behaviour is observable, not just row state.
@@ -215,6 +254,8 @@ class RosbagRetentionParityTest : public ::testing::Test {
 
   std::filesystem::path dir_;
   std::unique_ptr<FaultStorage> storage_;
+  std::unique_ptr<RosbagRetention> retention_;
+  std::vector<std::string> unlink_paths_;
 };
 
 #ifdef POSTGRES_SUPPORT
@@ -229,9 +270,8 @@ TYPED_TEST_SUITE(RosbagRetentionParityTest, Backends);
 TYPED_TEST(RosbagRetentionParityTest, RecordingIdIsTheBasenameOfEveryStoredRow) {
   // The gateway addresses a recording by this string and the fault_manager resolves it
   // back to rows, so a backend that stored anything else would break the URL silently.
-  this->storage_->set_max_rosbags_per_fault(0);
-  this->storage_->store_rosbag_file(this->row("BASENAME", "fault_BASENAME_1", 1000));
-  this->storage_->store_rosbag_file(this->row("BASENAME", "fault_BASENAME_2", 2000));
+  seed_rosbag_rows(*this->storage_, {this->row("BASENAME", "fault_BASENAME_1", 1000)});
+  seed_rosbag_rows(*this->storage_, {this->row("BASENAME", "fault_BASENAME_2", 2000)});
 
   const auto rows = this->storage_->get_rosbag_files("BASENAME");
   ASSERT_EQ(rows.size(), 2u);
@@ -243,10 +283,9 @@ TYPED_TEST(RosbagRetentionParityTest, RecordingIdIsTheBasenameOfEveryStoredRow) 
 TYPED_TEST(RosbagRetentionParityTest, RecordingIdIsDerivedWhenTheCallerLeftItEmpty) {
   // rosbag_capture fills it, but the interface is public and embedders re-store rows.
   // A row with no recording_id is unaddressable, so neither backend may store one.
-  this->storage_->set_max_rosbags_per_fault(0);
   auto info = this->row("DERIVED", "fault_DERIVED_1", 1000);
   info.recording_id.clear();
-  this->storage_->store_rosbag_file(info);
+  seed_rosbag_rows(*this->storage_, {info});
 
   const auto rows = this->storage_->get_rosbag_files("DERIVED");
   ASSERT_EQ(rows.size(), 1u);
@@ -255,46 +294,46 @@ TYPED_TEST(RosbagRetentionParityTest, RecordingIdIsDerivedWhenTheCallerLeftItEmp
 
 TYPED_TEST(RosbagRetentionParityTest, SeveralRecordingsForOneFaultSurviveUnderACap) {
   // The feature itself: this is exactly what the schema made impossible before.
-  this->storage_->set_max_rosbags_per_fault(3);
-  this->storage_->store_rosbag_file(this->row("FLAP", "fault_FLAP_1", 1000));
-  this->storage_->store_rosbag_file(this->row("FLAP", "fault_FLAP_2", 2000));
-  this->storage_->store_rosbag_file(this->row("FLAP", "fault_FLAP_3", 3000));
+  this->use_retention(this->cap(3));
+  this->store({this->row("FLAP", "fault_FLAP_1", 1000)});
+  this->store({this->row("FLAP", "fault_FLAP_2", 2000)});
+  this->store({this->row("FLAP", "fault_FLAP_3", 3000)});
 
   const auto rows = this->storage_->get_rosbag_files("FLAP");
   ASSERT_EQ(rows.size(), 3u);
   EXPECT_EQ(rows[0].recording_id, "fault_FLAP_3") << "newest first";
   EXPECT_EQ(rows[2].recording_id, "fault_FLAP_1");
   for (const auto & r : rows) {
-    EXPECT_TRUE(std::filesystem::exists(r.file_path));
+    EXPECT_FALSE(this->unlinked(r.file_path));
   }
 }
 
 TYPED_TEST(RosbagRetentionParityTest, CapKeepsTheNewestAndUnlinksTheEvicted) {
-  this->storage_->set_max_rosbags_per_fault(2);
+  this->use_retention(this->cap(2));
   const auto oldest = this->row("CAP", "fault_CAP_1", 1000);
-  this->storage_->store_rosbag_file(oldest);
-  this->storage_->store_rosbag_file(this->row("CAP", "fault_CAP_2", 2000));
-  this->storage_->store_rosbag_file(this->row("CAP", "fault_CAP_3", 3000));
+  this->store({oldest});
+  this->store({this->row("CAP", "fault_CAP_2", 2000)});
+  this->store({this->row("CAP", "fault_CAP_3", 3000)});
 
   const auto rows = this->storage_->get_rosbag_files("CAP");
   ASSERT_EQ(rows.size(), 2u);
   EXPECT_EQ(rows[0].recording_id, "fault_CAP_3");
   EXPECT_EQ(rows[1].recording_id, "fault_CAP_2");
-  EXPECT_FALSE(std::filesystem::exists(oldest.file_path)) << "the evicted bag must not outlive its last row";
+  EXPECT_TRUE(this->unlinked(oldest.file_path)) << "the evicted bag must not outlive its last row";
 }
 
 TYPED_TEST(RosbagRetentionParityTest, ACapOfOneReproducesThePreviousBehaviourExactly) {
   // The shipped default. Landing at parity is what makes any regression report about
   // the plumbing rather than about the retention policy.
-  this->storage_->set_max_rosbags_per_fault(1);
+  this->use_retention(this->cap(1));
   const auto first = this->row("ONE", "fault_ONE_1", 1000);
-  this->storage_->store_rosbag_file(first);
-  this->storage_->store_rosbag_file(this->row("ONE", "fault_ONE_2", 2000));
+  this->store({first});
+  this->store({this->row("ONE", "fault_ONE_2", 2000)});
 
   const auto rows = this->storage_->get_rosbag_files("ONE");
   ASSERT_EQ(rows.size(), 1u);
   EXPECT_EQ(rows[0].recording_id, "fault_ONE_2");
-  EXPECT_FALSE(std::filesystem::exists(first.file_path));
+  EXPECT_TRUE(this->unlinked(first.file_path));
 
   const auto newest = this->storage_->get_rosbag_file("ONE");
   ASSERT_TRUE(newest.has_value());
@@ -302,20 +341,22 @@ TYPED_TEST(RosbagRetentionParityTest, ACapOfOneReproducesThePreviousBehaviourExa
 }
 
 TYPED_TEST(RosbagRetentionParityTest, ACapOfOneIsTheDefaultWithoutConfiguringAnything) {
-  // A backend constructed directly - tests, embedders - must not silently start
-  // accumulating recordings just because the cap became configurable.
+  // A retention built without configuring anything - tests, embedders - must not silently
+  // start accumulating recordings just because the cap became configurable.
+  EXPECT_EQ(RosbagRetentionLimits{}.max_bags_per_fault, 1u);
+  this->use_retention(RosbagRetentionLimits{});
   const auto first = this->row("DEFAULT", "fault_DEFAULT_1", 1000);
-  this->storage_->store_rosbag_file(first);
-  this->storage_->store_rosbag_file(this->row("DEFAULT", "fault_DEFAULT_2", 2000));
+  this->store({first});
+  this->store({this->row("DEFAULT", "fault_DEFAULT_2", 2000)});
 
   EXPECT_EQ(this->storage_->get_rosbag_files("DEFAULT").size(), 1u);
-  EXPECT_FALSE(std::filesystem::exists(first.file_path));
+  EXPECT_TRUE(this->unlinked(first.file_path));
 }
 
 TYPED_TEST(RosbagRetentionParityTest, ZeroMeansUnlimited) {
-  this->storage_->set_max_rosbags_per_fault(0);
+  this->use_retention(this->cap(0));
   for (int i = 1; i <= 6; ++i) {
-    this->storage_->store_rosbag_file(this->row("UNBOUNDED", "fault_UNBOUNDED_" + std::to_string(i), i * 1000));
+    this->store({this->row("UNBOUNDED", "fault_UNBOUNDED_" + std::to_string(i), i * 1000)});
   }
   EXPECT_EQ(this->storage_->get_rosbag_files("UNBOUNDED").size(), 6u);
 }
@@ -323,18 +364,18 @@ TYPED_TEST(RosbagRetentionParityTest, ZeroMeansUnlimited) {
 TYPED_TEST(RosbagRetentionParityTest, ReStoringTheSamePathIsAnUpsertNotASecondRecording) {
   // Uniqueness is on (fault_code, file_path). Re-storing the same bag - a restart
   // replaying its rows, say - must update in place, not consume a cap slot.
-  this->storage_->set_max_rosbags_per_fault(3);
+  this->use_retention(this->cap(3));
   auto info = this->row("UPSERT", "fault_UPSERT_1", 1000);
-  this->storage_->store_rosbag_file(info);
+  this->store({info});
   info.size_bytes = 4096;
   info.duration_sec = 9.0;
-  this->storage_->store_rosbag_file(info);
+  this->store({info});
 
   const auto rows = this->storage_->get_rosbag_files("UPSERT");
   ASSERT_EQ(rows.size(), 1u);
   EXPECT_EQ(rows[0].size_bytes, 4096u);
   EXPECT_DOUBLE_EQ(rows[0].duration_sec, 9.0);
-  EXPECT_TRUE(std::filesystem::exists(rows[0].file_path)) << "an upsert must not unlink the bag it just updated";
+  EXPECT_FALSE(this->unlinked(rows[0].file_path)) << "an upsert must not unlink the bag it just updated";
 }
 
 TYPED_TEST(RosbagRetentionParityTest, RefreshingALinkDoesNotMoveItWithinATieGroup) {
@@ -342,13 +383,12 @@ TYPED_TEST(RosbagRetentionParityTest, RefreshingALinkDoesNotMoveItWithinATieGrou
   // refresh must not renumber the row. SQLite's INSERT OR REPLACE would: it deletes
   // and re-inserts, handing the row a fresh id and silently promoting it past rows
   // it was stored before.
-  this->storage_->set_max_rosbags_per_fault(0);
   auto first = this->row("REFRESH", "fault_REFRESH_1", 5000);
-  this->storage_->store_rosbag_file(first);
-  this->storage_->store_rosbag_file(this->row("REFRESH", "fault_REFRESH_2", 5000));
+  seed_rosbag_rows(*this->storage_, {first});
+  seed_rosbag_rows(*this->storage_, {this->row("REFRESH", "fault_REFRESH_2", 5000)});
 
   first.size_bytes = 8192;
-  this->storage_->store_rosbag_file(first);
+  seed_rosbag_rows(*this->storage_, {first});
 
   const auto rows = this->storage_->get_rosbag_files("REFRESH");
   ASSERT_EQ(rows.size(), 2u);
@@ -362,9 +402,8 @@ TYPED_TEST(RosbagRetentionParityTest, NewestFirstIsStableWhenAWholeBurstSharesAT
   // rather than exotic. SQLite breaks them by id; the in-memory backend needs its own
   // sequence counter to agree. Without it the two orders diverge only sometimes,
   // which is a flaky test rather than an honest failure.
-  this->storage_->set_max_rosbags_per_fault(0);
   for (int i = 1; i <= 4; ++i) {
-    this->storage_->store_rosbag_file(this->row("TIE", "fault_TIE_" + std::to_string(i), 7000));
+    seed_rosbag_rows(*this->storage_, {this->row("TIE", "fault_TIE_" + std::to_string(i), 7000)});
   }
 
   const auto rows = this->storage_->get_rosbag_files("TIE");
@@ -378,31 +417,31 @@ TYPED_TEST(RosbagRetentionParityTest, NewestFirstIsStableWhenAWholeBurstSharesAT
 TYPED_TEST(RosbagRetentionParityTest, ACapTieIsBrokenByInsertionOrderNotArbitrarily) {
   // The same tie, now deciding which bag gets deleted. Whichever row wins, both
   // backends must agree, and the survivor's bag must be the one still on disk.
-  this->storage_->set_max_rosbags_per_fault(1);
+  this->use_retention(this->cap(1));
   const auto first = this->row("TIECAP", "fault_TIECAP_1", 7000);
-  this->storage_->store_rosbag_file(first);
+  this->store({first});
   const auto second = this->row("TIECAP", "fault_TIECAP_2", 7000);
-  this->storage_->store_rosbag_file(second);
+  this->store({second});
 
   const auto rows = this->storage_->get_rosbag_files("TIECAP");
   ASSERT_EQ(rows.size(), 1u);
   EXPECT_EQ(rows[0].recording_id, "fault_TIECAP_2");
-  EXPECT_TRUE(std::filesystem::exists(second.file_path));
-  EXPECT_FALSE(std::filesystem::exists(first.file_path));
+  EXPECT_FALSE(this->unlinked(second.file_path));
+  EXPECT_TRUE(this->unlinked(first.file_path));
 }
 
 TYPED_TEST(RosbagRetentionParityTest, ABurstRecordingSurvivesWhileASiblingRowReferencesIt) {
   // One bag, several faults. The cap evicts A's link but B still holds the bytes.
-  this->storage_->set_max_rosbags_per_fault(1);
+  this->use_retention(this->cap(1));
   auto shared = this->row("BURST_A", "fault_BURST_1", 1000);
-  this->storage_->store_rosbag_file(shared);
+  this->store({shared});
   shared.fault_code = "BURST_B";
-  this->storage_->store_rosbag_file(shared);
+  this->store({shared});
 
   const auto shared_path = shared.file_path;
-  this->storage_->store_rosbag_file(this->row("BURST_A", "fault_BURST_2", 2000));
+  this->store({this->row("BURST_A", "fault_BURST_2", 2000)});
 
-  EXPECT_TRUE(std::filesystem::exists(shared_path)) << "the sibling fault still owns the shared bag";
+  EXPECT_FALSE(this->unlinked(shared_path)) << "the sibling fault still owns the shared bag";
   const auto sibling = this->storage_->get_rosbag_files("BURST_B");
   ASSERT_EQ(sibling.size(), 1u);
   EXPECT_EQ(sibling[0].file_path, shared_path);
@@ -411,13 +450,12 @@ TYPED_TEST(RosbagRetentionParityTest, ABurstRecordingSurvivesWhileASiblingRowRef
 TYPED_TEST(RosbagRetentionParityTest, RecordingLookupReturnsEveryFaultOfTheBurst) {
   // This is what the gateway authorizes against: the union of faults attached to a
   // recording. Missing one would 404 a download the entity is entitled to.
-  this->storage_->set_max_rosbags_per_fault(0);
   auto shared = this->row("LOOKUP_A", "fault_LOOKUP_1", 1000);
-  this->storage_->store_rosbag_file(shared);
+  seed_rosbag_rows(*this->storage_, {shared});
   shared.fault_code = "LOOKUP_B";
-  this->storage_->store_rosbag_file(shared);
+  seed_rosbag_rows(*this->storage_, {shared});
   shared.fault_code = "LOOKUP_C";
-  this->storage_->store_rosbag_file(shared);
+  seed_rosbag_rows(*this->storage_, {shared});
 
   const auto rows = this->storage_->get_rosbag_files_by_recording("fault_LOOKUP_1");
   ASSERT_EQ(rows.size(), 3u);
@@ -439,52 +477,57 @@ TYPED_TEST(RosbagRetentionParityTest, AnUnknownRecordingLooksUpEmptyRatherThanTh
 }
 
 TYPED_TEST(RosbagRetentionParityTest, DeletingARecordingRemovesEveryLinkAndTheBag) {
-  // What the quota sweep calls. Deleting by fault code here would wipe the whole
-  // history of every fault the bag touched.
-  this->storage_->set_max_rosbags_per_fault(0);
+  // Removal by recording, as the stale-row cleanup does. Deleting by fault code here would
+  // wipe the whole history of every fault the bag touched.
   auto shared = this->row("DELREC_A", "fault_DELREC_1", 1000);
-  this->storage_->store_rosbag_file(shared);
+  seed_rosbag_rows(*this->storage_, {shared});
   shared.fault_code = "DELREC_B";
-  this->storage_->store_rosbag_file(shared);
+  seed_rosbag_rows(*this->storage_, {shared});
   const auto kept = this->row("DELREC_A", "fault_DELREC_2", 2000);
-  this->storage_->store_rosbag_file(kept);
+  seed_rosbag_rows(*this->storage_, {kept});
+  this->use_retention(RosbagRetentionLimits{});
 
-  EXPECT_EQ(this->storage_->delete_rosbag_recording("fault_DELREC_1"), 2u);
-  EXPECT_FALSE(std::filesystem::exists(shared.file_path));
+  const auto removal = this->retention_->forget_recording("fault_DELREC_1");
+  this->hand_over(removal.unlink_paths);
+  EXPECT_EQ(removal.removed_rows, 2u);
+  EXPECT_TRUE(this->unlinked(shared.file_path));
   EXPECT_TRUE(this->storage_->get_rosbag_files("DELREC_B").empty());
 
   const auto survivors = this->storage_->get_rosbag_files("DELREC_A");
   ASSERT_EQ(survivors.size(), 1u) << "the other fault's other recording is untouched";
   EXPECT_EQ(survivors[0].recording_id, "fault_DELREC_2");
-  EXPECT_TRUE(std::filesystem::exists(kept.file_path));
+  EXPECT_FALSE(this->unlinked(kept.file_path));
 
-  EXPECT_EQ(this->storage_->delete_rosbag_recording("fault_DELREC_1"), 0u);
+  const auto again = this->retention_->forget_recording("fault_DELREC_1");
+  this->hand_over(again.unlink_paths);
+  EXPECT_EQ(again.removed_rows, 0u);
 }
 
 TYPED_TEST(RosbagRetentionParityTest, DeletingAFaultDropsAllItsRecordings) {
-  this->storage_->set_max_rosbags_per_fault(0);
   const auto a = this->row("DELALL", "fault_DELALL_1", 1000);
   const auto b = this->row("DELALL", "fault_DELALL_2", 2000);
-  this->storage_->store_rosbag_file(a);
-  this->storage_->store_rosbag_file(b);
+  seed_rosbag_rows(*this->storage_, {a});
+  seed_rosbag_rows(*this->storage_, {b});
+  this->use_retention(RosbagRetentionLimits{});
 
-  EXPECT_TRUE(this->storage_->delete_rosbag_file("DELALL"));
+  const auto removal = this->retention_->on_fault_cleared("DELALL");
+  this->hand_over(removal.unlink_paths);
+  EXPECT_EQ(removal.removed_rows, 2u);
   EXPECT_TRUE(this->storage_->get_rosbag_files("DELALL").empty());
-  EXPECT_FALSE(std::filesystem::exists(a.file_path));
-  EXPECT_FALSE(std::filesystem::exists(b.file_path));
+  EXPECT_TRUE(this->unlinked(a.file_path));
+  EXPECT_TRUE(this->unlinked(b.file_path));
 }
 
 TYPED_TEST(RosbagRetentionParityTest, ASharedBagCountsOnceTowardsStorageAcrossSeveralRecordings) {
   // The quota sums bytes per path, not per row. N recordings per fault multiplies the
   // rows, so a per-row sum would over-report and evict healthy bags under no pressure.
-  this->storage_->set_max_rosbags_per_fault(0);
   auto shared = this->row("QUOTA_A", "fault_QUOTA_1", 1000);
-  this->storage_->store_rosbag_file(shared);
+  seed_rosbag_rows(*this->storage_, {shared});
   shared.fault_code = "QUOTA_B";
-  this->storage_->store_rosbag_file(shared);
+  seed_rosbag_rows(*this->storage_, {shared});
   shared.fault_code = "QUOTA_C";
-  this->storage_->store_rosbag_file(shared);
-  this->storage_->store_rosbag_file(this->row("QUOTA_A", "fault_QUOTA_2", 2000));
+  seed_rosbag_rows(*this->storage_, {shared});
+  seed_rosbag_rows(*this->storage_, {this->row("QUOTA_A", "fault_QUOTA_2", 2000)});
 
   EXPECT_EQ(this->storage_->get_total_rosbag_storage_bytes(), 2048u) << "two distinct bags of 1024, counted once each";
 }
@@ -492,10 +535,9 @@ TYPED_TEST(RosbagRetentionParityTest, ASharedBagCountsOnceTowardsStorageAcrossSe
 TYPED_TEST(RosbagRetentionParityTest, GetAllRosbagFilesListsEveryRecordingOldestFirst) {
   // The quota sweep walks this list and evicts from the front, so the extra rows this
   // change introduces have to appear here in a defined order.
-  this->storage_->set_max_rosbags_per_fault(0);
-  this->storage_->store_rosbag_file(this->row("ALL_A", "fault_ALL_1", 3000));
-  this->storage_->store_rosbag_file(this->row("ALL_A", "fault_ALL_2", 1000));
-  this->storage_->store_rosbag_file(this->row("ALL_B", "fault_ALL_3", 2000));
+  seed_rosbag_rows(*this->storage_, {this->row("ALL_A", "fault_ALL_1", 3000)});
+  seed_rosbag_rows(*this->storage_, {this->row("ALL_A", "fault_ALL_2", 1000)});
+  seed_rosbag_rows(*this->storage_, {this->row("ALL_B", "fault_ALL_3", 2000)});
 
   const auto rows = this->storage_->get_all_rosbag_files();
   ASSERT_EQ(rows.size(), 3u);
@@ -504,14 +546,132 @@ TYPED_TEST(RosbagRetentionParityTest, GetAllRosbagFilesListsEveryRecordingOldest
   EXPECT_EQ(rows[2].recording_id, "fault_ALL_1");
 }
 
+TYPED_TEST(RosbagRetentionParityTest, OneFaultKeepsSeveralRecordingsWhenTheCapAllows) {
+  this->use_retention(this->cap(3));
+  this->store({this->row("FLAP", "fault_FLAP_100", 100)});
+  this->store({this->row("FLAP", "fault_FLAP_200", 200)});
+
+  const auto rows = this->storage_->get_rosbag_files("FLAP");
+  ASSERT_EQ(rows.size(), 2u) << "the second recording must not replace the first";
+  EXPECT_EQ(rows[0].recording_id, "fault_FLAP_200") << "newest first";
+  EXPECT_EQ(rows[1].recording_id, "fault_FLAP_100");
+
+  // get_rosbag_file is "the newest", deterministically.
+  const auto newest = this->storage_->get_rosbag_file("FLAP");
+  ASSERT_TRUE(newest.has_value());
+  EXPECT_EQ(newest->recording_id, "fault_FLAP_200");
+}
+
+TYPED_TEST(RosbagRetentionParityTest, CapKeepsTheNewestAndUnlinksTheEvictedBag) {
+  this->use_retention(this->cap(1));
+  const auto a = this->row("CAP", "fault_CAP_100", 100);
+  const auto b = this->row("CAP", "fault_CAP_200", 200);
+  this->store({a});
+  this->store({b});
+
+  const auto rows = this->storage_->get_rosbag_files("CAP");
+  ASSERT_EQ(rows.size(), 1u) << "cap 1 is the historical behaviour: one recording per fault";
+  EXPECT_EQ(rows[0].file_path, b.file_path);
+  EXPECT_TRUE(this->unlinked(a.file_path)) << "the evicted bag must be unlinked";
+  EXPECT_FALSE(this->unlinked(b.file_path));
+}
+
+TYPED_TEST(RosbagRetentionParityTest, EvictingOneFaultsLinkKeepsABagASiblingStillReferences) {
+  // A burst shares one recording. Evicting it for one fault must not take the bytes
+  // the other fault still points at.
+  this->use_retention(this->cap(1));
+  auto shared_b = this->row("B", "fault_SHARED_100", 100);
+  auto shared_a = shared_b;
+  shared_a.fault_code = "A";
+  this->store({shared_a, shared_b});
+  // A re-confirms with its own new bag, so A's link to the shared one is evicted.
+  this->store({this->row("A", "fault_A_200", 200)});
+
+  EXPECT_FALSE(this->unlinked(shared_b.file_path)) << "B still references it";
+  const auto b_rows = this->storage_->get_rosbag_files("B");
+  ASSERT_EQ(b_rows.size(), 1u);
+  EXPECT_EQ(b_rows[0].file_path, shared_b.file_path);
+}
+
+// Re-store guard: a fault re-confirming stores a row with a new path, and the
+// old bag must be unlinked only when no sibling fault still references it.
+
+TYPED_TEST(RosbagRetentionParityTest, RestoreWithNewPathUnlinksTheOldExclusiveBag) {
+  this->use_retention(RosbagRetentionLimits{});
+  const auto old_bag = this->row("X", "exclusive_bag", 1000);
+  this->store({old_bag});
+
+  auto info = old_bag;
+  info.file_path = this->make_bag("exclusive_bag_new");
+  info.recording_id = rosbag_recording_id(info.file_path);
+  this->store({info});
+
+  EXPECT_TRUE(this->unlinked(old_bag.file_path)) << "nobody references the old bag, it must be unlinked";
+  auto row = this->storage_->get_rosbag_file("X");
+  ASSERT_TRUE(row.has_value());
+  EXPECT_EQ(row->file_path, info.file_path);
+}
+
+TYPED_TEST(RosbagRetentionParityTest, RestoreWithNewPathKeepsTheBagASiblingStillReferences) {
+  this->use_retention(RosbagRetentionLimits{});
+  auto info = this->row("X", "shared_bag", 1000);
+  const auto shared_path = info.file_path;
+  this->store({info});
+  info.fault_code = "Y";
+  this->store({info});
+
+  info.fault_code = "X";
+  info.file_path = this->make_bag("shared_bag_new");
+  info.recording_id = rosbag_recording_id(info.file_path);
+  this->store({info});
+
+  EXPECT_FALSE(this->unlinked(shared_path)) << "the sibling fault still owns the shared bag";
+  auto sibling = this->storage_->get_rosbag_file("Y");
+  ASSERT_TRUE(sibling.has_value());
+  EXPECT_EQ(sibling->file_path, shared_path);
+}
+
+TYPED_TEST(RosbagRetentionParityTest, ABatchStoreUnlinksASharedReplacedBagExactlyOnce) {
+  // Two faults of one burst can share the bag being replaced, and whether it is still
+  // referenced has to be judged on the finished batch. Judged row by row beforehand,
+  // each row sees its sibling still pointing at the old bag and neither unlinks it.
+  this->use_retention(RosbagRetentionLimits{});
+  auto shared = this->row("SHARED_A", "shared_old_bag", 1000);
+  const auto old_bag = shared.file_path;
+  this->store({shared});
+  shared.fault_code = "SHARED_B";
+  this->store({shared});
+  ASSERT_FALSE(this->unlinked(old_bag));
+
+  auto moved = shared;
+  moved.file_path = this->make_bag("shared_new_bag");
+  moved.recording_id = rosbag_recording_id(moved.file_path);
+  moved.created_at_ns = 2000;
+  std::vector<RosbagFileInfo> rows;
+  rows.reserve(2);
+  moved.fault_code = "SHARED_A";
+  rows.push_back(moved);
+  moved.fault_code = "SHARED_B";
+  rows.push_back(moved);
+  this->store(rows);
+
+  EXPECT_TRUE(this->unlinked(old_bag)) << "the replaced bag leaked: nothing references it any more";
+  EXPECT_FALSE(this->unlinked(moved.file_path)) << "the bag the batch points at was removed";
+  auto row_a = this->storage_->get_rosbag_file("SHARED_A");
+  auto row_b = this->storage_->get_rosbag_file("SHARED_B");
+  ASSERT_TRUE(row_a.has_value());
+  ASSERT_TRUE(row_b.has_value());
+  EXPECT_EQ(row_a->file_path, moved.file_path);
+  EXPECT_EQ(row_b->file_path, moved.file_path);
+}
+
 // apply_rosbag_changes: the one write primitive. Same body over every backend.
 
 TYPED_TEST(RosbagRetentionParityTest, ApplyTwiceIsIdempotent) {
   const auto a = this->row("TWICE_A", "fault_TWICE_1", 1000);
   const auto b = this->row("TWICE_B", "fault_TWICE_2", 2000);
-  this->storage_->set_max_rosbags_per_fault(0);
-  this->storage_->store_rosbag_file(a);
-  this->storage_->store_rosbag_file(b);
+  seed_rosbag_rows(*this->storage_, {a});
+  seed_rosbag_rows(*this->storage_, {b});
 
   RosbagChangeSet set;
   set.insert.push_back(this->row("TWICE_C", "fault_TWICE_3", 3000));
@@ -536,11 +696,10 @@ TYPED_TEST(RosbagRetentionParityTest, ApplyTwiceIsIdempotent) {
 }
 
 TYPED_TEST(RosbagRetentionParityTest, OrphanedPathOnlyWhenLastLinkRemoved) {
-  this->storage_->set_max_rosbags_per_fault(0);
   auto shared = this->row("ORPHAN_A", "fault_ORPHAN_1", 1000);
-  this->storage_->store_rosbag_file(shared);
+  seed_rosbag_rows(*this->storage_, {shared});
   shared.fault_code = "ORPHAN_B";
-  this->storage_->store_rosbag_file(shared);
+  seed_rosbag_rows(*this->storage_, {shared});
 
   RosbagChangeSet first;
   first.remove.push_back({"ORPHAN_A", shared.file_path});
@@ -561,9 +720,8 @@ TYPED_TEST(RosbagRetentionParityTest, OrphanedPathOnlyWhenLastLinkRemoved) {
 }
 
 TYPED_TEST(RosbagRetentionParityTest, ASetThatMovesTheLastLinkToAnotherFaultOrphansNothing) {
-  this->storage_->set_max_rosbags_per_fault(0);
   const auto old_link = this->row("MOVE_A", "fault_MOVE_1", 1000);
-  this->storage_->store_rosbag_file(old_link);
+  seed_rosbag_rows(*this->storage_, {old_link});
 
   RosbagChangeSet set;
   set.remove.push_back({"MOVE_A", old_link.file_path});
@@ -577,7 +735,6 @@ TYPED_TEST(RosbagRetentionParityTest, ASetThatMovesTheLastLinkToAnotherFaultOrph
 }
 
 TYPED_TEST(RosbagRetentionParityTest, UpsertOnLinkKeepsOneRow) {
-  this->storage_->set_max_rosbags_per_fault(0);
   auto info = this->row("APPLY_UPSERT", "fault_APPLY_UPSERT_1", 1000);
   const auto sibling = this->row("APPLY_UPSERT", "fault_APPLY_UPSERT_2", 1000);
 
@@ -621,13 +778,12 @@ TYPED_TEST(RosbagRetentionParityTest, UpsertOnLinkKeepsOneRow) {
 }
 
 TYPED_TEST(RosbagRetentionParityTest, RemoveRecordingsRemovesEveryLink) {
-  this->storage_->set_max_rosbags_per_fault(0);
   auto burst = this->row("RECS_A", "fault_RECS_1", 1000);
-  this->storage_->store_rosbag_file(burst);
+  seed_rosbag_rows(*this->storage_, {burst});
   burst.fault_code = "RECS_B";
-  this->storage_->store_rosbag_file(burst);
+  seed_rosbag_rows(*this->storage_, {burst});
   const auto other = this->row("RECS_A", "fault_RECS_2", 2000);
-  this->storage_->store_rosbag_file(other);
+  seed_rosbag_rows(*this->storage_, {other});
 
   RosbagChangeSet set;
   set.remove_recordings = {"fault_RECS_1", "fault_RECS_1", "fault_RECS_UNKNOWN", ""};
@@ -641,11 +797,10 @@ TYPED_TEST(RosbagRetentionParityTest, RemoveRecordingsRemovesEveryLink) {
 }
 
 TYPED_TEST(RosbagRetentionParityTest, ApplyNeverUnlinks) {
-  this->storage_->set_max_rosbags_per_fault(0);
   const auto a = this->row("KEEP_A", "fault_KEEP_1", 1000);
   const auto b = this->row("KEEP_B", "fault_KEEP_2", 2000);
-  this->storage_->store_rosbag_file(a);
-  this->storage_->store_rosbag_file(b);
+  seed_rosbag_rows(*this->storage_, {a});
+  seed_rosbag_rows(*this->storage_, {b});
 
   RosbagChangeSet set;
   set.remove.push_back({"KEEP_A", a.file_path});
@@ -659,7 +814,6 @@ TYPED_TEST(RosbagRetentionParityTest, ApplyNeverUnlinks) {
 }
 
 TYPED_TEST(RosbagRetentionParityTest, ApplyAppliesNoCap) {
-  this->storage_->set_max_rosbags_per_fault(1);
   RosbagChangeSet set;
   for (int i = 1; i <= 3; ++i) {
     set.insert.push_back(this->row("NOCAP", "fault_NOCAP_" + std::to_string(i), i * 1000));
@@ -671,9 +825,8 @@ TYPED_TEST(RosbagRetentionParityTest, ApplyAppliesNoCap) {
 }
 
 TYPED_TEST(RosbagRetentionParityTest, RejectsInsertAndRemoveOfTheSameLink) {
-  this->storage_->set_max_rosbags_per_fault(0);
   const auto kept = this->row("REJECT_A", "fault_REJECT_1", 1000);
-  this->storage_->store_rosbag_file(kept);
+  seed_rosbag_rows(*this->storage_, {kept});
   const auto before = this->storage_->get_all_rosbag_files();
 
   auto fresh = this->row("REJECT_B", "fault_REJECT_2", 2000);
@@ -707,9 +860,8 @@ class RosbagApplyAtomicityTest : public RosbagRetentionParityTest<Backend> {};
 TYPED_TEST_SUITE(RosbagApplyAtomicityTest, SqlBackends);
 
 TYPED_TEST(RosbagApplyAtomicityTest, ApplyIsAtomicOnInsertFailure) {
-  this->storage_->set_max_rosbags_per_fault(0);
   const auto a = this->row("ATOM_A", "fault_ATOM_1", 1000);
-  this->storage_->store_rosbag_file(a);
+  seed_rosbag_rows(*this->storage_, {a});
   BackendFactory<TypeParam>::add_failing_trigger(this->dir_, "INSERT", "ATOM_FAIL");
 
   RosbagChangeSet set;
@@ -725,11 +877,10 @@ TYPED_TEST(RosbagApplyAtomicityTest, ApplyIsAtomicOnInsertFailure) {
 }
 
 TYPED_TEST(RosbagApplyAtomicityTest, ApplyIsAtomicOnDeleteFailure) {
-  this->storage_->set_max_rosbags_per_fault(0);
   const auto a = this->row("ATOM_A", "fault_ATOM_1", 1000);
   const auto failing = this->row("ATOM_FAIL", "fault_ATOM_2", 2000);
-  this->storage_->store_rosbag_file(a);
-  this->storage_->store_rosbag_file(failing);
+  seed_rosbag_rows(*this->storage_, {a});
+  seed_rosbag_rows(*this->storage_, {failing});
   BackendFactory<TypeParam>::add_failing_trigger(this->dir_, "DELETE", "ATOM_FAIL");
 
   RosbagChangeSet set;

@@ -26,14 +26,18 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "ros2_medkit_fault_manager/core/rosbag_retention.hpp"
 #include "ros2_medkit_fault_manager/sqlite_fault_storage.hpp"
 #include "ros2_medkit_msgs/msg/fault.hpp"
 #include "ros2_medkit_msgs/srv/report_fault.hpp"
 #include "test_log_sink.hpp"
+#include "test_rosbag_rows.hpp"
 
 using ros2_medkit_fault_manager::DebounceConfig;
 using ros2_medkit_fault_manager::RosbagFileInfo;
 using ros2_medkit_fault_manager::SqliteFaultStorage;
+using ros2_medkit_fault_manager::core::RosbagRetention;
+using ros2_medkit_fault_manager::core::RosbagRetentionLimits;
 using ros2_medkit_msgs::msg::Fault;
 using ros2_medkit_msgs::srv::ReportFault;
 
@@ -1058,7 +1062,7 @@ TEST_F(SqliteFaultStorageTest, LegacyUniqueConstraintIsRebuiltAwayAndRecordingId
 TEST_F(SqliteFaultStorageTest, ReopeningAMigratedDatabaseIsANoOp) {
   // The migration runs on every open, so it has to be idempotent - a second and
   // third open must not rebuild again, lose rows or re-backfill.
-  storage_->store_rosbag_file(make_rosbag("A", "/bags/fault_A_100", 100));
+  seed_rosbag_rows(*storage_, {make_rosbag("A", "/bags/fault_A_100", 100)});
   const auto before = storage_->get_all_rosbag_files();
 
   for (int i = 0; i < 2; ++i) {
@@ -1071,63 +1075,9 @@ TEST_F(SqliteFaultStorageTest, ReopeningAMigratedDatabaseIsANoOp) {
   }
 }
 
-TEST_F(SqliteFaultStorageTest, OneFaultKeepsSeveralRecordingsWhenTheCapAllows) {
-  storage_->set_max_rosbags_per_fault(3);
-  storage_->store_rosbag_file(make_rosbag("FLAP", "/bags/fault_FLAP_100", 100));
-  storage_->store_rosbag_file(make_rosbag("FLAP", "/bags/fault_FLAP_200", 200));
-
-  const auto rows = storage_->get_rosbag_files("FLAP");
-  ASSERT_EQ(rows.size(), 2u) << "the second recording must not replace the first";
-  EXPECT_EQ(rows[0].recording_id, "fault_FLAP_200") << "newest first";
-  EXPECT_EQ(rows[1].recording_id, "fault_FLAP_100");
-
-  // get_rosbag_file is "the newest", deterministically.
-  const auto newest = storage_->get_rosbag_file("FLAP");
-  ASSERT_TRUE(newest.has_value());
-  EXPECT_EQ(newest->recording_id, "fault_FLAP_200");
-}
-
-TEST_F(SqliteFaultStorageTest, CapKeepsTheNewestAndUnlinksTheEvictedBag) {
-  const auto bags = temp_db_path_.parent_path() / (temp_db_path_.stem().string() + "_bags");
-  const auto dir_a = bags / "fault_CAP_100";
-  const auto dir_b = bags / "fault_CAP_200";
-  std::filesystem::create_directories(dir_a);
-  std::filesystem::create_directories(dir_b);
-
-  storage_->set_max_rosbags_per_fault(1);
-  storage_->store_rosbag_file(make_rosbag("CAP", dir_a.string(), 100));
-  storage_->store_rosbag_file(make_rosbag("CAP", dir_b.string(), 200));
-
-  const auto rows = storage_->get_rosbag_files("CAP");
-  ASSERT_EQ(rows.size(), 1u) << "cap 1 is the historical behaviour: one recording per fault";
-  EXPECT_EQ(rows[0].file_path, dir_b.string());
-  EXPECT_FALSE(std::filesystem::exists(dir_a)) << "the evicted bag must be unlinked";
-  EXPECT_TRUE(std::filesystem::exists(dir_b));
-}
-
-TEST_F(SqliteFaultStorageTest, EvictingOneFaultsLinkKeepsABagASiblingStillReferences) {
-  // A burst shares one recording. Evicting it for one fault must not take the bytes
-  // the other fault still points at.
-  const auto bags = temp_db_path_.parent_path() / (temp_db_path_.stem().string() + "_bags");
-  const auto shared = bags / "fault_SHARED_100";
-  const auto later = bags / "fault_A_200";
-  std::filesystem::create_directories(shared);
-  std::filesystem::create_directories(later);
-
-  storage_->set_max_rosbags_per_fault(1);
-  storage_->store_rosbag_files({make_rosbag("A", shared.string(), 100), make_rosbag("B", shared.string(), 100)});
-  // A re-confirms with its own new bag, so A's link to the shared one is evicted.
-  storage_->store_rosbag_file(make_rosbag("A", later.string(), 200));
-
-  EXPECT_TRUE(std::filesystem::exists(shared)) << "B still references it";
-  const auto b_rows = storage_->get_rosbag_files("B");
-  ASSERT_EQ(b_rows.size(), 1u);
-  EXPECT_EQ(b_rows[0].file_path, shared.string());
-}
-
 TEST_F(SqliteFaultStorageTest, RecordingLookupReturnsEveryFaultOfTheBurst) {
-  storage_->store_rosbag_files({make_rosbag("A", "/bags/fault_A_100", 100), make_rosbag("B", "/bags/fault_A_100", 100),
-                                make_rosbag("C", "/bags/fault_A_100", 100)});
+  seed_rosbag_rows(*storage_, {make_rosbag("A", "/bags/fault_A_100", 100), make_rosbag("B", "/bags/fault_A_100", 100),
+                               make_rosbag("C", "/bags/fault_A_100", 100)});
 
   const auto rows = storage_->get_rosbag_files_by_recording("fault_A_100");
   ASSERT_EQ(rows.size(), 3u) << "the download authorizes against this set";
@@ -1140,28 +1090,37 @@ TEST_F(SqliteFaultStorageTest, DeleteRecordingRemovesEveryLinkAndTheBag) {
   const auto bags = temp_db_path_.parent_path() / (temp_db_path_.stem().string() + "_bags");
   const auto dir = bags / "fault_A_100";
   std::filesystem::create_directories(dir);
-  storage_->store_rosbag_files({make_rosbag("A", dir.string(), 100), make_rosbag("B", dir.string(), 100)});
+  seed_rosbag_rows(*storage_, {make_rosbag("A", dir.string(), 100), make_rosbag("B", dir.string(), 100)});
+  RosbagRetention retention(*storage_, RosbagRetentionLimits{}, test_log_sink(), "test_sqlite_storage");
 
-  EXPECT_EQ(storage_->delete_rosbag_recording("fault_A_100"), 2u);
+  const auto removal = retention.forget_recording("fault_A_100");
+  expect_unlinkable(removal.unlink_paths);
+  EXPECT_EQ(removal.removed_rows, 2u);
   EXPECT_TRUE(storage_->get_rosbag_files("A").empty());
   EXPECT_TRUE(storage_->get_rosbag_files("B").empty());
-  EXPECT_FALSE(std::filesystem::exists(dir));
+  EXPECT_TRUE(listed(removal.unlink_paths, dir.string()));
+  std::filesystem::remove_all(bags);
 }
 
 TEST_F(SqliteFaultStorageTest, DeletingAFaultDropsAllItsRecordings) {
-  storage_->set_max_rosbags_per_fault(0);
-  storage_->store_rosbag_file(make_rosbag("A", "/bags/fault_A_100", 100));
-  storage_->store_rosbag_file(make_rosbag("A", "/bags/fault_A_200", 200));
+  const auto bags = temp_db_path_.parent_path() / (temp_db_path_.stem().string() + "_bags");
+  std::filesystem::create_directories(bags / "fault_A_100");
+  std::filesystem::create_directories(bags / "fault_A_200");
+  seed_rosbag_rows(*storage_, {make_rosbag("A", (bags / "fault_A_100").string(), 100)});
+  seed_rosbag_rows(*storage_, {make_rosbag("A", (bags / "fault_A_200").string(), 200)});
+  RosbagRetention retention(*storage_, RosbagRetentionLimits{}, test_log_sink(), "test_sqlite_storage");
 
-  EXPECT_TRUE(storage_->delete_rosbag_file("A"));
+  const auto removal = retention.on_fault_cleared("A");
+  expect_unlinkable(removal.unlink_paths);
+  EXPECT_EQ(removal.removed_rows, 2u);
   EXPECT_TRUE(storage_->get_rosbag_files("A").empty()) << "auto_cleanup drops the fault's whole history";
+  std::filesystem::remove_all(bags);
 }
 
 TEST_F(SqliteFaultStorageTest, SharedRecordingStillCountsOnceTowardsStorageWithSeveralRecordings) {
-  storage_->set_max_rosbags_per_fault(0);
-  storage_->store_rosbag_files(
-      {make_rosbag("A", "/bags/fault_A_100", 100, 4096), make_rosbag("B", "/bags/fault_A_100", 100, 4096)});
-  storage_->store_rosbag_file(make_rosbag("A", "/bags/fault_A_200", 200, 1024));
+  seed_rosbag_rows(
+      *storage_, {make_rosbag("A", "/bags/fault_A_100", 100, 4096), make_rosbag("B", "/bags/fault_A_100", 100, 4096)});
+  seed_rosbag_rows(*storage_, {make_rosbag("A", "/bags/fault_A_200", 200, 1024)});
 
   EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 4096u + 1024u) << "bytes belong to file_path, not to the row";
 }
@@ -1457,7 +1416,7 @@ TEST_F(SqliteFaultStorageTest, ListRosbagsForEntityFiltersCorrectly) {
   info1.duration_sec = 5.0;
   info1.size_bytes = 1024;
   info1.created_at_ns = clock.now().nanoseconds();
-  storage_->store_rosbag_file(info1);
+  seed_rosbag_rows(*storage_, {info1});
 
   RosbagFileInfo info2;
   info2.fault_code = "ENTITY_FAULT_2";
@@ -1466,7 +1425,7 @@ TEST_F(SqliteFaultStorageTest, ListRosbagsForEntityFiltersCorrectly) {
   info2.duration_sec = 3.0;
   info2.size_bytes = 512;
   info2.created_at_ns = clock.now().nanoseconds();
-  storage_->store_rosbag_file(info2);
+  seed_rosbag_rows(*storage_, {info2});
 
   // Get rosbags for motor entity
   auto rosbags = storage_->list_rosbags_for_entity("/powertrain/motor");
@@ -1486,11 +1445,10 @@ TEST_F(SqliteFaultStorageTest, ListRosbagsForEntityFiltersCorrectly) {
 TEST_F(SqliteFaultStorageTest, AFailingRowDeleteKeepsTheBagOnDisk) {
   using ros2_medkit_fault_manager::RosbagFileInfo;
 
-  // delete_rosbag_file() has to survive a DELETE that throws - a busy, full or
-  // read-only database - without having already unlinked the bag. A surviving row
-  // whose directory is gone fails every later retrieval and keeps its bytes charged
-  // against the quota, which sums rows. The batch sibling states this invariant in
-  // its own comment; this pins it for the single-row path too.
+  // A clear has to survive a DELETE that throws - a busy, full or read-only database -
+  // without the bag being unlinked. A surviving row whose directory is gone fails every
+  // later retrieval and keeps its bytes charged against the quota, which sums rows. The
+  // storage primitive never unlinks, and the retention hands over nothing on a throw.
   const auto bag_dir = std::filesystem::temp_directory_path() / "test_failing_delete_bag";
   std::filesystem::create_directories(bag_dir);
   { std::ofstream(bag_dir / "payload.mcap") << "data"; }
@@ -1502,7 +1460,7 @@ TEST_F(SqliteFaultStorageTest, AFailingRowDeleteKeepsTheBagOnDisk) {
   info.duration_sec = 1.0;
   info.size_bytes = 4;
   info.created_at_ns = 1000;
-  storage_->store_rosbag_file(info);
+  seed_rosbag_rows(*storage_, {info});
 
   // Make the DELETE, and only the DELETE, fail. A dropped or renamed table would
   // take the preceding SELECT with it, and the unlink under test comes after that.
@@ -1515,7 +1473,8 @@ TEST_F(SqliteFaultStorageTest, AFailingRowDeleteKeepsTheBagOnDisk) {
             SQLITE_OK);
   sqlite3_close(raw);
 
-  EXPECT_THROW(storage_->delete_rosbag_file("DELETE_FAILS"), std::runtime_error);
+  RosbagRetention retention(*storage_, RosbagRetentionLimits{}, test_log_sink(), "test_sqlite_storage");
+  EXPECT_THROW(retention.on_fault_cleared("DELETE_FAILS"), std::runtime_error);
 
   EXPECT_TRUE(storage_->get_rosbag_file("DELETE_FAILS").has_value()) << "the DELETE failed, so its row must remain";
   EXPECT_TRUE(std::filesystem::exists(bag_dir))
@@ -1536,7 +1495,7 @@ TEST_F(SqliteFaultStorageTest, GetAllRosbagFilesReturnsSortedByCreatedAt) {
   info1.duration_sec = 1.0;
   info1.size_bytes = 100;
   info1.created_at_ns = 1000;
-  storage_->store_rosbag_file(info1);
+  seed_rosbag_rows(*storage_, {info1});
 
   RosbagFileInfo info2;
   info2.fault_code = "FAULT_B";
@@ -1545,7 +1504,7 @@ TEST_F(SqliteFaultStorageTest, GetAllRosbagFilesReturnsSortedByCreatedAt) {
   info2.duration_sec = 2.0;
   info2.size_bytes = 200;
   info2.created_at_ns = 2000;
-  storage_->store_rosbag_file(info2);
+  seed_rosbag_rows(*storage_, {info2});
 
   auto all_rosbags = storage_->get_all_rosbag_files();
   ASSERT_EQ(all_rosbags.size(), 2u);
@@ -1572,17 +1531,23 @@ TEST_F(SqliteFaultStorageTest, SharedRosbagSurvivesUntilTheLastFaultIsDeleted) {
   info.duration_sec = 5.0;
   info.size_bytes = 4096;
   info.created_at_ns = 1000;
-  storage_->store_rosbag_file(info);
+  seed_rosbag_rows(*storage_, {info});
 
   info.fault_code = "CORRELATED";
-  storage_->store_rosbag_file(info);
+  seed_rosbag_rows(*storage_, {info});
+  RosbagRetention retention(*storage_, RosbagRetentionLimits{}, test_log_sink(), "test_sqlite_storage");
 
-  EXPECT_TRUE(storage_->delete_rosbag_file("CORRELATED"));
-  EXPECT_TRUE(std::filesystem::exists(bag_path));
+  const auto correlated = retention.on_fault_cleared("CORRELATED");
+  expect_unlinkable(correlated.unlink_paths);
+  EXPECT_GT(correlated.removed_rows, 0u);
+  EXPECT_FALSE(listed(correlated.unlink_paths, bag_path));
   EXPECT_TRUE(storage_->get_rosbag_file("ROOT_CAUSE").has_value());
 
-  EXPECT_TRUE(storage_->delete_rosbag_file("ROOT_CAUSE"));
-  EXPECT_FALSE(std::filesystem::exists(bag_path));
+  const auto root = retention.on_fault_cleared("ROOT_CAUSE");
+  expect_unlinkable(root.unlink_paths);
+  EXPECT_GT(root.removed_rows, 0u);
+  EXPECT_TRUE(listed(root.unlink_paths, bag_path));
+  std::filesystem::remove_all(bag_path);
 }
 
 TEST_F(SqliteFaultStorageTest, SharedRosbagCountsOnceTowardsStorageTotal) {
@@ -1600,7 +1565,7 @@ TEST_F(SqliteFaultStorageTest, SharedRosbagCountsOnceTowardsStorageTotal) {
     info.duration_sec = 5.0;
     info.size_bytes = bytes;
     info.created_at_ns = 1000;
-    storage_->store_rosbag_file(info);
+    seed_rosbag_rows(*storage_, {info});
   };
 
   store("BIG_FIRST", "/tmp/shared_a.mcap", 1000);
@@ -1610,63 +1575,6 @@ TEST_F(SqliteFaultStorageTest, SharedRosbagCountsOnceTowardsStorageTotal) {
   store("UNRELATED", "/tmp/other.mcap", 500);
 
   EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 1000u + 800u + 500u);
-}
-
-// Re-store guard: a fault re-confirming stores a row with a new path, and the
-// old bag must be unlinked only when no sibling fault still references it.
-
-TEST_F(SqliteFaultStorageTest, RestoreWithNewPathUnlinksTheOldExclusiveBag) {
-  using ros2_medkit_fault_manager::RosbagFileInfo;
-
-  const auto old_path = temp_db_path_.string() + "_exclusive_bag";
-  std::filesystem::create_directories(old_path);
-
-  RosbagFileInfo info;
-  info.fault_code = "X";
-  info.file_path = old_path;
-  info.format = "mcap";
-  info.duration_sec = 5.0;
-  info.size_bytes = 100;
-  info.created_at_ns = 1000;
-  storage_->store_rosbag_file(info);
-
-  info.file_path = old_path + "_new";
-  storage_->store_rosbag_file(info);
-
-  EXPECT_FALSE(std::filesystem::exists(old_path)) << "nobody references the old bag, it must be unlinked";
-  auto row = storage_->get_rosbag_file("X");
-  ASSERT_TRUE(row.has_value());
-  EXPECT_EQ(row->file_path, old_path + "_new");
-}
-
-TEST_F(SqliteFaultStorageTest, RestoreWithNewPathKeepsTheBagASiblingStillReferences) {
-  using ros2_medkit_fault_manager::RosbagFileInfo;
-
-  const auto shared_path = temp_db_path_.string() + "_shared_bag";
-  std::filesystem::create_directories(shared_path);
-
-  RosbagFileInfo info;
-  info.file_path = shared_path;
-  info.format = "mcap";
-  info.duration_sec = 5.0;
-  info.size_bytes = 100;
-  info.created_at_ns = 1000;
-  info.fault_code = "X";
-  storage_->store_rosbag_file(info);
-  info.fault_code = "Y";
-  storage_->store_rosbag_file(info);
-
-  info.fault_code = "X";
-  info.file_path = shared_path + "_new";
-  storage_->store_rosbag_file(info);
-
-  EXPECT_TRUE(std::filesystem::exists(shared_path)) << "the sibling fault still owns the shared bag";
-  auto sibling = storage_->get_rosbag_file("Y");
-  ASSERT_TRUE(sibling.has_value());
-  EXPECT_EQ(sibling->file_path, shared_path);
-
-  std::error_code ec;
-  std::filesystem::remove_all(shared_path, ec);
 }
 
 // Burst-level batch operations (one SQLite transaction per burst).
@@ -1686,7 +1594,7 @@ TEST_F(SqliteFaultStorageTest, BulkStoreRegistersEveryFaultOfTheBurst) {
     info.fault_code = code;
     rows.push_back(info);
   }
-  storage_->store_rosbag_files(rows);
+  seed_rosbag_rows(*storage_, rows);
 
   for (const char * code : {"ROOT_CAUSE", "CORRELATED_A", "CORRELATED_B"}) {
     auto row = storage_->get_rosbag_file(code);
@@ -1713,18 +1621,28 @@ TEST_F(SqliteFaultStorageTest, BulkDeleteRemovesTheBurstAndUnlinksTheBagOnce) {
     info.fault_code = code;
     rows.push_back(info);
   }
-  storage_->store_rosbag_files(rows);
+  seed_rosbag_rows(*storage_, rows);
+  RosbagRetention retention(*storage_, RosbagRetentionLimits{}, test_log_sink(), "test_sqlite_storage");
 
   // A partial delete leaves the bag on disk for the remaining fault.
-  EXPECT_EQ(storage_->delete_rosbag_files({"CORRELATED_A", "CORRELATED_B", "NEVER_STORED"}), 2u);
-  EXPECT_TRUE(std::filesystem::exists(bag_path));
+  size_t codes_deleted = 0;
+  for (const char * code : {"CORRELATED_A", "CORRELATED_B", "NEVER_STORED"}) {
+    const auto removal = retention.on_fault_cleared(code);
+    expect_unlinkable(removal.unlink_paths);
+    EXPECT_FALSE(listed(removal.unlink_paths, bag_path)) << code;
+    codes_deleted += removal.removed_rows > 0 ? 1 : 0;
+  }
+  EXPECT_EQ(codes_deleted, 2u);
   EXPECT_TRUE(storage_->get_rosbag_file("ROOT_CAUSE").has_value());
   EXPECT_FALSE(storage_->get_rosbag_file("CORRELATED_A").has_value());
 
   // The last reference going away unlinks the directory.
-  EXPECT_EQ(storage_->delete_rosbag_files({"ROOT_CAUSE"}), 1u);
-  EXPECT_FALSE(std::filesystem::exists(bag_path));
+  const auto root = retention.on_fault_cleared("ROOT_CAUSE");
+  expect_unlinkable(root.unlink_paths);
+  EXPECT_EQ(root.removed_rows, 1u);
+  EXPECT_EQ(paths_of(root.unlink_paths), std::vector<std::string>{bag_path});
   EXPECT_EQ(storage_->get_total_rosbag_storage_bytes(), 0u);
+  std::filesystem::remove_all(bag_path);
 }
 
 // =============================================================================

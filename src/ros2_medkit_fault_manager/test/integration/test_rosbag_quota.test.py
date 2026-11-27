@@ -23,6 +23,7 @@ directory. A run ends with SIGTERM and an exit code of 0.
 
 import os
 import pathlib
+import re
 import shutil
 import sys
 
@@ -34,12 +35,21 @@ import launch_testing.util
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from rosbag_fm_harness import (  # noqa: E402
-    bag_dirs, MIB, poll, RetentionCase, sqlite_exec, Ticker,
+    bag_dirs, FM_NODE, MESSAGE_SIZE, MIB, poll, RetentionCase, sqlite_exec, Ticker,
 )
 
 RACE_REPETITIONS = 50
 DISCARDED_BEFORE_STORE = 'Bag file discarded (all its faults cleared before it was stored)'
 FUTURE_NS = 4_000_000_000 * 1_000_000_000
+SLOW_REMOVAL_FILES = 20000
+CLEARED_REMOVAL = r'Recording removed: (\S+) \(fault cleared\)'
+
+
+def make_slow_to_remove(path):
+    """Fill `path` with empty files, so its removal outlasts the reading of one log line."""
+    for index in range(SLOW_REMOVAL_FILES):
+        with open(os.path.join(path, f'pad_{index}'), 'w'):
+            pass
 
 
 def generate_test_description():
@@ -299,6 +309,32 @@ class TestRosbagQuota(RetentionCase):
             self.assertTrue(os.path.isdir(served.file_path))
             self.assertEqual([code for code, _ in self.stored_rows()], ['SHUT_A'])
 
+    def test_shutdown_finalizes_a_cap_victim(self):
+        """SIGTERM inside a post-roll stores the recording and removes the one its cap replaced."""
+        params = {'snapshots.rosbag.max_bags_per_fault': 1, 'snapshots.rosbag.auto_cleanup': False}
+        with self.fm_run(**params) as fm:
+            first = self.record(fm, 'SHUT_CAP', 1)
+        with self.fm_run(**{**params, 'snapshots.rosbag.duration_after_sec': 30.0}) as fm:
+            self.assertTrue(self.client.clear('SHUT_CAP').success)
+            mark = fm.mark()
+            self.client.publish_bytes(8, 128 * 1024)
+            self.assertTrue(self.client.report('SHUT_CAP').accepted)
+            self.assertIsNotNone(
+                fm.wait_line(r'Recording [\d.]+s more after fault confirmation', since=mark),
+                'the post-fault window never opened:\n' + fm.output()[-3000:])
+            self.assertEqual(fm.terminate(), 0, fm.output()[-3000:])
+        self.assertFalse(os.path.exists(first), f'{first} outlived the row the cap removed')
+        dirs = bag_dirs(self.storage)
+        self.assertEqual(len(dirs), 1, f'expected only the replacement, found {dirs}')
+        replacement = os.path.join(self.storage, dirs[0])
+        with self.fm_run(**params):
+            served = self.client.get_rosbag('SHUT_CAP')
+            self.assertTrue(served.success, served.error_message)
+            self.assertEqual(served.file_path, replacement)
+            self.assertTrue(os.path.isdir(replacement))
+            self.assertEqual(self.stored_rows(), [('SHUT_CAP', replacement)])
+            self.assertFalse(os.path.exists(first))
+
     def test_shutdown_right_after_clear(self):
         """SIGTERM as soon as ClearFault returns leaves no directory and a clean exit."""
         with self.fm_run() as fm:
@@ -307,6 +343,142 @@ class TestRosbagQuota(RetentionCase):
             self.assertEqual(fm.terminate(), 0, fm.output()[-3000:])
         self.assertFalse(os.path.exists(bag))
         self.assertEqual(bag_dirs(self.storage), [])
+
+    def test_shutdown_drains_queued_removals(self):
+        """SIGTERM with clear removals still queued runs them all before the exit."""
+        with self.fm_run() as fm:
+            bags = [self.record(fm, 'DRAIN_A', 1), self.record(fm, 'DRAIN_B', 1)]
+            for bag in bags:
+                make_slow_to_remove(bag)
+            self.assertTrue(self.client.clear('DRAIN_A').success)
+            self.assertTrue(self.client.clear('DRAIN_B').success)
+            self.assertEqual(fm.terminate(), 0, fm.output()[-3000:])
+            output = fm.output()
+        for bag in bags:
+            self.assertFalse(os.path.exists(bag),
+                             f'{bag} outlived the shutdown:\n{output[-4000:]}')
+        self.assertEqual(bag_dirs(self.storage), [])
+
+    def test_no_removal_line_for_a_missing_directory(self):
+        """A clear whose directory is already gone logs no removal of it."""
+        with self.fm_run(**{'snapshots.rosbag.max_bags_per_fault': 1,
+                            'snapshots.rosbag.auto_cleanup': True}) as fm:
+            bag = self.record(fm, 'GONE_DIR', 1)
+            shutil.rmtree(bag)
+            mark = fm.mark()
+            self.assertTrue(self.client.clear('GONE_DIR').success)
+            self.assertIsNotNone(
+                fm.wait_line(r"Auto-cleanup: deleted bag file for fault 'GONE_DIR'", since=mark),
+                fm.output()[-3000:])
+            removed = f'Recording removed: {os.path.basename(bag)} '
+            self.assertEqual(fm.count_lines(re.escape(removed), since=mark), 0,
+                             fm.output()[-3000:])
+
+    def test_removals_are_logged(self):
+        """Each removal of a recording is logged after its directory is gone."""
+        with self.subTest('a: a cap victim, before the recording that replaced it'):
+            self.new_scratch()
+            with self.fm_run(**{'snapshots.rosbag.auto_cleanup': False}) as fm:
+                first = self.record(fm, 'LOG_CAP', 1)
+                self.assertTrue(self.client.clear('LOG_CAP').success)
+                make_slow_to_remove(first)
+                mark = self.start_store(fm, 'LOG_CAP', 1)
+                removed = (f'Recording removed: {os.path.basename(first)} '
+                           f'(max_bags_per_fault)')
+                self.assertIsNotNone(fm.wait_line(re.escape(removed), since=mark),
+                                     fm.output()[-3000:])
+                self.assertFalse(os.path.exists(first), f'{first} is still on disk')
+                self.assert_logged_before(fm, removed, 'LOG_CAP', mark)
+
+        with self.subTest('b: a quota eviction, before the recording that caused it'):
+            self.new_scratch()
+            with self.fm_run(**{'snapshots.rosbag.max_bags_per_fault': 0,
+                                'snapshots.rosbag.max_total_storage_mb': 3}) as fm:
+                evicted = self.record(fm, 'LOG_QUOTA_A', 2)
+                make_slow_to_remove(evicted)
+                mark = self.start_store(fm, 'LOG_QUOTA_B', 2)
+                line = f"[{FM_NODE}]: Deleted old bag '{evicted}' to enforce storage limit"
+                self.assertIsNotNone(fm.wait_line(re.escape(line), since=mark),
+                                     fm.output()[-3000:])
+                self.assertFalse(os.path.exists(evicted), f'{evicted} is still on disk')
+                self.assert_logged_before(fm, line, 'LOG_QUOTA_B', mark)
+
+        with self.subTest('c: a clear'):
+            self.new_scratch()
+            with self.fm_run() as fm:
+                bag = self.record(fm, 'LOG_CLEAR', 1)
+                mark = fm.mark()
+                self.assertTrue(self.client.clear('LOG_CLEAR').success)
+                self.assertIsNotNone(
+                    fm.wait_line(r"Auto-cleanup: deleted bag file for fault 'LOG_CLEAR'",
+                                 since=mark),
+                    fm.output()[-3000:])
+                self.assertFalse(os.path.exists(bag), f'{bag} is still on disk')
+
+        with self.subTest('d: a clear of a fault with two recordings'):
+            self.new_scratch()
+            with self.fm_run(**{'snapshots.rosbag.max_bags_per_fault': 0,
+                                'snapshots.rosbag.auto_cleanup': False}) as fm:
+                bags = [self.record(fm, 'LOG_TWO', 1)]
+                self.assertTrue(self.client.clear('LOG_TWO').success)
+                bags.append(self.record(fm, 'LOG_TWO', 1))
+            self.assertEqual(sorted(self.row_paths('LOG_TWO')), sorted(bags))
+            by_id = {os.path.basename(bag): bag for bag in bags}
+            for bag in bags:
+                make_slow_to_remove(bag)
+            with self.fm_run(**{'snapshots.rosbag.max_bags_per_fault': 1,
+                                'snapshots.rosbag.auto_cleanup': True}) as fm:
+                mark = fm.mark()
+                self.assertTrue(self.client.clear('LOG_TWO').success)
+                seen = []
+                for _ in bags:
+                    others = ''.join(f'(?!{re.escape(done)} )' for done in seen)
+                    match = fm.wait_line(r'Recording removed: ' + others +
+                                         r'(\S+) \(fault cleared\)', since=mark)
+                    self.assertIsNotNone(match, fm.output()[-3000:])
+                    self.assertIn(match.group(1), by_id)
+                    self.assertFalse(os.path.exists(by_id[match.group(1)]),
+                                     f'{by_id[match.group(1)]} is still on disk')
+                    seen.append(match.group(1))
+                auto = r"Auto-cleanup: deleted bag file for fault 'LOG_TWO'"
+                self.assertIsNotNone(fm.wait_line(auto, since=mark), fm.output()[-3000:])
+                self.assertEqual(fm.count_lines(CLEARED_REMOVAL, since=mark), 2)
+                self.assertEqual(fm.count_lines(auto, since=mark), 1)
+                output = fm.output()
+                for recording_id in seen:
+                    self.assertLess(
+                        output.index(f'Recording removed: {recording_id} (fault cleared)'),
+                        output.index("Auto-cleanup: deleted bag file for fault 'LOG_TWO'"),
+                        'the fault was logged before the removal of its recording')
+
+        with self.subTest('e: a clear removes on the worker, after its reply'):
+            self.new_scratch()
+            with self.fm_run() as fm:
+                bag = self.record(fm, 'LOG_WORKER', 1)
+                make_slow_to_remove(bag)
+                mark = fm.mark()
+                self.assertTrue(self.client.clear('LOG_WORKER').success)
+                self.assertTrue(os.path.isdir(bag),
+                                'the clear removed the directory before its reply')
+                removed = f'Recording removed: {os.path.basename(bag)} (fault cleared)'
+                self.assertIsNotNone(fm.wait_line(re.escape(removed), since=mark),
+                                     fm.output()[-3000:])
+                self.assertFalse(os.path.exists(bag), f'{bag} is still on disk')
+
+    def start_store(self, fm, code, mib):
+        """Publish `mib` MiB and confirm `code` without waiting for the bag; return a mark."""
+        mark = fm.mark()
+        self.client.publish_bytes(int(mib * MIB) // MESSAGE_SIZE, MESSAGE_SIZE)
+        self.assertTrue(self.client.report(code).accepted)
+        return mark
+
+    def assert_logged_before(self, fm, removal, code, mark):
+        """Wait for the bag of `code` and check `removal` was logged before it."""
+        done = fm.wait_line(rf'Bag file (?:created|completed): \S*fault_{code}_\d+', since=mark)
+        self.assertIsNotNone(done, f'no recording for {code}:\n' + fm.output()[-3000:])
+        output = fm.output()
+        self.assertLess(output.index(removal), output.index(done.group(0)),
+                        'the recording was logged before the removal it caused')
 
     def test_stale_rows(self):
         """A row whose directory is gone is reaped on the next listing, with rosbag on or off."""
