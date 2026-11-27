@@ -26,8 +26,15 @@ namespace ros2_medkit_gateway {
 EntityMerger::EntityMerger(const std::string & peer_name) : peer_name_(peer_name) {
 }
 
-EntityMerger::EntityMerger(const std::string & peer_name, LocalIds local_ids, LocalIds peer_ids)
-  : peer_name_(peer_name), local_ids_(std::move(local_ids)), peer_ids_(std::move(peer_ids)) {
+EntityMerger::EntityMerger(const std::string & peer_name, LocalIds local_ids, std::optional<LocalIds> peer_ids)
+  : peer_name_(peer_name)
+  , local_ids_(std::move(local_ids))
+  , peer_ids_(peer_ids ? std::move(*peer_ids) : LocalIds{})
+  , checks_references_(peer_ids.has_value()) {
+}
+
+const std::unordered_set<std::string> * EntityMerger::declared(const std::unordered_set<std::string> & ids) const {
+  return checks_references_ ? &ids : nullptr;
 }
 
 EntityMerger::LocalIds EntityMerger::collect_ids(const std::vector<Area> & areas,
@@ -52,6 +59,21 @@ EntityMerger::LocalIds EntityMerger::collect_ids(const std::vector<Area> & areas
 
 std::string EntityMerger::prefix_id(const std::string & id) const {
   return peer_name_ + SEPARATOR + id;
+}
+
+std::string EntityMerger::prefix_name(const std::string & name) const {
+  std::string served = peer_name_ + SEPARATOR + name;
+  if (served.size() > kMaxServedNameBytes) {
+    // Back off to the start of the character the cut would split: a byte
+    // 10xxxxxx continues one, and a name ending inside a character is not
+    // UTF-8, which the JSON writer refuses.
+    size_t cut = kMaxServedNameBytes;
+    while (cut > 0 && (static_cast<unsigned char>(served[cut]) & 0xC0u) == 0x80u) {
+      --cut;
+    }
+    served.resize(cut);
+  }
+  return served;
 }
 
 std::string EntityMerger::peer_source() const {
@@ -140,24 +162,36 @@ void apply_rename(std::string & id, const std::unordered_map<std::string, std::s
   }
 }
 
+/// True when the reference `id` names nothing the peer may name here: an
+/// entity the merge dropped, whose ID names a local entity here, or, when the
+/// peer's IDs of that type are known (`declared`), one the peer never declared.
+bool unresolvable(const std::string & id, const std::unordered_set<std::string> & drops,
+                  const std::unordered_set<std::string> * declared) {
+  return drops.count(id) > 0u || (declared != nullptr && declared->count(id) == 0u);
+}
+
 /// A reference the peer made by its own ID, as served here: the prefixed ID of
-/// a renamed entity, and nothing for a dropped one, whose ID names a local
-/// entity here and must not be read as a reference to it.
+/// a renamed entity, and nothing for one it may not name (unresolvable).
 void resolve_reference(std::string & id, const std::unordered_map<std::string, std::string> & renames,
-                       const std::unordered_set<std::string> & drops) {
-  if (drops.count(id) > 0u) {
+                       const std::unordered_set<std::string> & drops,
+                       const std::unordered_set<std::string> * declared) {
+  if (id.empty()) {
+    return;
+  }
+  if (unresolvable(id, drops, declared)) {
     id.clear();
     return;
   }
   apply_rename(id, renames);
 }
 
-/// resolve_reference over a list; dropped entries are removed.
+/// resolve_reference over a list; the entries it may not name are removed.
 void resolve_references(std::vector<std::string> & ids, const std::unordered_map<std::string, std::string> & renames,
-                        const std::unordered_set<std::string> & drops) {
+                        const std::unordered_set<std::string> & drops,
+                        const std::unordered_set<std::string> * declared) {
   ids.erase(std::remove_if(ids.begin(), ids.end(),
-                           [&drops](const std::string & id) {
-                             return drops.count(id) > 0u;
+                           [&drops, declared](const std::string & id) {
+                             return unresolvable(id, drops, declared);
                            }),
             ids.end());
   // Each served ID once: a peer that names one dependency twice names one
@@ -192,6 +226,11 @@ void EntityMerger::resolve_hosts(std::vector<std::string> & hosts) const {
     const auto & renames = app ? renames_.apps : renames_.components;
     const auto & drops = app ? drops_.apps : drops_.components;
     if (drops.count(host) > 0u) {
+      continue;
+    }
+    // Neither: with the peer's IDs known, the host names nothing of the peer's,
+    // and here it would name whatever holds the ID.
+    if (checks_references_ && !app && peer_ids_.components.count(host) == 0u && renames_.components.count(host) == 0u) {
       continue;
     }
     auto it = renames.find(host);
@@ -272,7 +311,7 @@ std::vector<Area> EntityMerger::merge_areas(const std::vector<Area> & local, con
         drop(Kind::kArea, remote_area.id, "its prefixed ID '" + added.id + "' is taken");
         continue;
       }
-      added.name = peer_name_ + SEPARATOR + remote_area.name;
+      added.name = prefix_name(remote_area.name);
       added.original_id = remote_area.id;
       renames_.areas[remote_area.id] = added.id;
       record_generated(added.id, Kind::kArea, remote_area.id);
@@ -287,7 +326,7 @@ std::vector<Area> EntityMerger::merge_areas(const std::vector<Area> & local, con
 
   // A subarea names its parent by the ID the peer gave it.
   for (auto i : added_index) {
-    resolve_reference(result[i].parent_area_id, renames_.areas, drops_.areas);
+    resolve_reference(result[i].parent_area_id, renames_.areas, drops_.areas, declared(peer_ids_.areas));
   }
 
   return result;
@@ -360,7 +399,7 @@ std::vector<Function> EntityMerger::merge_functions(const std::vector<Function> 
         drop(Kind::kFunction, remote_func.id, "its prefixed ID '" + added.id + "' is taken");
         continue;
       }
-      added.name = peer_name_ + SEPARATOR + remote_func.name;
+      added.name = prefix_name(remote_func.name);
       added.original_id = remote_func.id;
       renames_.functions[remote_func.id] = added.id;
       record_generated(added.id, Kind::kFunction, remote_func.id);
@@ -375,7 +414,7 @@ std::vector<Function> EntityMerger::merge_functions(const std::vector<Function> 
 
   // Dependencies the peer named, by the IDs the Functions are served under.
   for (auto i : renamed_refs_index) {
-    resolve_references(result[i].depends_on, renames_.functions, drops_.functions);
+    resolve_references(result[i].depends_on, renames_.functions, drops_.functions, declared(peer_ids_.functions));
   }
 
   return result;
@@ -394,7 +433,7 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
 
   std::vector<size_t> added_index;
   for (auto remote_comp : remote) {
-    resolve_reference(remote_comp.area, renames_.areas, drops_.areas);
+    resolve_reference(remote_comp.area, renames_.areas, drops_.areas, declared(peer_ids_.areas));
 
     // A merged Component is routed to the peer by its ID, and so would be a local entity of another type holding
     // that ID. Such a remote Component is prefixed like any other cross-type collision instead of merged. An ID a
@@ -462,7 +501,7 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
         drop(Kind::kComponent, remote_comp.id, "its prefixed ID '" + added.id + "' is taken");
         continue;
       }
-      added.name = peer_name_ + SEPARATOR + remote_comp.name;
+      added.name = prefix_name(remote_comp.name);
       added.original_id = remote_comp.id;
       renames_.components[remote_comp.id] = added.id;
       record_generated(added.id, Kind::kComponent, remote_comp.id);
@@ -476,8 +515,9 @@ std::vector<Component> EntityMerger::merge_components(const std::vector<Componen
   }
 
   for (auto i : added_index) {
-    resolve_reference(result[i].parent_component_id, renames_.components, drops_.components);
-    resolve_references(result[i].depends_on, renames_.components, drops_.components);
+    resolve_reference(result[i].parent_component_id, renames_.components, drops_.components,
+                      declared(peer_ids_.components));
+    resolve_references(result[i].depends_on, renames_.components, drops_.components, declared(peer_ids_.components));
   }
 
   return result;
@@ -502,7 +542,7 @@ std::vector<App> EntityMerger::merge_apps(const std::vector<App> & local, const 
     // in both cases the component_id remains valid, unless the Component was
     // prefixed, in which case the App follows it. Store the peer origin in
     // x-medkit metadata via the source field for traceability.
-    resolve_reference(added.component_id, renames_.components, drops_.components);
+    resolve_reference(added.component_id, renames_.components, drops_.components, declared(peer_ids_.components));
 
     if (local_ids.count(remote_app.id) > 0u || held_by_other_type(remote_app.id, Kind::kApp)) {
       // Collision: prefix the remote entity ID, preserve original for clients
@@ -515,7 +555,7 @@ std::vector<App> EntityMerger::merge_apps(const std::vector<App> & local, const 
         drop(Kind::kApp, remote_app.id, "its prefixed ID '" + added.id + "' is taken");
         continue;
       }
-      added.name = peer_name_ + SEPARATOR + remote_app.name;
+      added.name = prefix_name(remote_app.name);
       renames_.apps[remote_app.id] = added.id;
       record_generated(added.id, Kind::kApp, remote_app.id);
     }
@@ -528,7 +568,7 @@ std::vector<App> EntityMerger::merge_apps(const std::vector<App> & local, const 
   }
 
   for (auto i : added_index) {
-    resolve_references(result[i].depends_on, renames_.apps, drops_.apps);
+    resolve_references(result[i].depends_on, renames_.apps, drops_.apps, declared(peer_ids_.apps));
   }
 
   return result;

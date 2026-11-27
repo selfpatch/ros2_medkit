@@ -273,6 +273,24 @@ std::string path_on_peer(const std::string & path, const EntityInfo & entity) {
   return path;
 }
 
+/// The `type` an entity detail of the collection `type` names itself by.
+std::string route_type_name(SovdEntityType type) {
+  switch (type) {
+    case SovdEntityType::AREA:
+      return "area";
+    case SovdEntityType::COMPONENT:
+      return "component";
+    case SovdEntityType::APP:
+      return "app";
+    case SovdEntityType::FUNCTION:
+      return "function";
+    case SovdEntityType::SERVER:
+    case SovdEntityType::UNKNOWN:
+      break;
+  }
+  return "";
+}
+
 /// Replace a forwarded discovery response with a 502 naming why it is not
 /// served: `what` the body does, after the peer's name. The peer's headers
 /// that describe its body go with it.
@@ -302,9 +320,20 @@ void refuse_forwarded_discovery(httplib::Response & res, const std::string & pee
 /// entities by the peer's ids as if they were this gateway's, which is the
 /// answer the rewrite exists to prevent. No discovery response comes near
 /// either bound, so only a broken or hostile peer is refused. The text is
-/// judged before it is parsed, so no deep or huge value is built.
-void rewrite_forwarded_discovery(const httplib::Request & req, const std::string & peer, httplib::Response & res,
-                                 const std::shared_ptr<const PeerIdIndex> & peer_ids) {
+/// judged before it is parsed, so no deep or huge value is built. So is a body
+/// whose rewrite would add more than kMaxServedIdRewriteGrowth bytes: one that
+/// names a renamed entity in far more objects than its size accounts for.
+///
+/// The detail of an entity, `peer_path` without a resource after the id (the
+/// trailing slash every route accepts is none), has to describe the entity it
+/// was asked for: an `id` other than the peer's id
+/// for it, or a `type` other than the route's - a `type` that is not a string
+/// included - is refused (502). Served, a detail of the peer's App `sensor`
+/// saying it is App `admin` would present as this gateway's account of
+/// whichever entity holds `admin` here. A detail that names no type is of the
+/// route's, and its `id` and `name` are rewritten as that type's.
+void rewrite_forwarded_discovery(const httplib::Request & req, const std::string & peer_path, const std::string & peer,
+                                 httplib::Response & res, const std::shared_ptr<const PeerIdIndex> & peer_ids) {
   if (req.method != "GET" || res.status != 200 || !is_discovery_route(req.path)) {
     return;
   }
@@ -316,11 +345,46 @@ void rewrite_forwarded_discovery(const httplib::Request & req, const std::string
   if (body.is_discarded()) {
     return;
   }
-  switch (rewrite_to_served_ids(body, peer, peer_ids)) {
+  std::optional<SovdEntityType> detail_type;
+  const std::string peer_route = without_route_trailing_slash(peer_path);
+  if (const auto segment = locate_entity_segment(peer_route); segment && !segment->has_subpath) {
+    const std::string asked = peer_route.substr(segment->id_pos, segment->id_len);
+    const auto id = body.is_object() ? body.find("id") : body.end();
+    const std::string said = id != body.end() && id->is_string() ? id->get<std::string>() : std::string{};
+    if (said != asked) {
+      refuse_forwarded_discovery(res, peer,
+                                 said.empty() ? "names no entity for '" + asked + "'"
+                                              : "describes entity '" + said + "' rather than the '" + asked +
+                                                    "' it was asked for");
+      return;
+    }
+    const auto type = body.find("type");
+    if (type != body.end() && !type->is_string()) {
+      refuse_forwarded_discovery(res, peer,
+                                 "describes '" + asked + "' with a type that is not a string, not as '" +
+                                     route_type_name(segment->type) + "'");
+      return;
+    }
+    if (type != body.end() && type->get<std::string>() != route_type_name(segment->type)) {
+      refuse_forwarded_discovery(res, peer,
+                                 "describes '" + asked + "' as '" + type->get<std::string>() + "' rather than '" +
+                                     route_type_name(segment->type) + "'");
+      return;
+    }
+    detail_type = segment->type;
+  }
+  // The items of a relationship collection are of the type the relationship
+  // lists when they name none the walk recognizes.
+  switch (rewrite_to_served_ids(body, peer, peer_ids, detail_type, relationship_items(peer_path))) {
     case ServedIdRewrite::kUnchanged:
       return;
     case ServedIdRewrite::kTooDeep:
       refuse_forwarded_discovery(res, peer, describe_peer_json_shape(PeerJsonShape::kTooDeep));
+      return;
+    case ServedIdRewrite::kTooLarge:
+      refuse_forwarded_discovery(res, peer,
+                                 "would grow by more than " + std::to_string(kMaxServedIdRewriteGrowth) +
+                                     " bytes when named by the IDs served here");
       return;
     case ServedIdRewrite::kRewritten:
       break;
@@ -328,6 +392,30 @@ void rewrite_forwarded_discovery(const httplib::Request & req, const std::string
   auto content_type = res.get_header_value("Content-Type");
   res.set_content(body.dump(), content_type.empty() ? "application/json" : content_type);
   res.headers.erase("ETag");
+}
+
+/// The `Location` `peer` answered a forwarded request with, naming the entity
+/// it addresses by the id this gateway serves it under (served_entity_uri),
+/// read against `peer_ids`, the index of the generation the forward was
+/// resolved in. The peer builds it from the route it received, which names
+/// the entity by the peer's id: for an entity this gateway renamed on
+/// collision that id is the local namesake's here, and an async execution or
+/// a lock followed through it would be looked up on the wrong entity. A
+/// `Location` naming an entity this gateway does not serve is removed.
+void translate_forwarded_location(httplib::Response & res, const std::string & peer,
+                                  const std::shared_ptr<const PeerIdIndex> & peer_ids) {
+  if (!res.has_header("Location")) {
+    return;
+  }
+  const auto location = res.get_header_value("Location");
+  auto served = served_entity_uri(peer_ids, peer, location);
+  if (served && *served == location) {
+    return;
+  }
+  res.headers.erase("Location");
+  if (served) {
+    res.set_header("Location", *served);
+  }
 }
 
 }  // namespace
@@ -424,9 +512,11 @@ http::ValidatorResult<EntityInfo> HandlerContext::validate_entity_for_route(cons
       return tl::unexpected(ErrorVariant{std::move(err)});
     }
     if (tl_forward_response != nullptr) {
-      aggregation_mgr_->forward_request(entity_info.peer_name, raw_req, *tl_forward_response,
-                                        path_on_peer(raw_req.path, entity_info));
-      rewrite_forwarded_discovery(raw_req, entity_info.peer_name, *tl_forward_response, entity_info.peer_ids);
+      const std::string peer_path = path_on_peer(raw_req.path, entity_info);
+      aggregation_mgr_->forward_request(entity_info.peer_name, raw_req, *tl_forward_response, peer_path);
+      rewrite_forwarded_discovery(raw_req, peer_path, entity_info.peer_name, *tl_forward_response,
+                                  entity_info.peer_ids);
+      translate_forwarded_location(*tl_forward_response, entity_info.peer_name, entity_info.peer_ids);
     }
     return tl::unexpected(ErrorVariant{http::Forwarded{}});
   }
@@ -468,22 +558,36 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
   //
   // The member is addressed on the peer by the id that peer knows it by, read
   // off the member's recorded rename like its owner.
+  //
+  // The member and the peer ID index the peer's answer is read against come
+  // from one cache generation, the same way validate_entity_for_route reads
+  // them: an index that is the same before and after the lookup is the one
+  // the member was published with.
   const auto & cache = services_.entity_cache();
   std::string collection;
   std::optional<std::string> peer;
   std::string member_on_peer;
-  if (auto app = cache.get_app(member_id)) {
-    collection = "apps";
-    peer = aggregation_mgr_->find_owning_peer(*app);
-    member_on_peer = peer ? peer_entity_id(*app, *peer) : member_id;
-  } else if (auto component = cache.get_component(member_id)) {
-    collection = "components";
-    peer = aggregation_mgr_->find_owning_peer(*component);
-    member_on_peer = peer ? peer_entity_id(*component, *peer) : member_id;
-  } else {
-    return MemberDispatch::kServeLocally;
+  const auto look_up_member = [&]() {
+    collection.clear();
+    peer.reset();
+    member_on_peer.clear();
+    if (auto app = cache.get_app(member_id)) {
+      collection = "apps";
+      peer = aggregation_mgr_->find_owning_peer(*app);
+      member_on_peer = peer ? peer_entity_id(*app, *peer) : member_id;
+    } else if (auto component = cache.get_component(member_id)) {
+      collection = "components";
+      peer = aggregation_mgr_->find_owning_peer(*component);
+      member_on_peer = peer ? peer_entity_id(*component, *peer) : member_id;
+    }
+  };
+  auto peer_ids = cache.get_peer_id_index();
+  look_up_member();
+  for (auto latest = cache.get_peer_id_index(); latest != peer_ids; latest = cache.get_peer_id_index()) {
+    peer_ids = std::move(latest);
+    look_up_member();
   }
-  if (!peer) {
+  if (collection.empty() || !peer) {
     return MemberDispatch::kServeLocally;
   }
 
@@ -497,6 +601,7 @@ http::Result<MemberDispatch> HandlerContext::dispatch_to_member(const http::Type
   if (tl_forward_response != nullptr) {
     aggregation_mgr_->forward_request(*peer, raw_req, *tl_forward_response,
                                       api_path("/" + collection + "/" + member_on_peer + "/" + member_resource_path));
+    translate_forwarded_location(*tl_forward_response, *peer, peer_ids);
   }
   return MemberDispatch::kForwarded;
 }

@@ -276,8 +276,10 @@ classification pass over the full Component set:
   hosts from both gateways, and a local declaration that names no
   dependencies takes the peer's. Same ownership semantics as Areas. A peer host that
   names a peer App the App merge prefixed takes the prefixed id, so it cannot
-  bind to the local App with the same id. The merge keeps the other hosts as
-  the peer listed them. After the merge and the internal-node filter, the
+  bind to the local App with the same id. The merge keeps the other hosts
+  the peer declared, as App or as Component, and removes a host the peer
+  declared as neither: by the peer's ID it would name the local entity that
+  holds that ID here. After the merge and the internal-node filter, the
   gateway keeps only the hosts that name an App or Component it serves.
 
 - **Components**: Merge by ID, combining tags and metadata. Components
@@ -360,7 +362,11 @@ classification pass over the full Component set:
   Component, Function or App whose ID a local entity of another type holds
   would hand that local entity's requests - writes included - to the peer.
   The remote entity is served as ``peername__<id>`` and routed under that ID
-  instead. "Local" here is everything already merged when the peer is folded
+  instead, with the name ``peername__<name>``, cut to
+  ``EntityMerger::kMaxServedNameBytes`` (512) bytes at a UTF-8 character
+  boundary: the peer's name is bounded only by the text a refresh may read,
+  and the served name is copied into every forwarded object that names the
+  entity (below). "Local" here is everything already merged when the peer is folded
   in: this gateway's own entities, plugin-provided ones included (they are
   injected before the merge in every discovery mode), and those of every peer
   merged before it. An entity of the same peer merged earlier in the same
@@ -400,22 +406,61 @@ classification pass over the full Component set:
   A prefixed entity keeps its references valid: a subarea names its prefixed
   parent, a Component its prefixed Area, parent or dependency, an App its
   prefixed Component, and a Function its prefixed hosts and dependencies.
+  A reference a peer entity makes resolves only to an entity that peer
+  declared - kept under its own ID, prefixed, or dropped - and one to an ID
+  the peer never declared is removed in the merge: a peer Function
+  ``diagnostics`` hosting ``admin``, which the peer declares neither as App
+  nor as Component, does not group the local App ``admin``. The merge pass
+  over a peer reads the peer's IDs off the entities it fetched
+  (``EntityMerger::collect_ids``).
   A discovery response the peer answers for it - a forwarded detail, or a
   relationship collection such as an App's ``depends-on`` - comes back in the
   peer's own IDs, and ``validate_entity_for_route`` rewrites it to the IDs it
   is served under here before it is sent (``rewrite_to_served_ids``): the ``id``
-  of every object that names its ``type`` - with its ``name``, which takes the
+  of every object that names its ``type``, of a detail that names none, which
+  is of the type its route asked for, and of an item of a relationship
+  collection that names no type the walk recognizes (none, one that is not a
+  string, one no entity has), which is of the type the relationship lists - an
+  App's ``depends-on`` Apps, its ``is-located-on`` Components and its
+  ``belongs-to`` Areas, a Component's ``subcomponents`` and ``depends-on``
+  Components and its ``hosts`` Apps, an Area's ``subareas`` Areas and its
+  ``components`` and ``contains`` Components, a Function's ``hosts`` Apps or
+  Components by what the peer declared (``relationship_items``); such an item
+  kept the peer's ID while its links were rewritten or removed, and named the
+  local namesake, and one whose type cannot be established is removed whole -
+  with its ``name``, which takes the
   served one so a forwarded detail names the entity as the listings do -
   every entity URI (the self link, the resource collection links, the
   relationship links, relative or absolute; the ID is read from the path
   alone, and a query or fragment after it is kept as sent), and the
   relationship IDs ``x-medkit`` carries (``parent_area_id``,
   ``parentComponentId``, ``dependsOn``, ``area``, ``component_id``,
-  ``hosts``). A reference to an
+  ``hosts``). An entity URI the peer wrote absolute
+  (``http://peer:8080/api/v1/apps/x``) is written as a path on this gateway
+  (``/api/v1/apps/peer__x``), whether its ID is renamed or kept: the walk reads
+  every entity URI as the peer's reference by its ID, so the link has to
+  resolve through this gateway. With the peer's authority kept, a renamed
+  link reached the peer with an ID it does not know, and a kept one bypassed
+  this gateway for a peer a client may not reach, or may not be allowed to
+  call. An absolute URI that is not an entity URI - an external manual - is
+  left as sent. A reference to an
   entity the merge dropped is removed - the collection item that describes
   it, the link or relationship field that names it, the entry of a list of
   IDs - because by the peer's ID it would name the local entity that took its
-  place. Only recorded renames and drops are applied. They come from the
+  place. So is a reference to an ID the peer never declared: the index holds
+  each peer's admitted IDs per type, every entity the peer contributes by the
+  ID that peer knows it by, and only those are the peer's to name. A detail of
+  the peer's App ``sensor`` linking ``/apps/admin`` names, through this
+  gateway, the local ``admin``; the link is removed. The detail itself has to
+  describe the entity it was asked for: an ``id`` other than the peer's id for
+  it, or a ``type`` other than the route's (a ``type`` that is not a string
+  included), is refused with ``502``. A route is read as the router matched
+  it: every route takes one trailing slash (``/?$``), so ``/apps/x/`` is the
+  detail of ``x`` and ``/apps/y/depends-on/`` its relationship, rewritten and
+  checked as such (``without_route_trailing_slash``). Read as sent, the slash
+  made them a resource after the id, and the peer's answer reached the client
+  in the peer's IDs. Only
+  recorded renames are applied. They come from the
   ``PeerIdIndex`` the refresh builds from the served entities and the merge's
   drops and publishes in the entity cache with the entities
   (``ThreadSafeEntityCache::update_all``). The rewrite reads, for the whole
@@ -427,9 +472,13 @@ classification pass over the full Component set:
   took its place. A rewritten body drops the peer's ``ETag``.
   Responses of the resource collections (data, faults, operations and the
   rest) are passed through as the peer sent them, except for the member IDs a
-  fan-out reads off them: a dropped member is removed from a data item's
-  ``x-medkit.member_ids``, and an operation of a dropped member is left out of
-  the list.
+  fan-out reads off them (see the member-qualified items below): a dropped
+  member, or one the peer never declared, is removed from a data or
+  operation item's ``x-medkit.member_ids``, and an item none of whose members
+  is served here, or whose id or ``x-medkit.source`` names such a member, is
+  left out of the list. The ``Location`` of every forwarded answer is
+  translated the same way (``served_entity_uri``), and so is the entity a
+  relayed fault event is attributed to (below).
 
   The body comes from the peer, so the walk is bounded: a body nested deeper
   than ``kMaxPeerJsonDepth`` (64) levels, or holding more than
@@ -440,6 +489,18 @@ classification pass over the full Component set:
   discovery response comes anywhere near either bound. The dropped references of
   an array are removed in one pass over it, so the work grows with the length
   of the array and not with its square.
+
+  What the walk writes is bounded as well. It copies a served ID, and with it
+  a served name, into each object that names a renamed entity, so a small
+  body that names one entity many times grows by that many copies: an 8 MB
+  name repeated in 10,000 objects of a valid detail would come to about 78 GB;
+  300 of them took the gateway from 150 MB to 7.3 GB. Every replacement is
+  charged, before its value is built, by the bytes it adds to the body's JSON
+  text (escapes counted), against ``kMaxServedIdRewriteGrowth`` (10 MB, as much
+  again as the largest body a peer is read for); a body whose rewrite would
+  pass it is refused with ``502`` and not served in part. A rename adds the
+  peer's name and a separator to an ID and a name, so a discovery response
+  grows by a fraction of its own size.
 
 The ``EntityMerger::SEPARATOR`` constant (``__``) is used as the prefix
 separator. The routing table maps ``entity_id -> peer_name`` for
@@ -598,10 +659,24 @@ against the rename the merge recorded: the cached entity under
 ``<id>``, so a peer's own entity whose id merely reads like a prefix is never
 taken for one. An item arriving through the
 fan-out is re-attributed to the id the merge gave its owner, in
-``x-medkit.member_ids`` and in the member half of the item id, before any of it
-is offered to a client. Read verbatim instead, the peer's item is attributed to
-a member that does not own it, the collection offers one id for two operations,
-and the peer's copy is not addressable through the aggregate at all.
+``x-medkit.member_ids``, in ``x-medkit.source`` and in the member half of the
+item id, before any of it is offered to a client. Read verbatim instead, the
+peer's item is attributed to a member that does not own it, the collection
+offers one id for two operations, and the peer's copy is not addressable
+through the aggregate at all - and a request for it reaches the local member
+instead: the peer's configuration ``x:gain``, for a peer App ``x`` served here
+as ``peer__x``, was resolved by ``address_parameter`` to the local ``x``, and a
+``PUT`` to it changed the local parameter. The member half of an id is the
+text before its first colon, read as a member only when it can be an entity id
+(``served_member_qualified_id``), which is how ``address_parameter`` and
+``address_data_item`` read it here; an item whose member half or source names a
+member the merge dropped, or one the peer never declared, is left out, because
+no id here addresses it. ``/data``, ``/operations`` and ``/configurations`` are
+the collections whose items carry member ids. A log entry names its node by
+ROS FQN and a fault its code and the FQNs that reported it, so ``/logs`` and
+``/faults`` items carry none; bulk data, triggers, cyclic subscriptions,
+scripts and updates are not fanned out: a request for an entity a peer owns is
+forwarded to it whole, and one for any other entity is served here.
 
 Each collection keeps its own id scheme and each hands the same two halves to
 the dispatch. ``/data`` and ``/operations`` qualify only an ambiguous id and
@@ -672,8 +747,20 @@ locally-owned execution is answered here exactly as before, and an id naming no
 goal gets the same ``404`` it always did.
 
 The peer's ``Location`` header is carried back through the forward, because it
-names the member's own route - a path the aggregator resolves to the same
-member - and it is the only address of a resource that lives on the other side.
+is the only address of a resource that lives on the other side. The peer builds
+it from the route it received, which names the member by the peer's own id, so
+the id is translated to the one this gateway serves the member under
+(``served_entity_uri``, read against the index of the generation the forward
+was resolved in) before it is passed on: for a member renamed on collision the
+peer's id names the local namesake here, and a client following the
+``Location`` of an async execution or a lock would ask the wrong entity. The
+same applies to every forwarded request, a member dispatched through a
+grouping entity or an entity forwarded whole, and a ``Location`` naming an
+entity this gateway does not serve is removed. A ``Location`` the peer wrote
+absolute (``http://peer:8080/api/v1/...``) is passed on as a path on this
+gateway (``/api/v1/...``), renamed or not: with the peer's authority and the
+served id it reached the peer with an id the peer does not know, and with the
+peer's own id it went round this gateway, to a peer a client may not reach.
 
 The member's own gateway is the only one that can answer: the ROS service, the
 topic and the parameter behind the id exist on its graph and nowhere else. What
@@ -927,8 +1014,12 @@ describes it whole or reports failure: a dead connection, a status a route has
 no other meaning for, an oversized body, a body nested deeper than
 ``kMaxPeerJsonDepth`` (64) levels or holding more than ``kMaxPeerJsonValues``
 (1,000,000) values, a request still unanswered at its deadline, unparsable
-JSON or a field of the wrong type on any of them, or a refresh keeping more of
-the peer than ``FetchBudget`` allows (see Refresh Size Limits), fails
+JSON or a field of the wrong type on any of them, a detail that describes
+another entity than the list named (``detail_mismatch``: another ``id``, or a
+``type`` other than the collection's - a detail replaces the listed entity, so
+a peer listing ``sensor`` and describing ``ecu`` would be served as ``ecu``),
+or a refresh keeping more of the peer than ``FetchBudget`` allows (see Refresh
+Size Limits), fails
 the fetch, because a picture missing a branch is indistinguishable on the wire
 from a peer that does not have that branch. Two statuses carry a meaning of
 their own: a ``404`` on a nested collection route (``/subareas``,
@@ -1067,7 +1158,12 @@ Lifecycle and the three constraints that shape it:
   aggregating gateways would relay one event round the loop.
 
 Each relayed event goes out under the aggregator's own event id, carrying the
-peer's payload with ``x-medkit.peer`` added. **Replay covers this gateway's own
+peer's payload with ``x-medkit.peer`` added. The entity the peer attributed
+the event to, ``x-medkit.entity_type`` and ``entity_id``, is named by its
+peer's ID, and a consumer addresses it here
+(``/{entity_type}/{entity_id}/bulk-data/rosbags/{fault_code}``): it is named by
+the ID served here, read against the newest peer ID index, and an entity the
+merge dropped, or the peer never declared, is taken out of the attribution. **Replay covers this gateway's own
 ids only.** Two peers number their events independently, so a ``Last-Event-ID``
 cannot address a position in a merged stream; a reconnecting client resumes
 from what the aggregator has buffered, not from each peer's own history.
@@ -1462,6 +1558,7 @@ in their ``hosts`` list are automatically remapped to use the prefixed ID; a hos
 naming a prefixed Component is remapped the same way. The remapping reads the
 renames ``EntityMerger`` recorded for that peer, never the shape of an ID, so a
 peer whose own IDs contain ``__`` keeps them. This
-ensures Function host references remain valid after merge. The hosts are not
-reduced at this point: the one pass at the end of the cache refresh removes
+ensures Function host references remain valid after merge. A host the peer
+declared neither as App nor as Component is removed here. The other hosts are
+not reduced at this point: the one pass at the end of the cache refresh removes
 every host that names no served App or Component.

@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include <cstddef>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -51,6 +53,13 @@ namespace ros2_medkit_gateway {
  * generated is never a merge target: a remote entity declared under one is
  * another entity.
  *
+ * Given the IDs the peer declares, a reference one of its entities makes -
+ * a host, a parent, an Area, a Component an App is located on, a dependency -
+ * resolves only to an entity that peer declared: renamed, dropped, or kept
+ * under its own ID. Any other is removed. The peer's ID for something it never
+ * declared names, here, whatever holds that ID: a peer Function hosting
+ * `admin` next to a local App `admin` would group the local App.
+ *
  * After merging, a routing table maps remote entity IDs (possibly prefixed)
  * to the peer name, enabling request forwarding. Merged Areas and Functions do
  * NOT appear in the routing table; a merged Component does (see merge_components).
@@ -84,8 +93,10 @@ class EntityMerger {
 
   /// A merger that also keeps every remote entity out of an ID a local entity
   /// of another type holds, and every prefixed ID out of the IDs `peer_ids`
-  /// says the peer declares. The merge pass over a whole peer uses this one.
-  EntityMerger(const std::string & peer_name, LocalIds local_ids, LocalIds peer_ids = {});
+  /// says the peer declares. With `peer_ids`, a reference the peer makes
+  /// resolves only to an entity among them. The merge pass over a whole peer
+  /// uses this one.
+  EntityMerger(const std::string & peer_name, LocalIds local_ids, std::optional<LocalIds> peer_ids = std::nullopt);
 
   /// The IDs of the given entities, ready to pass to the constructor.
   static LocalIds collect_ids(const std::vector<Area> & areas, const std::vector<Component> & components,
@@ -156,12 +167,21 @@ class EntityMerger {
   /// Separator used for prefixing remote entity IDs on collision.
   static constexpr const char * SEPARATOR = "__";
 
+  /// The longest name, in bytes, a prefixed entity is served under:
+  /// `<peer>__<name>` is cut to it at a UTF-8 character boundary. The peer's
+  /// name is bounded only by the text a refresh may read (16 MB), and the
+  /// served name is copied into every forwarded object that names the entity.
+  static constexpr size_t kMaxServedNameBytes = 512;
+
  private:
   enum class Kind { kArea, kComponent, kApp, kFunction };
 
   std::string peer_name_;
   LocalIds local_ids_;
   LocalIds peer_ids_;
+  /// The peer's IDs are known, so a reference to an ID it did not declare is
+  /// removed.
+  bool checks_references_{false};
   std::unordered_map<std::string, std::string> routing_table_;
   Renames renames_;
   std::vector<std::string> dropped_;
@@ -179,6 +199,10 @@ class EntityMerger {
 
   /// Create a prefixed ID: "peername__original_id"
   std::string prefix_id(const std::string & id) const;
+
+  /// The name a prefixed entity is served under: "peername__name", cut to
+  /// kMaxServedNameBytes.
+  std::string prefix_name(const std::string & name) const;
 
   /// Create the source tag for remote entities: "peer:<name>"
   std::string peer_source() const;
@@ -212,8 +236,13 @@ class EntityMerger {
   bool drop_if_unaddressable(Kind kind, const std::string & original_id, const std::string & generated_id);
 
   /// A Function's hosts, which name the peer's own Apps or Components, as the
-  /// IDs they are served under, each once; a dropped one is removed.
+  /// IDs they are served under, each once; a dropped one, and one the peer
+  /// declared neither as App nor as Component, is removed.
   void resolve_hosts(std::vector<std::string> & hosts) const;
+
+  /// The IDs of one type the peer declares, or nullptr when they are not
+  /// known and no reference is checked against them.
+  const std::unordered_set<std::string> * declared(const std::unordered_set<std::string> & ids) const;
 };
 
 }  // namespace ros2_medkit_gateway

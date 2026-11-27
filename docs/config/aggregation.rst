@@ -476,7 +476,8 @@ When aggregation is enabled, entities from peers are merged with local entities:
   one, the remote App's ID is prefixed with ``peername__`` (double underscore).
   For example, App ``camera_driver`` from peer ``arm`` becomes
   ``arm__camera_driver``, and a Function host of that peer that names it does
-  too. Apps represent individual ROS 2 nodes with unique behavior. The
+  too. A prefixed entity's name is prefixed the same way (``arm__Camera
+  driver``) and cut to 512 bytes. Apps represent individual ROS 2 nodes with unique behavior. The
   aggregator does not filter a peer's Apps again: the peer applied its own
   ``filter_internal_nodes``.
 
@@ -493,7 +494,10 @@ When aggregation is enabled, entities from peers are merged with local entities:
   and Component ``arm__cell``, merged in that order (Areas, Components, Apps,
   Functions), because routing is keyed by ID alone and two entities under one
   ID would share one route. References the peer's entities make to a prefixed
-  entity (an Area, a parent, a host, a dependency) name the prefixed ID.
+  entity (an Area, a parent, a host, a dependency) name the prefixed ID. A
+  reference to an ID the peer never declared is removed: a peer Function
+  hosting ``admin``, when the peer serves no App or Component ``admin``, would
+  otherwise group the local App ``admin``.
 
 - **A prefixed ID that is taken, or too long**: The prefixed ID must be free of
   every ID already served, whatever its type, of every ID the peer itself
@@ -518,10 +522,26 @@ A prefixed entity is forwarded under the ID its peer knows it by, and the
 discovery responses that come back (its detail, its relationship collections)
 are rewritten to the IDs this gateway serves: the entity's own ID and its name
 (``arm__Camera driver``, as the listings show it), its self, resource and
-relationship links, and the related entities' IDs. A reference to a peer
-entity that is not served (see the taken prefixed ID above) is removed from the
-response, because by the peer's ID it would name the local entity that holds
-that ID here.
+relationship links, and the related entities' IDs. A response whose rewrite
+would add more than 10 MB to it - one naming a renamed entity in far more
+objects than its own size accounts for - is refused with ``502``. A reference to a peer
+entity that is not served (see the taken prefixed ID above), or to an ID the
+peer never declared, is removed from the response, because by the peer's ID it
+would name the local entity that holds that ID here. A forwarded detail has to
+describe the entity asked for: one naming another ``id``, or another ``type``
+(a ``type`` that is not a string included), is refused with ``502``
+(``x-medkit-peer-unavailable``). A detail that names no ``type`` is of the type
+its route asked for, and its ``id`` and ``name`` are rewritten as that type's. The ``Location`` header of any forwarded answer - an async
+execution, a lock, a created resource - is translated the same way, whether the
+entity was forwarded whole or a member was reached through a grouping entity
+(below): ``POST /apps/arm__camera/operations/calibrate/executions`` comes back
+with ``Location: /api/v1/apps/arm__camera/...``, not the peer's
+``/api/v1/apps/camera/...``, which names the local ``camera`` here. An entity
+link or ``Location`` the peer wrote absolute (``http://<peer>/api/v1/...``) comes
+back as that path on this gateway, whether its ID was renamed or not, so it
+resolves through this gateway and never names the peer's address; a link that
+is not an entity URI is left as the peer sent it. A
+``Location`` naming an entity this gateway does not serve is removed.
 
 An entity that draws its resources from members - an Area, a merged Function, a
 hierarchical parent Component - is deliberately absent from that table, because
@@ -559,6 +579,16 @@ of the addressed entity, so the qualified form works on an aggregating entity
 whose members are all owned by peers - a parent gateway that runs no ROS node of
 its own - and on one that runs a single node beside peer-owned members. Neither
 shape changes the ids the entity's listing offers.
+
+The items a peer lists for such an entity name their member by the peer's id,
+and the listing here names it by the id served here: a peer's
+``calibration:calibration_offset``, for a peer App ``calibration`` served here as
+``peer_a__calibration`` because a local App has that id, is listed as
+``peer_a__calibration:calibration_offset`` (and its ``x-medkit.source`` as
+``peer_a__calibration``), so a ``PUT`` to it reaches the peer and not the local
+App. The same holds for the member half of a ``/data`` or ``/operations`` id and
+for ``x-medkit.member_ids``. An item of a member this gateway does not serve - one
+the merge left out, or one the peer never declared - is not listed.
 
 ``DELETE /api/v1/{entity_type}/{id}/configurations`` resets the nodes this
 gateway runs. A member another gateway runs is not reset by it, and the response
@@ -627,7 +657,8 @@ that carries a Component's relationships and a Function's hosts, and each app's
 the route has no other meaning for, an oversized body, a body nested more than
 64 levels deep or holding more than 1,000,000 values, a refresh keeping more of the
 peer than its bounds allow (both in Peer Response Limits), unparsable JSON, a field of the wrong type (a name that is a number, a tag that
-is not a string), a request still unanswered at ``aggregation.request_deadline_ms`` -
+is not a string), a detail that describes another entity than the list named
+(another ``id``, or a ``type`` other than the collection's), a request still unanswered at ``aggregation.request_deadline_ms`` -
 the refresh for that peer is discarded whole. A partial picture is never published
 as a complete one, and the peer's last complete declaration is left in place.
 

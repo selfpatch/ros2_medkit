@@ -312,9 +312,13 @@ A member half a peer supplied is read through the collision rename before it is
 used. A peer names its own leaves as its own tree names them, and an App whose
 id collided with a local one is merged here under `<peer>__<id>` - so the name
 the peer sends names the LOCAL leaf. Items that arrive through the peer fan-out
-are re-attributed to the id the merge gave their owner, in `member_ids` and in
-the member half of the id itself, so every id the collection offers addresses
-the copy it names.
+are re-attributed to the id the merge gave their owner, in `member_ids`, in a
+configuration's `x-medkit.source` and in the member half of the id itself, so
+every id the collection offers addresses the copy it names: a `PUT` to a peer's
+configuration reaches the peer, not the local App that shares its member's id.
+An item of a member the merge left out, or one the peer never declared, is not
+listed. A relayed fault event names the entity it is attributed to by the id
+served here too.
 
 `x-medkit.available` on a listed item is a statement about its MEMBER: it
 appears, as `false`, only when the gateway that owns the item is not answering.
@@ -344,7 +348,11 @@ answers: an action returns its goals, a service returns `200` with an empty
 `items` array (a service call completes inside its `POST` and leaves no
 execution resource), and an id naming no operation is `404`. Goals live on the
 gateway that sent them, so an id naming a peer-owned member is dispatched to
-that member's own route exactly as the `POST` was.
+that member's own route exactly as the `POST` was. So is the status, stop and
+cancel of an execution on a peer's own App, and the `Location` a forwarded
+`201` or `202` comes back with names the entity by the id it is served under
+here, as a path on this gateway - for an App renamed on collision,
+`<peer>__<id>`, not the peer's own id, which names the local namesake.
 
 A member-qualified request is served by the gateway that owns that member, on
 the member's own entity route. An aggregating entity holds nothing itself and
@@ -437,7 +445,11 @@ the four entity lists, the nested `subareas` and `subcomponents` collections,
 the per-entity detail that carries a Component's relationships and a Function's
 hosts, and each app's `operations` - and if any of them cannot be read, the
 whole refresh is dropped instead of published with the missing branch silently
-absent. The peer's last complete declaration stands for another cycle. Two statuses
+absent. So is a refresh that would keep more of a peer than its bounds allow:
+more than 1000 operations or data items for one App, more than 1000
+dependencies for one Component or Function, or more than 250,000 records or
+16 MiB of text in all (see the aggregation configuration docs). The peer's last
+complete declaration stands for another cycle. Two statuses
 carry a meaning of their own and are read instead: a `404` on a nested
 collection route means the peer runs a gateway that predates that route, so
 those members are omitted, the rest of the peer merges normally and the absent
