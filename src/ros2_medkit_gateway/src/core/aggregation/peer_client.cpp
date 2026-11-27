@@ -21,6 +21,7 @@
 #include <iterator>
 #include <set>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 #include "ros2_medkit_gateway/core/http/error_codes.hpp"
@@ -42,6 +43,12 @@ constexpr size_t MAX_PEER_RESPONSE_SIZE = 10 * 1024 * 1024;
 /// Maximum number of entities per collection (areas, components, apps, functions)
 /// before detail fetches are skipped to prevent excessive HTTP requests.
 constexpr size_t MAX_ENTITIES_PER_COLLECTION = 1000;
+
+/// Deepest level of subareas or subcomponents read below a top-level Area or
+/// Component. The top-level lists leave nested entities out, so each level
+/// costs one request per entity of the level above; the bound keeps a deep or
+/// cyclic tree from turning one refresh into an unbounded walk.
+constexpr size_t MAX_NESTING_DEPTH = 8;
 
 /**
  * @brief Percent-encode a query parameter key or value (RFC 3986)
@@ -143,6 +150,38 @@ std::vector<T> parse_collection(const nlohmann::json & response_json, Parser par
   return result;
 }
 
+/// The string under `key`, or empty when the key is absent or holds something else.
+std::string string_at(const nlohmann::json & j, const char * key) {
+  auto it = j.find(key);
+  return (it != j.end() && it->is_string()) ? it->get<std::string>() : std::string{};
+}
+
+/// A field a gateway serves under `x-medkit.ros2.<ros2_key>`, falling back to
+/// `x-medkit.<legacy_key>`, where this parser used to look for it.
+std::string ros2_field(const nlohmann::json & xm, const char * ros2_key, const char * legacy_key) {
+  auto ros2 = xm.find("ros2");
+  if (ros2 != xm.end() && ros2->is_object()) {
+    auto value = string_at(*ros2, ros2_key);
+    if (!value.empty()) {
+      return value;
+    }
+  }
+  return string_at(xm, legacy_key);
+}
+
+/// The description a gateway serves at the top level of an entity, falling back
+/// to `x-medkit.description`, which only some routes carry.
+std::string description_of(const nlohmann::json & j) {
+  auto description = string_at(j, "description");
+  if (description.empty()) {
+    auto xm = j.find("x-medkit");
+    if (xm != j.end() && xm->is_object()) {
+      description = string_at(*xm, "description");
+    }
+  }
+  return description;
+}
+
 /**
  * @brief Parse an Area from JSON
  */
@@ -150,11 +189,17 @@ Area parse_area(const nlohmann::json & j) {
   Area area;
   area.id = j.value("id", "");
   area.name = j.value("name", "");
+  area.description = description_of(j);
   if (j.contains("x-medkit") && j["x-medkit"].is_object()) {
     const auto & xm = j["x-medkit"];
-    area.namespace_path = xm.value("namespace", "");
-    area.description = xm.value("description", "");
+    area.namespace_path = ros2_field(xm, "namespace", "namespace");
     area.source = xm.value("source", "");
+    // Served on the detail only. A subarea read off its parent's subareas
+    // route takes its parent from the route instead (see fetch_entities).
+    area.parent_area_id = string_at(xm, "parent_area_id");
+    if (!is_valid_entity_id(area.parent_area_id)) {
+      area.parent_area_id.clear();
+    }
   }
   if (j.contains("translationId")) {
     area.translation_id = j["translationId"].get<std::string>();
@@ -172,13 +217,13 @@ Component parse_component(const nlohmann::json & j) {
   Component comp;
   comp.id = j.value("id", "");
   comp.name = j.value("name", "");
+  comp.description = description_of(j);
   if (j.contains("x-medkit") && j["x-medkit"].is_object()) {
     const auto & xm = j["x-medkit"];
-    comp.namespace_path = xm.value("namespace", "");
-    comp.fqn = xm.value("fqn", "");
+    comp.namespace_path = ros2_field(xm, "namespace", "namespace");
+    comp.fqn = ros2_field(xm, "node", "fqn");
     comp.area = xm.value("area", "");
     comp.source = xm.value("source", "");
-    comp.description = xm.value("description", "");
     comp.variant = xm.value("variant", "");
     comp.parent_component_id = xm.value("parentComponentId", "");
     if (xm.contains("dependsOn") && xm["dependsOn"].is_array()) {
@@ -206,31 +251,67 @@ Component parse_component(const nlohmann::json & j) {
 }
 
 /**
- * @brief Extract the component ID from an ``is-located-on`` URI.
+ * @brief Extract the entity ID that follows `marker` (e.g. ``/components/``) in a relationship URI.
  *
- * SOVD exposes the app-to-component binding as a standard relationship
- * URI (ISO 17978-3, §7.6). Peers may emit it as either an absolute URL
- * (``http://host:port/api/v1/components/{id}``) or a path-only reference
- * (``/api/v1/components/{id}``). Extract the trailing segment after the
- * ``/components/`` marker and validate it with ``is_valid_entity_id`` so
- * that a malformed or hostile peer URI cannot smuggle path traversal or
- * percent-encoded junk into the aggregator's entity cache.
+ * Peers may emit a relationship either as an absolute URL
+ * (``http://host:port/api/v1/components/{id}``) or as a path-only reference
+ * (``/api/v1/components/{id}``). Extract the segment after the last
+ * `marker` and validate it with ``is_valid_entity_id`` so that a malformed
+ * or hostile peer URI cannot smuggle path traversal or percent-encoded junk
+ * into the aggregator's entity cache.
  * Returns an empty string if the URI contains no marker or if the
  * extracted segment fails validation.
  */
-std::string component_id_from_located_on(const std::string & uri) {
-  static const std::string kMarker = "/components/";
-  auto pos = uri.rfind(kMarker);
+std::string entity_id_after(const std::string & uri, const std::string & marker) {
+  auto pos = uri.rfind(marker);
   if (pos == std::string::npos) {
     return "";
   }
-  auto id_start = pos + kMarker.size();
+  auto id_start = pos + marker.size();
   if (id_start >= uri.size()) {
     return "";
   }
   auto id_end = uri.find_first_of("/?#", id_start);
   auto candidate = uri.substr(id_start, id_end - id_start);
   return is_valid_entity_id(candidate) ? candidate : std::string{};
+}
+
+/**
+ * @brief Extract the component ID from an ``is-located-on`` URI.
+ *
+ * SOVD exposes the app-to-component binding as a standard relationship
+ * URI (ISO 17978-3, §7.6).
+ */
+std::string component_id_from_located_on(const std::string & uri) {
+  return entity_id_after(uri, "/components/");
+}
+
+/**
+ * @brief Read a Function's ``depends-on`` links into Function ids.
+ *
+ * The Function detail serves its dependencies only as ``_links["depends-on"]``,
+ * an array of ``/api/v1/functions/{id}`` references (a HAL ``{"href": ...}``
+ * object is read too). Each id is extracted and validated the way an
+ * ``is-located-on`` reference is; a link that yields no valid id is skipped.
+ */
+std::vector<std::string> function_ids_from_depends_on(const nlohmann::json & j) {
+  std::vector<std::string> ids;
+  auto links = j.find("_links");
+  if (links == j.end() || !links->is_object()) {
+    return ids;
+  }
+  auto depends_on = links->find("depends-on");
+  if (depends_on == links->end() || !depends_on->is_array()) {
+    return ids;
+  }
+  for (const auto & link : *depends_on) {
+    std::string uri = link.is_string() ? link.get<std::string>() : (link.is_object() ? string_at(link, "href") : "");
+    auto id = entity_id_after(uri, "/functions/");
+    if (!id.empty() && std::find(ids.begin(), ids.end(), id) == ids.end()) {
+      ids.push_back(std::move(id));
+    }
+  }
+  return ids;
 }
 
 /**
@@ -395,20 +476,24 @@ Function parse_function(const nlohmann::json & j) {
   Function func;
   func.id = j.value("id", "");
   func.name = j.value("name", "");
+  func.description = description_of(j);
   if (j.contains("x-medkit") && j["x-medkit"].is_object()) {
     const auto & xm = j["x-medkit"];
     func.source = xm.value("source", "");
-    func.description = xm.value("description", "");
     if (xm.contains("hosts") && xm["hosts"].is_array()) {
       func.hosts = xm["hosts"].get<std::vector<std::string>>();
     }
   }
-  if (j.contains("translationId")) {
-    func.translation_id = j["translationId"].get<std::string>();
+  // The Function detail serves `translation_id`; `translationId` is what this
+  // parser read before.
+  func.translation_id = string_at(j, "translation_id");
+  if (func.translation_id.empty()) {
+    func.translation_id = string_at(j, "translationId");
   }
   if (j.contains("tags") && j["tags"].is_array()) {
     func.tags = j["tags"].get<std::vector<std::string>>();
   }
+  func.depends_on = function_ids_from_depends_on(j);
   return func;
 }
 
@@ -463,7 +548,7 @@ struct SubResponse {
  * @brief True for a SOVD error body carrying the ``not-responding`` code.
  */
 bool says_not_responding(const std::string & body) {
-  if (body.size() > MAX_PEER_RESPONSE_SIZE) {
+  if (body.size() > MAX_PEER_RESPONSE_SIZE || json_nesting_exceeds(body)) {
     return false;
   }
   auto parsed = nlohmann::json::parse(body, nullptr, false);
@@ -500,6 +585,11 @@ SubResponse read_sub_response(const httplib::Result & result, const std::string 
   }
   if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
     out.error = "Response from peer '" + peer_name + "' for " + path + " exceeds size limit";
+    return out;
+  }
+  if (json_nesting_exceeds(result->body)) {
+    out.error = "Response from peer '" + peer_name + "' for " + path + " nests deeper than " +
+                std::to_string(kMaxPeerJsonDepth) + " levels";
     return out;
   }
   auto parsed = nlohmann::json::parse(result->body, nullptr, false);
@@ -632,6 +722,8 @@ const char * peer_failure_reason(PeerFailureKind kind) {
       return "too-large";
     case PeerFailureKind::kInvalidResponse:
       return "invalid-response";
+    case PeerFailureKind::kEntityNotFound:
+      return "entity-not-found";
   }
   return "unreachable";
 }
@@ -711,7 +803,7 @@ void PeerClient::check_health() {
   std::string instance_id;
   bool reduced = false;
   bool full = false;
-  if (healthy) {
+  if (healthy && !json_nesting_exceeds(result->body)) {
     auto body = nlohmann::json::parse(result->body, nullptr, false);
     if (body.is_object() && body.contains("x-medkit-instance-id") && body["x-medkit-instance-id"].is_string()) {
       instance_id = body["x-medkit-instance-id"].get<std::string>();
@@ -839,36 +931,55 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       area.source = peer_source;
     }
 
-    // Fetch subareas for each top-level area (list endpoint filters them out).
-    // Collect into a separate vector first to avoid push_back during iteration
-    // (which can invalidate references if the vector reallocates).
+    // Subareas, read level by level below the top-level Areas (the list leaves
+    // them out), down to MAX_NESTING_DEPTH. Collected into a separate vector so
+    // nothing is pushed into the vector being iterated. A subarea's list item
+    // names no parent, so the route it was read from does: it is a child of the
+    // Area that route belongs to. An id already read is not read again, which
+    // is what ends a tree that loops back on itself.
     std::vector<Area> all_subareas;
+    std::unordered_set<std::string> seen_areas;
+    std::vector<std::string> area_level;
     for (const auto & area : entities.areas) {
-      const std::string route = "/areas/" + area.id + "/subareas";
-      auto sub =
-          read_sub_response(cli.Get(std::string(API_PREFIX) + route), name_, route, RouteKind::kNestedCollection);
-      if (sub.kind == SubResponse::Kind::kIncomplete) {
-        return tl::unexpected<std::string>(sub.error);
-      }
-      if (sub.kind == SubResponse::Kind::kRouteAbsent) {
-        note_absent_route("/areas/{id}/subareas");
-        continue;
-      }
-      if (sub.kind == SubResponse::Kind::kEntityUnreachable) {
-        // The peer holds this Area's id but the gateway contributing it is
-        // silent, so its members are out of reach. That is one Area's worth of
-        // detail missing, not a failed read of the peer.
-        continue;
-      }
-      auto subareas = parse_collection<Area>(sub.body, parse_area);
-      for (auto & subarea : subareas) {
-        if (!is_valid_entity_id(subarea.id)) {
+      seen_areas.insert(area.id);
+      area_level.push_back(area.id);
+    }
+    for (size_t depth = 0; depth < MAX_NESTING_DEPTH && !area_level.empty(); ++depth) {
+      std::vector<std::string> next_level;
+      for (const auto & parent_id : area_level) {
+        const std::string route = "/areas/" + parent_id + "/subareas";
+        auto sub =
+            read_sub_response(cli.Get(std::string(API_PREFIX) + route), name_, route, RouteKind::kNestedCollection);
+        if (sub.kind == SubResponse::Kind::kIncomplete) {
+          return tl::unexpected<std::string>(sub.error);
+        }
+        if (sub.kind == SubResponse::Kind::kRouteAbsent) {
+          note_absent_route("/areas/{id}/subareas");
           continue;
         }
-        subarea.declared_source = subarea.source;
-        subarea.source = peer_source;
-        all_subareas.push_back(std::move(subarea));
+        if (sub.kind == SubResponse::Kind::kEntityUnreachable) {
+          // The peer holds this Area's id but the gateway contributing it is
+          // silent, so its members are out of reach. That is one Area's worth of
+          // detail missing, not a failed read of the peer.
+          continue;
+        }
+        for (auto & subarea : parse_collection<Area>(sub.body, parse_area)) {
+          if (!is_valid_entity_id(subarea.id) || !seen_areas.insert(subarea.id).second) {
+            continue;
+          }
+          subarea.parent_area_id = parent_id;
+          subarea.declared_source = subarea.source;
+          subarea.source = peer_source;
+          next_level.push_back(subarea.id);
+          all_subareas.push_back(std::move(subarea));
+        }
       }
+      if (entities.areas.size() + all_subareas.size() > MAX_ENTITIES_PER_COLLECTION) {
+        return tl::unexpected<std::string>(
+            "Peer '" + name_ + "' returned " + std::to_string(entities.areas.size() + all_subareas.size()) +
+            " areas and subareas (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
+      }
+      area_level = std::move(next_level);
     }
     entities.areas.insert(entities.areas.end(), std::make_move_iterator(all_subareas.begin()),
                           std::make_move_iterator(all_subareas.end()));
@@ -914,51 +1025,70 @@ tl::expected<PeerEntities, std::string> PeerClient::fetch_entities() {
       comp.declared_source = comp.source;
       comp.source = peer_source;
     }
-    // Fetch subcomponents for each top-level component (list endpoint filters them out).
-    // Collect into a separate vector first to avoid push_back during iteration
-    // (which can invalidate references if the vector reallocates).
+    // Subcomponents, level by level below the top-level Components (the list
+    // leaves them out), down to MAX_NESTING_DEPTH, the same way as subareas.
+    // Collected into a separate vector so nothing is pushed into the vector
+    // being iterated.
     std::vector<Component> all_subcomps;
+    std::unordered_set<std::string> seen_components;
+    std::vector<std::string> component_level;
     for (const auto & comp : comp_list) {
-      const std::string route = "/components/" + comp.id + "/subcomponents";
-      auto sub =
-          read_sub_response(cli.Get(std::string(API_PREFIX) + route), name_, route, RouteKind::kNestedCollection);
-      if (sub.kind == SubResponse::Kind::kIncomplete) {
-        return tl::unexpected<std::string>(sub.error);
-      }
-      if (sub.kind == SubResponse::Kind::kRouteAbsent) {
-        note_absent_route("/components/{id}/subcomponents");
-        continue;
-      }
-      if (sub.kind == SubResponse::Kind::kEntityUnreachable) {
-        // Same as for subareas: the parent is retained and unreachable, so what
-        // it contains cannot be read. The parent itself already carries that.
-        continue;
-      }
-      auto subcomps = parse_collection<Component>(sub.body, parse_component);
-      for (auto & subcomp : subcomps) {
-        if (!is_valid_entity_id(subcomp.id)) {
+      seen_components.insert(comp.id);
+      component_level.push_back(comp.id);
+    }
+    for (size_t depth = 0; depth < MAX_NESTING_DEPTH && !component_level.empty(); ++depth) {
+      std::vector<std::string> next_level;
+      for (const auto & parent_id : component_level) {
+        const std::string route = "/components/" + parent_id + "/subcomponents";
+        auto sub =
+            read_sub_response(cli.Get(std::string(API_PREFIX) + route), name_, route, RouteKind::kNestedCollection);
+        if (sub.kind == SubResponse::Kind::kIncomplete) {
+          return tl::unexpected<std::string>(sub.error);
+        }
+        if (sub.kind == SubResponse::Kind::kRouteAbsent) {
+          note_absent_route("/components/{id}/subcomponents");
           continue;
         }
-        // Fetch detail for each subcomponent to get full relationships
-        const std::string detail_route = "/components/" + subcomp.id;
-        auto detail = read_sub_response(cli.Get(std::string(API_PREFIX) + detail_route), name_, detail_route,
-                                        RouteKind::kAddressableDetail);
-        if (detail.kind == SubResponse::Kind::kIncomplete) {
-          return tl::unexpected<std::string>(detail.error);
+        if (sub.kind == SubResponse::Kind::kEntityUnreachable) {
+          // Same as for subareas: the parent is retained and unreachable, so what
+          // it contains cannot be read. The parent itself already carries that.
+          continue;
         }
-        if (detail.kind == SubResponse::Kind::kBody) {
-          subcomp = parse_component(detail.body);
-        } else {
-          subcomp.available = false;
-          // The route this id came from is itself the statement that `comp` is
-          // its parent, so the tree keeps its shape even though the entity's
-          // own description is out of reach.
-          subcomp.parent_component_id = comp.id;
+        for (auto & subcomp : parse_collection<Component>(sub.body, parse_component)) {
+          if (!is_valid_entity_id(subcomp.id) || !seen_components.insert(subcomp.id).second) {
+            continue;
+          }
+          // Fetch detail for each subcomponent to get full relationships
+          const std::string sub_id = subcomp.id;
+          const std::string detail_route = "/components/" + sub_id;
+          auto detail = read_sub_response(cli.Get(std::string(API_PREFIX) + detail_route), name_, detail_route,
+                                          RouteKind::kAddressableDetail);
+          if (detail.kind == SubResponse::Kind::kIncomplete) {
+            return tl::unexpected<std::string>(detail.error);
+          }
+          if (detail.kind == SubResponse::Kind::kBody) {
+            subcomp = parse_component(detail.body);
+          } else {
+            subcomp.available = false;
+          }
+          // The route this id came from is itself the statement that the
+          // Component it belongs to is its parent, so the tree keeps its shape
+          // even when the entity's own description is out of reach.
+          if (subcomp.parent_component_id.empty()) {
+            subcomp.parent_component_id = parent_id;
+          }
+          subcomp.declared_source = subcomp.source;
+          subcomp.source = peer_source;
+          next_level.push_back(sub_id);
+          all_subcomps.push_back(std::move(subcomp));
         }
-        subcomp.declared_source = subcomp.source;
-        subcomp.source = peer_source;
-        all_subcomps.push_back(std::move(subcomp));
       }
+      if (comp_list.size() + all_subcomps.size() > MAX_ENTITIES_PER_COLLECTION) {
+        return tl::unexpected<std::string>(
+            "Peer '" + name_ + "' returned " + std::to_string(comp_list.size() + all_subcomps.size()) +
+            " components and subcomponents (max " + std::to_string(MAX_ENTITIES_PER_COLLECTION) + ")");
+      }
+      component_level = std::move(next_level);
     }
     comp_list.insert(comp_list.end(), std::make_move_iterator(all_subcomps.begin()),
                      std::make_move_iterator(all_subcomps.end()));
@@ -1298,6 +1428,21 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
     return PeerError{kind, std::move(message)};
   };
 
+  // A 404 carrying `entity-not-found` is the peer saying it holds nothing by the
+  // id in the path. A caller asking several peers about one entity reads that
+  // as "nothing from this peer", not as a call that failed.
+  auto status_failure = [&](int status, const std::string & body) {
+    auto kind = PeerFailureKind::kErrorStatus;
+    if (status == 404 && !json_nesting_exceeds(body)) {
+      auto error = nlohmann::json::parse(body, nullptr, false);
+      if (error.is_object() && string_at(error, "error_code") == ERR_ENTITY_NOT_FOUND) {
+        kind = PeerFailureKind::kEntityNotFound;
+      }
+    }
+    return PeerError{kind,
+                     "Peer '" + name_ + "' returned status " + std::to_string(status) + " for " + method + " " + path};
+  };
+
   if (used_streaming) {
     if (size_exceeded) {
       return tl::unexpected(
@@ -1308,18 +1453,14 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
       return tl::unexpected(transport_failure());
     }
     if (response_status < 200 || response_status >= 300) {
-      return tl::unexpected(PeerError{PeerFailureKind::kErrorStatus, "Peer '" + name_ + "' returned status " +
-                                                                         std::to_string(response_status) + " for " +
-                                                                         method + " " + path});
+      return tl::unexpected(status_failure(response_status, accumulated_body));
     }
   } else {
     if (!result) {
       return tl::unexpected(transport_failure());
     }
     if (result->status < 200 || result->status >= 300) {
-      return tl::unexpected(PeerError{PeerFailureKind::kErrorStatus, "Peer '" + name_ + "' returned status " +
-                                                                         std::to_string(result->status) + " for " +
-                                                                         method + " " + path});
+      return tl::unexpected(status_failure(result->status, result->body));
     }
     if (result->body.size() > MAX_PEER_RESPONSE_SIZE) {
       return tl::unexpected(
@@ -1329,6 +1470,14 @@ tl::expected<nlohmann::json, PeerError> PeerClient::forward_and_get_json(const s
     accumulated_body = std::move(result->body);
   }
 
+  // The caller copies, merges and serializes what comes back, all of which
+  // recurse once per level of nesting: a body nested past the limit is not
+  // the JSON any route promises, and is refused before it is parsed.
+  if (json_nesting_exceeds(accumulated_body)) {
+    return tl::unexpected(PeerError{PeerFailureKind::kInvalidResponse,
+                                    "Response from peer '" + name_ + "' for " + method + " " + path +
+                                        " nests deeper than " + std::to_string(kMaxPeerJsonDepth) + " levels"});
+  }
   auto parsed = nlohmann::json::parse(accumulated_body, nullptr, false);
   if (parsed.is_discarded()) {
     return tl::unexpected(PeerError{PeerFailureKind::kInvalidResponse,

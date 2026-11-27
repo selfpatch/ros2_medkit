@@ -27,6 +27,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "ros2_medkit_gateway/core/aggregation/peer_json.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/app.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/area.hpp"
 #include "ros2_medkit_gateway/core/discovery/models/component.hpp"
@@ -71,6 +72,7 @@ enum class PeerFailureKind : uint8_t {
   kErrorStatus,      ///< The peer answered, with a status outside 2xx.
   kTooLarge,         ///< The body passed the peer-response size limit.
   kInvalidResponse,  ///< The peer answered with something that is not the JSON the route promises.
+  kEntityNotFound,   ///< The peer answered 404 `entity-not-found`: it holds nothing by the id asked about.
 };
 
 /// A peer call that failed, and why. Kept together because every caller that

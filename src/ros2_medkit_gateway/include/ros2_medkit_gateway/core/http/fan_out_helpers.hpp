@@ -27,6 +27,8 @@
 #include <nlohmann/json.hpp>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
+#include "ros2_medkit_gateway/core/models/entity_types.hpp"
 #include "ros2_medkit_gateway/dto/aggregation.hpp"
 #include "ros2_medkit_gateway/dto/contract.hpp"
 #include "ros2_medkit_gateway/dto/json_reader.hpp"
@@ -60,48 +62,50 @@ inline std::string url_encode_param(const std::string & value) {
   return result;
 }
 
-// Extract the entity id from a per-entity collection path like
+/// The entity a per-entity collection path names: its type and its id.
+struct FanOutEntity {
+  SovdEntityType type{SovdEntityType::UNKNOWN};
+  std::string id;
+};
+
+// Extract the entity from a per-entity collection path like
 // `/api/v1/components/<id>/logs` or `/api/v1/apps/<id>/data/<sub>`.
 // Matching is intentionally permissive: any path containing
 // `/components|apps|areas|functions/<id>/<anything>` is treated as
 // per-entity, regardless of what the segment after `<id>` is. This keeps
 // future per-entity sub-endpoints eligible for target-filtered fan-out
-// without requiring a whitelist bump every time.
+// without requiring a whitelist bump every time. The collection gives the
+// type, which the contributor lookup needs: ids are not unique across types.
 //
 // Returns std::nullopt for:
 //   - global endpoints (`/api/v1/faults`, `/api/v1/health`, ...),
 //   - entity-detail endpoints (`/api/v1/components/<id>` with no trailing
 //     `/...` - these go through the forwarding path, not fan-out),
 //   - malformed paths with an empty entity segment (`/components//logs`).
-inline std::optional<std::string> extract_entity_id_for_fan_out(const std::string & path) {
-  static constexpr std::array<std::string_view, 4> kEntityCollections = {"/components/", "/apps/", "/areas/",
-                                                                         "/functions/"};
-  for (const auto & prefix : kEntityCollections) {
-    auto start = path.find(prefix);
-    if (start == std::string::npos) {
-      continue;
-    }
-    start += prefix.size();
-    auto end = path.find('/', start);
-    if (end == std::string::npos) {
-      // Entity detail endpoint like `/components/<id>` (no trailing collection).
-      // These are routed to peers via a different mechanism; not a fan-out case.
-      return std::nullopt;
-    }
-    std::string id = path.substr(start, end - start);
-    if (id.empty()) {
-      return std::nullopt;
-    }
-    return id;
+inline std::optional<FanOutEntity> extract_entity_for_fan_out(const std::string & path) {
+  auto segment = locate_entity_segment(path);
+  // An entity detail endpoint like `/components/<id>` (no trailing collection)
+  // is routed to peers via a different mechanism; not a fan-out case.
+  if (!segment || !segment->has_subpath) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  return FanOutEntity{segment->type, path.substr(segment->id_pos, segment->id_len)};
 }
 
-inline std::string build_fan_out_path(const httplib::Request & req) {
-  if (req.params.empty()) {
-    return req.path;
+/// The id part of extract_entity_for_fan_out.
+inline std::optional<std::string> extract_entity_id_for_fan_out(const std::string & path) {
+  auto entity = extract_entity_for_fan_out(path);
+  if (!entity) {
+    return std::nullopt;
   }
-  std::string path = req.path;
+  return std::move(entity->id);
+}
+
+/// `path` with the query parameters of `req` appended.
+inline std::string build_fan_out_path(const httplib::Request & req, std::string path) {
+  if (req.params.empty()) {
+    return path;
+  }
   char sep = '?';
   for (const auto & [key, value] : req.params) {
     path += sep;
@@ -111,6 +115,11 @@ inline std::string build_fan_out_path(const httplib::Request & req) {
     sep = '&';
   }
   return path;
+}
+
+/// The path and query of `req`, as sent to a peer.
+inline std::string build_fan_out_path(const httplib::Request & req) {
+  return build_fan_out_path(req, req.path);
 }
 
 /// How a gateway answers the global `GET /faults`.
@@ -176,11 +185,75 @@ inline GlobalFaultFanOut plan_global_fault_fan_out(const httplib::Request & req,
   return {Mode::kFanOut, std::move(visited)};
 }
 
+/// One request of a fan-out: the path and query to send, and the peers to
+/// send it to (std::nullopt: every healthy peer).
+struct FanOutRequest {
+  std::string path;
+  std::optional<std::vector<std::string>> peers;
+};
+
+/// The requests a fan-out of `req` sends.
+///
+/// A global path (no entity in it) is one request, to every healthy peer. A
+/// per-entity path is asked of `entity_targets` - the peers the entity the
+/// request was validated against names among its contributors - and of no
+/// other; none given, or none listed, sends nothing. Read off that entity, the
+/// peers come from the same cache generation the request was validated
+/// against, never from a merge that replaced it since. Each peer is asked
+/// about the entity by the id it knows it by: an entity this gateway renamed
+/// on collision is served as `<peer>__<id>`, an id the peer has nothing under,
+/// and its 404 would read as an empty answer. Peers that share the id share
+/// one request.
+inline std::vector<FanOutRequest> plan_fan_out(const httplib::Request & req,
+                                               const std::vector<PeerTarget> * entity_targets) {
+  auto segment = locate_entity_segment(req.path);
+  if (!segment || !segment->has_subpath) {
+    return {FanOutRequest{build_fan_out_path(req), std::nullopt}};
+  }
+  std::vector<FanOutRequest> requests;
+  if (entity_targets == nullptr) {
+    return requests;
+  }
+  for (const auto & target : *entity_targets) {
+    auto path = build_fan_out_path(req, with_entity_id(req.path, *segment, target.id));
+    auto it = std::find_if(requests.begin(), requests.end(), [&path](const FanOutRequest & request) {
+      return request.path == path;
+    });
+    if (it == requests.end()) {
+      requests.push_back(FanOutRequest{std::move(path), std::vector<std::string>{target.peer}});
+    } else {
+      it->peers->push_back(target.peer);
+    }
+  }
+  return requests;
+}
+
+/// Send `requests` and merge the answers, in order, into one result.
+inline AggregationManager::FanOutResult
+run_fan_out(AggregationManager & agg, const std::vector<FanOutRequest> & requests, const std::string & auth_header) {
+  AggregationManager::FanOutResult merged;
+  merged.merged_items = nlohmann::json::array();
+  for (const auto & request : requests) {
+    auto result = agg.fan_out_get(request.path, auth_header, request.peers ? &request.peers.value() : nullptr);
+    if (result.merged_items.is_array()) {
+      for (size_t index = 0; index < result.merged_items.size(); ++index) {
+        merged.merged_items.push_back(std::move(result.merged_items[index]));
+        merged.item_peers.push_back(index < result.item_peers.size() ? result.item_peers[index] : std::string{});
+      }
+    }
+    merged.is_partial = merged.is_partial || result.is_partial;
+    merged.failed_peers.insert(merged.failed_peers.end(), result.failed_peers.begin(), result.failed_peers.end());
+    merged.peer_failures.insert(merged.peer_failures.end(), result.peer_failures.begin(), result.peer_failures.end());
+  }
+  return merged;
+}
+
 /// Fan-out GET to peer gateways and merge their items into `result["items"]`.
 /// Aggregation metadata (partial, failed_peers) is written into `ext_json`
 /// (a plain JSON object that callers fold into the response x-medkit block).
+/// `entity_targets` are the validated entity's peers; see plan_fan_out.
 inline void merge_peer_items(AggregationManager * agg, const httplib::Request & req, nlohmann::json & result,
-                             nlohmann::json & ext_json) {
+                             nlohmann::json & ext_json, const std::vector<PeerTarget> * entity_targets = nullptr) {
   if (agg == nullptr) {
     return;
   }
@@ -190,17 +263,11 @@ inline void merge_peer_items(AggregationManager * agg, const httplib::Request & 
   if (agg->healthy_peer_count() == 0) {
     return;
   }
-  std::optional<std::vector<std::string>> contributors_buffer;
-  const std::vector<std::string> * target_peers = nullptr;
-  if (auto entity_id = extract_entity_id_for_fan_out(req.path); entity_id.has_value()) {
-    contributors_buffer = agg->get_peer_contributors(*entity_id);
-    if (contributors_buffer->empty()) {
-      return;
-    }
-    target_peers = &contributors_buffer.value();
+  auto requests = plan_fan_out(req, entity_targets);
+  if (requests.empty()) {
+    return;
   }
-  auto fan_path = build_fan_out_path(req);
-  auto fan_result = agg->fan_out_get(fan_path, req.get_header_value("Authorization"), target_peers);
+  auto fan_result = run_fan_out(*agg, requests, req.get_header_value("Authorization"));
   if (fan_result.merged_items.is_array() && !fan_result.merged_items.empty()) {
     if (!result.contains("items") || !result["items"].is_array()) {
       result["items"] = nlohmann::json::array();
@@ -256,8 +323,9 @@ struct FanOutResult {
 /// Behavior parity with merge_peer_items:
 ///   - null `agg`, `X-Medkit-No-Fan-Out` header, or zero healthy peers all
 ///     short-circuit to an empty result (no fan-out attempted).
-///   - per-entity paths consult the routing/contributor tables to target only
-///     the peers that host the entity; global paths fan out to all healthy peers.
+///   - per-entity paths ask only `entity_targets`, the peers of the entity
+///     the request was validated against, each by the id it knows the entity
+///     by (see plan_fan_out); global paths fan out to all healthy peers.
 ///   - peer failures are surfaced via `partial` + `failed_peers`, and the
 ///     reason for each via `peer_failures`.
 ///
@@ -268,7 +336,8 @@ struct FanOutResult {
 ///     best-effort `source_id`. A WARN is logged for each drop.
 ///   - every item that parsed carries the peer it came from, in `item_peers`.
 template <class T>
-inline FanOutResult<T> fan_out_collection(AggregationManager * agg, const httplib::Request & req) {
+inline FanOutResult<T> fan_out_collection(AggregationManager * agg, const httplib::Request & req,
+                                          const std::vector<PeerTarget> * entity_targets = nullptr) {
   FanOutResult<T> result;
   if (agg == nullptr) {
     return result;
@@ -280,18 +349,11 @@ inline FanOutResult<T> fan_out_collection(AggregationManager * agg, const httpli
     return result;
   }
 
-  std::optional<std::vector<std::string>> contributors_buffer;
-  const std::vector<std::string> * target_peers = nullptr;
-  if (auto entity_id = extract_entity_id_for_fan_out(req.path); entity_id.has_value()) {
-    contributors_buffer = agg->get_peer_contributors(*entity_id);
-    if (contributors_buffer->empty()) {
-      return result;
-    }
-    target_peers = &contributors_buffer.value();
+  auto requests = plan_fan_out(req, entity_targets);
+  if (requests.empty()) {
+    return result;
   }
-
-  auto fan_path = build_fan_out_path(req);
-  auto fan_result = agg->fan_out_get(fan_path, req.get_header_value("Authorization"), target_peers);
+  auto fan_result = run_fan_out(*agg, requests, req.get_header_value("Authorization"));
 
   if (fan_result.merged_items.is_array()) {
     for (size_t index = 0; index < fan_result.merged_items.size(); ++index) {

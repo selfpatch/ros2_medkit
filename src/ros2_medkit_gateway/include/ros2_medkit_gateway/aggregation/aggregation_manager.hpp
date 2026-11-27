@@ -18,15 +18,18 @@
 
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ros2_medkit_gateway/core/aggregation/classification.hpp"
 #include "ros2_medkit_gateway/core/aggregation/peer_client.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_id_index.hpp"
 #include "ros2_medkit_gateway/core/logging.hpp"
 #include "ros2_medkit_gateway/dto/aggregation.hpp"
 
@@ -163,6 +166,9 @@ class AggregationManager {
     /// to operators via /health.warnings; runtime falls back to last-writer
     /// for routing.
     std::vector<LeafCollisionWarning> leaf_warnings;
+    /// Peer name -> the entities of that peer left out because their prefixed
+    /// ID was taken. The peer keeps naming them; see PeerIdIndex.
+    std::unordered_map<std::string, PeerDrops> drops;
   };
 
   /**
@@ -322,55 +328,25 @@ class AggregationManager {
   std::optional<std::string> find_peer_for_entity(const std::string & entity_id) const;
 
   /**
-   * @brief The id this gateway uses for a member `peer_name` calls `member_id`.
+   * @brief The peer a request for an entity this gateway holds is forwarded to.
    *
-   * An App whose id collides with a local one is merged under `<peer>__<id>`,
-   * and the routing table is where that renaming is recorded. A peer knows
-   * nothing of it and keeps naming the member as it always did, so anything a
-   * peer says about its own members has to be read through this before it can
-   * be used to address something here - the unprefixed id names the LOCAL leaf.
+   * Read off the entity (`routed_to`, which the merge sets from the routing
+   * table it builds), not off the routing table: a request decides from the
+   * entity it looked up, so the decision comes from the same cache generation
+   * as that entity, and an entity of another type, or a local one, that shares
+   * a routed id is served here. Every caller that is about to forward a
+   * request for an entity it looked up goes through this rather than
+   * find_peer_for_entity.
    *
-   * Returns `member_id` unchanged when nothing was renamed, which is the
-   * ordinary case. Thread-safe.
+   * @return Peer name, or std::nullopt when the entity is served locally
    */
-  std::string local_member_id(const std::string & peer_name, const std::string & member_id) const;
-
-  /**
-   * @brief Replace the map of per-entity peer contributors.
-   *
-   * Covers both routed leaf entities (entity fully hosted by a peer - also
-   * tracked via the routing table) and merged/hierarchical entities (served
-   * locally with contributions from one or more peers - e.g. a Component
-   * aggregating subcomponents from multiple gateways, or an Area/Function
-   * with an ID shared across peers).
-   *
-   * Fan-out helpers consult this map to target per-entity collection
-   * requests only at the peers that actually host / contribute to a given
-   * entity, avoiding spurious 404s from non-contributing peers.
-   *
-   * @param contributors New map: entity id -> list of peer names that
-   *        contribute to it. Entries with empty lists are discarded.
-   */
-  void update_peer_contributors(std::unordered_map<std::string, std::vector<std::string>> contributors);
-
-  /**
-   * @brief Check whether an entity id has at least one peer contributor.
-   *
-   * Returns true when the entity is either routed to a peer (remote leaf) or
-   * served locally but aggregated from peers (hierarchical / merged). Returns
-   * false for local-only entities and for unknown IDs. Thread-safe.
-   */
-  bool has_peer_contributors(const std::string & entity_id) const;
-
-  /**
-   * @brief List the peers that host / contribute to a given entity.
-   *
-   * Combines information from the routing table (routed leaves) and the
-   * per-entity contributors map (merged / hierarchical entities). Duplicates
-   * are removed while preserving first-seen order. Returns an empty vector
-   * for local-only entities and unknown IDs. Thread-safe.
-   */
-  std::vector<std::string> get_peer_contributors(const std::string & entity_id) const;
+  template <class Entity>
+  std::optional<std::string> find_owning_peer(const Entity & entity) const {
+    if (entity.routed_to.empty()) {
+      return std::nullopt;
+    }
+    return entity.routed_to;
+  }
 
   /**
    * @brief Get the URL for a known peer by name
@@ -382,8 +358,9 @@ class AggregationManager {
   /**
    * @brief Forward an HTTP request to a specific peer
    *
-   * Finds the PeerClient by name and calls forward_request().
-   * If the peer is not found, sends a 502 error response.
+   * Finds the PeerClient by name and calls forward_request() with the
+   * incoming path as given. If the peer is not found, sends a 502 error
+   * response.
    *
    * @param peer_name Name of the target peer
    * @param req Incoming HTTP request to forward
@@ -400,9 +377,11 @@ class AggregationManager {
    * entity, only the member. The target path names the member's own route
    * there, so the peer answers a request about something it actually holds.
    *
-   * `target_path` goes through the same SSRF guard and peer-prefix rewrite as
-   * the incoming path, because it is built from client-supplied ids. Query
-   * parameters and body come from `req` unchanged.
+   * `target_path` goes through the same SSRF guard as the incoming path,
+   * because it is built from client-supplied ids, and is sent as given: it has
+   * to name an entity this gateway renamed on collision by the id the peer
+   * knows it by (see peer_entity_id). Query parameters and body come from
+   * `req` unchanged.
    *
    * @param peer_name Name of the target peer
    * @param req Incoming HTTP request supplying method, headers, body and query
@@ -432,6 +411,8 @@ class AggregationManager {
    *        both sides until it answered empty. A peer that reports itself
    *        partial makes this result partial too, with its failed peers named
    *        `<peer>/<its peer>`.
+   * A peer answering `404 entity-not-found` holds nothing by the id in
+   * `path`: it contributes no items and is not a failed peer.
    * @return FanOutResult with merged items and failure info.
    */
   FanOutResult fan_out_get(const std::string & path, const std::string & auth_header,
@@ -488,7 +469,10 @@ class AggregationManager {
   /// of a live graph this gateway can no longer observe, so it is allowed to
   /// disappear.
   std::unordered_map<std::string, PeerEntities> retained_peer_entities_;
-  std::unordered_map<std::string, std::vector<std::string>> peer_contributors_by_entity_;
+  /// Keys of the entity-id and leaf collisions the last merge pass met, so each
+  /// is logged once until it goes away. Own lock: written only by the merge pass.
+  std::mutex logged_collisions_mutex_;
+  std::unordered_set<std::string> logged_collisions_;
   std::vector<LeafCollisionWarning> leaf_warnings_;
 
   /**

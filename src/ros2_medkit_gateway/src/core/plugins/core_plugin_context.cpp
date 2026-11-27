@@ -14,10 +14,14 @@
 
 #include "ros2_medkit_gateway/core/plugins/core_plugin_context.hpp"
 
+#include <map>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ros2_medkit_gateway/aggregation/aggregation_manager.hpp"
+#include "ros2_medkit_gateway/core/aggregation/peer_ids.hpp"
 #include "ros2_medkit_gateway/core/condition_evaluator.hpp"
 #include "ros2_medkit_gateway/core/entity_validation.hpp"
 #include "ros2_medkit_gateway/core/faults/fault_scope.hpp"
@@ -50,6 +54,31 @@ std::string entity_type_to_url_segment(SovdEntityType type) {
       return "";
   }
   return "";
+}
+
+/// The entity `id` names, found in the order get_entity looks, and the peers
+/// it names among its contributors. Both are read off the one copy of the
+/// entity found, so they come from the same cache generation, and a peer that
+/// contributed some other entity sharing the id is not among them.
+struct EntityPeers {
+  SovdEntityType type{SovdEntityType::UNKNOWN};
+  std::vector<PeerTarget> peers;
+};
+
+std::optional<EntityPeers> find_entity_peers(const ThreadSafeEntityCache & cache, const std::string & id) {
+  if (auto comp = cache.get_component(id)) {
+    return EntityPeers{SovdEntityType::COMPONENT, peer_targets_of(*comp)};
+  }
+  if (auto app = cache.get_app(id)) {
+    return EntityPeers{SovdEntityType::APP, peer_targets_of(*app)};
+  }
+  if (auto area = cache.get_area(id)) {
+    return EntityPeers{SovdEntityType::AREA, peer_targets_of(*area)};
+  }
+  if (auto func = cache.get_function(id)) {
+    return EntityPeers{SovdEntityType::FUNCTION, peer_targets_of(*func)};
+  }
+  return std::nullopt;
 }
 
 }  // namespace
@@ -102,7 +131,10 @@ std::vector<PluginEntityInfo> CorePluginContext::get_child_apps(const std::strin
 
 nlohmann::json CorePluginContext::list_entity_faults(const std::string & entity_id) const {
   // Determine entity type (needed for both local query and peer path construction).
-  auto entity = get_entity(entity_id);
+  if (!services_) {
+    return nlohmann::json::array();
+  }
+  auto entity = find_entity_peers(services_->entity_cache(), entity_id);
   if (!entity) {
     return nlohmann::json::array();
   }
@@ -124,17 +156,34 @@ nlohmann::json CorePluginContext::list_entity_faults(const std::string & entity_
     }
   }
 
-  // Fan-out to peer gateways: fetch faults for this entity from each peer.
-  // The peer path mirrors the HTTP REST route: /api/v1/<type_plural>/<id>/faults.
+  // Fan-out to peer gateways: fetch faults for this entity from the peers that
+  // contributed it, and from no other, as the HTTP per-entity route does. A
+  // local-only entity asks no peer at all. The peer path mirrors the HTTP REST
+  // route: /api/v1/<type_plural>/<id>/faults, with the id the peer knows the
+  // entity by. That id comes from the rename the merge recorded on the entity
+  // (`original_id`), never from the spelling of the served id: a peer's own
+  // entity whose id merely starts with `<peer>__` is asked for under that id.
   // Auth: the ROS 2 service path has no inbound HTTP Authorization header to
-  // forward, so peers are queried with an empty credential - fan-out over this
-  // path only surfaces faults from peers that do not gate their /faults route.
+  // forward. Each peer is asked with this gateway's own credential
+  // (aggregation.peer_auth_header) when one is configured; without one the
+  // request carries none, and a peer that gates its /faults route contributes
+  // nothing.
   auto * agg = wiring_.aggregation ? wiring_.aggregation() : nullptr;
   if (agg) {
     const std::string type_segment = entity_type_to_url_segment(entity->type);
+    std::map<std::string, std::vector<std::string>> peers_by_path;
     if (!type_segment.empty()) {
-      const std::string peer_path = "/api/v1/" + type_segment + "/" + entity_id + "/faults";
-      auto fan_result = agg->fan_out_get(peer_path, "");
+      for (auto & target : entity->peers) {
+        std::string peer_path = "/api/v1/";
+        peer_path += type_segment;
+        peer_path += '/';
+        peer_path += target.id;
+        peer_path += "/faults";
+        peers_by_path[peer_path].push_back(std::move(target.peer));
+      }
+    }
+    for (const auto & [peer_path, peers] : peers_by_path) {
+      auto fan_result = agg->fan_out_get(peer_path, "", &peers);
       if (fan_result.merged_items.is_array()) {
         for (const auto & item : fan_result.merged_items) {
           local_faults.push_back(item);

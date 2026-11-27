@@ -13,7 +13,9 @@
 # external. effective_fqn() then derives a live FQN "/plc/plc_process", so a
 # fault scope that used the FQN would drop the app's faults (reported under the
 # bare id). The external classification must win - the app is scoped by its
-# entity id. This also raises validation warning R013 (external + ros_binding).
+# entity id. This also raises validation warning R013 (external + ros_binding),
+# which strict validation (the default) turns into a load failure, so load it
+# with discovery.manifest_strict_validation: false, as its test does.
 #
 # Used by: test/features/test_external_app_fault_rollup.test.py
 

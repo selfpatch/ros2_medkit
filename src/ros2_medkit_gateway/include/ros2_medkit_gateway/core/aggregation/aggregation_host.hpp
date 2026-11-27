@@ -53,17 +53,25 @@ class AggregationHost {
     return *manager_;
   }
 
+  /// What merge_peers hands back to the refresh.
+  struct MergedPeers {
+    /// Entity id -> name of the peer its requests are forwarded to.
+    std::unordered_map<std::string, std::string> routing_table;
+    /// Peer name -> its entities the merge left out. Publish them with the
+    /// entities (make_peer_id_index, ThreadSafeEntityCache::update_all).
+    std::unordered_map<std::string, PeerDrops> drops;
+  };
+
   /**
    * @brief Merges the entities of all peers into the local ones.
    *
    * Does nothing and returns nullopt while no peer is configured or discovered. Otherwise it checks the peers'
-   * health, replaces the four vectors with the merged entities, publishes the routing table, the leaf warnings and
-   * the per-entity peer contributors to the manager, and returns the routing table (entity id to peer name).
+   * health, replaces the four vectors with the merged entities - each one carrying the peer its requests are
+   * forwarded to (`routed_to`) and, if the merge renamed it, the id it was renamed from - publishes the routing table
+   * and the leaf warnings to the manager, and returns the routing table and the drops.
    */
-  std::optional<std::unordered_map<std::string, std::string>> merge_peers(std::vector<Area> & areas,
-                                                                          std::vector<Component> & components,
-                                                                          std::vector<App> & apps,
-                                                                          std::vector<Function> & functions);
+  std::optional<MergedPeers> merge_peers(std::vector<Area> & areas, std::vector<Component> & components,
+                                         std::vector<App> & apps, std::vector<Function> & functions);
 
   /// Stops mDNS discovery and cancels the calls in flight to peers. Safe to call more than once.
   /// Call it before the REST server stops: the server's workers may be waiting on a peer.

@@ -200,7 +200,10 @@ type-specific merge rules:
 
    start
    :Receive remote entity from peer;
-   if (Entity type?) then (Area or Function)
+   if (An entity of another type, local\nor this peer's, holds the ID?) then (yes)
+       :Prefix remote ID with\npeername__ separator;
+       :Add routing entry\n(prefixed ID);
+   elseif (Entity type?) then (Area or Function)
        if (Same ID exists locally?) then (yes)
            :Merge into existing entity\n(combine relations/tags);
        else (no)
@@ -209,7 +212,7 @@ type-specific merge rules:
        endif
    elseif (Component) then
        if (Same ID exists locally?) then (yes)
-           :Merge metadata (tags, description);
+           :Merge metadata (tags, description,\nArea when the local has none);
            :Add provisional routing entry;
        else (no)
            :Add as new entity;
@@ -270,7 +273,8 @@ classification pass over the full Component set:
 
 - **Functions**: Merge by ID, combining the ``hosts`` lists from both sides.
   If both gateways expose a ``navigation`` Function, the merged entity lists
-  hosts from both gateways. Same ownership semantics as Areas. A peer host that
+  hosts from both gateways, and a local declaration that names no
+  dependencies takes the peer's. Same ownership semantics as Areas. A peer host that
   names a peer App the App merge prefixed takes the prefixed id, so it cannot
   bind to the local App with the same id. The merge keeps the other hosts as
   the peer listed them. After the merge and the internal-node filter, the
@@ -286,7 +290,13 @@ classification pass over the full Component set:
     as ``parent_component_id``. Leaves are tied to exactly one ECU, so on
     collision the peer owns the runtime state (data, logs, hosts,
     operations, faults). Leaves get a routing table entry and every request
-    - detail endpoint and all sub-resources - is forwarded to the peer.
+    to their resource collections is forwarded to the peer. The detail
+    endpoint is forwarded too, except for a leaf this gateway declares itself
+    (``contributors`` includes ``"local"``): its detail is served from the
+    merged view, as its other discovery routes (``/subcomponents``,
+    ``/hosts``, ``/depends-on``) and the Area listings are, so the Area the
+    detail names is the Area that lists the Component. The local declaration
+    keeps its Area; one that names none takes the peer's.
   * **Hierarchical parent Component** - referenced as
     ``parent_component_id`` by at least one other Component in the merged
     set (local, remote, or transitively merged from any peer). The parent
@@ -302,7 +312,9 @@ classification pass over the full Component set:
 
   **Multi-peer leaf collisions** (two or more peers announce the same leaf
   Component ID) are surfaced as structured ``/health.warnings`` entries and
-  RCLCPP_WARN log lines. Routing falls back to last-writer-wins;
+  RCLCPP_WARN log lines; the log line is written when the collision first
+  appears and again only after it has gone away and come back, since every
+  refresh meets it. Routing falls back to last-writer-wins;
   rejection would not fix the deployment and would only take the gateway
   offline.
 
@@ -341,11 +353,91 @@ classification pass over the full Component set:
   separator). Apps represent individual ROS 2 nodes with unique behavior - two
   Apps with the same ID from different peers are different entities.
 
+- **Any type, ID held locally by another type**: Prefixed the same way,
+  except that a remote Area or Function first merges with a local entity of its
+  own type that shares the ID, as above. The
+  routing table is keyed by ID alone, so a routing entry for a remote Area,
+  Component, Function or App whose ID a local entity of another type holds
+  would hand that local entity's requests - writes included - to the peer.
+  The remote entity is served as ``peername__<id>`` and routed under that ID
+  instead. "Local" here is everything already merged when the peer is folded
+  in: this gateway's own entities, plugin-provided ones included (they are
+  injected before the merge in every discovery mode), and those of every peer
+  merged before it. An entity of the same peer merged earlier in the same
+  pass counts too (Areas, then Components, Apps, Functions): a peer that
+  declares Area ``x`` and Component ``x`` is served as Area ``x`` and
+  Component ``peername__x``. Served under one ID, the two would share one
+  routing entry, and the classification below, which takes the entries of
+  Component IDs out of the table, would take the Area's with them.
+  A remote Component whose ID a local Component shares merges as above only
+  when no local entity of another type shares it too; otherwise it is
+  prefixed rather than merged, because the merged Component's routing entry
+  would cover the other entity. Merged Areas and Functions create no routing
+  entry and merge regardless.
+
+  A prefixed ID is reserved: it must be free of every ID already merged,
+  whatever its type, of every ID the peer itself declares (the peer's own
+  ``peername__x`` would otherwise collapse with the one generated for its
+  ``x``), and of every ID this merge generated for another remote entity,
+  whatever its type: a remote Area ``x`` and a remote Component ``x`` that
+  both collide are not both served as ``peername__x`` (the Area, merged first,
+  is). Only the same remote entity listed twice gets its ID again. A prefixed
+  ID also has to be a valid entity ID (``validate_entity_id``): a peer ID of
+  up to 256 characters is valid, and prefixed by ``peername__`` it can be
+  longer than that, an ID every request answers with ``400``, so the entity
+  would be listed and never addressable (``drop_if_unaddressable``). A remote
+  entity whose prefixed ID is taken, or is not a valid entity ID, is not
+  served at all, and a warning names it and the reason. The drop is recorded per type, and
+  every reference the peer's other entities make to it - a subarea's parent, a
+  Component's Area, parent or dependency, an App's Component or dependency, a
+  Function's host or dependency - is removed: by the peer's own ID it would
+  name the local entity that took its place. An ID a merge generated is never
+  merged into, even by an Area or Function: an entity a later peer declares
+  under that ID is another entity, and is prefixed in turn. Each rename and
+  each drop is logged once, when it first appears, and again only after it has
+  gone away and come back.
+
+  A prefixed entity keeps its references valid: a subarea names its prefixed
+  parent, a Component its prefixed Area, parent or dependency, an App its
+  prefixed Component, and a Function its prefixed hosts and dependencies.
+  A discovery response the peer answers for it - a forwarded detail, or a
+  relationship collection such as an App's ``depends-on`` - comes back in the
+  peer's own IDs, and ``validate_entity_for_route`` rewrites it to the IDs it
+  is served under here before it is sent (``rewrite_to_served_ids``): the ``id``
+  of every object that names its ``type`` - with its ``name``, which takes the
+  served one so a forwarded detail names the entity as the listings do -
+  every entity URI (the self link, the resource collection links, the
+  relationship links, relative or absolute; the ID is read from the path
+  alone, and a query or fragment after it is kept as sent), and the
+  relationship IDs ``x-medkit`` carries (``parent_area_id``,
+  ``parentComponentId``, ``dependsOn``, ``area``, ``component_id``,
+  ``hosts``). A reference to an
+  entity the merge dropped is removed - the collection item that describes
+  it, the link or relationship field that names it, the entry of a list of
+  IDs - because by the peer's ID it would name the local entity that took its
+  place. Only recorded renames and drops are applied. They come from the
+  ``PeerIdIndex`` the refresh builds from the served entities and the merge's
+  drops and publishes in the entity cache with the entities
+  (``ThreadSafeEntityCache::update_all``); the rewrite reads one snapshot of
+  it for the whole body. A rewritten body drops the peer's ``ETag``.
+  Responses of the resource collections (data, faults, operations and the
+  rest) are passed through as the peer sent them, except for the member IDs a
+  fan-out reads off them: a dropped member is removed from a data item's
+  ``x-medkit.member_ids``, and an operation of a dropped member is left out of
+  the list.
+
+  The body comes from the peer, so the walk is bounded: a body nested deeper
+  than ``kMaxPeerJsonDepth`` (64) levels is judged on its text before it is
+  parsed and refused with ``502`` (``x-medkit-peer-unavailable``, naming the
+  depth). It is not passed through untranslated, which would present the
+  peer's IDs as this gateway's, and it is never translated in part. No
+  discovery response nests anywhere near that deep.
+
 The ``EntityMerger::SEPARATOR`` constant (``__``) is used as the prefix
-separator for Apps. The routing table maps ``entity_id -> peer_name`` for
+separator. The routing table maps ``entity_id -> peer_name`` for
 entities whose runtime state lives on the peer: remote-only Areas and
-Functions, leaf Components (remote-only or collision-merged), and
-remote-only or prefixed Apps. Hierarchical parent Components are not in the
+Functions, leaf Components (remote-only or collision-merged), remote-only
+Apps, and every prefixed entity. Hierarchical parent Components are not in the
 routing table - they are served locally.
 
 Provenance (``x-medkit.contributors``)
@@ -381,9 +473,22 @@ its own contributor list.
 Request Routing
 ---------------
 
-When a request arrives for an entity, ``HandlerContext`` checks the routing
-table. If the entity is local, processing continues normally. If the entity
-maps to a peer, the request is forwarded transparently:
+When a request arrives for an entity, ``HandlerContext`` looks the entity up
+and reads where it is answered off the entity itself. If the entity is local,
+processing continues normally. If it is routed to a peer, the request is
+forwarded transparently.
+
+The merge builds the routing table and records each entry on the entity it
+belongs to, as ``routed_to``: an Area, App or Function when the peer declared
+it alone (its ``source`` is ``peer:<name>``), a Component also when the peer is
+merged into it. ``AggregationManager::find_owning_peer`` reads ``routed_to``
+and nothing else. The routing table is keyed by ID and published separately
+from the entity cache, so a request that consulted it could pair an entity
+from one refresh with a routing entry from the next, or with an entry that
+belongs to another entity sharing the ID. Read off the entity, the decision is
+always that entity's, from the same cache generation. Member dispatch and the
+configuration reset read the owner the same way. The table itself is still
+published (``find_peer_for_entity``) for code that runs inside the refresh.
 
 .. plantuml::
    :caption: Request Routing - Local vs Remote
@@ -398,14 +503,16 @@ maps to a peer, the request is forwarded transparently:
 
    Client -> primary : GET /api/v1/components/robot_arm__lidar/data
    primary -> ctx : validate_entity_for_route()
-   ctx -> ctx : Look up "robot_arm__lidar" in routing table
+   ctx -> ctx : Look up Component "robot_arm__lidar", read its routed_to
    ctx --> primary : entity found, peer = "robot_arm"
 
-   primary -> agg : forward_request("robot_arm", req, res)
+   primary -> agg : forward_request("robot_arm", req, res, path)
    agg -> peer : GET /api/v1/components/lidar/data
    note right
-       Path rewritten: strips peer prefix
-       from entity ID before forwarding
+       The entity is named by the id the peer
+       knows it by: the rename the merge
+       recorded on it (original_id), not the
+       spelling of the served id
    end note
    peer --> agg : 200 OK + JSON data
    agg --> primary : Copy response to client
@@ -415,7 +522,7 @@ maps to a peer, the request is forwarded transparently:
 
    Client -> primary : GET /api/v1/apps/my_node/data
    primary -> ctx : validate_entity_for_route()
-   ctx -> ctx : "my_node" not in routing table
+   ctx -> ctx : App "my_node" has no routed_to
    ctx --> primary : entity found, local
 
    primary -> primary : Process locally via DataAccessManager
@@ -436,8 +543,8 @@ every member the other contributors hold.
 A request naming one member is a different question, and it does have a single
 answer. ``HandlerContext::dispatch_to_member`` re-addresses such a request to
 the member's own entity route - ``/apps/{member}/...`` or
-``/components/{member}/...`` - on the gateway the routing table names for that
-member:
+``/components/{member}/...``, by the id that gateway knows the member by - on
+the gateway the member is routed to:
 
 .. code-block:: text
 
@@ -477,8 +584,11 @@ means anything here. A peer describes its own tree in its own names, and an App
 whose id collided with a local one was merged under ``<peer>__<id>``, so the
 name the peer sends names the LOCAL leaf on this gateway. ``fan_out_get``
 therefore records the peer each item came from in
-``FanOutResult::item_peers``, and ``AggregationManager::local_member_id``
-resolves that name against the routing table: an item arriving through the
+``FanOutResult::item_peers``, and ``served_member_id`` resolves that name
+against the rename the merge recorded: the cached entity under
+``<peer>__<id>`` counts only when it is that peer's and was renamed from
+``<id>``, so a peer's own entity whose id merely reads like a prefix is never
+taken for one. An item arriving through the
 fan-out is re-attributed to the id the merge gave its owner, in
 ``x-medkit.member_ids`` and in the member half of the item id, before any of it
 is offered to a client. Read verbatim instead, the peer's item is attributed to
@@ -671,25 +781,54 @@ The path does not deduplicate a gateway reached over two different routes in
 the same request (A -> B -> C plus A -> C): C answers both, as it did before.
 
 **Target-filtered fan-out.** For per-entity paths, ``merge_peer_items()``
-asks ``AggregationManager::get_peer_contributors(id)`` for the list of
-peers that host or contribute to the entity, and passes it as a filter to
-``fan_out_get()``. Requests reach only those peers; non-contributors are
-never queried so they cannot appear in ``failed_peers``. The set unions:
+and ``fan_out_collection()`` ask only the peers the handler passes them: the
+``EntityInfo::peer_targets`` of the entity the request was validated against,
+which ``HandlerContext::get_entity_info`` reads off that cached entity's
+``contributors`` (``peer_targets_of``, stripping the ``"peer:"`` prefix). The
+list is passed as a filter to ``fan_out_get()``. Requests reach only those
+peers; non-contributors are never queried so they cannot appear in
+``failed_peers``. The ROS 2 fault listing (``list_entity_faults``) reads the
+entity's type and contributors off one copy of the entity the same way.
 
-- The routing table (remote leaves, collision-renamed peer-only entities).
-- A ``peer_contributors_by_entity_`` map maintained alongside the routing
-  table. ``gateway_node`` rebuilds both after every discovery cycle by
-  walking ``contributors`` on the merged Areas/Components/Apps/Functions,
-  stripping the ``"peer:"`` prefix and accumulating peer names per id.
-  Merged Areas/Functions with ID collisions and hierarchical parent
-  Components - both deliberately stripped from the routing table - still
-  reach their peers through this map.
+Read off the entity, the targets come from the same cache generation the
+request was validated against. A table rebuilt by the merge and published
+before the cache would, for the length of a refresh, name the peers of the
+next generation's entity for this generation's - including a peer asked
+about, and handed the caller's credential for, an entity that is still local
+here. The contributors cover remote leaves (the merge names the peer a routed
+entity is forwarded to), collision-renamed peer-only entities, and merged
+Areas/Functions and hierarchical parent Components, which are deliberately
+absent from the routing table. The id-keyed routing table is not consulted: an
+App and an Area can share an id, and the peer contributing one has nothing to
+say about the other.
 
 When the resolved list is empty (local-only entity), fan-out is skipped:
 no peer hosts the entity, so hitting peers would only produce spurious
-``partial: true`` / ``failed_peers``. Global endpoints (paths with no
+``partial: true`` / ``failed_peers``. A targeted peer that answers ``404``
+with ``entity-not-found`` - one that stopped holding the entity since the
+tables were built - contributes nothing and is not counted as failed either
+(``PeerFailureKind::kEntityNotFound``). Global endpoints (paths with no
 entity id, e.g. ``GET /api/v1/faults``) pass a ``nullptr`` filter and keep
 fan-out-to-all-healthy behavior.
+
+Each targeted peer is asked about the entity by the id it knows it by
+(``PeerTarget::id``, from ``peer_entity_id``): an entity the merge renamed is
+known to its peer by ``original_id``, every other contributor by the served id.
+A grouping Component prefixed on collision and kept local by the
+classification would otherwise be asked for as ``<peer>__<id>``, an id the peer
+holds nothing under, and its ``404`` would read as an empty answer. The rename
+is read off the entity, never off the spelling of the served id. The same
+holds for a request forwarded whole (``validate_entity_for_route``) and for one
+re-addressed to a member (``dispatch_to_member``): ``forward_request`` sends the
+path it is given.
+
+``CorePluginContext::list_entity_faults``, behind the ROS 2
+``list_entity_faults`` service, applies the same rule. It asks only the peers
+the cached entity names among its ``contributors``, each by the id it knows the
+entity by. An entity only this gateway holds asks no peer and logs no partial
+fan-out. The service has no inbound HTTP credential to forward, so each peer is
+asked with this gateway's own (``aggregation.peer_auth_header``) when one is
+configured.
 
 Entities freshly announced on a peer but not yet reflected in the local
 routing/contributor tables (a brief window between discovery cycles) are
@@ -769,7 +908,8 @@ refreshes that gateway needs to relink its ROS graph, and then turns true.
 
 ``PeerClient::fetch_entities()`` reads a peer over several requests and either
 describes it whole or reports failure: a dead connection, a status a route has
-no other meaning for, an oversized body or unparsable JSON on any of them fails
+no other meaning for, an oversized body, a body nested deeper than
+``kMaxPeerJsonDepth`` (64) levels or unparsable JSON on any of them fails
 the fetch, because a picture missing a branch is indistinguishable on the wire
 from a peer that does not have that branch. Two statuses carry a meaning of
 their own: a ``404`` on a nested collection route (``/subareas``,
@@ -802,6 +942,25 @@ are both healthy. Both requests carry ``X-Medkit-No-Fan-Out``, which keeps the
 peer from re-asking ITS peers: each gateway reports what it holds, the hop that
 owns an entity is the hop that answers for it, and that is also what makes the
 walk terminate.
+
+Each field is read from the key a gateway serves it under. An Area's and a
+Component's description come from the top level of the item, their namespace
+from ``x-medkit.ros2.namespace``, a Component's node from
+``x-medkit.ros2.node``, and a Function's translation id from the top-level
+``translation_id``. ``x-medkit.description``, ``x-medkit.namespace``,
+``x-medkit.fqn`` and ``translationId`` are still read when the served key is
+absent, for a peer that sends a field there. A subarea is read off the
+peer's ``/areas/{id}/subareas`` route, which serves its description and tags
+the way the top-level ``/areas`` list does, and takes that route's Area as its
+parent: the list item names none. The top-level ``/areas`` and ``/components``
+lists leave nested entities out, so subareas and subcomponents are read level
+by level, each level from the routes of the one above, down to eight levels
+below the top-level entity. An id already read is not read again, so a tree
+that loops back on itself ends there. A subcomponent takes its parent from its
+detail, and from the route when the detail names none or cannot be read. A
+Function's dependencies come from
+the ``_links["depends-on"]`` references its detail serves, each reduced to the
+Function id it names.
 
 Availability travels the same way in the other direction. ``x-medkit.available``
 is emitted only when false, so absence means reachable, and both
@@ -958,7 +1117,8 @@ Key Classes
 ``EntityMerger``
     Stateless merge engine that combines local and remote entity sets using
     type-specific rules (merge by ID for Area/Function/Component, prefix on
-    collision for App). Produces a provisional routing table mapping remote
+    collision for App, prefix for any type whose ID a local entity of another
+    type holds). Produces a provisional routing table mapping remote
     entity IDs to peer names - the Component entries are later refined by
     ``classify_component_routing``.
 
@@ -1087,7 +1247,10 @@ Function Host Remapping
 
 When App ID collision causes prefixing (e.g., ``camera_driver`` becomes
 ``peer_b__camera_driver``), Function entities that reference the original App ID
-in their ``hosts`` list are automatically remapped to use the prefixed ID. This
+in their ``hosts`` list are automatically remapped to use the prefixed ID; a host
+naming a prefixed Component is remapped the same way. The remapping reads the
+renames ``EntityMerger`` recorded for that peer, never the shape of an ID, so a
+peer whose own IDs contain ``__`` keeps them. This
 ensures Function host references remain valid after merge. The hosts are not
 reduced at this point: the one pass at the end of the cache refresh removes
 every host that names no served App or Component.

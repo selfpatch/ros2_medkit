@@ -37,7 +37,10 @@ areas:
         name: "Robot 1 Perception"
         namespace: /robot1/perception
 
-      - id: robot-1-navigation
+      # Entity ids are unique across areas, components, apps and functions
+      # in one manifest, so the subarea is not named after the App
+      # robot-1-navigation that runs in it.
+      - id: robot-1-navigation-area
         name: "Robot 1 Navigation"
         namespace: /robot1/navigation
 
@@ -50,7 +53,7 @@ areas:
         name: "Robot 2 Perception"
         namespace: /robot2/perception
 
-      - id: robot-2-navigation
+      - id: robot-2-navigation-area
         name: "Robot 2 Navigation"
         namespace: /robot2/navigation
 

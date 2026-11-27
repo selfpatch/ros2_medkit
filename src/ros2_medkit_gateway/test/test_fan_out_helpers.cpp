@@ -336,9 +336,9 @@ TEST(FanOutHelpers, merge_peer_items_appends_peer_items_to_result) {
 
   AggregationManager agg(config);
   agg.check_all_health();
-  // Routing table maps the entity in the path to the peer; without this the
-  // fan-out helper treats the entity as local-only and skips fan-out.
-  agg.update_routing_table({{"f1", "test_peer"}});
+  // The peer contributes the Function in the path; without it among the
+  // entity's targets the fan-out helper treats the entity as local-only.
+  const std::vector<PeerTarget> targets{{"test_peer", "f1"}};
 
   httplib::Request req;
   req.path = "/api/v1/functions/f1/logs";
@@ -346,7 +346,7 @@ TEST(FanOutHelpers, merge_peer_items_appends_peer_items_to_result) {
   result["items"] = json::array({{{"id", "local_log_1"}}});
   json ext;
 
-  merge_peer_items(&agg, req, result, ext);
+  merge_peer_items(&agg, req, result, ext, &targets);
 
   ASSERT_EQ(result["items"].size(), 3u);
   EXPECT_EQ(result["items"][0]["id"], "local_log_1");
@@ -374,7 +374,7 @@ TEST(FanOutHelpers, merge_peer_items_sets_partial_on_peer_failure) {
 
   AggregationManager agg(config);
   agg.check_all_health();
-  agg.update_routing_table({{"f1", "failing_peer"}});
+  const std::vector<PeerTarget> targets{{"failing_peer", "f1"}};
 
   httplib::Request req;
   req.path = "/api/v1/functions/f1/logs";
@@ -382,7 +382,7 @@ TEST(FanOutHelpers, merge_peer_items_sets_partial_on_peer_failure) {
   result["items"] = json::array();
   json ext;
 
-  merge_peer_items(&agg, req, result, ext);
+  merge_peer_items(&agg, req, result, ext, &targets);
 
   EXPECT_EQ(result["items"].size(), 0u);
   EXPECT_FALSE(ext.empty());
@@ -413,7 +413,7 @@ TEST(FanOutHelpers, merge_peer_items_creates_items_when_missing_and_peer_has_dat
 
   AggregationManager agg(config);
   agg.check_all_health();
-  agg.update_routing_table({{"a", "peer"}});
+  const std::vector<PeerTarget> targets{{"peer", "a"}};
 
   httplib::Request req;
   req.path = "/api/v1/apps/a/data";
@@ -421,7 +421,7 @@ TEST(FanOutHelpers, merge_peer_items_creates_items_when_missing_and_peer_has_dat
   // No "items" key - merge_peer_items should create it
   json ext;
 
-  merge_peer_items(&agg, req, result, ext);
+  merge_peer_items(&agg, req, result, ext, &targets);
 
   ASSERT_TRUE(result.contains("items"));
   ASSERT_EQ(result["items"].size(), 1u);
@@ -490,8 +490,8 @@ TEST(FanOutHelpers, extract_entity_id_ignores_query_string_because_httplib_split
 // =============================================================================
 
 TEST(FanOutHelpers, merge_peer_items_skips_fanout_when_entity_is_local_only) {
-  // A local-only entity has no peer contributors: it is absent from both the
-  // routing table and the peer-contributed-id set. Peers do not host it so
+  // A local-only entity has no peer contributors: its own contributors name no
+  // peer, whatever peers other entities name. Peers do not host it so
   // fan-out would always 404 and produce spurious `failed_peers`. Regression
   // test for the component-logs bug.
   MockServer mock;
@@ -513,7 +513,8 @@ TEST(FanOutHelpers, merge_peer_items_skips_fanout_when_entity_is_local_only) {
 
   AggregationManager agg(config);
   agg.check_all_health();
-  agg.update_routing_table({{"something-else", "other_peer"}});
+  // The entity in the path is local-only: its own contributors name no peer.
+  const std::vector<PeerTarget> targets;
 
   httplib::Request req;
   req.path = "/api/v1/components/local-only-comp/logs";
@@ -521,7 +522,7 @@ TEST(FanOutHelpers, merge_peer_items_skips_fanout_when_entity_is_local_only) {
   result["items"] = json::array({{{"id", "local_log"}}});
   json ext;
 
-  merge_peer_items(&agg, req, result, ext);
+  merge_peer_items(&agg, req, result, ext, &targets);
 
   EXPECT_EQ(result["items"].size(), 1u);
   EXPECT_EQ(result["items"][0]["id"], "local_log");
@@ -533,7 +534,7 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_for_merged_entity_without_routing_
   // or Areas/Functions with IDs shared across gateways) are served locally
   // and therefore have no routing-table entry, but peers still host runtime
   // state backing them. The helper must fan out in this case; it identifies
-  // these entities via update_peer_contributors().
+  // these entities by the peers their own contributors name.
   MockServer mock;
   mock.server().Get("/api/v1/health", [](const httplib::Request &, httplib::Response & res) {
     res.set_content(R"({"status":"healthy"})", "application/json");
@@ -555,7 +556,7 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_for_merged_entity_without_routing_
   AggregationManager agg(config);
   agg.check_all_health();
   // "root" is not routed (merged Area) but was contributed by a peer.
-  agg.update_peer_contributors({{"root", {"peer"}}});
+  const std::vector<PeerTarget> targets{{"peer", "root"}};
 
   httplib::Request req;
   req.path = "/api/v1/areas/root/logs";
@@ -563,7 +564,7 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_for_merged_entity_without_routing_
   result["items"] = json::array({{{"id", "local_log"}}});
   json ext;
 
-  merge_peer_items(&agg, req, result, ext);
+  merge_peer_items(&agg, req, result, ext, &targets);
 
   ASSERT_EQ(result["items"].size(), 2u);
   EXPECT_EQ(result["items"][0]["id"], "local_log");
@@ -611,7 +612,8 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_only_to_routed_leaf_owner) {
 
   AggregationManager agg(config);
   agg.check_all_health();
-  agg.update_routing_table({{"temp_sensor", "peer_owner"}});
+  // The merge names the peer a routed leaf is forwarded to among its contributors.
+  const std::vector<PeerTarget> targets{{"peer_owner", "temp_sensor"}};
 
   httplib::Request req;
   req.path = "/api/v1/apps/temp_sensor/logs";
@@ -619,7 +621,7 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_only_to_routed_leaf_owner) {
   result["items"] = json::array();
   json ext;
 
-  merge_peer_items(&agg, req, result, ext);
+  merge_peer_items(&agg, req, result, ext, &targets);
 
   ASSERT_EQ(result["items"].size(), 1u);
   EXPECT_EQ(result["items"][0]["id"], "owner_log");
@@ -670,7 +672,7 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_only_to_listed_contributors) {
 
   AggregationManager agg(config);
   agg.check_all_health();
-  agg.update_peer_contributors({{"vehicle", {"peer_a", "peer_c"}}});
+  const std::vector<PeerTarget> targets{{"peer_a", "vehicle"}, {"peer_c", "vehicle"}};
 
   httplib::Request req;
   req.path = "/api/v1/areas/vehicle/faults";
@@ -678,7 +680,7 @@ TEST(FanOutHelpers, merge_peer_items_fans_out_only_to_listed_contributors) {
   result["items"] = json::array();
   json ext;
 
-  merge_peer_items(&agg, req, result, ext);
+  merge_peer_items(&agg, req, result, ext, &targets);
 
   ASSERT_EQ(result["items"].size(), 2u);
   // Order is not guaranteed - std::async parallelism. Check presence.
@@ -733,7 +735,7 @@ TEST(FanOutHelpers, merge_peer_items_partial_only_when_contributor_fails) {
 
   AggregationManager agg(config);
   agg.check_all_health();
-  agg.update_peer_contributors({{"cluster", {"peer_ok", "peer_broken"}}});
+  const std::vector<PeerTarget> targets{{"peer_ok", "cluster"}, {"peer_broken", "cluster"}};
 
   httplib::Request req;
   req.path = "/api/v1/components/cluster/logs";
@@ -741,7 +743,7 @@ TEST(FanOutHelpers, merge_peer_items_partial_only_when_contributor_fails) {
   result["items"] = json::array();
   json ext;
 
-  merge_peer_items(&agg, req, result, ext);
+  merge_peer_items(&agg, req, result, ext, &targets);
 
   ASSERT_EQ(result["items"].size(), 1u);
   EXPECT_EQ(result["items"][0]["id"], "ok_log");

@@ -311,7 +311,8 @@ Summary
 - **mDNS discovery**: Set ``aggregation.announce`` and ``aggregation.discover``
   to ``true`` for zero-configuration peer discovery.
 - **Entity merging**: Areas, Functions, and Components merge by ID. Apps get
-  peer-name prefixes on collision.
+  peer-name prefixes on collision, as does any remote entity whose ID a local
+  entity of another type holds.
 - **Transparent forwarding**: Requests for remote entities are forwarded to the
   owning peer. Clients interact with a single API endpoint.
 - **Graceful degradation**: Unhealthy peers are excluded from fan-out. Partial

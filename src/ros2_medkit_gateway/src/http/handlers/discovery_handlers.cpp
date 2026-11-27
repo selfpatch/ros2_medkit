@@ -459,6 +459,16 @@ http::Result<dto::Collection<dto::AreaListItem>> DiscoveryHandlers::get_subareas
       item.href = "/api/v1/areas/" + subarea.id;
       item.type = "area";
 
+      // The same fields the top-level /areas list carries, so a subarea is
+      // described as fully here, and a gateway aggregating this one can read
+      // its description off this route as it does for a top-level Area.
+      if (!subarea.description.empty()) {
+        item.description = subarea.description;
+      }
+      if (!subarea.tags.empty()) {
+        item.tags = subarea.tags;
+      }
+
       if (!subarea.namespace_path.empty()) {
         dto::XMedkitRos2 ros2;
         ros2.ns = subarea.namespace_path;
@@ -653,15 +663,25 @@ http::Result<dto::ComponentDetail> DiscoveryHandlers::get_component(const http::
     }
     const std::string component_id = *id_result;
 
-    // Validate entity and forward to peer if remote (aggregation support).
-    auto entity_result = ctx_.validate_entity_for_route(req, component_id);
-    if (!entity_result) {
-      return tl::unexpected(flatten_validator_error(entity_result.error()));
+    // A Component this gateway declares itself is described here from the
+    // merged view, even while a peer that declares it too owns its runtime
+    // state and answers its resource collections. Its Area, subcomponents,
+    // hosts and dependencies are all served from that view, so the detail has
+    // to be as well, or it names an Area the Area listings do not.
+    const auto & cache = ctx_.services().entity_cache();
+    auto comp_opt = cache.get_component(component_id);
+    const bool declared_here = comp_opt && std::find(comp_opt->contributors.begin(), comp_opt->contributors.end(),
+                                                     "local") != comp_opt->contributors.end();
+
+    if (!declared_here) {
+      // Validate entity and forward to peer if remote (aggregation support).
+      auto entity_result = ctx_.validate_entity_for_route(req, component_id);
+      if (!entity_result) {
+        return tl::unexpected(flatten_validator_error(entity_result.error()));
+      }
     }
 
     // Local entity - look up full object from cache for detail response.
-    const auto & cache = ctx_.services().entity_cache();
-    auto comp_opt = cache.get_component(component_id);
     if (!comp_opt) {
       auto discovery = ctx_.services().discovery();
       comp_opt = discovery->get_component(component_id);

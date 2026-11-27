@@ -130,8 +130,12 @@ struct App {
   std::vector<ActionInfo> actions;
 
   // === Discovery metadata ===
-  std::string source = "manifest";        ///< "manifest" or "runtime"
-  std::string original_id;                ///< Pre-rename ID when collision-prefixed by aggregation
+  std::string source = "manifest";  ///< "manifest" or "runtime"
+  std::string original_id;          ///< Pre-rename ID when collision-prefixed by aggregation
+  /// The peer this gateway forwards the entity's requests to, empty when it
+  /// answers them itself. Set by the aggregation merge on the entity, so a
+  /// request reads it from the same cache generation as the entity it found.
+  std::string routed_to;
   std::vector<std::string> contributors;  ///< Aggregation provenance: "local" and/or "peer:<name>"
   /// What the contributing gateway itself called this entity: "manifest",
   /// "runtime", "node" or "topic". `source` is overwritten with `peer:<name>`
@@ -170,8 +174,8 @@ inline bool operator==(const App & a, const App & b) {
          a.tags == b.tags && a.component_id == b.component_id && a.depends_on == b.depends_on &&
          a.ros_binding == b.ros_binding && a.bound_fqn == b.bound_fqn && a.is_online == b.is_online &&
          a.external == b.external && a.topics == b.topics && a.services == b.services && a.actions == b.actions &&
-         a.source == b.source && a.original_id == b.original_id && a.contributors == b.contributors &&
-         a.declared_source == b.declared_source && a.available == b.available;
+         a.source == b.source && a.original_id == b.original_id && a.routed_to == b.routed_to &&
+         a.contributors == b.contributors && a.declared_source == b.declared_source && a.available == b.available;
 }
 inline bool operator!=(const App & a, const App & b) {
   return !(a == b);

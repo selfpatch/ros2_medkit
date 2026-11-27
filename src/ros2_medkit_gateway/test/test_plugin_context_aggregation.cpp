@@ -325,8 +325,10 @@ class PluginContextWithPeerTest : public ::testing::Test {
       res.set_content(R"({"status":"healthy"})", "application/json");
     });
 
-    // /api/v1/apps/brakes/faults - returns a PROTECTIVE_STOP fault
-    mock_.server().Get(R"(/api/v1/apps/brakes/faults)", [](const httplib::Request &, httplib::Response & res) {
+    // /api/v1/functions/braking/faults - returns a PROTECTIVE_STOP fault. The
+    // peer declares Function "braking" too (below), so the merged Function
+    // names it as a contributor and the fan-out asks it.
+    mock_.server().Get(R"(/api/v1/functions/braking/faults)", [](const httplib::Request &, httplib::Response & res) {
       json item = {
           {"fault_code", "PROTECTIVE_STOP"}, {"description", "Emergency stop triggered"}, {"status", "ACTIVE"}};
       res.set_content(json({{"items", json::array({item})}}).dump(), "application/json");
@@ -338,7 +340,8 @@ class PluginContextWithPeerTest : public ::testing::Test {
       res.set_content(json({{"items", json::array({item})}}).dump(), "application/json");
     });
 
-    // Discovery endpoints (empty) - needed during GatewayNode startup discovery refresh
+    // Discovery endpoints - needed during GatewayNode startup discovery refresh.
+    // The peer declares the Function "braking" the local manifest declares.
     mock_.server().Get("/api/v1/components", [](const httplib::Request &, httplib::Response & res) {
       res.set_content(R"({"items":[]})", "application/json");
     });
@@ -349,7 +352,10 @@ class PluginContextWithPeerTest : public ::testing::Test {
       res.set_content(R"({"items":[]})", "application/json");
     });
     mock_.server().Get("/api/v1/functions", [](const httplib::Request &, httplib::Response & res) {
-      res.set_content(R"({"items":[]})", "application/json");
+      res.set_content(R"({"items":[{"id":"braking","name":"Braking"}]})", "application/json");
+    });
+    mock_.server().Get("/api/v1/functions/braking", [](const httplib::Request &, httplib::Response & res) {
+      res.set_content(R"({"id":"braking","name":"Braking","x-medkit":{"hosts":["brakes"]}})", "application/json");
     });
 
     int peer_port = mock_.start();
@@ -430,17 +436,23 @@ class PluginContextFailingPeerTest : public ::testing::Test {
       res.status = 503;
       res.set_content(R"({"error":"unavailable"})", "application/json");
     };
-    mock_.server().Get(R"(/api/v1/apps/brakes/faults)", fail);
+    mock_.server().Get(R"(/api/v1/functions/braking/faults)", fail);
     mock_.server().Get("/api/v1/faults", fail);
 
-    // Discovery endpoints (empty) - needed during GatewayNode startup discovery refresh
+    // Discovery endpoints - needed during GatewayNode startup discovery refresh.
+    // The peer contributes Function "braking", so its fault query is asked.
     auto empty_items = [](const httplib::Request &, httplib::Response & res) {
       res.set_content(R"({"items":[]})", "application/json");
     };
     mock_.server().Get("/api/v1/components", empty_items);
     mock_.server().Get("/api/v1/areas", empty_items);
     mock_.server().Get("/api/v1/apps", empty_items);
-    mock_.server().Get("/api/v1/functions", empty_items);
+    mock_.server().Get("/api/v1/functions", [](const httplib::Request &, httplib::Response & res) {
+      res.set_content(R"({"items":[{"id":"braking","name":"Braking"}]})", "application/json");
+    });
+    mock_.server().Get("/api/v1/functions/braking", [](const httplib::Request &, httplib::Response & res) {
+      res.set_content(R"({"id":"braking","name":"Braking","x-medkit":{"hosts":["brakes"]}})", "application/json");
+    });
 
     int peer_port = mock_.start();
     ASSERT_GT(peer_port, 0);
@@ -560,9 +572,10 @@ TEST_F(PluginContextWithPeerTest, ListEntityFaults_IncludesPeerFault) {
   auto ctx = ros2_medkit_gateway::make_gateway_plugin_context(node_.get(), nullptr, nullptr);
   ASSERT_NE(ctx, nullptr);
 
-  // "brakes" is in the local manifest. No local fault manager (null), but the
-  // peer returns a PROTECTIVE_STOP fault via /api/v1/apps/brakes/faults.
-  auto faults = ctx->list_entity_faults("brakes");
+  // "braking" is in the local manifest and the peer declares it too. No local
+  // fault manager (null), but the peer returns a PROTECTIVE_STOP fault via
+  // /api/v1/functions/braking/faults.
+  auto faults = ctx->list_entity_faults("braking");
 
   ASSERT_TRUE(faults.is_array());
   ASSERT_GE(faults.size(), 1u) << "peer fault should be included in the result";
@@ -672,8 +685,10 @@ TEST_F(PluginContextWithPeerTest, ListEntityFaults_MergesLocalAndPeerFaults) {
   auto ctx = ros2_medkit_gateway::make_gateway_plugin_context(node_.get(), &fm, nullptr);
   ASSERT_NE(ctx, nullptr);
 
-  // Local /vehicle/brakes fault AND the peer's PROTECTIVE_STOP must both appear.
-  auto faults = ctx->list_entity_faults("brakes");
+  // Function "braking" hosts the local app "brakes" and is contributed by the
+  // peer: the local /vehicle/brakes fault AND the peer's PROTECTIVE_STOP must
+  // both appear.
+  auto faults = ctx->list_entity_faults("braking");
   ASSERT_TRUE(faults.is_array());
   EXPECT_TRUE(contains_fault_code(faults, "LOCAL_BRAKE_FAULT")) << "local fault missing from merged result";
   EXPECT_TRUE(contains_fault_code(faults, "PROTECTIVE_STOP")) << "peer fault missing from merged result";
@@ -722,9 +737,10 @@ TEST_F(PluginContextFailingPeerTest, ListEntityFaults_FailingPeerPreservesLocalF
   auto ctx = ros2_medkit_gateway::make_gateway_plugin_context(node_.get(), &fm, nullptr);
   ASSERT_NE(ctx, nullptr);
 
-  // The peer 503s on the fault query (partial fan-out), so it contributes
-  // nothing - but the local fault must still be returned, not silently lost.
-  auto faults = ctx->list_entity_faults("brakes");
+  // The peer contributes "braking" but 503s on its fault query (partial
+  // fan-out), so it adds nothing - but the local fault of the host app must
+  // still be returned, not silently lost.
+  auto faults = ctx->list_entity_faults("braking");
   ASSERT_TRUE(faults.is_array());
   EXPECT_TRUE(contains_fault_code(faults, "LOCAL_BRAKE_FAULT"))
       << "local faults must survive when a peer fails the fan-out";
