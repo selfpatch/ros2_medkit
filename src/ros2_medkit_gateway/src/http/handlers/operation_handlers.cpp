@@ -138,6 +138,71 @@ bool names_a_member(const AggregatedOperations & ops, const std::string & member
   return std::find(ops.source_ids.begin(), ops.source_ids.end(), member_id) != ops.source_ids.end();
 }
 
+/// True when `goal` is one of the executions of the entity of `entity_type`
+/// and `entity_id`, whose operations are `ops`, addressed by the operation id
+/// `parsed`: it was started through that entity, or through the member the
+/// qualified id names.
+///
+/// Both compare the type with the id. Ids are unique per type only - a
+/// namespace Function beside a manifest Area of that name shares its id - and
+/// by id alone a goal started through the Area was read, stopped and
+/// cancelled through the Function. The member has to be one of `ops`' own
+/// members, of the goal's type: parsing a member half only proves the
+/// addressed entity aggregates, not that the member named is one of its
+/// members, and an App and a Component may share an id too.
+bool goal_belongs_to(const ActionGoalInfo & goal, SovdEntityType entity_type, const std::string & entity_id,
+                     const AggregatedOperations & ops, const http::MemberQualifiedId & parsed) {
+  if (goal.entity_type == entity_type && goal.entity_id == entity_id) {
+    return true;
+  }
+  if (!parsed.has_member || goal.entity_id != parsed.member_id) {
+    return false;
+  }
+  for (size_t i = 0; i < ops.source_ids.size() && i < ops.source_types.size(); ++i) {
+    if (ops.source_types[i] == goal.entity_type && ops.source_ids[i] == goal.entity_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// The name a tracked goal's operation is listed under: the last segment of
+/// its action's path. A goal is tracked only for an action of this gateway's
+/// own ROS graph, and runtime introspection names every such action so.
+std::string goal_operation_name(const ActionGoalInfo & goal) {
+  const auto slash = goal.action_path.rfind('/');
+  return slash == std::string::npos ? goal.action_path : goal.action_path.substr(slash + 1);
+}
+
+/// True when `goal` is an execution of the operation `parsed` names on the
+/// entity of `entity_type` and `entity_id`, whose operations are `ops`.
+///
+/// An execution belongs to the operation that started it as well as to the
+/// entity: the item half has to name the goal's operation, by its name or its
+/// ROS path, so `operations/missing/executions/{goal}` - or another operation's
+/// executions - is no address of it. A member half has to name the member that
+/// holds the operation: the one the goal was started on, or the one recorded
+/// as the owner of its action when the goal was sent (ActionGoalInfo::
+/// owner_id). The goal's own record is what is matched, not the operations
+/// the cache lists now, so the execution of an action server that has gone
+/// stays answerable under each of its ids - its status, and a cancel that
+/// reports the server unavailable.
+bool is_execution_of(const ActionGoalInfo & goal, SovdEntityType entity_type, const std::string & entity_id,
+                     const AggregatedOperations & ops, const http::MemberQualifiedId & parsed) {
+  if (!http::operation_item_id_names(goal_operation_name(goal), goal.action_path, parsed.item_id) ||
+      !goal_belongs_to(goal, entity_type, entity_id, ops, parsed)) {
+    return false;
+  }
+  if (!parsed.has_member) {
+    return true;
+  }
+  const bool started_here = goal.entity_type == entity_type && goal.entity_id == entity_id;
+  if (!started_here && goal.entity_id == parsed.member_id) {
+    return true;
+  }
+  return started_here && !goal.owner_id.empty() && goal.owner_id == parsed.member_id;
+}
+
 /// The operation an item id resolves to inside one entity's operations.
 struct ResolvedOperation {
   std::optional<ServiceInfo> service;
@@ -283,6 +348,18 @@ std::optional<ErrorInfo> refuse_if_ambiguous(const AggregatedOperations & ops, c
   return make_error(400, ERR_INVALID_REQUEST, "Ambiguous operation id: it names more than one operation", params);
 }
 
+/// The entity type the route names: `/functions/{id}/...` addresses a
+/// Function, whatever else holds that id. An Area and a Function may share an
+/// id - a namespace Function next to a manifest Area of that name - and a
+/// lookup by id alone finds the Area first.
+SovdEntityType route_entity_type(const http::TypedRequest & req) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+  const auto & raw_req = req.raw_for_framework();
+#pragma GCC diagnostic pop
+  return extract_entity_type_from_path(raw_req.path);
+}
+
 /// Settle which gateway holds the execution this request addresses.
 ///
 /// An execution lives on the gateway that started it, which is the gateway that
@@ -291,15 +368,38 @@ std::optional<ErrorInfo> refuse_if_ambiguous(const AggregatedOperations & ops, c
 /// the executions collection already resolves it by, and the three follow-up
 /// verbs reach the goals the collection hands out.
 ///
+/// An entity routed whole to a peer is that peer's, and so are its executions
+/// and the operations they run: the request is forwarded to it whole, as every
+/// other route of the entity is (validate_entity_for_route), without reading
+/// this gateway's cached operations. Resolved from the cache instead, an
+/// operation it does not list - a plugin operation with no ROS path, one the
+/// peer added since the last refresh - was started through this gateway, since
+/// the POST is forwarded whole, and its status, stop and cancel then found no
+/// owner here and answered a local 404. The cache picks the owner only for a
+/// grouping entity, whose member holds the execution.
+///
 /// An id this gateway cannot resolve to exactly one owned operation is left to
 /// the local path: the execution id is the key there, and the answer it gives
 /// for an id naming no goal is the answer this route already owes. Resolving is
 /// how the owner is found, never a second place for the route to refuse.
+///
+/// The entity is the one the route names, looked up by the route's type: by id
+/// alone a Function follow-up resolved against an Area sharing the id and was
+/// dispatched to a peer member of the Area.
 http::Result<MemberDispatch> dispatch_execution_to_owner(const HandlerContext & ctx, const http::TypedRequest & req,
                                                          const std::string & entity_id,
                                                          const std::string & operation_id,
                                                          const std::string & execution_id) {
-  const auto entity_info = ctx.get_entity_info(entity_id);
+  auto entity_info = ctx.get_entity_info(entity_id, route_entity_type(req));
+  if (entity_info.is_remote) {
+    auto routed = ctx.validate_entity_for_route(req, entity_id);
+    if (!routed) {
+      return tl::unexpected(flatten_validator_error(routed.error()));
+    }
+    // A refresh landed in between and the entity is served here now: the
+    // entity validation found is resolved below like any local one.
+    entity_info = std::move(*routed);
+  }
   const auto & cache = ctx.services().entity_cache();
   auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id);
   if (!lookup) {
@@ -315,12 +415,21 @@ http::Result<MemberDispatch> dispatch_execution_to_owner(const HandlerContext & 
 
   const std::string & full_path =
       resolved.service.has_value() ? resolved.service->full_path : resolved.action->full_path;
+  // An App's operations are its own and name no member: the App owns them,
+  // and the goal of a peer's App lives on that peer. Left to the local path,
+  // which holds no goal of it, the status, stop and cancel of every execution
+  // a peer's App was asked for answered 404 here, and so did the `Location`
+  // its start handed out.
   auto owner = ops.owner_by_path.find(full_path);
-  if (owner == ops.owner_by_path.end()) {
+  std::string owner_id = owner != ops.owner_by_path.end() ? owner->second : std::string{};
+  if (owner_id.empty() && !ops.is_aggregated) {
+    owner_id = entity_id;
+  }
+  if (owner_id.empty()) {
     return MemberDispatch::kServeLocally;
   }
   return ctx.dispatch_to_member(
-      req, owner->second, "operations/" + parsed.item_id + "/executions/" + execution_id,
+      req, owner_id, "operations/" + parsed.item_id + "/executions/" + execution_id,
       json{{"entity_id", entity_id}, {"operation_id", operation_id}, {"execution_id", execution_id}});
 }
 
@@ -420,7 +529,8 @@ dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std
 }
 
 /// Look up a tracked action goal, and refuse it through any entity other than
-/// the one it was started on.
+/// the one it was started on, by type and id, and under any operation but its
+/// own (is_execution_of).
 ///
 /// `ActionGoalInfo` carries the owning entity, so the check costs nothing -
 /// and without it a goal id is a global handle: an execution started on one
@@ -430,31 +540,36 @@ dto::XMedkitOperationItem build_action_xmedkit(const ActionInfo & act, const std
 /// addresses the wrong entity gets the same "not found" it would get for a
 /// wrong id, which is the answer that keeps entity boundaries meaningful.
 tl::expected<ActionGoalInfo, ErrorInfo> owned_goal(const HandlerContext & ctx, OperationManager * operation_mgr,
-                                                   const std::string & entity_id, const std::string & operation_id,
-                                                   const std::string & execution_id) {
+                                                   SovdEntityType entity_type, const std::string & entity_id,
+                                                   const std::string & operation_id, const std::string & execution_id) {
   auto goal_info = operation_mgr->get_tracked_goal(execution_id);
   if (goal_info.has_value()) {
-    if (goal_info->entity_id == entity_id) {
-      return *goal_info;
-    }
     // The executions collection lists a goal under the member a qualified id
     // names, so the item routes have to accept that same id: a client that
     // reads the collection and follows an id it was handed must not be told
     // the execution does not exist.
     //
-    // `names_a_member` is the half that makes this safe, and the collection
-    // applies it too. Parsing a member half only proves the ADDRESSED entity
-    // aggregates - not that the member named is one of its members. Without
-    // this gate any aggregate could name the owner of someone else's goal and
-    // read, stop or cancel it from an unrelated URI.
-    const auto entity_info = ctx.get_entity_info(entity_id);
+    // The member half of `goal_belongs_to` is what makes this safe, and the
+    // collection applies it too. Parsing a member half only proves the
+    // ADDRESSED entity aggregates - not that the member named is one of its
+    // members. Without this gate any aggregate could name the owner of
+    // someone else's goal and read, stop or cancel it from an unrelated URI.
+    //
+    // The entity the route names, by its type (route_entity_type). One the
+    // cache no longer holds has no operations and no members, and answers
+    // only for the goals started through it.
+    const auto entity_info = ctx.get_entity_info(entity_id, entity_type);
     const auto & cache = ctx.services().entity_cache();
+    AggregatedOperations ops;
     if (auto lookup = resolve_entity_operations(cache, entity_info.sovd_type(), entity_id)) {
-      const auto parsed = http::parse_member_qualified_id(operation_id, lookup->ops.is_aggregated);
-      if (parsed.has_member && names_a_member(lookup->ops, parsed.member_id) &&
-          goal_info->entity_id == parsed.member_id) {
-        return *goal_info;
-      }
+      ops = std::move(lookup->ops);
+    }
+    // A goal with a recorded owner was started through a grouping, whose
+    // qualified ids stay its addresses after its members are gone.
+    const auto parsed =
+        http::parse_member_qualified_id(operation_id, ops.is_aggregated || !goal_info->owner_id.empty());
+    if (is_execution_of(*goal_info, entity_type, entity_id, ops, parsed)) {
+      return *goal_info;
     }
   }
   return tl::make_unexpected(
@@ -1150,7 +1265,13 @@ OperationHandlers::create_execution(const http::TypedRequest & req, dto::Executi
       action_type = *body.type;
     }
 
-    auto action_result = operation_mgr->send_action_goal(action_info->full_path, action_type, goal_data, entity_id);
+    // The member that owns the action, for a grouping entity - the one whose
+    // operation ids can be qualified: recorded with the goal, as the grouping
+    // stops listing the action when its server goes.
+    const auto owner = ops.owner_by_path.find(action_info->full_path);
+    const std::string owner_id = ops.is_aggregated && owner != ops.owner_by_path.end() ? owner->second : std::string{};
+    auto action_result = operation_mgr->send_action_goal(action_info->full_path, action_type, goal_data, entity_id,
+                                                         entity_info.sovd_type(), owner_id);
 
     if (action_result.success && action_result.goal_accepted) {
       dto::ExecutionCreateAsync async_dto;
@@ -1338,10 +1459,10 @@ http::Result<dto::Collection<dto::ExecutionId>> OperationHandlers::list_executio
       // one; the same execution is also reachable under the member a
       // qualified id names, because that member is how the caller selects it.
       // Both readings are legitimate, so either match keeps the execution -
-      // testing only one of them empties the collection for the other.
-      const bool started_here = goal.entity_id == entity_id;
-      const bool started_on_the_named_member = parsed.has_member && goal.entity_id == parsed.member_id;
-      if (!started_here && !started_on_the_named_member) {
+      // testing only one of them empties the collection for the other - and
+      // each is by type and id and by the operation, the rule the execution's
+      // own routes answer by.
+      if (!is_execution_of(goal, entity_info.sovd_type(), entity_id, ops, parsed)) {
         continue;
       }
       dto::ExecutionId item;
@@ -1391,7 +1512,7 @@ http::Result<dto::OperationExecution> OperationHandlers::get_execution(const htt
   }
 
   auto * operation_mgr = ctx_.services().operation_manager();
-  auto goal_info = owned_goal(ctx_, operation_mgr, entity_id, operation_id, execution_id);
+  auto goal_info = owned_goal(ctx_, operation_mgr, route_entity_type(req), entity_id, operation_id, execution_id);
   if (!goal_info) {
     return tl::make_unexpected(goal_info.error());
   }
@@ -1446,8 +1567,8 @@ http::Result<http::NoContent> OperationHandlers::cancel_execution(const http::Ty
 
   // Lock-check against the resolved entity (best-effort - if the entity
   // cannot be resolved here we still let the operation manager produce the
-  // canonical 404 below).
-  const auto entity_info = ctx_.get_entity_info(entity_id);
+  // canonical 404 below). The entity the route names, by its type.
+  const auto entity_info = ctx_.get_entity_info(entity_id, route_entity_type(req));
   if (auto lock_err = ctx_.validate_lock_access(req, entity_info, "operations"); !lock_err) {
     return tl::make_unexpected(lock_err.error());
   }
@@ -1463,7 +1584,7 @@ http::Result<http::NoContent> OperationHandlers::cancel_execution(const http::Ty
   }
 
   auto * operation_mgr = ctx_.services().operation_manager();
-  auto goal_info = owned_goal(ctx_, operation_mgr, entity_id, operation_id, execution_id);
+  auto goal_info = owned_goal(ctx_, operation_mgr, route_entity_type(req), entity_id, operation_id, execution_id);
   if (!goal_info) {
     return tl::make_unexpected(goal_info.error());
   }
@@ -1515,7 +1636,7 @@ OperationHandlers::update_execution(const http::TypedRequest & req, const dto::E
                                           json{{"details", vr.error()}, {"entity_id", entity_id}}));
   }
 
-  const auto entity_info = ctx_.get_entity_info(entity_id);
+  const auto entity_info = ctx_.get_entity_info(entity_id, route_entity_type(req));
   if (auto lock_err = ctx_.validate_lock_access(req, entity_info, "operations"); !lock_err) {
     return tl::make_unexpected(lock_err.error());
   }
@@ -1533,7 +1654,7 @@ OperationHandlers::update_execution(const http::TypedRequest & req, const dto::E
   const std::string capability = body.capability;
 
   auto * operation_mgr = ctx_.services().operation_manager();
-  auto goal_info = owned_goal(ctx_, operation_mgr, entity_id, operation_id, execution_id);
+  auto goal_info = owned_goal(ctx_, operation_mgr, route_entity_type(req), entity_id, operation_id, execution_id);
   if (!goal_info) {
     return tl::make_unexpected(goal_info.error());
   }

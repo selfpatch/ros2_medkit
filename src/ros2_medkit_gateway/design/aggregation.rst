@@ -740,8 +740,29 @@ for the same reason - ``GET`` for its status, ``PUT`` to apply a capability and
    GET /api/v1/functions/vehicle_health/operations/peer_long_calibration:long_calibration/executions/{exec}
      -> GET /api/v1/apps/peer_long_calibration/operations/long_calibration/executions/{exec}
 
-An id that does not resolve to exactly one owned operation is left to the local
-path, whose key is the execution id alone: resolving is how the owning gateway
+An entity routed whole to a peer - a peer's own App, a Component the peer
+contributes as a leaf - is that peer's, and so are its executions: their
+status, stop and cancel are forwarded to it whole, as its start was and as
+every other route of the entity is (``validate_entity_for_route``), without
+reading this gateway's cached operations. Resolving them from the cache
+instead found no owner for an operation the cache does not list - a plugin
+operation with no ROS path, one the peer added since the last refresh - and
+answered a local ``404`` for an execution the start had just created on the
+peer. The cached operations pick the owner only on a grouping entity, whose
+member holds the execution. The entity is the one the route names, looked up
+by the route's type: an Area and a Function may share an id (a namespace
+Function beside a manifest Area of that name), and by id alone a Function's
+follow-up was resolved against the Area and dispatched to the Area's peer
+member. There, an id that does not resolve to exactly
+one owned operation is left to the local path, which finds the goal by the
+execution id and answers it only through the entity it was started through,
+by type and id, or through the member a qualified id names, by its own type
+and id, and only under an id naming its own operation: an execution started
+through the Area answers ``404`` through the Function that shares its id, and
+under ``operations/missing`` or another operation of the Area. The operation
+is the goal's own action and the member a qualified id has to name is the
+owner recorded when the goal was sent, so neither depends on what the cache
+lists once the action's server has gone. Resolving is how the owning gateway
 is found, not a second place for these routes to refuse a request. So a
 locally-owned execution is answered here exactly as before, and an id naming no
 goal gets the same ``404`` it always did.

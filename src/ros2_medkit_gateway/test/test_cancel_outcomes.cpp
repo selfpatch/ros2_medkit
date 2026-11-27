@@ -67,6 +67,7 @@ using ros2_medkit_gateway::ActionGoalStatus;
 using ros2_medkit_gateway::AuthConfig;
 using ros2_medkit_gateway::CorsConfig;
 using ros2_medkit_gateway::GatewayNode;
+using ros2_medkit_gateway::SovdEntityType;
 using ros2_medkit_gateway::TlsConfig;
 using ros2_medkit_gateway::handlers::HandlerContext;
 using ros2_medkit_gateway::handlers::OperationHandlers;
@@ -354,12 +355,17 @@ class CancelOutcomesFixtureTest : public ::testing::Test {
     return false;
   }
 
-  void inject_goal(ActionGoalStatus status = ActionGoalStatus::EXECUTING) {
+  /// A goal is the execution of the entity it was started through, by type
+  /// and id, so the goal is planted on the entity the test drives: the
+  /// components collection's unless a test names another.
+  void inject_goal(ActionGoalStatus status = ActionGoalStatus::EXECUTING,
+                   SovdEntityType entity_type = SovdEntityType::COMPONENT) {
     ActionGoalInfo info;
     info.goal_id = kGoalIdHex;
     info.action_path = kActionPath;
     info.action_type = "example_interfaces/action/Fibonacci";
     info.entity_id = "engine";
+    info.entity_type = entity_type;
     info.status = status;
     info.created_at = std::chrono::system_clock::now();
     info.last_update = info.created_at;
@@ -603,7 +609,7 @@ TEST_F(CancelOutcomesFixtureTest, PutStopReconciledLocationPointsAtTheRequestedC
   // The same route is registered for apps, components, areas and functions.
   // A Location built from a hardcoded apps/components pair sends an areas
   // client into the components collection.
-  inject_goal();
+  inject_goal(ActionGoalStatus::EXECUTING, SovdEntityType::AREA);
   ASSERT_TRUE(deliver_status_until_tracked(ActionGoalStatus::CANCELING, action_msgs::msg::GoalStatus::STATUS_CANCELING))
       << "status stream never reached the tracked goal";
 

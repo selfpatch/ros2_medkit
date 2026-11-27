@@ -113,15 +113,22 @@ class OperationManager {
 
   // ==================== ACTION OPERATIONS ====================
 
-  /// Send a goal to an action server through the ActionTransport.
+  /// Send a goal to an action server through the ActionTransport, tracked as
+  /// started through the entity of `entity_type` and `entity_id`, whose member
+  /// `owner_id` owns the action (empty for an entity that is no grouping; see
+  /// ActionGoalInfo::owner_id).
   ActionSendGoalResult send_action_goal(const std::string & action_path, const std::string & action_type,
-                                        const json & goal, const std::string & entity_id = "");
+                                        const json & goal, const std::string & entity_id = "",
+                                        SovdEntityType entity_type = SovdEntityType::UNKNOWN,
+                                        const std::string & owner_id = "");
 
   /// Send a goal using component namespace + operation name. Resolves through
   /// the ServiceActionResolver when type is unset.
   ActionSendGoalResult send_component_action_goal(const std::string & component_ns, const std::string & operation_name,
                                                   const std::optional<std::string> & action_type, const json & goal,
-                                                  const std::string & entity_id = "");
+                                                  const std::string & entity_id = "",
+                                                  SovdEntityType entity_type = SovdEntityType::UNKNOWN,
+                                                  const std::string & owner_id = "");
 
   /// Cancel a running action goal.
   ///
@@ -208,7 +215,7 @@ class OperationManager {
 
   /// Track a new goal in the local map.
   void track_goal(const std::string & goal_id, const std::string & action_path, const std::string & action_type,
-                  const std::string & entity_id);
+                  const std::string & entity_id, SovdEntityType entity_type, const std::string & owner_id);
 
   /// True while at least one goal for `action_path` is tracked. Cheaper than
   /// get_goals_for_action (no copy, no sort) and safe to call while holding
