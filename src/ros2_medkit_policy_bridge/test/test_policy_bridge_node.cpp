@@ -173,20 +173,21 @@ class PolicyBridgeNodeTest : public ::testing::Test {
 }  // namespace
 
 TEST(PolicyBridgeFaultCode, PrefixIsUpperSnake) {
-  EXPECT_EQ(PolicyBridgeNode::fault_code("POLICY", "LOW_CONFIDENCE"), "POLICY_LOW_CONFIDENCE");
-  EXPECT_EQ(PolicyBridgeNode::fault_code("left arm/act", "LOW_CONFIDENCE"), "LEFT_ARM_ACT_LOW_CONFIDENCE");
+  EXPECT_EQ(PolicyBridgeNode::fault_code("POLICY", "CHUNK_DISAGREEMENT"), "POLICY_CHUNK_DISAGREEMENT");
+  EXPECT_EQ(PolicyBridgeNode::fault_code("left arm/act", "CHUNK_DISAGREEMENT"), "LEFT_ARM_ACT_CHUNK_DISAGREEMENT");
   EXPECT_EQ(PolicyBridgeNode::fault_code("__x--y__", "SLOW_INFERENCE"), "X_Y_SLOW_INFERENCE");
 }
 
 TEST(PolicyBridgeFaultCode, EmptyPrefixLeavesTheSuffix) {
-  EXPECT_EQ(PolicyBridgeNode::fault_code("", "LOW_CONFIDENCE"), "LOW_CONFIDENCE");
-  EXPECT_EQ(PolicyBridgeNode::fault_code("///", "LOW_CONFIDENCE"), "LOW_CONFIDENCE");
+  EXPECT_EQ(PolicyBridgeNode::fault_code("", "CHUNK_DISAGREEMENT"), "CHUNK_DISAGREEMENT");
+  EXPECT_EQ(PolicyBridgeNode::fault_code("///", "CHUNK_DISAGREEMENT"), "CHUNK_DISAGREEMENT");
 }
 
 TEST(PolicyBridgeFaultCode, LongPrefixIsCutAndSuffixKept) {
-  const std::string code = PolicyBridgeNode::fault_code(std::string(200, 'A'), "LOW_CONFIDENCE");
+  const std::string suffix = "_CHUNK_DISAGREEMENT";
+  const std::string code = PolicyBridgeNode::fault_code(std::string(200, 'A'), suffix.substr(1));
   EXPECT_EQ(code.size(), 64u);
-  EXPECT_EQ(code.substr(code.size() - 15), "_LOW_CONFIDENCE");
+  EXPECT_EQ(code.substr(code.size() - suffix.size()), suffix);
 }
 
 TEST(PolicyBridgeToSample, CopiesEveryField) {
@@ -238,10 +239,10 @@ TEST_F(PolicyBridgeNodeTest, DefaultsAreTheDocumentedOnes) {
   EXPECT_EQ(c.raise_after, 3u);
   EXPECT_EQ(c.clear_after, 0u);
   EXPECT_TRUE(c.clear_on_new_episode);
-  EXPECT_EQ(node->low_confidence_severity(), 1);
+  EXPECT_EQ(node->chunk_disagreement_severity(), 1);
   EXPECT_EQ(node->slow_inference_severity(), 1);
   EXPECT_DOUBLE_EQ(node->sync_period_sec(), 0.1);
-  EXPECT_EQ(node->low_confidence_code(), "POLICY_LOW_CONFIDENCE");
+  EXPECT_EQ(node->chunk_disagreement_code(), "POLICY_CHUNK_DISAGREEMENT");
   EXPECT_EQ(node->slow_inference_code(), "POLICY_SLOW_INFERENCE");
   EXPECT_FALSE(node->get_parameter("fault_reporter.local_filtering.enabled").as_bool());
   // A PASSED for each code waits for the FaultManager (none runs here).
@@ -259,7 +260,7 @@ TEST_F(PolicyBridgeNodeTest, WrongTypesAndRangesFallBack) {
       {"raise_after", 3.0},                       // a whole double is an integer
       {"clear_after", 2.5},                       // not whole: default 0
       {"spread_history", int64_t{4294967296}},    // clamped to 64
-      {"low_confidence_severity", int64_t{9}},    // default 1
+      {"chunk_disagreement_severity", int64_t{9}},    // default 1
       {"retry_period_sec", -1.0},                 // default 0.1
       {"joint_scale", std::vector<int64_t>{1, 2}},
       {"clear_on_new_episode", std::string("yes")},
@@ -273,11 +274,11 @@ TEST_F(PolicyBridgeNodeTest, WrongTypesAndRangesFallBack) {
   EXPECT_EQ(c.raise_after, 3u);
   EXPECT_EQ(c.clear_after, 0u);
   EXPECT_EQ(c.spread_history, 64u);
-  EXPECT_EQ(node->low_confidence_severity(), 1);
+  EXPECT_EQ(node->chunk_disagreement_severity(), 1);
   EXPECT_DOUBLE_EQ(node->sync_period_sec(), 0.1);
   EXPECT_EQ(c.joint_scale, (std::vector<double>{1.0, 2.0}));
   EXPECT_TRUE(c.clear_on_new_episode);
-  EXPECT_EQ(node->low_confidence_code(), "POLICY_LOW_CONFIDENCE");
+  EXPECT_EQ(node->chunk_disagreement_code(), "POLICY_CHUNK_DISAGREEMENT");
 }
 
 // Nothing can fall back from a topic that is not a valid name: the constructor
@@ -297,14 +298,14 @@ TEST_F(PolicyBridgeNodeTest, FaultManagerThatAppearsLaterGetsTheRaise) {
 
   FakeFaultManager fm(host_);
   ASSERT_TRUE(spin_until([&]() {
-    return fm.count(bridge_->low_confidence_code(), true) == 1 && fm.count(bridge_->slow_inference_code(), false) == 1;
+    return fm.count(bridge_->chunk_disagreement_code(), true) == 1 && fm.count(bridge_->slow_inference_code(), false) == 1;
   })) << "events: "
       << fm.events.size();
   EXPECT_EQ(bridge_->due_reports(), 0u);
-  EXPECT_EQ(fm.count(bridge_->low_confidence_code(), false), 0);  // no pass of the raised code
+  EXPECT_EQ(fm.count(bridge_->chunk_disagreement_code(), false), 0);  // no pass of the raised code
   EXPECT_EQ(fm.events.front().source, std::string("/") + publisher_node_->get_name());
   spin_for(std::chrono::milliseconds(300));
-  EXPECT_EQ(fm.count(bridge_->low_confidence_code(), true), 1);  // sent once, not on every sync
+  EXPECT_EQ(fm.count(bridge_->chunk_disagreement_code(), true), 1);  // sent once, not on every sync
 }
 
 // The FaultManager goes away and comes back (a restart, memory storage): the
@@ -316,7 +317,7 @@ TEST_F(PolicyBridgeNodeTest, FaultManagerThatComesBackGetsTheRaiseAgain) {
   }));
   publish_unsure(0);
   ASSERT_TRUE(spin_until([&]() {
-    return fm.count(bridge_->low_confidence_code(), true) == 1;
+    return fm.count(bridge_->chunk_disagreement_code(), true) == 1;
   }));
 
   fm.stop();
@@ -327,7 +328,7 @@ TEST_F(PolicyBridgeNodeTest, FaultManagerThatComesBackGetsTheRaiseAgain) {
   fm.start();
   // Both codes are sent again: the active raise and the other code's pass.
   ASSERT_TRUE(spin_until([&]() {
-    return fm.count(bridge_->low_confidence_code(), true) == 2 && fm.count(bridge_->slow_inference_code(), false) == 2;
+    return fm.count(bridge_->chunk_disagreement_code(), true) == 2 && fm.count(bridge_->slow_inference_code(), false) == 2;
   })) << "state not sent again after the FaultManager came back";
 }
 
@@ -335,11 +336,11 @@ TEST_F(PolicyBridgeNodeTest, FaultManagerThatComesBackGetsTheRaiseAgain) {
 TEST_F(PolicyBridgeNodeTest, NewEpisodePassesTheRaise) {
   FakeFaultManager fm(host_);
   ASSERT_TRUE(spin_until([&]() {
-    return fm.count(bridge_->low_confidence_code(), false) == 1;  // the start-up pass
+    return fm.count(bridge_->chunk_disagreement_code(), false) == 1;  // the start-up pass
   }));
   publish_unsure(0);
   ASSERT_TRUE(spin_until([&]() {
-    return fm.count(bridge_->low_confidence_code(), true) == 1;
+    return fm.count(bridge_->chunk_disagreement_code(), true) == 1;
   }));
   PolicyIntrospection msg;
   msg.episode = 1;
@@ -348,7 +349,7 @@ TEST_F(PolicyBridgeNodeTest, NewEpisodePassesTheRaise) {
   msg.chunk = {0.0f};
   pub_->publish(msg);
   ASSERT_TRUE(spin_until([&]() {
-    return fm.count(bridge_->low_confidence_code(), false) == 2;  // the start-up pass and this one
+    return fm.count(bridge_->chunk_disagreement_code(), false) == 2;  // the start-up pass and this one
   }));
 }
 
@@ -362,7 +363,7 @@ TEST_F(PolicyBridgeNodeTest, SourceIdAndSeverityAreTheConfiguredOnes) {
       {"code_prefix", std::string("ARM")},
       {"spread_threshold", 0.05},
       {"raise_after", int64_t{1}},
-      {"low_confidence_severity", int64_t{2}},
+      {"chunk_disagreement_severity", int64_t{2}},
       {"retry_period_sec", 0.05},
   });
   auto bridge = std::make_shared<PolicyBridgeNode>(options);
@@ -370,7 +371,7 @@ TEST_F(PolicyBridgeNodeTest, SourceIdAndSeverityAreTheConfiguredOnes) {
   exec_.add_node(bridge);
   FakeFaultManager fm(host_);
   ASSERT_TRUE(spin_until([&]() {
-    return pub->get_subscription_count() > 0 && fm.count("ARM_LOW_CONFIDENCE", false) == 1;
+    return pub->get_subscription_count() > 0 && fm.count("ARM_CHUNK_DISAGREEMENT", false) == 1;
   }));
   for (uint32_t k = 0; k < 2; ++k) {
     PolicyIntrospection msg;
@@ -384,10 +385,10 @@ TEST_F(PolicyBridgeNodeTest, SourceIdAndSeverityAreTheConfiguredOnes) {
     spin_for(std::chrono::milliseconds(100));
   }
   ASSERT_TRUE(spin_until([&]() {
-    return fm.count("ARM_LOW_CONFIDENCE", true) == 1;
+    return fm.count("ARM_CHUNK_DISAGREEMENT", true) == 1;
   }));
   for (const auto & e : fm.events) {
-    if (e.code == "ARM_LOW_CONFIDENCE" && e.failed) {
+    if (e.code == "ARM_CHUNK_DISAGREEMENT" && e.failed) {
       EXPECT_EQ(e.source, "/arm");
       EXPECT_EQ(e.severity, 2);
     }

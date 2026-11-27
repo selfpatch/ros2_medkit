@@ -6,13 +6,13 @@ policy_bridge:
     # introspection topic (waited for up to 5 s, then the topic name), so the
     # faults show on that entity in the gateway.
     source_id: ""
-    # Fault codes are <PREFIX>_LOW_CONFIDENCE and <PREFIX>_SLOW_INFERENCE. The
+    # Fault codes are <PREFIX>_CHUNK_DISAGREEMENT and <PREFIX>_SLOW_INFERENCE. The
     # fault manager keys faults by code, so give every bridge (one per watched
     # policy) its own prefix: two bridges with one prefix share their faults,
     # and one heals the other's.
     code_prefix: "POLICY"
 
-    # Low confidence: consecutive predictions stop agreeing. The threshold
+    # Chunk disagreement: consecutive predictions stop agreeing. The threshold
     # depends on the policy; measure it on successful runs (for example a high
     # percentile of the spread) and set it here. 0 turns the check off. The
     # check needs predictions that overlap: the policy must infer more often
@@ -44,7 +44,7 @@ policy_bridge:
     # is cleared.
 
     # Severity (0=INFO 1=WARN 2=ERROR 3=CRITICAL).
-    low_confidence_severity: 1
+    chunk_disagreement_severity: 1
     slow_inference_severity: 1
     # How often the bridge checks the FaultManager service and sends what is
     # due, in seconds, [0.01, 10].

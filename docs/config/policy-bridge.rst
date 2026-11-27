@@ -4,7 +4,7 @@ Policy Bridge Configuration
 The ``ros2_medkit_policy_bridge`` node watches a learned robot policy (ACT,
 diffusion policy, VLA, ...) through the
 ``ros2_medkit_policy_msgs/PolicyIntrospection`` messages it publishes, and
-reports faults when the policy is unsure or slow. A robot can be healthy while
+reports faults when its predictions disagree or its inference is slow. A robot can be healthy while
 the policy driving it is not; without this bridge, that shows up only as a
 failed task.
 
@@ -21,8 +21,9 @@ core turns them into two signals:
 
 - **Chunk spread.** A policy that predicts chunks of future actions predicts
   the same steps again at its next inference. When it knows what to do, the new
-  chunk agrees with the older ones on the steps they share; when it is unsure,
-  they drift apart. The spread is the mean, over the last ``spread_history``
+  chunk agrees with the older ones on the steps they share; when it does not,
+  they drift apart. This measures disagreement between chunks, not a
+  confidence score. The spread is the mean, over the last ``spread_history``
   chunks, of the RMS difference on the shared steps (at most
   ``spread_horizon``), each joint divided by its ``joint_scale``. Two chunks
   share steps only when the policy infers more often than every
@@ -41,7 +42,7 @@ count. Both checks are off until their threshold is set, because the right
 threshold depends on the policy: measure the spread on successful runs and take
 a high percentile.
 
-Fault codes are ``<code_prefix>_LOW_CONFIDENCE`` and
+Fault codes are ``<code_prefix>_CHUNK_DISAGREEMENT`` and
 ``<code_prefix>_SLOW_INFERENCE``. They are reported for the node that publishes
 the introspection topic, unless ``source_id`` names another entity. The bridge
 waits up to 5 s for discovery to name that node, then reports under the topic
@@ -73,7 +74,7 @@ whenever the FaultManager service can be reached, checked every
   the repeat only moves its ``last_occurred``.
 - A fault that is raised and passed while the FaultManager cannot be reached
   is not reported.
-- A fault cleared over REST while the policy is still unsure is raised again
+- A fault cleared over REST while the chunks still disagree is raised again
   only after it has passed.
 - A report the FaultManager client gives up on (no answer after its
   ``fault_reporter.delivery`` attempts, while the service still looks ready)
@@ -112,7 +113,7 @@ parameters belong to the fault reporter library and keep its own checks.
        raise_after: 3
        clear_after: 0
        clear_on_new_episode: true
-       low_confidence_severity: 1  # SEVERITY_WARN
+       chunk_disagreement_severity: 1  # SEVERITY_WARN
        slow_inference_severity: 1
        retry_period_sec: 0.1
 
@@ -140,7 +141,7 @@ parameters belong to the fault reporter library and keep its own checks.
    * - ``spread_threshold``
      - ``0.0``
      - >= 0
-     - Chunk spread above which a reading counts as unsure. ``0`` turns the
+     - Chunk spread above which a reading counts as disagreeing. ``0`` turns the
        check off; a negative value turns it off with a warning.
    * - ``spread_history``
      - ``4``
@@ -175,7 +176,7 @@ parameters belong to the fault reporter library and keep its own checks.
      - ``true``
      -
      - Pass both faults when the episode number changes.
-   * - ``low_confidence_severity``, ``slow_inference_severity``
+   * - ``chunk_disagreement_severity``, ``slow_inference_severity``
      - ``1`` (WARN)
      - 0 to 3
      - Severity of each fault: 0 INFO, 1 WARN, 2 ERROR, 3 CRITICAL.

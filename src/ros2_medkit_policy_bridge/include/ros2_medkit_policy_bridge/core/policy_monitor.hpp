@@ -71,7 +71,7 @@ inline std::string number_text(double v) {
 /// How much the policy changes its mind. A policy that predicts chunks of
 /// future actions predicts the same steps again on its next inference. When
 /// it knows what to do, the new chunk agrees with the older ones on the steps
-/// they share; when it is unsure, they drift apart. The value is the mean,
+/// they share; when it does not, they drift apart. The value is the mean,
 /// over the last `history` chunks, of the RMS difference on the overlapping
 /// steps (at most `horizon` of them), each joint divided by its scale.
 class ChunkSpread {
@@ -196,7 +196,7 @@ class RaiseGate {
 };
 
 struct MonitorConfig {
-  // Chunk spread above which the policy counts as unsure. <= 0 turns the
+  // Chunk spread above which a reading counts as disagreeing. <= 0 turns the
   // check off: the right value depends on the policy and must be measured
   // on its successful runs. The check needs predictions that overlap: the
   // policy must infer more often than every chunk_length steps.
@@ -254,7 +254,7 @@ inline MonitorConfig validate_config(const RawConfig & raw, std::vector<std::str
     return value;
   };
   MonitorConfig c;
-  c.spread_threshold = threshold("spread_threshold", raw.spread_threshold, "low confidence");
+  c.spread_threshold = threshold("spread_threshold", raw.spread_threshold, "chunk disagreement");
   c.max_inference_ms = threshold("max_inference_ms", raw.max_inference_ms, "slow inference");
   c.spread_history = static_cast<size_t>(clamp_int("spread_history", raw.spread_history, 1, 64));
   c.spread_horizon = static_cast<size_t>(clamp_int("spread_horizon", raw.spread_horizon, 1, 10000));
@@ -276,7 +276,7 @@ inline MonitorConfig validate_config(const RawConfig & raw, std::vector<std::str
 
 /// What the node has to tell the fault manager after one sample.
 struct MonitorResult {
-  enum class Signal { kLowConfidence, kSlowInference };
+  enum class Signal { kChunkDisagreement, kSlowInference };
   struct Transition {
     Signal signal;
     bool raise;  // false = passed
@@ -385,7 +385,7 @@ class PolicyMonitor {
         if (no_overlap_told_ && ++spread_run_ >= kNoOverlapNoticeAfter) {
           no_overlap_told_ = false;
         }
-        apply(spread_gate_.update(out.spread), MonitorResult::Signal::kLowConfidence, *out.spread, out);
+        apply(spread_gate_.update(out.spread), MonitorResult::Signal::kChunkDisagreement, *out.spread, out);
       } else {
         spread_run_ = 0;
         if (++no_overlap_run_ >= kNoOverlapNoticeAfter && !no_overlap_told_) {
@@ -393,14 +393,14 @@ class PolicyMonitor {
           out.notices.push_back("chunk spread cannot be computed: the last " + std::to_string(no_overlap_run_) +
                                 " inferences shared no predicted step (latest " + std::to_string(gap) +
                                 " steps apart, chunk_length " + std::to_string(s.chunk_length) +
-                                "); the low confidence check needs inferences closer than chunk_length steps");
+                                "); the chunk disagreement check needs inferences closer than chunk_length steps");
         }
       }
     }
     return out;
   }
 
-  bool low_confidence_active() const {
+  bool chunk_disagreement_active() const {
     return spread_gate_.active();
   }
   bool slow_inference_active() const {
@@ -418,7 +418,7 @@ class PolicyMonitor {
     const bool spread_was = spread_gate_.reset();
     const bool latency_was = latency_gate_.reset();
     if (spread_was) {
-      out.transitions.push_back({MonitorResult::Signal::kLowConfidence, false, 0.0});
+      out.transitions.push_back({MonitorResult::Signal::kChunkDisagreement, false, 0.0});
     }
     if (latency_was) {
       out.transitions.push_back({MonitorResult::Signal::kSlowInference, false, 0.0});

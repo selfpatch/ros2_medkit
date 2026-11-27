@@ -3,7 +3,7 @@
 <package format="3">
   <name>ros2_medkit_policy_bridge</name>
   <version>0.7.2</version>
-  <description>Bridge node turning signs of trouble in a learned robot policy (unsure or slow predictions) into FaultManager faults</description>
+  <description>Bridge node turning signs of trouble in a learned robot policy (chunks that disagree, slow inference) into FaultManager faults</description>
 
   <maintainer email="ahmedsleem8843@gmail.com">ahmedsleem109</maintainer>
   <license>Apache-2.0</license>

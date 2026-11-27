@@ -29,7 +29,7 @@ namespace {
 // Fault code length limit used across medkit bridges.
 constexpr size_t kMaxCodeLen = 64;
 
-std::string low_confidence_text(double spread, double threshold) {
+std::string chunk_disagreement_text(double spread, double threshold) {
   char buf[96];
   std::snprintf(buf, sizeof(buf), "Policy predictions stopped agreeing: chunk spread %.4g above %.4g", spread,
                 threshold);
@@ -133,7 +133,7 @@ class ParameterReader {
 PolicyBridgeNode::PolicyBridgeNode(const rclcpp::NodeOptions & options) : Node("policy_bridge", options) {
   load_parameters();
   monitor_ = std::make_unique<core::PolicyMonitor>(config_);
-  sync_ = core::FaultSync({low_confidence_code_, slow_inference_code_});
+  sync_ = core::FaultSync({chunk_disagreement_code_, slow_inference_code_});
 
   // Best effort matches both reliable and best-effort publishers. A dropped
   // message is a missing reading: it neither counts toward a raise nor resets
@@ -196,7 +196,7 @@ void PolicyBridgeNode::load_parameters() {
     }
     return static_cast<uint8_t>(value);
   };
-  low_confidence_severity_ = severity("low_confidence_severity", read.integer("low_confidence_severity", 1));
+  chunk_disagreement_severity_ = severity("chunk_disagreement_severity", read.integer("chunk_disagreement_severity", 1));
   slow_inference_severity_ = severity("slow_inference_severity", read.integer("slow_inference_severity", 1));
 
   const double period = read.number("retry_period_sec", 0.1);
@@ -211,7 +211,7 @@ void PolicyBridgeNode::load_parameters() {
     RCLCPP_WARN(get_logger(), "%s", w.c_str());
   }
 
-  low_confidence_code_ = fault_code(prefix, "LOW_CONFIDENCE");
+  chunk_disagreement_code_ = fault_code(prefix, "CHUNK_DISAGREEMENT");
   slow_inference_code_ = fault_code(prefix, "SLOW_INFERENCE");
 
   // The bridge sends one report per change of state, so the reporter's local
@@ -275,16 +275,16 @@ void PolicyBridgeNode::on_introspection(const ros2_medkit_policy_msgs::msg::Poli
     return;
   }
   for (const auto & t : result.transitions) {
-    const bool low = t.signal == core::MonitorResult::Signal::kLowConfidence;
+    const bool low = t.signal == core::MonitorResult::Signal::kChunkDisagreement;
     std::string description;
     if (t.raise) {
-      description = low ? low_confidence_text(t.value, config_.spread_threshold)
+      description = low ? chunk_disagreement_text(t.value, config_.spread_threshold)
                         : slow_inference_text(t.value, config_.max_inference_ms);
       description += " for " + std::to_string(config_.raise_after) + " readings in a row (episode " +
                      std::to_string(msg->episode) + ", step " + std::to_string(msg->step) + ")";
     }
-    sync_.set(low ? low_confidence_code_ : slow_inference_code_, t.raise,
-              low ? low_confidence_severity_ : slow_inference_severity_, std::move(description));
+    sync_.set(low ? chunk_disagreement_code_ : slow_inference_code_, t.raise,
+              low ? chunk_disagreement_severity_ : slow_inference_severity_, std::move(description));
   }
   sync();
 }
@@ -406,7 +406,7 @@ void PolicyBridgeNode::sync() {
     sync_.forget_sent();
     if (missing_logged_) {
       RCLCPP_INFO(get_logger(), "FaultManager reachable again, sending the state of %s and %s",
-                  low_confidence_code_.c_str(), slow_inference_code_.c_str());
+                  chunk_disagreement_code_.c_str(), slow_inference_code_.c_str());
     }
     missing_logged_ = false;
     raise_waits_since_.reset();

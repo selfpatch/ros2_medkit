@@ -36,7 +36,7 @@ namespace ros2_medkit_policy_bridge {
 /// its own inferences (ros2_medkit_policy_msgs/PolicyIntrospection) and turns
 /// signs of trouble into FaultManager faults:
 ///
-///   - <PREFIX>_LOW_CONFIDENCE: consecutive predictions stop agreeing with each
+///   - <PREFIX>_CHUNK_DISAGREEMENT: consecutive predictions stop agreeing with each
 ///     other (chunk spread above spread_threshold for raise_after readings).
 ///   - <PREFIX>_SLOW_INFERENCE: inference took longer than max_inference_ms for
 ///     raise_after readings.
@@ -70,8 +70,8 @@ class PolicyBridgeNode : public rclcpp::Node {
   const core::MonitorConfig & config() const {
     return config_;
   }
-  uint8_t low_confidence_severity() const {
-    return low_confidence_severity_;
+  uint8_t chunk_disagreement_severity() const {
+    return chunk_disagreement_severity_;
   }
   uint8_t slow_inference_severity() const {
     return slow_inference_severity_;
@@ -79,8 +79,8 @@ class PolicyBridgeNode : public rclcpp::Node {
   double sync_period_sec() const {
     return sync_period_sec_;
   }
-  const std::string & low_confidence_code() const {
-    return low_confidence_code_;
+  const std::string & chunk_disagreement_code() const {
+    return chunk_disagreement_code_;
   }
   const std::string & slow_inference_code() const {
     return slow_inference_code_;
@@ -116,9 +116,9 @@ class PolicyBridgeNode : public rclcpp::Node {
   core::FaultSync sync_{{}};
   std::string topic_param_;
   std::string source_id_;
-  std::string low_confidence_code_;
+  std::string chunk_disagreement_code_;
   std::string slow_inference_code_;
-  uint8_t low_confidence_severity_{1};
+  uint8_t chunk_disagreement_severity_{1};
   uint8_t slow_inference_severity_{1};
   double sync_period_sec_{0.1};
 

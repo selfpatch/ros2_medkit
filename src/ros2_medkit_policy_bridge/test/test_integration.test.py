@@ -96,7 +96,7 @@ def generate_test_description():
         parameters=[{
             'introspection_topic': '/unused/introspection',
             'raise_after': 4294967298,
-            'low_confidence_severity': 7,
+            'chunk_disagreement_severity': 7,
             'joint_scale': [1.0, -2.0],
             'spread_threshold': 'high',
         }],
@@ -168,13 +168,13 @@ class TestPolicyBridgeIntegration(unittest.TestCase):
         self.assertGreaterEqual(stamp(fault.last_occurred), since)
 
     def test_01_calm_policy_raises_nothing(self):
-        """Agreeing predictions at normal speed leave no LOW_CONFIDENCE."""
+        """Agreeing predictions at normal speed leave no CHUNK_DISAGREEMENT."""
         self.assertTrue(self.wait_for_bridge(), 'bridge did not subscribe in time')
         self.publish([message(0, 5 * k, 0.0, inference_ms=10.0) for k in range(10)])
         self.sentinel(0, 50)
         self.assertIsNone(self.faults.get(LOW_CODE))
 
-    def test_02_unsure_policy_raises_low_confidence_once(self):
+    def test_02_unsure_policy_raises_chunk_disagreement_once(self):
         """Predictions that keep changing raise one WARN fault on the publisher."""
         self.publish([message(1, 5 * k, 0.2 if k % 2 == 0 else -0.2, inference_ms=10.0)
                       for k in range(8)])
@@ -203,7 +203,7 @@ class TestPolicyBridgeIntegration(unittest.TestCase):
         self.assertEqual(fault.status, Fault.STATUS_HEALED, f'{LOW_CODE} not HEALED in time')
 
     def test_04_slow_inference_raises_its_own_fault(self):
-        """Inference over max_inference_ms raises SLOW_INFERENCE, not LOW_CONFIDENCE."""
+        """Inference over max_inference_ms raises SLOW_INFERENCE, not CHUNK_DISAGREEMENT."""
         since = time.time()
         self.publish([message(3, 5 * k, 0.0, inference_ms=120.0) for k in range(5)])
         fault = self.faults.wait_for(SLOW_CODE, Fault.STATUS_CONFIRMED, WAIT, since)
@@ -218,7 +218,7 @@ class TestPolicyBridgeIntegration(unittest.TestCase):
         Wrong-size and NaN chunks are ignored, not counted, and said once per kind.
 
         Each kind comes in its own run, 2 steps apart with alternating noise:
-        used, either run would raise LOW_CONFIDENCE.
+        used, either run would raise CHUNK_DISAGREEMENT.
         """
         since = time.time()
         short = []
@@ -237,7 +237,7 @@ class TestPolicyBridgeIntegration(unittest.TestCase):
         low = self.faults.get(LOW_CODE)
         self.assertIsNotNone(low)
         self.assertEqual(low.status, Fault.STATUS_HEALED)
-        self.assertLess(stamp(low.last_occurred), since, 'a bad message raised LOW_CONFIDENCE')
+        self.assertLess(stamp(low.last_occurred), since, 'a bad message raised CHUNK_DISAGREEMENT')
         for fragment in ('values, expected chunk_length x action_dim = 20',
                          'chunk holds NaN or inf'):
             with self.subTest(fragment=fragment):
@@ -250,7 +250,7 @@ class TestPolicyBridgeParameters(unittest.TestCase):
     def test_bad_parameters_are_reported(self, proc_output, bad_params_bridge_node):
         for fragment in (
             'raise_after 4294967298 is outside',
-            'low_confidence_severity 7 is outside [0, 3]',
+            'chunk_disagreement_severity 7 is outside [0, 3]',
             'joint_scale holds a value that is not a positive number',
             'spread_threshold is string, expected a number: using 0',
         ):

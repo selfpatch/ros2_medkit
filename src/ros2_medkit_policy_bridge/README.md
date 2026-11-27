@@ -1,7 +1,8 @@
 # ros2_medkit_policy_bridge
 
 Bridge node that watches a learned robot policy (ACT, diffusion policy, VLA,
-...) and reports faults when the policy is unsure or slow. The policy publishes
+...) and reports faults when its predictions disagree or its inference is
+slow. The policy publishes
 `ros2_medkit_policy_msgs/msg/PolicyIntrospection` once per inference: the
 action chunk it predicted, the episode and step, and the inference time.
 
@@ -14,7 +15,7 @@ snapshots and recordings.
 
 | Code | Raised when | Passed when |
 |---|---|---|
-| `<PREFIX>_LOW_CONFIDENCE` | the chunk spread is above `spread_threshold` for `raise_after` readings in a row | a new episode starts, or `clear_after` readings within the limit |
+| `<PREFIX>_CHUNK_DISAGREEMENT` | the chunk spread is above `spread_threshold` for `raise_after` readings in a row | a new episode starts, or `clear_after` readings within the limit |
 | `<PREFIX>_SLOW_INFERENCE` | `inference_ms` is above `max_inference_ms` for `raise_after` readings in a row | the same |
 
 Both checks are off until their threshold is set. The right values depend on
@@ -22,8 +23,9 @@ the policy: measure them on successful runs.
 
 **Chunk spread.** A policy that predicts chunks of future actions predicts the
 same steps again at its next inference. When it knows what to do the new chunk
-agrees with the older ones on the steps they share; when it is unsure they
-drift apart. The spread needs inferences closer than `chunk_length` steps: ACT
+agrees with the older ones on the steps they share; when it does not, they
+drift apart. This measures disagreement between chunks, not a confidence
+score. The spread needs inferences closer than `chunk_length` steps: ACT
 with temporal ensembling infers every step, ACT without it infers once per
 chunk and cannot be checked this way (the bridge warns once when 10 inferences
 in a row share no step, and again only after the spread was computed 10 times

@@ -23,7 +23,7 @@ from ros2_medkit_msgs.srv import ListFaults
 from ros2_medkit_policy_msgs.msg import PolicyIntrospection
 
 TOPIC = '/policy/introspection'
-LOW_CODE = 'POLICY_LOW_CONFIDENCE'
+LOW_CODE = 'POLICY_CHUNK_DISAGREEMENT'
 SLOW_CODE = 'POLICY_SLOW_INFERENCE'
 CHUNK, DIM = 10, 2
 ALL_STATUSES = [

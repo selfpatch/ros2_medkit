@@ -230,14 +230,14 @@ TEST(PolicyMonitor, DefaultConfigReportsNothing) {
 TEST(PolicyMonitor, CalmPolicyNeverRaises) {
   PolicyMonitor m(spread_config());
   auto results = feed(m, 0, 0, 50, 0.001f);
-  EXPECT_EQ(raises(results, Signal::kLowConfidence), 0);
+  EXPECT_EQ(raises(results, Signal::kChunkDisagreement), 0);
 }
 
 TEST(PolicyMonitor, UnsurePolicyRaisesExactlyOnce) {
   PolicyMonitor m(spread_config(0.05, 3));
   auto results = feed(m, 0, 0, 30, 0.2f);
-  EXPECT_EQ(raises(results, Signal::kLowConfidence), 1);
-  EXPECT_TRUE(m.low_confidence_active());
+  EXPECT_EQ(raises(results, Signal::kChunkDisagreement), 1);
+  EXPECT_TRUE(m.chunk_disagreement_active());
   // The first chunk has nothing to compare with, so the third reading comes
   // with the fourth chunk.
   ASSERT_EQ(results[3].transitions.size(), 1u);
@@ -248,20 +248,20 @@ TEST(PolicyMonitor, UnsurePolicyRaisesExactlyOnce) {
 TEST(PolicyMonitor, NMinusOneReadingsDoNotRaise) {
   PolicyMonitor m(spread_config(0.05, 3));
   auto results = feed(m, 0, 0, 3, 0.2f);  // 2 spread readings
-  EXPECT_EQ(raises(results, Signal::kLowConfidence), 0);
+  EXPECT_EQ(raises(results, Signal::kChunkDisagreement), 0);
 }
 
 TEST(PolicyMonitor, NewEpisodePassesTheFaultAndDropsHistory) {
   PolicyMonitor m(spread_config(0.05, 1));
   feed(m, 0, 0, 3, 0.2f);
-  ASSERT_TRUE(m.low_confidence_active());
+  ASSERT_TRUE(m.chunk_disagreement_active());
   auto r = m.update(sample(1, 0, 5.0f));
   ASSERT_EQ(r.transitions.size(), 1u);
-  EXPECT_EQ(r.transitions[0].signal, Signal::kLowConfidence);
+  EXPECT_EQ(r.transitions[0].signal, Signal::kChunkDisagreement);
   EXPECT_FALSE(r.transitions[0].raise);
   // The chunk from episode 0 is not compared with the one from episode 1.
   EXPECT_FALSE(r.spread.has_value());
-  EXPECT_FALSE(m.low_confidence_active());
+  EXPECT_FALSE(m.chunk_disagreement_active());
 }
 
 TEST(PolicyMonitor, NewEpisodeWithoutAlarmSendsNothing) {
@@ -275,9 +275,9 @@ TEST(PolicyMonitor, ClearOnNewEpisodeOffKeepsTheAlarm) {
   c.clear_on_new_episode = false;
   PolicyMonitor m(c);
   feed(m, 0, 0, 3, 0.2f);
-  ASSERT_TRUE(m.low_confidence_active());
+  ASSERT_TRUE(m.chunk_disagreement_active());
   EXPECT_TRUE(m.update(sample(1, 0, 0.0f)).transitions.empty());
-  EXPECT_TRUE(m.low_confidence_active());
+  EXPECT_TRUE(m.chunk_disagreement_active());
 }
 
 TEST(PolicyMonitor, ClearAfterReadingsPassesWithinAnEpisode) {
@@ -285,7 +285,7 @@ TEST(PolicyMonitor, ClearAfterReadingsPassesWithinAnEpisode) {
   c.clear_after = 2;
   PolicyMonitor m(c);
   feed(m, 0, 0, 2, 0.2f);  // raises at the second chunk
-  ASSERT_TRUE(m.low_confidence_active());
+  ASSERT_TRUE(m.chunk_disagreement_active());
   // Calm chunks from here; the first is still compared with the noisy ones.
   std::vector<MonitorResult> calm;
   for (uint32_t k = 0; k < 8; ++k) {
@@ -294,11 +294,11 @@ TEST(PolicyMonitor, ClearAfterReadingsPassesWithinAnEpisode) {
   bool cleared = false;
   for (const auto & r : calm) {
     for (const auto & t : r.transitions) {
-      cleared = cleared || (t.signal == Signal::kLowConfidence && !t.raise);
+      cleared = cleared || (t.signal == Signal::kChunkDisagreement && !t.raise);
     }
   }
   EXPECT_TRUE(cleared);
-  EXPECT_FALSE(m.low_confidence_active());
+  EXPECT_FALSE(m.chunk_disagreement_active());
 }
 
 TEST(PolicyMonitor, RepeatedStepIsNotANewReading) {
@@ -311,17 +311,17 @@ TEST(PolicyMonitor, RepeatedStepIsNotANewReading) {
     EXPECT_FALSE(r.rejected.empty());
     EXPECT_TRUE(r.transitions.empty());
   }
-  EXPECT_FALSE(m.low_confidence_active());
+  EXPECT_FALSE(m.chunk_disagreement_active());
 }
 
 TEST(PolicyMonitor, StepGoingBackRestartsHistoryButKeepsAlarm) {
   PolicyMonitor m(spread_config(0.05, 1));
   feed(m, 0, 100, 3, 0.2f);
-  ASSERT_TRUE(m.low_confidence_active());
+  ASSERT_TRUE(m.chunk_disagreement_active());
   auto r = m.update(sample(0, 0, 0.0f));
   EXPECT_FALSE(r.spread.has_value());
   EXPECT_TRUE(r.transitions.empty());
-  EXPECT_TRUE(m.low_confidence_active());
+  EXPECT_TRUE(m.chunk_disagreement_active());
 }
 
 TEST(PolicyMonitor, BadShapeIsRejectedAndChangesNothing) {
@@ -333,9 +333,9 @@ TEST(PolicyMonitor, BadShapeIsRejectedAndChangesNothing) {
   bad.chunk.pop_back();
   auto r = m.update(bad);
   EXPECT_NE(r.rejected.find("expected chunk_length x action_dim"), std::string::npos);
-  EXPECT_FALSE(m.low_confidence_active());
+  EXPECT_FALSE(m.chunk_disagreement_active());
   // The next good reading is the third in a row above threshold.
-  EXPECT_EQ(raises({m.update(sample(0, 17, -0.2f))}, Signal::kLowConfidence), 1);
+  EXPECT_EQ(raises({m.update(sample(0, 17, -0.2f))}, Signal::kChunkDisagreement), 1);
 }
 
 TEST(PolicyMonitor, ZeroSizesAreRejected) {
@@ -586,11 +586,11 @@ TEST(PolicyMonitor, BothSignalsAreIndependent) {
   a.inference_ms = 90.0f;
   auto r = m.update(a);  // latency raises, no spread yet
   EXPECT_EQ(raises({r}, Signal::kSlowInference), 1);
-  EXPECT_EQ(raises({r}, Signal::kLowConfidence), 0);
+  EXPECT_EQ(raises({r}, Signal::kChunkDisagreement), 0);
   auto b = sample(0, 5, -0.2f);
   b.inference_ms = 10.0f;
   r = m.update(b);  // spread raises, latency below (no clear_after)
-  EXPECT_EQ(raises({r}, Signal::kLowConfidence), 1);
+  EXPECT_EQ(raises({r}, Signal::kChunkDisagreement), 1);
   EXPECT_TRUE(m.slow_inference_active());
 }
 

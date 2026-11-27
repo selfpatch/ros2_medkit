@@ -23,7 +23,7 @@ using ros2_medkit_policy_bridge::core::FaultSync;
 
 namespace {
 
-const std::vector<std::string> kCodes{"P_LOW_CONFIDENCE", "P_SLOW_INFERENCE"};
+const std::vector<std::string> kCodes{"P_CHUNK_DISAGREEMENT", "P_SLOW_INFERENCE"};
 
 // Send everything that is due, as the node does while the FaultManager is up.
 std::vector<FaultSync::Report> flush(FaultSync & sync) {
@@ -42,7 +42,7 @@ TEST(FaultSync, StartPassesEveryCodeOnce) {
   FaultSync sync(kCodes);
   auto first = flush(sync);
   ASSERT_EQ(first.size(), 2u);
-  EXPECT_EQ(first[0].code, "P_LOW_CONFIDENCE");
+  EXPECT_EQ(first[0].code, "P_CHUNK_DISAGREEMENT");
   EXPECT_FALSE(first[0].raise);
   EXPECT_EQ(first[1].code, "P_SLOW_INFERENCE");
   EXPECT_FALSE(first[1].raise);
@@ -71,7 +71,7 @@ TEST(FaultSync, RaiseAndPassAreSentOnceEach) {
 TEST(FaultSync, RaiseWhileUnreachableStaysDue) {
   FaultSync sync(kCodes);
   flush(sync);
-  sync.set("P_LOW_CONFIDENCE", true, 1, "unsure");
+  sync.set("P_CHUNK_DISAGREEMENT", true, 1, "unsure");
   ASSERT_EQ(sync.due().size(), 1u);
   ASSERT_EQ(sync.due().size(), 1u);  // reading due() does not consume it
   auto sent = flush(sync);
@@ -84,7 +84,7 @@ TEST(FaultSync, RaiseWhileUnreachableStaysDue) {
 TEST(FaultSync, ForgetSentResendsTheCurrentState) {
   FaultSync sync(kCodes);
   flush(sync);
-  sync.set("P_LOW_CONFIDENCE", true, 1, "unsure");
+  sync.set("P_CHUNK_DISAGREEMENT", true, 1, "unsure");
   flush(sync);
   sync.forget_sent();
   auto again = flush(sync);
@@ -99,8 +99,8 @@ TEST(FaultSync, ForgetSentResendsTheCurrentState) {
 TEST(FaultSync, RaiseThenPassWhileUnreachableSendsNothing) {
   FaultSync sync(kCodes);
   flush(sync);
-  sync.set("P_LOW_CONFIDENCE", true, 1, "unsure");
-  sync.set("P_LOW_CONFIDENCE", false, 0, "");
+  sync.set("P_CHUNK_DISAGREEMENT", true, 1, "unsure");
+  sync.set("P_CHUNK_DISAGREEMENT", false, 0, "");
   EXPECT_TRUE(sync.due().empty());
 }
 
