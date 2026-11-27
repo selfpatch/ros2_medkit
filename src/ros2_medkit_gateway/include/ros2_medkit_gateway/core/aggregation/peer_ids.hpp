@@ -256,6 +256,15 @@ std::optional<RelationshipItems> relationship_items(const std::string & path);
 /// IDs. IDs the merge admitted unrenamed are left as they are. Every lookup reads `peer_ids`, the index of
 /// the generation the request was validated against (see served_entity_id).
 ///
+/// Every object that describes an entity served here takes this gateway's
+/// provenance for it, read from the same index (PeerIdIndex::provenance): the
+/// `x-medkit.source` and `x-medkit.contributors` this gateway's own answers
+/// give the entity. The peer writes its own, `"local"` for an entity it
+/// declares, which here would name this gateway. The detail itself takes
+/// both, as this gateway's own detail serves them; any other object - an item
+/// of a relationship collection - takes the ones it carries, so it keeps the
+/// shape of the route that lists it.
+///
 /// The walk descends at most kMaxPeerJsonDepth levels (see peer_json.hpp): the
 /// body comes from a peer, and a walk that followed it down without a bound
 /// would let a deeply nested answer overflow the stack. A deeper body returns
@@ -271,8 +280,8 @@ std::optional<RelationshipItems> relationship_items(const std::string & path);
 /// would take the total past it stops the walk and returns kTooLarge, with
 /// `body` partly rewritten and not to be served.
 enum class ServedIdRewrite {
-  kUnchanged,  ///< Nothing in the body names a renamed or dropped entity.
-  kRewritten,  ///< Renamed entities named by their served IDs, dropped ones removed.
+  kUnchanged,  ///< Nothing in the body names a renamed or dropped entity or needs this gateway's provenance.
+  kRewritten,  ///< Renamed entities named by their served IDs, dropped ones removed, provenance this gateway's.
   kTooDeep,    ///< The body nests past the bound; it is not a discovery response.
   kTooLarge,   ///< Rewritten, the body would grow past kMaxServedIdRewriteGrowth.
 };

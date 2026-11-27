@@ -379,12 +379,15 @@ bool is_declared(const Entity & entity) {
   return entity.declared_source == "manifest";
 }
 
-/// Availability belongs to an entity a request can be addressed to. A grouping
-/// entity has none of its own: it is a view over its members, and the members
-/// carry the flag, so retaining one says nothing about what can be reached.
-void mark_unreachable(Area & /*area*/) {
+/// A replayed declaration describes what sits behind a link that is down, so
+/// every entity of it is marked: the tree shows it and says it cannot be
+/// reached. A grouping entity a live gateway also contributes is available
+/// again once merged (EntityMerger keeps any contributor's availability).
+void mark_unreachable(Area & area) {
+  area.available = false;
 }
-void mark_unreachable(Function & /*function*/) {
+void mark_unreachable(Function & function) {
+  function.available = false;
 }
 void mark_unreachable(App & app) {
   app.available = false;
@@ -606,7 +609,9 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
 
   // A peer this cycle could not describe still contributes what it declared.
   // Merged after the peers that did answer, so a live declaration always wins
-  // over a retained one carrying the same id.
+  // over a retained one carrying the same id: an App keeps its id for the live
+  // one, and a Component a live peer serves stays routed to it.
+  std::unordered_set<std::string> silent_replays;
   for (const auto & peer : unread_peers) {
     auto retained = replay_declaration(peer.name, peer.reachability);
     if (retained.areas.empty() && retained.components.empty() && retained.apps.empty() && retained.functions.empty()) {
@@ -628,6 +633,18 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
     replayed.success = true;
     replayed.entities = std::move(retained);
     to_merge.push_back(std::move(replayed));
+    if (peer.reachability == Reachability::kUnreachable) {
+      silent_replays.insert(peer.name);
+    }
+  }
+
+  // The peers whose entities this refresh can reach: a retained declaration of
+  // a silent peer yields a Component one of them contributes (EntityMerger::set_replay).
+  std::unordered_set<std::string> live_sources;
+  for (const auto & pfr : to_merge) {
+    if (silent_replays.count(pfr.peer_name) == 0u) {
+      live_sources.insert("peer:" + pfr.peer_name);
+    }
   }
 
   // Every collision met this pass: a stable key and the line that reports it.
@@ -642,6 +659,9 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
                         EntityMerger::collect_ids(merged.areas, merged.components, merged.apps, merged.functions),
                         EntityMerger::collect_ids(pfr.entities.areas, pfr.entities.components, pfr.entities.apps,
                                                   pfr.entities.functions));
+    if (silent_replays.count(pfr.peer_name) > 0u) {
+      merger.set_replay(live_sources);
+    }
     // Areas, then Components, then Apps, then Functions: each step reads the
     // renames of the ones before it to keep the peer's references pointing at
     // the IDs its entities are served under.
@@ -765,7 +785,18 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
   // declared it alone (its `source`), a Component also when the peer is merged
   // into it - the classification above leaves Component entries only for
   // Components. Set on every entity, so nothing from a previous merge survives.
-  auto stamp_routes = [&merged](auto & entities, bool merged_contributor_routes) {
+  //
+  // An entity routed to a peer this refresh found unreachable cannot be served:
+  // its requests go to that peer. It is marked so, whatever else contributes it
+  // - a Component merged from this gateway and a silent peer is that peer's to
+  // serve, and forwarding there would only fail.
+  std::unordered_set<std::string> unreachable_peers;
+  for (const auto & peer : unread_peers) {
+    if (peer.reachability == Reachability::kUnreachable) {
+      unreachable_peers.insert(peer.name);
+    }
+  }
+  auto stamp_routes = [&merged, &unreachable_peers](auto & entities, bool merged_contributor_routes) {
     for (auto & entity : entities) {
       entity.routed_to.clear();
       auto it = merged.routing_table.find(entity.id);
@@ -778,6 +809,20 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
                                                                tag) != entity.contributors.end());
       if (own) {
         entity.routed_to = it->second;
+        if (unreachable_peers.count(it->second) > 0u) {
+          mark_unreachable(entity);
+        }
+      }
+    }
+  };
+  // An entity this gateway contributes and serves itself is reachable here,
+  // whatever a peer merged into it reported: a Component the classification
+  // made a parent is served from the merged view, not by the peer.
+  auto serve_here = [](auto & entities) {
+    for (auto & entity : entities) {
+      if (entity.routed_to.empty() &&
+          std::find(entity.contributors.begin(), entity.contributors.end(), "local") != entity.contributors.end()) {
+        entity.available = true;
       }
     }
   };
@@ -785,6 +830,7 @@ AggregationManager::MergedPeerResult AggregationManager::fetch_and_merge_peer_en
   stamp_routes(merged.components, true);
   stamp_routes(merged.apps, false);
   stamp_routes(merged.functions, false);
+  serve_here(merged.components);
 
   return merged;
 }
@@ -891,15 +937,15 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
     visited = split_fan_out_visited(it->second);
   }
 
-  // Snapshot healthy peers under lock, release before network I/O.
+  // Snapshot the peers to ask under lock, release before network I/O.
   // When target_peers is non-null, restrict the snapshot to matching peers.
   std::vector<std::shared_ptr<PeerClient>> snapshot;
+  // Peers this request should reach that are marked unhealthy. They are not
+  // asked, and each is a failed peer: the answer must not look complete.
+  std::vector<std::string> unhealthy;
   {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     for (const auto & peer : peers_) {
-      if (!peer->is_healthy()) {
-        continue;
-      }
       if (target_peers != nullptr &&
           std::find(target_peers->begin(), target_peers->end(), peer->name()) == target_peers->end()) {
         continue;
@@ -912,6 +958,10 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
         if (!peer_id.empty() && std::find(visited.begin(), visited.end(), peer_id) != visited.end()) {
           continue;
         }
+      }
+      if (!peer->is_healthy()) {
+        unhealthy.push_back(peer->name());
+        continue;
       }
       snapshot.push_back(peer);
     }
@@ -1022,6 +1072,11 @@ AggregationManager::FanOutResult AggregationManager::fan_out_get(const std::stri
   // Merge results from all peers
   FanOutResult fan_out_result;
   fan_out_result.merged_items = nlohmann::json::array();
+  for (auto & name : unhealthy) {
+    fan_out_result.is_partial = true;
+    fan_out_result.peer_failures.push_back(dto::PeerFailure{name, peer_failure_reason(PeerFailureKind::kUnreachable)});
+    fan_out_result.failed_peers.push_back(std::move(name));
+  }
   for (auto & f : futures) {
     auto pr = f.get();
     if (!pr.success) {

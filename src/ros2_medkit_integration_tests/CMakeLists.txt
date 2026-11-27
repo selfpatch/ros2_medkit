@@ -292,6 +292,7 @@ if(BUILD_TESTING)
   # otherwise have started alongside it.
   set(_TWO_GATEWAY_TESTS
     test_aggregated_function_hosts
+    test_fan_out_unhealthy_peer
     test_peer_recovery
     test_triggers_restore_before_discovery
     test_aggregator_fault_stream

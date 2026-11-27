@@ -1071,6 +1071,10 @@ What version 8 changes for a plugin author:
   alone. A call written for version 7 does not compile against version 8 headers.
 - A ``NotifierFilter`` left at ``SovdEntityType::UNKNOWN`` matches every type, as a filter
   written for version 7 did; set it to receive the changes of one type only.
+- The ``Area`` and ``Function`` models gain ``bool available`` (default ``true``), as ``App`` and
+  ``Component`` carry it: ``false`` while every gateway contributing the entity is silent. It
+  changes their layout in ``IntrospectionInput`` / ``NewEntities``; a plugin that creates them
+  needs no source change.
 - ``register_sampler()`` takes a sampler of ``(SovdEntityType entity_type, entity_id,
   resource_path)``: the type and id of the entity the subscription was created on. A sampler
   written for version 7 does not compile against version 8 headers.

@@ -293,23 +293,24 @@ class PeerClient {
   /// Check if the peer was healthy at last health check
   bool is_healthy() const;
 
-  /// The peer's `x-medkit-instance-id` from its last health check, empty if it
-  /// sent none. Lets a fan-out skip a peer already on the visited path.
+  /// The peer's `x-medkit-instance-id` from its last successful health check,
+  /// empty if it sent none. Lets a fan-out skip a peer already on the visited path.
   std::string instance_id() const;
 
   /**
    * @brief Perform a health check against the peer
    *
-   * GETs /api/v1/health on the peer and records its instance id. A failed
-   * /health makes the peer unhealthy. A full body shows this gateway's
-   * credential accepted. A reduced body (`x-medkit-reduced: true`) says it was
-   * not; the discovery collection reads then decide: a 401 or 403 on one makes
-   * the peer unhealthy, all of them answering 2xx keep it healthy. Any other
-   * answer, a failed /health included, keeps the last such verdict; with none
-   * yet, a reduced 200 is healthy. Each refusal is logged once, when it is
-   * reached; clearing it is silent. The call is made on its own client, so
-   * shutdown() stops it like any other, and it ends at its deadline, its capped
-   * connect and read budgets added up, however steadily the peer keeps sending.
+   * GETs /api/v1/health on the peer and, on a 200, records its instance id. A
+   * failed /health makes the peer unhealthy and keeps the last id. A full body
+   * shows this gateway's credential accepted. A reduced body
+   * (`x-medkit-reduced: true`) says it was not; the discovery collection reads
+   * then decide: a 401 or 403 on one makes the peer unhealthy, all of them
+   * answering 2xx keep it healthy. Any other answer, a failed /health included,
+   * keeps the last such verdict; with none yet, a reduced 200 is healthy. Each
+   * refusal is logged once, when it is reached; clearing it is silent. The call
+   * is made on its own client, so shutdown() stops it like any other, and it
+   * ends at its deadline, its capped connect and read budgets added up, however
+   * steadily the peer keeps sending.
    */
   void check_health();
 

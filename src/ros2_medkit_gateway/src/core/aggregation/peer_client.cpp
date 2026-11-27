@@ -389,6 +389,9 @@ Area parse_area(const nlohmann::json & j) {
     const auto & xm = j["x-medkit"];
     area.namespace_path = ros2_field(xm, "namespace", "namespace");
     area.source = xm.value("source", "");
+    // Emitted only when false; a middle gateway in a chain reports this way a
+    // grouping its silent leaf declared. Read back like a Component's.
+    area.available = xm.value("available", true);
     // Served on the detail only. A subarea read off its parent's subareas
     // route takes its parent from the route instead (see fetch_entities).
     area.parent_area_id = string_at(xm, "parent_area_id");
@@ -711,6 +714,7 @@ Function parse_function(const nlohmann::json & j) {
   if (j.contains("x-medkit") && j["x-medkit"].is_object()) {
     const auto & xm = j["x-medkit"];
     func.source = xm.value("source", "");
+    func.available = xm.value("available", true);
     if (xm.contains("hosts") && xm["hosts"].is_array()) {
       func.hosts = xm["hosts"].get<std::vector<std::string>>();
       keep_first_of_each(func.hosts);
@@ -1203,10 +1207,11 @@ void PeerClient::check_health() {
   // is not read, and a peer that sends one is unhealthy. Text that is not JSON
   // is judged the same way and stays a healthy 200, as before.
   bool healthy = result && result->status == 200 && judge_peer_json(result->body) == PeerJsonShape::kAcceptable;
-  std::string instance_id;
   bool reduced = false;
   bool full = false;
+  // A failed check keeps the id: a fan-out still knows the peer on a visited path.
   if (healthy) {
+    std::string instance_id;
     auto body = nlohmann::json::parse(result->body, nullptr, false);
     if (body.is_object() && body.contains("x-medkit-instance-id") && body["x-medkit-instance-id"].is_string()) {
       instance_id = body["x-medkit-instance-id"].get<std::string>();
@@ -1216,6 +1221,8 @@ void PeerClient::check_health() {
       reduced = flag != body.end() && flag->is_boolean() && flag->get<bool>();
       full = !reduced;
     }
+    std::lock_guard<std::mutex> id_lock(instance_id_mutex_);
+    instance_id_ = std::move(instance_id);
   }
   // A full body shows the credential accepted. A reduced one says it was not; the collection reads discovery starts
   // with then decide. Any other answer, from /health or from the reads, keeps the last verdict.
@@ -1257,10 +1264,6 @@ void PeerClient::check_health() {
     }
   }
   healthy = healthy && credential_state != CredentialState::kRefusedReadsClosed;
-  {
-    std::lock_guard<std::mutex> id_lock(instance_id_mutex_);
-    instance_id_ = std::move(instance_id);
-  }
   healthy_.store(healthy);
 
   // Logged after the store: each refusal once, when it is reached. Clearing it is silent.

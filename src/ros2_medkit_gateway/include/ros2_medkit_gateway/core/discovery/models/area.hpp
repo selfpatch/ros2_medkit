@@ -53,6 +53,11 @@ struct Area {
   /// the entity is retained when its peer stops answering. Empty for entities
   /// this gateway discovered itself.
   std::string declared_source;
+  /// False while every gateway that could serve this entity is silent and it
+  /// is in the tree only from a declaration retained for one of them. A
+  /// grouping that a live gateway also contributes - this one, or another peer
+  /// - stays available.
+  bool available{true};
 
   /**
    * @brief Convert to JSON representation
@@ -147,7 +152,8 @@ inline bool operator==(const Area & a, const Area & b) {
   return a.id == b.id && a.name == b.name && a.namespace_path == b.namespace_path && a.type == b.type &&
          a.translation_id == b.translation_id && a.description == b.description && a.tags == b.tags &&
          a.parent_area_id == b.parent_area_id && a.source == b.source && a.original_id == b.original_id &&
-         a.routed_to == b.routed_to && a.contributors == b.contributors && a.declared_source == b.declared_source;
+         a.routed_to == b.routed_to && a.contributors == b.contributors && a.declared_source == b.declared_source &&
+         a.available == b.available;
 }
 inline bool operator!=(const Area & a, const Area & b) {
   return !(a == b);

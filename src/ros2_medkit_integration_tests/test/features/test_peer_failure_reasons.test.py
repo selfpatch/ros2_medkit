@@ -303,16 +303,14 @@ class PeerFailureReasonsTest(unittest.TestCase):
             f'sent; that is not {reason!r}')
 
     def test_3_a_peer_that_is_gone_reads_as_unreachable(self, peer_gateway):
-        """R3: killed, not slow. The health check has not noticed yet."""
+        """R3: killed, not slow, read before or after the health check notices."""
         pid = peer_gateway.process_details['pid']
         _KILLED_PIDS.add(pid)
         os.kill(pid, signal.SIGKILL)
 
-        # The peer stays marked healthy until the next health check, which is
-        # the window this reads in. Once it is marked unhealthy it drops out of
-        # the fan-out entirely and reports nothing at all - so a run that
-        # cannot observe a reason before then has proven nothing either way and
-        # says so, rather than passing on an empty result.
+        # Until the next health check the fan-out asks the peer and finds it
+        # gone. After it, the fan-out does not ask a peer marked unhealthy and
+        # names it all the same. Both are unreachable.
         deadline = time.time() + 30
         reasons = []
         while time.time() < deadline:
@@ -326,15 +324,14 @@ class PeerFailureReasonsTest(unittest.TestCase):
                 reasons.append(failures[0].get('reason'))
                 break
             if not ext.get('partial'):
-                # The peer has been dropped from the healthy set; nothing more
-                # will be reported about it.
+                # A complete answer left the peer out without naming it.
                 break
             time.sleep(0.2)
 
         self.assertTrue(
             reasons,
-            'the killed peer produced no peer_failures entry before it was dropped from the '
-            'healthy set, so this run could not observe the reason at all')
+            'the killed peer produced no peer_failures entry: the answer left it out '
+            'without naming it')
         self.assertEqual(
             reasons[0], 'unreachable',
             f'a peer whose process is gone is unreachable, not {reasons[0]!r} - the two send '

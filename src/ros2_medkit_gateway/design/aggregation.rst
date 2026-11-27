@@ -326,14 +326,19 @@ classification pass over the full Component set:
   filters via ``is_healthy()``). Two consequences operators should plan
   around:
 
-  - If a colliding peer goes unhealthy between merges, it drops out of
-    the snapshot. The remaining peer becomes the new last-writer and
-    routing silently flips to it. The request itself cannot fail (the
-    dead peer cannot serve it), so this flip is required behaviour -
-    but the ``/health.warnings`` entry also disappears (only one
-    claimant is left), which hides the routing change from a snapshot
-    comparison. Alert on the transition from ``warnings`` non-empty to
-    empty, not just on the presence of warnings.
+  - If a colliding peer goes unhealthy between merges, it stops
+    claiming the Component. Its declaration is retained and replayed
+    after the live peers, but a replay yields a Component a live peer
+    contributes (``EntityMerger::set_replay``): it is listed as a
+    contributor and claims no route. The remaining peer becomes the new
+    last-writer and routing silently flips to it. The request itself
+    cannot fail (the dead peer cannot serve it), so this flip is
+    required behaviour - but the ``/health.warnings`` entry also
+    disappears (only one claimant is left), which hides the routing
+    change from a snapshot comparison. Alert on the transition from
+    ``warnings`` non-empty to empty, not just on the presence of
+    warnings. A Component only silent peers declare stays routed to the
+    last of them and is marked unavailable.
   - Insertion order within ``peers_`` is stable across a merge but can
     vary across gateway restarts, so two fresh primaries with the same
     peer list may pick different last-writers. Sticky routing across
@@ -469,7 +474,19 @@ classification pass over the full Component set:
   ``EntityInfo::peer_ids``; so do the fan-outs below. A refresh that lands
   while the peer answers can rename or drop the entity the request named, and
   the newest snapshot would then map the peer's id to the local entity that
-  took its place. A rewritten body drops the peer's ``ETag``.
+  took its place. Each object the walk recognizes as an entity served here
+  also takes this gateway's provenance for it, from the same snapshot
+  (``PeerIdIndex::provenance``, the ``source`` and sorted ``contributors`` of
+  every served entity a peer contributes): the peer writes its own, ``"local"``
+  for an entity it declares, which here would name this gateway, and passed
+  through, a peer-only Area's detail would read ``["local"]`` while the peer
+  answers and ``["peer:<name>"]`` once it is retained. The detail takes both fields, as
+  this gateway's own detail serves them; a relationship item takes the ones it
+  carries, so it keeps the shape of the route that lists it. Read from the
+  snapshot of the request's generation, never from the newest cache: a
+  refresh that renamed the entity meanwhile would otherwise attribute the
+  peer's entity as the local one that took its id. A rewritten body drops the
+  peer's ``ETag``.
   Responses of the resource collections (data, faults, operations and the
   rest) are passed through as the peer sent them, except for the member IDs a
   fan-out reads off them (see the member-qualified items below): a dropped
@@ -527,6 +544,10 @@ list is populated during merge:
   never produces duplicate entries.
 - Apps that collide receive only ``"peer:<name>"`` because the
   prefix strategy turns them into distinct entities.
+- A discovery response forwarded to the peer that serves the entity carries
+  this list too, not the peer's own (``rewrite_to_served_ids``), so the
+  detail of a peer-only entity reads the same whether its peer answers or it
+  is served from the retained declaration.
 - Outputs are sorted with ``"local"`` first (when present) and
   ``"peer:<name>"`` entries alphabetically, so clients and snapshot
   tests can rely on a stable order regardless of peer merge order.
@@ -860,7 +881,9 @@ logs) use real-time **fan-out** via ``fan_out_get()``, reached through the
 ``fan_out_helpers.hpp``: the primary gateway sends the same request to all
 healthy peers, collects the responses, and merges the ``items`` arrays. If some
 peers fail, the response body includes ``x-medkit.partial: true`` and
-``x-medkit.failed_peers``. Fan-out requests carry an ``X-Medkit-No-Fan-Out``
+``x-medkit.failed_peers``. A peer marked unhealthy is not asked, and it is a
+failed peer with reason ``unreachable``: a fan-out never answers complete
+while it left out a peer it should have asked. Fan-out requests carry an ``X-Medkit-No-Fan-Out``
 header, and both helpers return early when the incoming request has it, so a
 peer that aggregates back never fans out a second time. These routes and the
 global fault list below are the ones that declare the header in the OpenAPI
@@ -888,8 +911,9 @@ reads the request:
   Answer ``200`` with an empty list, since this gateway's faults are already
   in the answer the first pass is building.
 - A path of 16 ids, or one holding an id longer than 64 characters: answer
-  locally, do not extend it, and report every healthy peer as failed with
-  reason ``too-deep``, so a truncated list is not reported complete.
+  locally, do not extend it, and report every peer as failed, with reason
+  ``too-deep`` or, for a peer marked unhealthy, ``unreachable``, so a truncated
+  list is not reported complete.
 - ``X-Medkit-No-Fan-Out`` alone: answer locally only. That is a client opting
   out, or a gateway that predates the visited path.
 
@@ -948,7 +972,7 @@ with ``entity-not-found`` - one that stopped holding the entity since the
 tables were built - contributes nothing and is not counted as failed either
 (``PeerFailureKind::kEntityNotFound``). Global endpoints (paths with no
 entity id, e.g. ``GET /api/v1/faults``) pass a ``nullptr`` filter and keep
-fan-out-to-all-healthy behavior.
+fan-out-to-every-peer behavior.
 
 Each targeted peer is asked about the entity by the id it knows it by
 (``PeerTarget::id``, from ``peer_entity_id``): an entity the merge renamed is
@@ -979,11 +1003,10 @@ re-enabling the spurious ``partial: true`` path.
 
    Fan-out is synchronous on the httplib handler thread. Each request blocks
    for up to ``timeout_ms`` (default 2000ms) waiting for the slowest healthy
-   peer (parallel via ``std::async``, so max-not-sum across peers).
-   ``merge_peer_items()`` skips fan-out when ``healthy_peer_count() == 0`` to
-   avoid blocking after a peer outage is detected by health checks, but during
-   the window between a peer going down and the next health check cycle, handler
-   threads can block. Under concurrent load, this could exhaust httplib's thread
+   peer (parallel via ``std::async``, so max-not-sum across peers). A peer
+   marked unhealthy is not asked, so a request does not wait for an outage the
+   health checks have found. During the window between a peer going down and
+   the next health check cycle, handler threads can block. Under concurrent load, this could exhaust httplib's thread
    pool. Consider reducing ``aggregation.timeout_ms`` for deployments with many
    per-entity fan-out consumers.
 
@@ -1032,7 +1055,9 @@ refresh cycle. Refresh is primarily driven by rclcpp graph events (polled
 every 100 ms), with ``refresh_interval_ms`` (default: 30000 ms) providing a
 safety backstop for the case a graph event is missed. Each ``PeerClient``
 GETs ``/api/v1/health`` on its peer. If the health check fails, the peer is
-marked unhealthy and excluded from fan-out queries and entity fetching.
+marked unhealthy and not fetched. A fan-out does not ask it either, and names it
+in ``failed_peers`` with reason ``unreachable``, as the entity refresh records
+it unreachable.
 
 When a peer recovers (health check succeeds again), it is automatically
 re-included: the next refresh fetches it like any other healthy peer, and since
@@ -1066,7 +1091,8 @@ gateway that predates the route and is reported in
 ``not-responding`` on any route hanging off an entity - its detail, or one of
 its nested collections - is the peer reporting that the gateway contributing
 that entity has gone quiet, which is what a middle gateway in a chain answers
-for a declaration it is retaining. The entity is kept as the list named it and
+for an App or Component it is retaining (an Area or Function it retains it
+serves itself, with ``available: false``). The entity is kept as the list named it and
 marked unavailable, and a nested collection answering that way costs the members
 that route carries and nothing else. Read as a failed request instead, one
 unreachable member anywhere behind a peer would discard that peer's whole
@@ -1114,8 +1140,9 @@ the ``_links["depends-on"]`` references its detail serves, each reduced to the
 Function id it names and kept once (see Refresh Size Limits).
 
 Availability travels the same way in the other direction. ``x-medkit.available``
-is emitted only when false, so absence means reachable, and both
-``parse_component`` and ``parse_app`` read it back with a default of ``true``.
+is emitted only when false, so absence means reachable, and ``parse_component``,
+``parse_app``, ``parse_area`` and ``parse_function`` read it back with a default
+of ``true``.
 Without that, a chain of three gateways loses the fact at the second hop: an App
 still carries ``is_online``, but a Component has no other signal, and the head of
 the chain would report an unreachable leaf as reachable. Local retention only
@@ -1127,7 +1154,33 @@ link that is down.
 ``AggregationManager`` never records a failed fetch as the peer's declaration,
 so the last complete one survives; it re-checks that peer's health to decide
 whether to replay it marked unavailable (health check failed) or exactly as it
-was last read (health check still passes).
+was last read (health check still passes). What it records is the declaration
+alone: the entities the peer served with ``x-medkit.source: manifest``, which
+``PeerClient`` keeps as ``declared_source`` before it stamps ``peer:<name>``
+over ``source``. Every type carries that field on the routes the fetch reads,
+an Area on the list, the ``subareas`` items and the detail, so a peer's declared
+Areas are retained as its Components, Apps and Functions are.
+
+The marking (``mark_unreachable``) covers all four types, so the tree shows the
+current runtime: a retained entity stays and says it cannot be reached. It is
+applied twice per refresh, from one source of truth - the reachability the
+refresh decided for the peer from its health check (``Reachability``): to the
+declaration replayed for an unreachable peer, and, after the merge, to every
+entity routed to such a peer. ``EntityMerger`` keeps a merged Area or Function
+available when any contributor is, because it is then served from the merged
+view, and gives a merged Component the reachability of the peer it merges in last,
+because its requests go to that peer (the classification's last-writer-wins), not
+the combination of every contributor's; a merged Component the classification makes a parent is served
+here and is available again (``serve_here``). ``HandlerContext::validate_entity_for_route`` reads the flag off the
+entity it found and never forwards an unavailable one: an Area or a Function is
+served here from the declaration on its discovery routes (``is_discovery_route``:
+detail and structure) and from its members on the others while one of them can
+be reached (``has_available_member``) - otherwise ``504 not-responding``, the
+members' own answer; an App or a Component answers ``504 not-responding``; and the
+lifecycle status read takes the entity back (``RetainedAccess::kServeDeclaration``)
+to answer ``notReady``. A middle gateway therefore answers the head's read of a
+grouping its silent leaf declared with 200 and ``available: false``, and the
+head's refresh of the middle completes.
 
 The same field on a listed ITEM answers for that item's member and for nothing
 else. ``/operations`` and ``/data`` hold back the copies their declared tree

@@ -405,6 +405,8 @@ class AggregationManager {
    *        `<peer>/<its peer>`.
    * A peer answering `404 entity-not-found` holds nothing by the id in
    * `path`: it contributes no items and is not a failed peer.
+   * A peer this request targets that is marked unhealthy is not asked: it is
+   * a failed peer, reason `unreachable`.
    * @return FanOutResult with merged items and failure info.
    */
   FanOutResult fan_out_get(const std::string & path, const std::string & auth_header,

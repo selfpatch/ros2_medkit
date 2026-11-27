@@ -16,6 +16,7 @@
 #include <httplib.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <nlohmann/json.hpp>
 #include <set>
@@ -276,6 +277,40 @@ TEST(PeerClientHappyPath, health_check_unhealthy_on_500) {
   PeerClient client("http://127.0.0.1:" + std::to_string(port), "test_peer", 5000);
   client.check_health();
   EXPECT_FALSE(client.is_healthy());
+
+  svr.stop();
+  t.join();
+}
+
+// In process: a live peer whose health check fails cannot be forced on a real gateway.
+TEST(PeerClientHappyPath, failed_health_check_keeps_the_learned_instance_id) {
+  std::atomic<bool> answer_healthy{true};
+  httplib::Server svr;
+  svr.Get("/api/v1/health", [&answer_healthy](const httplib::Request &, httplib::Response & res) {
+    if (answer_healthy.load()) {
+      res.set_content(R"({"status":"healthy","x-medkit-instance-id":"peer-instance-1"})", "application/json");
+    } else {
+      res.status = 500;
+      res.set_content(R"({"status":"error"})", "application/json");
+    }
+  });
+
+  int port = svr.bind_to_any_port("127.0.0.1");
+  std::thread t([&]() {
+    svr.listen_after_bind();
+  });
+  // stop() only interrupts a server that is already listening.
+  svr.wait_until_ready();
+
+  PeerClient client("http://127.0.0.1:" + std::to_string(port), "test_peer", 5000);
+  client.check_health();
+  ASSERT_TRUE(client.is_healthy());
+  ASSERT_EQ(client.instance_id(), "peer-instance-1");
+
+  answer_healthy.store(false);
+  client.check_health();
+  EXPECT_FALSE(client.is_healthy());
+  EXPECT_EQ(client.instance_id(), "peer-instance-1");
 
   svr.stop();
   t.join();

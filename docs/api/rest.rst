@@ -70,7 +70,7 @@ operations that read them.
    other do not ask each other twice. It takes precedence over
    ``X-Medkit-No-Fan-Out``, which the same request also carries. A path of 16
    ids is not extended: the gateway answers for itself and reports its peers
-   as ``too-deep``. Clients do not send it (see :ref:`the fan-out design note
+   as ``too-deep``, a peer marked unhealthy as ``unreachable``. Clients do not send it (see :ref:`the fan-out design note
    <aggregation-fan-out>`).
 
 Server Capabilities
@@ -120,8 +120,9 @@ Server Capabilities
    require peers to be present - a gateway with aggregation enabled but
    zero peers still reports ``true`` and still emits the
    aggregation-only response fields (``peers`` on ``/health``, which may
-   be an empty array; ``x-medkit.contributors`` on entities, which will
-   contain only ``"local"`` until a peer contributes). Clients can
+   be an empty array; ``x-medkit.contributors`` on entities once a peer is
+   configured or discovered, which will contain only ``"local"`` until a
+   peer contributes). Clients can
    feature-detect those fields using this flag instead of probing for
    field presence. ``warnings`` is **not** one of them: it is served on
    every ``/health`` response regardless of this flag.
@@ -308,10 +309,53 @@ Areas
           {
             "id": "powertrain",
             "name": "Powertrain",
-            "href": "/api/v1/areas/powertrain"
+            "href": "/api/v1/areas/powertrain",
+            "x-medkit": {
+              "source": "manifest",
+              "ros2": {"namespace": "/powertrain"}
+            }
           }
         ]
       }
+
+   .. note::
+
+      **ros2_medkit extension:** an Area's ``x-medkit`` carries, each field
+      omitted when it has no value:
+
+      - ``source`` - where the Area comes from: ``manifest`` for a manifest
+        Area, ``plugin`` for one a discovery plugin introduced, and on a
+        gateway with aggregation enabled ``peer:<name>`` for an Area only a
+        peer holds (an Area both sides hold keeps the local source, as
+        Components do). Served on the list, the detail,
+        ``/areas/{area_id}/subareas`` and the resolved ``/apps/{app_id}/belongs-to``
+        item. A gateway aggregating this one reads an Area's origin from it, and
+        keeps a ``manifest`` Area while this gateway is not answering (see
+        :ref:`Peer Refresh Completeness <aggregation-peer-refresh-completeness>`).
+      - ``available`` - ``false`` when every gateway that contributes the Area
+        is silent and it is in the tree only from a retained declaration;
+        omitted otherwise, so absence means reachable. Served wherever
+        ``source`` is. Such an Area answers its detail and its structural
+        routes (``subareas``, ``components``, ``contains``) here, with 200. Its
+        resource collections are its members': while a member can be reached
+        they are served from the members, each answering for itself; when none
+        can, they answer ``504 not-responding``, as the members would. An Area a
+        live gateway also contributes stays available.
+      - ``ros2.namespace`` - the ROS 2 namespace the Area maps to.
+      - ``parent_area_id`` - the parent of a subarea (detail only).
+      - ``contributors`` - the merge inputs on a gateway with aggregation
+        enabled (detail only): ``"local"`` for this gateway, ``peer:<name>``
+        for each peer.
+      - ``missing`` and ``unresolved_component`` - only on a
+        ``/apps/{app_id}/belongs-to`` item whose Area cannot be resolved.
+
+      A detail or relationship collection this gateway forwards to the peer
+      that serves the entity carries this gateway's ``source`` and
+      ``contributors`` for each entity it describes, not the peer's own (which
+      name the peer ``"local"``): a peer-only Area's detail says
+      ``"contributors": ["peer:<name>"]`` and ``"source": "peer:<name>"``, as
+      its list item does and as its retained declaration does while the peer
+      is silent. The same holds for Components, Apps and Functions.
 
 ``GET /api/v1/areas/{area_id}``
    Get area capabilities and metadata.
@@ -495,6 +539,17 @@ Functions
 
 ``GET /api/v1/functions/{function_id}``
    Get function capabilities.
+
+   .. note::
+
+      **ros2_medkit extension:** a Function's ``x-medkit`` carries
+      ``available: false`` on the list and the detail when every gateway that
+      contributes it is silent and it is in the tree only from a retained
+      declaration (omitted otherwise). Such a Function answers its detail and
+      ``/hosts`` here, with 200. Its resource collections are its hosts': while
+      a host can be reached they are served from the hosts, each answering for
+      itself; when none can, they answer ``504 not-responding``, as the hosts
+      would. A Function a live gateway also contributes stays available.
 
 ``GET /api/v1/functions/{function_id}/hosts``
    List apps that host this function.
@@ -1232,6 +1287,11 @@ Read Status
    Component is ``ready`` while reachable, any other Component is ``ready`` while
    at least one hosted App is online) and no transition URIs are returned.
 
+   An App or Component retained from a silent peer (``x-medkit.available:
+   false``) answers ``{"status": "notReady"}`` with no transition URIs, from
+   what it declared; a transition request for it answers ``504
+   not-responding``.
+
    - **200:** Lifecycle status
    - **404:** Entity not found
 
@@ -1266,6 +1326,7 @@ Request Transition
    - **404:** Entity not found
    - **409:** A precondition was not fulfilled (``precondition-not-fulfilled``)
    - **501:** No lifecycle provider is registered for the entity (``not-implemented``)
+   - **504:** The entity is retained from a silent peer (``not-responding``)
 
    .. code-block:: bash
 
@@ -4228,6 +4289,8 @@ endpoint. ``GET /api/v1/faults/stream`` also reaches every healthy peer, but it
 is not an ``items`` merge: it holds one connection open per peer for as long as
 a client is attached. See the fault-streaming section below. The gateway sends the same request to all healthy peers, merges their
 ``items`` arrays into the local response, and returns the combined result.
+A peer whose last health check failed is not asked: the answer names it as a
+failed peer with reason ``unreachable``.
 
 If some peer requests fail during fan-out (peer unreachable or non-2xx
 response), the response includes vendor metadata indicating partial results:
@@ -4260,7 +4323,8 @@ why, one entry per name, with ``reason`` one of:
        had not finished when the request's deadline came.
    * - ``unreachable``
      - No usable answer arrived: connection refused, no route, TLS or redirect
-       failure, or the peer died while the answer was arriving.
+       failure, or the peer died while the answer was arriving. Also a peer
+       whose last health check failed, which the gateway did not ask.
    * - ``canceled``
      - This gateway stopped the call, which happens during its own shutdown.
    * - ``error-status``

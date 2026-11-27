@@ -315,8 +315,8 @@ Summary
   entity of another type holds.
 - **Transparent forwarding**: Requests for remote entities are forwarded to the
   owning peer. Clients interact with a single API endpoint.
-- **Graceful degradation**: Unhealthy peers are excluded from fan-out. Partial
-  results are clearly marked.
+- **Graceful degradation**: Unhealthy peers are not asked during fan-out. The
+  answer is marked partial and names each of them.
 
 Troubleshooting
 ---------------

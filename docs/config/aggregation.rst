@@ -522,7 +522,12 @@ A prefixed entity is forwarded under the ID its peer knows it by, and the
 discovery responses that come back (its detail, its relationship collections)
 are rewritten to the IDs this gateway serves: the entity's own ID and its name
 (``arm__Camera driver``, as the listings show it), its self, resource and
-relationship links, and the related entities' IDs. A response whose rewrite
+relationship links, and the related entities' IDs. Each entity such a response
+describes is attributed as this gateway attributes it: its ``x-medkit.source``
+and ``x-medkit.contributors`` are the merged entity's, the values the listings
+and the retained declaration serve, not the peer's own, which call the peer
+``"local"``. The detail carries both; a relationship item keeps the fields the
+peer's route gives it. A response whose rewrite
 would add more than 10 MB to it - one naming a renamed entity in far more
 objects than its own size accounts for - is refused with ``502``. A reference to a peer
 entity that is not served (see the taken prefixed ID above), or to an ID the
@@ -619,7 +624,8 @@ were last cached.
 
 Per-entity resource collection endpoints perform real-time fan-out via
 ``fan_out_get()`` to collect items from all healthy peers and merge them
-into the local response. This applies to:
+into the local response. A peer whose last health check failed is not asked,
+and the answer names it as failed. This applies to:
 
 - ``GET /api/v1/{entity_type}/{id}/data``
 - ``GET /api/v1/{entity_type}/{id}/operations``
@@ -637,15 +643,20 @@ A's answer is partial and names ``subsystem_b/subsystem_c`` in
 ``failed_peers``.
 
 If a peer request fails during fan-out (peer unreachable or non-2xx response),
-the response body includes:
+or a peer is not asked because its last health check failed, the response body
+includes:
 
 - ``x-medkit.partial: true`` in the JSON response body
 - ``x-medkit.failed_peers`` listing which peers failed
 
 This allows clients to detect degraded responses and take appropriate
-action. Individual entity requests for remote entities (e.g.,
-``GET /api/v1/apps/{id}``) return ``502 Bad Gateway`` if the owning peer
-is unreachable.
+action. An individual entity request for a remote entity (e.g.,
+``GET /api/v1/apps/{id}``) returns ``502 Bad Gateway`` when the forward to
+its peer fails. Once a refresh has found the peer unreachable, its entities
+are retained and nothing is forwarded to it (see
+:ref:`Peer Refresh Completeness <aggregation-peer-refresh-completeness>`).
+
+.. _aggregation-peer-refresh-completeness:
 
 Peer Refresh Completeness
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -671,6 +682,56 @@ What clients see then depends on the peer's health check:
   incomplete refresh is logged at ``WARN``. Availability is untouched - the
   peer can still be reached; this gateway merely failed to read all of it.
 
+The declaration is what the peer declared, nothing more: the entities it serves
+with ``x-medkit.source: manifest``, of all four types. An entity the peer
+discovered from its ROS graph describes a graph this gateway cannot observe
+once the peer is silent, so it leaves until the peer answers again.
+
+The tree shows what is running now. A retained entity stays in it, and is
+plainly marked as not reachable everywhere it is served; nothing addressed to
+it is forwarded to the silent peer:
+
+- An App carries ``x-medkit.available: false`` and ``x-medkit.is_online:
+  false``, a Component ``x-medkit.available: false``. Requests to either answer
+  ``504 not-responding``, except their lifecycle status, which answers
+  ``{"status": "notReady"}`` from what they declared (a transition still
+  answers ``504``).
+- An Area or a Function only the silent peer contributes carries
+  ``x-medkit.available: false`` too, on its list item and its detail. Its detail
+  and its structural routes - an Area's ``subareas``, ``components`` and
+  ``contains``, a Function's ``hosts`` - are served here from the retained
+  declaration, with 200. Its resource collections are its members': while one
+  of them can be reached they are served from the members, each answering for
+  itself (one behind the silent link with ``504 not-responding``); when none
+  can, the collection answers ``504 not-responding``, as the members would.
+- An Area or a Function that a live gateway also contributes - this one, or
+  another peer - stays available: it is served from the merged view, and only
+  the members behind the silent link are marked.
+- A Component merged from this gateway and a peer is that peer's to serve, so
+  it takes the peer's reachability: ``available: false`` while the peer is
+  silent, or while the peer reports it so. When several peers declare the same
+  leaf Component, its requests go to the last of them (see the leaf collision
+  warning), and it is that peer's account that counts: another peer reporting
+  the Component unavailable does not mark it while the peer it is routed to
+  serves it. A peer that stops answering yields the Component to the peers that
+  still do: its retained declaration keeps it in the contributors but does not
+  take its requests. A parent Component, which this gateway serves from the merged
+  view, stays available.
+
+An Area keeps its place in ``/areas`` (or under its parent's ``subareas``) as
+the peer declared it. A Component the peer declared in it is listed under
+``/areas/{area_id}/components`` with ``available: false``, and one the peer
+discovered at runtime has left, so a retained Area can be empty of Components.
+
+The signal is the peer's reachability as this gateway's refresh decided it from
+the peer's health check: the refresh that finds the peer unreachable replays its
+declaration marked unavailable and marks every entity routed to it, in the same
+cache generation the requests read. Beyond one hop the flag is read back: a
+middle gateway reports a grouping its silent leaf declared with ``available:
+false``, and the head keeps it, as it does for Apps and Components. The middle
+answers that grouping's detail itself, so the head goes on reading the middle
+whole while the leaf is down.
+
 A peer that starts answering again is read again on the next refresh, and a
 retained declaration is replayed only for a peer that could not be read - so
 the live answer replaces the retained one rather than being merged beside it.
@@ -689,7 +750,8 @@ Two statuses are read rather than treated as failures:
 - ``504`` with error code ``not-responding`` on any route hanging off an entity
   - its detail, or one of its nested collections - means the peer holds that id
   and the gateway contributing it has gone quiet, which is the answer an
-  aggregating peer gives for a declaration it is retaining. In a chain topology
+  aggregating peer gives for an App or Component it is retaining (an Area or a
+  Function it retains it serves itself, with ``available: false``). In a chain topology
   this is how the far end reports a dead leaf, so the entity is kept as the
   peer's list named it and marked ``x-medkit.available: false``. A nested
   collection answering that way costs only the members that route carries;
