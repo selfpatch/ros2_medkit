@@ -574,6 +574,9 @@ and some of them build an `rclcpp::Clock`.
   `core::reclassify_stale_healed()` is the startup pass for stale HEALED rows;
 - `core::FaultManagerCore`: `report`, `clear`, `list`, `get`, `list_for_entity`, `record_transition`
   and `tick`. These calls run under one internal mutex.
+- `core::RosbagRetention`: every rosbag retention decision (the per-fault cap, the storage quota,
+  the clear and the stale-row cleanup) on top of `FaultStorage::apply_rosbag_changes`. It returns
+  the directories to remove and never removes one itself.
 
 The core reaches the outside through four interfaces. The ROS adapter implements them.
 
@@ -597,7 +600,8 @@ The core returns `ros2_medkit::fault_detection` values (`FaultRecord`, `FaultEve
 nanosecond times.
 
 **ROS adapter** (`fault_manager_lib` and `fault_manager_node`): the services, the `FaultEvent`
-publisher, wall timers that call `tick`, the capture thread pool, snapshot and rosbag capture. It
+publisher, wall timers that call `tick`, the capture thread pool, snapshot and rosbag capture, and
+the `RetentionWorker` thread that removes the directories of cleared and stale recordings. It
 implements the four interfaces: `ros2::RosEventSink`, `ros2::RosCaptureHooks`,
 `ros2::SystemWallClock` and `ros2::RosLogSink`. It converts between the core values and the
 messages in `ros2/fault_msg_conversions.hpp`.

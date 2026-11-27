@@ -35,7 +35,7 @@ import launch_testing.util
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from rosbag_fm_harness import (  # noqa: E402
-    bag_dirs, MESSAGE_SIZE, MIB, poll, RetentionCase, sqlite_exec, Ticker,
+    bag_dirs, FM_NODE, MESSAGE_SIZE, MIB, poll, RetentionCase, sqlite_exec, Ticker,
 )
 
 RACE_REPETITIONS = 50
@@ -344,6 +344,36 @@ class TestRosbagQuota(RetentionCase):
         self.assertFalse(os.path.exists(bag))
         self.assertEqual(bag_dirs(self.storage), [])
 
+    def test_shutdown_drains_queued_removals(self):
+        """SIGTERM with clear removals still queued runs them all before the exit."""
+        with self.fm_run() as fm:
+            bags = [self.record(fm, 'DRAIN_A', 1), self.record(fm, 'DRAIN_B', 1)]
+            for bag in bags:
+                make_slow_to_remove(bag)
+            self.assertTrue(self.client.clear('DRAIN_A').success)
+            self.assertTrue(self.client.clear('DRAIN_B').success)
+            self.assertEqual(fm.terminate(), 0, fm.output()[-3000:])
+            output = fm.output()
+        for bag in bags:
+            self.assertFalse(os.path.exists(bag),
+                             f'{bag} outlived the shutdown:\n{output[-4000:]}')
+        self.assertEqual(bag_dirs(self.storage), [])
+
+    def test_no_removal_line_for_a_missing_directory(self):
+        """A clear whose directory is already gone logs no removal of it."""
+        with self.fm_run(**{'snapshots.rosbag.max_bags_per_fault': 1,
+                            'snapshots.rosbag.auto_cleanup': True}) as fm:
+            bag = self.record(fm, 'GONE_DIR', 1)
+            shutil.rmtree(bag)
+            mark = fm.mark()
+            self.assertTrue(self.client.clear('GONE_DIR').success)
+            self.assertIsNotNone(
+                fm.wait_line(r"Auto-cleanup: deleted bag file for fault 'GONE_DIR'", since=mark),
+                fm.output()[-3000:])
+            removed = f'Recording removed: {os.path.basename(bag)} '
+            self.assertEqual(fm.count_lines(re.escape(removed), since=mark), 0,
+                             fm.output()[-3000:])
+
     def test_removals_are_logged(self):
         """Each removal of a recording is logged after its directory is gone."""
         with self.subTest('a: a cap victim, before the recording that replaced it'):
@@ -367,7 +397,7 @@ class TestRosbagQuota(RetentionCase):
                 evicted = self.record(fm, 'LOG_QUOTA_A', 2)
                 make_slow_to_remove(evicted)
                 mark = self.start_store(fm, 'LOG_QUOTA_B', 2)
-                line = f"Deleted old bag '{evicted}' to enforce storage limit"
+                line = f"[{FM_NODE}]: Deleted old bag '{evicted}' to enforce storage limit"
                 self.assertIsNotNone(fm.wait_line(re.escape(line), since=mark),
                                      fm.output()[-3000:])
                 self.assertFalse(os.path.exists(evicted), f'{evicted} is still on disk')
@@ -420,6 +450,20 @@ class TestRosbagQuota(RetentionCase):
                         output.index(f'Recording removed: {recording_id} (fault cleared)'),
                         output.index("Auto-cleanup: deleted bag file for fault 'LOG_TWO'"),
                         'the fault was logged before the removal of its recording')
+
+        with self.subTest('e: a clear removes on the worker, after its reply'):
+            self.new_scratch()
+            with self.fm_run() as fm:
+                bag = self.record(fm, 'LOG_WORKER', 1)
+                make_slow_to_remove(bag)
+                mark = fm.mark()
+                self.assertTrue(self.client.clear('LOG_WORKER').success)
+                self.assertTrue(os.path.isdir(bag),
+                                'the clear removed the directory before its reply')
+                removed = f'Recording removed: {os.path.basename(bag)} (fault cleared)'
+                self.assertIsNotNone(fm.wait_line(re.escape(removed), since=mark),
+                                     fm.output()[-3000:])
+                self.assertFalse(os.path.exists(bag), f'{bag} is still on disk')
 
     def start_store(self, fm, code, mib):
         """Publish `mib` MiB and confirm `code` without waiting for the bag; return a mark."""

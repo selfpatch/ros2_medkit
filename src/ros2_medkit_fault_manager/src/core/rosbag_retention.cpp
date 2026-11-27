@@ -15,6 +15,7 @@
 #include "ros2_medkit_fault_manager/core/rosbag_retention.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <exception>
 #include <optional>
@@ -66,6 +67,9 @@ RosbagRetention::RosbagRetention(FaultStorage & storage, RosbagRetentionLimits l
 }
 
 StoreOutcome RosbagRetention::store(std::vector<RosbagFileInfo> rows) {
+  for ([[maybe_unused]] const auto & row : rows) {
+    assert(!row.recording_id.empty() && row.recording_id == rosbag_recording_id(row.file_path));
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   StoreOutcome outcome;
 

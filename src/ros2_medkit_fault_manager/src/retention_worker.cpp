@@ -119,11 +119,15 @@ void RetentionWorker::run_job(const Job & job) {
 
 bool RetentionWorker::remove_recording(const core::FreedRecording & recording) {
   std::error_code ec;
-  std::filesystem::remove_all(recording.path, ec);
+  const auto removed = std::filesystem::remove_all(recording.path, ec);
   if (ec) {
     core::logf(log_sink_, core::LogLevel::kWarn, logger_name_, "Failed to remove recording '%s' (%s): %s",
                recording.path.c_str(), removal_reason_name(recording.reason), ec.message().c_str());
     return false;
+  }
+  if (removed == 0) {
+    // The directory was already missing: nothing was removed.
+    return true;
   }
   switch (recording.reason) {
     case core::RemovalReason::kQuota:
@@ -131,7 +135,7 @@ bool RetentionWorker::remove_recording(const core::FreedRecording & recording) {
                  recording.path.c_str());
       break;
     case core::RemovalReason::kStale:
-      // The directory was already missing: there was nothing to remove.
+      // A stale row is reaped because its directory went missing.
       break;
     case core::RemovalReason::kCap:
     case core::RemovalReason::kCleared:

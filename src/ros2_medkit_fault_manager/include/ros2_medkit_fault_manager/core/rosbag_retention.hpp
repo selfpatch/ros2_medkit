@@ -87,6 +87,7 @@ class RosbagRetention {
   /// Store the rows of one recording. In one hold of the mutex: drop the rows of faults the
   /// storage holds as cleared, apply the per-fault cap together with the insert, then the quota.
   /// Precondition: no stored row names the recording's path, except links that @p rows upsert.
+  /// Precondition: every row carries `recording_id == rosbag_recording_id(file_path)`, not empty.
   /// Never throws.
   StoreOutcome store(std::vector<RosbagFileInfo> rows);
 

@@ -597,6 +597,8 @@ removal after it succeeded. No line announces a removal that has not happened ye
 - a stale row: no line, because its directory was already missing;
 - a removal that failed: a WARN with the path, the reason and the error.
 
+A removal that found no directory removed nothing and logs no line.
+
 A clear logs ``Auto-cleanup: deleted bag file for fault '<code>'`` once, after the lines of its
 recordings, when all of them are gone. It logs it at once when a sibling of the burst still holds
 the bag.

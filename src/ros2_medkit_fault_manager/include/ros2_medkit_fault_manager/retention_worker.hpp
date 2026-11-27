@@ -51,9 +51,10 @@ class RetentionWorker {
   void post(std::string kind, std::function<void()> job);
 
   /// Remove the directory of @p recording on the calling thread, then log the removal with its
-  /// reason: `Recording removed: <id> (max_bags_per_fault)` or `(fault cleared)`, main's
-  /// `Deleted old bag '<path>' to enforce storage limit` for the quota, nothing for a directory
-  /// that was already missing. A failure logs a WARN with the path, the reason and the error.
+  /// reason: `Recording removed: <id> (max_bags_per_fault)` or `(fault cleared)`, or main's
+  /// `Deleted old bag '<path>' to enforce storage limit` for the quota. No line when nothing was
+  /// removed, and none for a stale row. A failure logs a WARN with the path, the reason and the
+  /// error.
   /// @return true when the directory is gone
   bool remove_recording(const core::FreedRecording & recording);
 
