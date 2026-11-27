@@ -299,6 +299,32 @@ class TestRosbagQuota(RetentionCase):
             self.assertTrue(os.path.isdir(served.file_path))
             self.assertEqual([code for code, _ in self.stored_rows()], ['SHUT_A'])
 
+    def test_shutdown_finalizes_a_cap_victim(self):
+        """SIGTERM inside a post-roll stores the recording and removes the one its cap replaced."""
+        params = {'snapshots.rosbag.max_bags_per_fault': 1, 'snapshots.rosbag.auto_cleanup': False}
+        with self.fm_run(**params) as fm:
+            first = self.record(fm, 'SHUT_CAP', 1)
+        with self.fm_run(**{**params, 'snapshots.rosbag.duration_after_sec': 30.0}) as fm:
+            self.assertTrue(self.client.clear('SHUT_CAP').success)
+            mark = fm.mark()
+            self.client.publish_bytes(8, 128 * 1024)
+            self.assertTrue(self.client.report('SHUT_CAP').accepted)
+            self.assertIsNotNone(
+                fm.wait_line(r'Recording [\d.]+s more after fault confirmation', since=mark),
+                'the post-fault window never opened:\n' + fm.output()[-3000:])
+            self.assertEqual(fm.terminate(), 0, fm.output()[-3000:])
+        self.assertFalse(os.path.exists(first), f'{first} outlived the row the cap removed')
+        dirs = bag_dirs(self.storage)
+        self.assertEqual(len(dirs), 1, f'expected only the replacement, found {dirs}')
+        replacement = os.path.join(self.storage, dirs[0])
+        with self.fm_run(**params):
+            served = self.client.get_rosbag('SHUT_CAP')
+            self.assertTrue(served.success, served.error_message)
+            self.assertEqual(served.file_path, replacement)
+            self.assertTrue(os.path.isdir(replacement))
+            self.assertEqual(self.stored_rows(), [('SHUT_CAP', replacement)])
+            self.assertFalse(os.path.exists(first))
+
     def test_shutdown_right_after_clear(self):
         """SIGTERM as soon as ClearFault returns leaves no directory and a clean exit."""
         with self.fm_run() as fm:
