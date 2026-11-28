@@ -1,0 +1,51 @@
+policy_bridge:
+  ros__parameters:
+    # Topic the policy publishes ros2_medkit_policy_msgs/PolicyIntrospection on.
+    introspection_topic: "/policy/introspection"
+    # Entity the faults are reported for. Empty = the node that publishes the
+    # introspection topic (waited for up to 5 s, then the topic name), so the
+    # faults show on that entity in the gateway.
+    source_id: ""
+    # Fault codes are <PREFIX>_CHUNK_DISAGREEMENT and <PREFIX>_SLOW_INFERENCE. The
+    # fault manager keys faults by code, so give every bridge (one per watched
+    # policy) its own prefix: two bridges with one prefix share their faults,
+    # and one heals the other's.
+    code_prefix: "POLICY"
+
+    # Chunk disagreement: consecutive predictions stop agreeing. The threshold
+    # depends on the policy; measure it on successful runs (for example a high
+    # percentile of the spread) and set it here. 0 turns the check off. The
+    # check needs predictions that overlap: the policy must infer more often
+    # than every chunk_length steps (ACT with temporal ensembling infers every
+    # step; ACT without it infers every n_action_steps and cannot be checked).
+    spread_threshold: 0.0
+    # Older predictions each new one is compared with, [1, 64].
+    spread_history: 4
+    # Shared steps compared per pair of predictions, at most, [1, 10000].
+    spread_horizon: 20
+    # Per-joint divisor, e.g. each joint's spread in the training data. Leave
+    # unset to use 1 for every joint, e.g.:
+    # joint_scale: [0.3, 0.5, 0.4]
+
+    # Slow inference: the model took longer than this, in ms. 0 turns it off.
+    # Messages that leave inference_ms at 0 (not measured) are not counted.
+    max_inference_ms: 0.0
+
+    # Readings above the limit in a row before a fault is raised, [1, 100000].
+    raise_after: 3
+    # Readings within the limit in a row before the fault is passed,
+    # [0, 100000]. 0 = only a new episode passes it.
+    clear_after: 0
+    # Pass both faults when a new episode starts.
+    clear_on_new_episode: true
+    # A pass heals the fault only when the fault manager heals on one PASSED:
+    # healing_enabled: true and healing_threshold: 0. With the packaged
+    # fault_manager.yaml (healing off) a passed fault stays CONFIRMED until it
+    # is cleared.
+
+    # Severity (0=INFO 1=WARN 2=ERROR 3=CRITICAL).
+    chunk_disagreement_severity: 1
+    slow_inference_severity: 1
+    # How often the bridge checks the FaultManager service and sends what is
+    # due, in seconds, [0.01, 10].
+    retry_period_sec: 0.1

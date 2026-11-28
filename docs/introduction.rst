@@ -65,8 +65,15 @@ ros2_medkit consists of several ROS 2 packages:
 **ros2_medkit_action_status_bridge**
    Bridge node that turns terminal ROS 2 action goal states (aborted) into fault manager faults.
 
+**ros2_medkit_policy_bridge**
+   Bridge node that reports faults when a learned robot policy's predictions stop
+   agreeing with each other or its inference is slow, from the ``PolicyIntrospection`` messages it publishes.
+
 **ros2_medkit_msgs**
    Message and service definitions for fault management.
+
+**ros2_medkit_policy_msgs**
+   ``PolicyIntrospection``, what a learned robot policy predicted at one inference.
 
 **ros2_medkit_integration_tests**
    Integration tests, automotive-themed demo nodes, and shared test utilities.
