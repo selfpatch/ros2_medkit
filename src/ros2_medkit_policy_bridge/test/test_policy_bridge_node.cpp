@@ -255,13 +255,13 @@ TEST_F(PolicyBridgeNodeTest, WrongTypesAndRangesFallBack) {
   rclcpp::NodeOptions options;
   options.parameter_overrides({
       {"introspection_topic", topic_ + "_bad"},
-      {"spread_threshold", int64_t{1}},           // an integer is a number
-      {"max_inference_ms", std::string("fast")},  // not a number: default 0
-      {"raise_after", 3.0},                       // a whole double is an integer
-      {"clear_after", 2.5},                       // not whole: default 0
-      {"spread_history", int64_t{4294967296}},    // clamped to 64
-      {"chunk_disagreement_severity", int64_t{9}},    // default 1
-      {"retry_period_sec", -1.0},                 // default 0.1
+      {"spread_threshold", int64_t{1}},             // an integer is a number
+      {"max_inference_ms", std::string("fast")},    // not a number: default 0
+      {"raise_after", 3.0},                         // a whole double is an integer
+      {"clear_after", 2.5},                         // not whole: default 0
+      {"spread_history", int64_t{4294967296}},      // clamped to 64
+      {"chunk_disagreement_severity", int64_t{9}},  // default 1
+      {"retry_period_sec", -1.0},                   // default 0.1
       {"joint_scale", std::vector<int64_t>{1, 2}},
       {"clear_on_new_episode", std::string("yes")},
       {"code_prefix", int64_t{5}},
@@ -298,7 +298,8 @@ TEST_F(PolicyBridgeNodeTest, FaultManagerThatAppearsLaterGetsTheRaise) {
 
   FakeFaultManager fm(host_);
   ASSERT_TRUE(spin_until([&]() {
-    return fm.count(bridge_->chunk_disagreement_code(), true) == 1 && fm.count(bridge_->slow_inference_code(), false) == 1;
+    return fm.count(bridge_->chunk_disagreement_code(), true) == 1 &&
+           fm.count(bridge_->slow_inference_code(), false) == 1;
   })) << "events: "
       << fm.events.size();
   EXPECT_EQ(bridge_->due_reports(), 0u);
@@ -328,7 +329,8 @@ TEST_F(PolicyBridgeNodeTest, FaultManagerThatComesBackGetsTheRaiseAgain) {
   fm.start();
   // Both codes are sent again: the active raise and the other code's pass.
   ASSERT_TRUE(spin_until([&]() {
-    return fm.count(bridge_->chunk_disagreement_code(), true) == 2 && fm.count(bridge_->slow_inference_code(), false) == 2;
+    return fm.count(bridge_->chunk_disagreement_code(), true) == 2 &&
+           fm.count(bridge_->slow_inference_code(), false) == 2;
   })) << "state not sent again after the FaultManager came back";
 }
 

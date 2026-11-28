@@ -196,7 +196,8 @@ void PolicyBridgeNode::load_parameters() {
     }
     return static_cast<uint8_t>(value);
   };
-  chunk_disagreement_severity_ = severity("chunk_disagreement_severity", read.integer("chunk_disagreement_severity", 1));
+  chunk_disagreement_severity_ =
+      severity("chunk_disagreement_severity", read.integer("chunk_disagreement_severity", 1));
   slow_inference_severity_ = severity("slow_inference_severity", read.integer("slow_inference_severity", 1));
 
   const double period = read.number("retry_period_sec", 0.1);
