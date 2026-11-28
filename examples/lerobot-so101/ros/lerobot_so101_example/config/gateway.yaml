@@ -1,0 +1,20 @@
+# Gateway settings for this example: the graph watchdog plugin reports a node
+# that leaves the graph (the policy process killed) as GRAPH_NODE_DISAPPEARED.
+# The gateway's own defaults apply to everything else.
+ros2_medkit_gateway:
+  ros__parameters:
+    plugins: ["graph_watchdog"]
+    plugins.graph_watchdog.path: "/opt/medkit_ws/install/ros2_medkit_graph_watchdog/lib/ros2_medkit_graph_watchdog/libros2_medkit_graph_watchdog.so"
+    plugins.graph_watchdog.detectors.node_death.mode: "raise"
+    # The other detectors are off here: the example's scripts change parameters on
+    # purpose (param_drift would report every fault injection), and a confirmed
+    # GRAPH_* fault mid-attempt would start a recording of its own.
+    plugins.graph_watchdog.detectors.param_drift.mode: "off"
+    plugins.graph_watchdog.detectors.qos_mismatch.mode: "off"
+    plugins.graph_watchdog.detectors.orphan.mode: "off"
+    plugins.graph_watchdog.detectors.lifecycle_expectation.mode: "off"
+    # All interfaces inside the container, for Docker's port mapping; the port is
+    # published on 127.0.0.1 only (docker-compose.yml), since auth is off.
+    server.host: "0.0.0.0"
+    server.port: 8080
+    cors.allowed_origins: ["http://localhost:3000"]

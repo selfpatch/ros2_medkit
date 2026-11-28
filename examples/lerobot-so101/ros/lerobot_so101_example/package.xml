@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>lerobot_so101_example</name>
+  <version>0.1.0</version>
+  <description>LeRobot ACT policy on a simulated SO-101 arm, diagnosed by ros2_medkit</description>
+  <maintainer email="ahmedsleem8843@gmail.com">ahmedsleem109</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>ros2_medkit_msgs</exec_depend>
+  <exec_depend>ros2_medkit_gateway</exec_depend>
+  <exec_depend>ros2_medkit_fault_manager</exec_depend>
+  <exec_depend>ros2_medkit_diagnostic_bridge</exec_depend>
+  <exec_depend>ros2_medkit_graph_watchdog</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <!-- LeRobot, torch, MuJoCo and so101-nexus come from pip (see ../../requirements.txt) -->
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

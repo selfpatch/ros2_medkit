@@ -177,4 +177,6 @@ linkcheck_ignore = [
     # canonical REP host is slow, not broken. Scope the skip to this exact URL
     # so other REP links stay checked.
     r'https://ros\.org/reps/rep-0149\.html',
+    # Added by the pull request that links it: 404 on main until that is merged.
+    r'https://github\.com/selfpatch/ros2_medkit/tree/main/examples/lerobot-so101',
 ]

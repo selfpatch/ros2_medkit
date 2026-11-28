@@ -1,0 +1,23 @@
+# PolicyIntrospection -> faults, used only when ros2_medkit_policy_bridge is built.
+# Fault codes: POLICY_CHUNK_DISAGREEMENT (and POLICY_SLOW_INFERENCE, off here:
+# the step time is already watched through /diagnostics as POLICY_INFERENCE_SLOW).
+policy_bridge:
+  ros__parameters:
+    introspection_topic: "/policy/introspection"
+    source_id: "/lerobot_policy"
+    code_prefix: "POLICY"
+    # Chunk spread in radians (RMS over up to spread_horizon shared steps). The
+    # example's policy re-plans every 50 steps with 100-step chunks, so there is
+    # one reading every 50 steps. Measured on 30 unseen seeds + 15 with a frozen
+    # overhead camera (host GPU, same checkpoint): 0.1 rad twice in a row flagged
+    # 0 of 11 successes, 13 of 19 failures and 14 of 15 frozen-camera runs, at
+    # step 150 (median), half an episode before EPISODE_FAILED. Successes end by
+    # step ~160 (2-3 readings), so the false-alarm figure is optimistic.
+    spread_threshold: 0.1
+    spread_history: 4
+    spread_horizon: 20
+    max_inference_ms: 0.0
+    raise_after: 2
+    clear_after: 0
+    clear_on_new_episode: true
+    chunk_disagreement_severity: 1
