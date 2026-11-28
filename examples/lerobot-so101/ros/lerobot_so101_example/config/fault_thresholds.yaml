@@ -15,3 +15,10 @@ POLICY_CHUNK_DISAGREEMENT:
 POLICY_SLOW_INFERENCE:
   confirmation_threshold: -1000000
   healing_threshold: 0
+# From lerobot-medkit, when it is installed (config/lerobot_medkit.yaml).
+POLICY_CAMERA_WRIST_FROZEN:
+  confirmation_threshold: -1000000
+  healing_threshold: 0
+POLICY_CAMERA_OVERHEAD_FROZEN:
+  confirmation_threshold: -1000000
+  healing_threshold: 0

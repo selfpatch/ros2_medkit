@@ -34,6 +34,9 @@ RUN pip install --no-cache-dir torch==2.15.0 torchvision==0.29.2 \
       --index-url https://download.pytorch.org/whl/cpu
 COPY examples/lerobot-so101/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
+# lerobot-medkit, the plugin that reports from inside LeRobot (src/lerobot-medkit).
+COPY src/lerobot-medkit/ /tmp/lerobot-medkit/
+RUN pip install --no-cache-dir /tmp/lerobot-medkit && rm -rf /tmp/lerobot-medkit
 
 # MuJoCo renders off-screen (no GPU runtime needed).
 ENV MUJOCO_GL=egl

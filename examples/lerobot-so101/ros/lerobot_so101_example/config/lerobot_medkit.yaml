@@ -1,0 +1,19 @@
+# lerobot-medkit attached to the example's policy (used when src/lerobot-medkit is
+# installed). The policy re-plans every 50 steps, so slow inference is timed per
+# model inference: a mean over steps would rise and fall with each inference.
+lerobot_medkit:
+  code_prefix: POLICY
+  source_id: ""               # the policy node, /lerobot_policy
+  transport: rclpy
+  introspection:
+    enabled: true
+    topic: /policy/introspection
+  slow_inference:
+    max_ms: 300.0             # one ACT inference took 79-90 ms on the container's CPU
+    measure: chunk
+    window: 2                 # two slow inferences in a row
+    clear_ratio: 0.8
+    severity: warn
+  frozen_camera:
+    identical_frames: 10      # as the policy received them, next to camera_monitor's view
+    severity: error

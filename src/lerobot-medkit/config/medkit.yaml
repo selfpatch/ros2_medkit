@@ -1,0 +1,20 @@
+# lerobot-medkit configuration. Every check is off until its threshold is set:
+# measure the policy first (see README).
+lerobot_medkit:
+  code_prefix: LEROBOT        # fault codes: LEROBOT_INFERENCE_SLOW, LEROBOT_CAMERA_<NAME>_FROZEN
+  source_id: ""               # entity the faults belong to; empty: the reporting node
+  transport: rclpy            # rclpy (any rmw) or none
+  node_name: lerobot_medkit   # node created when no node is passed in
+  report_service: /fault_manager/report_fault
+  introspection:
+    enabled: true             # each predicted chunk as ros2_medkit_policy_msgs/PolicyIntrospection
+    topic: /policy/introspection
+  slow_inference:
+    max_ms: 0.0               # 0: off
+    measure: chunk            # chunk: each model inference; step: each select_action call
+    window: 3
+    clear_ratio: 0.8
+    severity: warn
+  frozen_camera:
+    identical_frames: 0       # 0: off; else that many identical frames in a row
+    severity: error

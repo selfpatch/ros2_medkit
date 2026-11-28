@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot-medkit"
+version = "0.1.0"
+description = "Report what a LeRobot policy does to ros2_medkit, from inside LeRobot"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = ["numpy", "pyyaml"]
+
+[project.optional-dependencies]
+# rclpy and ros2_medkit_msgs come from a sourced ROS 2 workspace, not from PyPI.
+lerobot = ["lerobot>=0.7"]
+test = ["pytest", "torch"]
+
+[project.scripts]
+lerobot-medkit-rollout = "lerobot_medkit.rollout:main"
+
+[tool.setuptools]
+packages = ["lerobot_medkit"]
