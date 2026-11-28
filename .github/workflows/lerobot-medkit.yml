@@ -1,0 +1,49 @@
+name: lerobot-medkit
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/lerobot-medkit/**'
+      - 'src/ros2_medkit_msgs/**'
+      - 'src/ros2_medkit_policy_msgs/**'
+      - 'examples/lerobot-so101/ros/**'
+      - 'scripts/ci_lerobot_medkit.sh'
+      - '.github/workflows/lerobot-medkit.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/lerobot-medkit/**'
+      - 'src/ros2_medkit_msgs/**'
+      - 'src/ros2_medkit_policy_msgs/**'
+      - 'examples/lerobot-so101/ros/**'
+      - 'scripts/ci_lerobot_medkit.sh'
+      - '.github/workflows/lerobot-medkit.yml'
+
+concurrency:
+  group: lerobot-medkit-${{ github.head_ref || github.sha }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # src/lerobot-medkit is a pip package, not a colcon one: the colcon jobs never
+  # see it. This job lints it and runs its tests, rclpy ones included.
+  test:
+    runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Keep the tests' DDS traffic inside the container.
+      ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Lint and test lerobot-medkit
+        run: ./scripts/ci_lerobot_medkit.sh

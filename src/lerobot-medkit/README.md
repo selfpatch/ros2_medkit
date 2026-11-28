@@ -136,3 +136,6 @@ pytest tests
 
 The rclpy tests need a sourced workspace with `ros2_medkit_msgs` (and
 `ros2_medkit_policy_msgs` for the introspection test); without it they skip.
+CI (`.github/workflows/lerobot-medkit.yml`, `scripts/ci_lerobot_medkit.sh`)
+builds those messages in `ros:jazzy-ros-base`, lints the package and fails if
+any test is skipped.
